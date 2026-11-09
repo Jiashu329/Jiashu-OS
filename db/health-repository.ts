@@ -42,6 +42,24 @@ export async function readHealth(userId: string, days: number) {
   };
 }
 
+/** Inclusive Shanghai calendar-day range for selected historical health reviews. */
+export async function readHealthRange(userId: string, from: string, to: string) {
+  const db = database();
+  const [rows, last] = await Promise.all([
+    db.prepare('SELECT measurement_json FROM health_measurements WHERE user_id = ? AND day BETWEEN ? AND ? ORDER BY day ASC, record_key ASC')
+      .bind(userId, from, to).all<{ measurement_json: string }>(),
+    db.prepare('SELECT MAX(received_at) AS received_at FROM health_syncs WHERE user_id = ?')
+      .bind(userId).first<{ received_at: string | null }>(),
+  ]);
+  const measurements = rows.results.map((row) => JSON.parse(row.measurement_json) as HealthMeasurement);
+  return {
+    summary: buildHealthSummary(measurements),
+    bodyComposition: buildBodyComposition(measurements),
+    measurements,
+    lastSync: last?.received_at ?? null,
+  };
+}
+
 export class SyncDeviceInvalidError extends Error {
   constructor() {
     super('Sync device is no longer active');

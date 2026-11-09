@@ -50,7 +50,7 @@ ${HEALTH_GOALS_CSS}
   <main class="main">
     <header class="topbar"><time id="today-date"></time><span id="breadcrumb-current" class="sr-only">健康</span></header>
     <div id="handoff-notice" class="status-banner" role="status" hidden><span class="banner-copy" id="handoff-notice-text"></span><button class="status-retry" id="dismiss-handoff-notice" type="button">关闭</button></div><section id="overview-page" aria-label="健康总览">
-      <div class="page-heading"><div><h1>健康</h1></div><div class="heading-action"><button class="btn quiet" data-open-setup><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><use href="#i-sync"/></svg>同步设置</button><button class="btn primary" data-open-import><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><use href="#i-upload"/></svg>导入数据</button></div></div>
+      <div class="page-heading"><div><h1>健康</h1></div><div class="heading-action"><a class="btn quiet" id="health-weekly-link" href="/health/review">每周回顾</a><button class="btn quiet" data-open-setup><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><use href="#i-sync"/></svg>同步设置</button><button class="btn primary" data-open-import><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><use href="#i-upload"/></svg>导入数据</button></div></div>
       <div id="data-banner" class="status-banner" role="status"><div class="banner-copy"><strong id="banner-title">读取健康记录中</strong><span id="banner-description"></span></div><span id="banner-tail" class="sr-only"></span><button id="retry-load" class="status-retry" hidden>重试</button></div>
       ${renderHealthGoals('health')}
       <div class="metrics" aria-label="健康指标">
