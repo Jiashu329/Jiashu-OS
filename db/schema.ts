@@ -35,3 +35,28 @@ export const syncDevices = sqliteTable('sync_devices', {
 }, (table) => [
   index('sync_devices_user_revoked_idx').on(table.userId, table.revokedAt),
 ]);
+
+export const financeAccounts = sqliteTable('finance_accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  ledger: text('ledger').notNull(),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  currency: text('currency').notNull(),
+  creationHash: text('creation_hash'),
+  note: text('note').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  archivedAt: text('archived_at'),
+}, (table) => [index('finance_accounts_owner_ledger_idx').on(table.userId, table.ledger)]);
+
+export const financeBalanceEntries = sqliteTable('finance_balance_entries', {
+  sequence: integer('sequence').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull().unique(),
+  userId: text('user_id').notNull(),
+  accountId: text('account_id').notNull(),
+  amountMinor: text('amount_minor').notNull(),
+  asOfDate: text('as_of_date').notNull(),
+  note: text('note').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('finance_balances_owner_account_date_idx').on(table.userId, table.accountId, table.asOfDate, table.sequence)]);

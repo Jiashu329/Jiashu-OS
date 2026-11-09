@@ -1,13 +1,20 @@
 {
   "id": "/",
-  "name": "Jiashu OS · 健康",
+  "name": "Jiashu OS",
   "short_name": "Jiashu OS",
-  "description": "看清身体状态与健康数据的变化。",
+  "description": "私人健康数据与个人、家庭财务账本。",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#f6f5ef",
   "theme_color": "#193e34",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Jiashu OS · 健康',
-  description: '私人健康状态与趋势，连接苹果健康中的步数、睡眠和活动能量。',
+  title: 'Jiashu OS · 人生管理',
+  description: '私人健康数据与个人、家庭财务账本。',
 };
 
 export default function RootLayout({

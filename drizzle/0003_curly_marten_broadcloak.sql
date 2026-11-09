@@ -1,0 +1,1 @@
+ALTER TABLE `finance_accounts` ADD `creation_hash` text;
