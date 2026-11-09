@@ -1,0 +1,103 @@
+import { isCheckedThisMonth, normalizeCheckAmount, normalizeCheckNote, validateCheckDate } from './finance-balance-check.ts';
+
+const BALANCE_CHECK_SCRIPT = String.raw`
+  const el=(id)=>document.getElementById('balance-check-'+id);
+  const ledgerLabels={personal:'个人账本',family:'家庭账本'};
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const state={ledger:'personal',currency:'all',pendingOnly:false,saving:false,loadSequence:0,controller:null};
+  const books={};
+  const esc=(value)=>String(value??'').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const localToday=()=>{const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const get=(key)=>parts.find((part)=>part.type===key).value;return get('year')+'-'+get('month')+'-'+get('day');};
+  const storageKey=(ledger)=>'jiashu-balance-check:'+encodeURIComponent(ownerId)+':'+ledger;
+  const freezeOperation=(operation)=>Object.freeze({accountId:operation.accountId,key:operation.key,body:Object.freeze({amount:operation.body.amount,asOfDate:operation.body.asOfDate,note:operation.body.note})});
+  function readOperations(ledger){
+    const text=sessionStorage.getItem(storageKey(ledger));if(!text)return [];
+    const data=JSON.parse(text);if(data?.version!==1||!Array.isArray(data.operations))throw new Error('待确认提交无法恢复，请先核对账户记录。');
+    const seen=new Set();return data.operations.map((operation)=>{if(!operation||!uuid.test(operation.accountId)||!uuid.test(operation.key)||seen.has(operation.accountId)||typeof operation.body?.amount!=='string'||!/^\d+(?:\.\d{1,2})?$/.test(operation.body.amount)||operation.body.amount.length>20||typeof operation.body.asOfDate!=='string'||typeof operation.body.note!=='string')throw new Error('待确认提交无法恢复，请先核对账户记录。');seen.add(operation.accountId);validateCheckDate(operation.body.asOfDate,localToday());normalizeCheckNote(operation.body.note);return freezeOperation(operation);});
+  }
+  function getBook(ledger=state.ledger){
+    if(books[ledger])return books[ledger];const book={ledger,accounts:[],today:localToday(),date:'',note:'',drafts:new Map(),results:new Map(),operations:[],loaded:false,storageError:'',loadError:null};
+    try{book.operations=readOperations(ledger);for(const operation of book.operations){book.drafts.set(operation.accountId,operation.body.amount);book.results.set(operation.accountId,{kind:'pending',message:'有待确认的提交，点击“重试未完成”继续。'});}if(book.operations.length){book.date=book.operations[0].body.asOfDate;book.note=book.operations[0].body.note;}}
+    catch(error){book.storageError=error?.message||'暂时无法保留提交进度，本次未发送。';}
+    books[ledger]=book;return book;
+  }
+  function persist(book,operations){
+    if(operations.length)sessionStorage.setItem(storageKey(book.ledger),JSON.stringify({version:1,operations:operations.map(({accountId,key,body})=>({accountId,key,body}))}));else sessionStorage.removeItem(storageKey(book.ledger));
+    book.operations=operations;
+  }
+  function money(minor,currency){if(typeof minor!=='string'||!/^\d+$/.test(minor)||!Object.hasOwn(currencies,currency))return '—';const decimals=currencies[currency].decimals;const digits=BigInt(minor).toString().padStart(decimals+1,'0');return currency+' '+(decimals?digits.slice(0,-decimals):digits).replace(/\B(?=(\d{3})+(?!\d))/g,',')+(decimals?'.'+digits.slice(-decimals):'');}
+  function currentAmount(account){if(typeof account.amount==='string')return normalizeCheckAmount(account.amount,currencies[account.currency].decimals);const decimals=currencies[account.currency].decimals;const digits=BigInt(account.balanceMinor).toString().padStart(decimals+1,'0');return decimals?digits.slice(0,-decimals)+'.'+digits.slice(-decimals):digits;}
+  function path(){return '/finance/balances?'+new URLSearchParams({ledger:state.ledger,currency:state.currency});}
+  function setStatus(message,error=false,login=false,retry=false){el('status').hidden=!message;el('status').classList.toggle('error',error);el('status-text').textContent=message;el('login').hidden=!login;el('login').href='/signin-with-chatgpt?return_to='+encodeURIComponent(path());el('load-retry').hidden=!retry;}
+  function syncControls(){
+    document.querySelectorAll('[data-check-ledger]').forEach((button)=>{const selected=button.dataset.checkLedger===state.ledger;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;button.disabled=state.saving;});
+    el('content').setAttribute('aria-labelledby','balance-check-ledger-'+state.ledger);el('currency').value=state.currency;el('currency').disabled=state.saving;el('pending-only').checked=state.pendingOnly;el('pending-only').disabled=state.saving;
+    el('back-link').href='/finance?'+new URLSearchParams({ledger:state.ledger,currency:state.currency});el('back-link').setAttribute('aria-disabled',String(state.saving));el('back-link').tabIndex=state.saving?-1:0;
+    const book=getBook();el('date').value=book.date||book.today;el('date').max=book.today;el('date').disabled=state.saving||book.operations.length>0;el('note').value=book.note;el('note').disabled=state.saving||book.operations.length>0;
+    if(location.pathname+location.search!==path())history.replaceState(null,'',path());el('page').setAttribute('aria-busy',String(state.saving));
+  }
+  function allRows(book){const rows=[...book.accounts];const known=new Set(rows.map((account)=>account.id));for(const id of new Set([...book.operations.map((operation)=>operation.accountId),...filledEntries(book).map(([id])=>id)]))if(!known.has(id))rows.push({id,name:book.operations.some((operation)=>operation.accountId===id)?'待确认账户':'当前不可用账户',unknown:true,currency:null,type:null,asOfDate:null});return rows;}
+  function filledEntries(book){return [...book.drafts.entries()].filter(([,value])=>value.trim()!=='');}
+  function updateSelection(){const book=getBook();const count=filledEntries(book).length;el('selection').textContent=ledgerLabels[state.ledger]+'已填写 '+count+' 个账户（含筛选后隐藏项）';el('save').textContent=state.saving?'正在逐行保存…':'保存已填写账户（'+count+'）';el('save').disabled=state.saving||!book.loaded||count===0||book.operations.length>0||Boolean(book.storageError);el('retry-pending').hidden=book.operations.length===0;el('retry-pending').textContent='重试未完成（'+book.operations.length+'）';el('retry-pending').disabled=state.saving||!book.loaded||Boolean(book.storageError);}
+  function renderRows(){
+    const book=getBook();const rows=allRows(book);const attention=new Set([...book.operations.map((operation)=>operation.accountId),...[...book.results.entries()].filter(([,result])=>result.kind==='error').map(([id])=>id)]);const visible=rows.filter((account)=>attention.has(account.id)||((account.unknown||state.currency==='all'||account.currency===state.currency)&&(!state.pendingOnly||account.unknown||!isCheckedThisMonth(account.asOfDate,book.today))));
+    const checked=book.accounts.filter((account)=>isCheckedThisMonth(account.asOfDate,book.today)).length;el('summary').textContent=ledgerLabels[state.ledger]+' · 本月已记录 '+checked+' / '+book.accounts.length+' 个账户';el('visible-count').textContent='显示 '+visible.length+' 个账户'+(attention.size?' · 待确认和错误行始终显示':'');
+    el('rows').innerHTML=visible.length?visible.map((account)=>{const operation=book.operations.find((item)=>item.accountId===account.id);const result=book.results.get(account.id);const checked=!account.unknown&&isCheckedThisMonth(account.asOfDate,book.today);const disabled=state.saving||Boolean(operation)||account.unknown;return '<li class="check-row" data-account-id="'+account.id+'"><div><div class="check-name">'+esc(account.name)+'</div><p class="check-meta">'+(account.unknown?'该账户当前未在活跃列表中':esc((accountTypes[account.type]?.label||'账户')+' · '+account.currency))+'</p><span class="check-badge'+(checked?' recorded':'')+'">'+(account.unknown?'待确认提交':checked?'本月已记录':'待核对')+'</span></div><div class="check-current">'+(account.unknown?'待确认':money(account.balanceMinor,account.currency))+'<small>'+(account.unknown?'重试后确认账户状态':'余额日期 '+esc(account.asOfDate))+'</small></div><div><label class="check-input-label" for="balance-check-amount-'+account.id+'">新余额'+(account.currency?'（'+account.currency+'）':'')+'</label><div class="check-amount-row"><input class="check-control" id="balance-check-amount-'+account.id+'" data-check-amount="'+account.id+'" type="text" inputmode="decimal" autocomplete="off" placeholder="留空不提交" value="'+esc(operation?operation.body.amount:book.drafts.get(account.id)||'')+'" aria-describedby="balance-check-result-'+account.id+'"'+(result?.kind==='error'?' aria-invalid="true"':'')+(disabled?' disabled':'')+'><button class="check-btn" type="button" data-check-unchanged="'+account.id+'"'+(disabled?' disabled':'')+'>余额未变</button>'+(account.unknown&&!operation?'<button class="check-btn" type="button" data-check-remove="'+account.id+'"'+(state.saving?' disabled':'')+'>移除本次填写</button>':'')+'</div><p class="check-result '+(result?.kind||'')+'" id="balance-check-result-'+account.id+'"'+(result?'':' hidden')+'>'+esc(result?.message||'')+'</p></div></li>';}).join(''):'<li class="check-empty">'+(!book.loaded?'暂未读取到账户。':book.accounts.length?'当前筛选下没有账户。':'这个账本还没有活跃账户。')+'</li>';
+    el('journal').hidden=!book.operations.length&&!book.storageError;el('journal-text').textContent=book.storageError||'有 '+book.operations.length+' 个未完成提交。金额、日期和备注已固定；请点击“重试未完成”确认结果。页面不会自动提交。';updateSelection();
+  }
+  function render(){syncControls();renderRows();}
+  async function loadAccounts(){
+    const ledger=state.ledger;const book=getBook(ledger);const sequence=++state.loadSequence;state.controller?.abort();const controller=new AbortController();state.controller=controller;setStatus('正在读取'+ledgerLabels[ledger]+'…');render();
+    try{const response=await fetch('/api/finance?'+new URLSearchParams({ledger}),{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json'},signal:controller.signal});let data;try{data=await response.json();}catch{const error=new Error('暂时无法读取账户，请重新登录后重试。');error.status=response.status;throw error;}if(sequence!==state.loadSequence)return;if(!response.ok){const error=new Error(typeof data.error==='string'?data.error:'账户读取失败，请重试。');error.status=response.status;error.code=data.code;throw error;}if(!Array.isArray(data.accounts))throw new Error('账户列表暂时无法读取，请重试。');book.accounts=data.accounts.filter((account)=>!account.archived&&!account.archivedAt&&account.ledger===ledger&&uuid.test(account.id)&&Object.hasOwn(currencies,account.currency));book.today=typeof data.meta?.today==='string'?data.meta.today:localToday();if(!book.date)book.date=book.today;book.loaded=true;book.loadError=null;render();setStatus(book.storageError,Boolean(book.storageError),false,Boolean(book.storageError));}
+    catch(error){if(sequence!==state.loadSequence||error?.name==='AbortError')return;book.loadError=error;setStatus(error?.message||'账户读取失败，请重试。',true,error?.status===401||error?.code==='SIGN_IN_REQUIRED',true);render();}
+    finally{if(sequence===state.loadSequence){state.controller=null;updateSelection();}}
+  }
+  function clearErrors(){for(const key of ['date','note']){el(key).removeAttribute('aria-invalid');el(key+'-error').hidden=true;el(key+'-error').textContent='';}}
+  function commonError(key,message){el(key).setAttribute('aria-invalid','true');el(key+'-error').textContent=message;el(key+'-error').hidden=false;el(key).focus();}
+  function focusRow(accountId){state.currency='all';state.pendingOnly=false;render();const input=document.getElementById('balance-check-amount-'+accountId);if(input?.disabled)el('rows').querySelector('[data-check-remove="'+accountId+'"]')?.focus();else input?.focus();input?.scrollIntoView?.({block:'center'});}
+  function preflight(book){
+    clearErrors();let date,note;try{date=validateCheckDate(el('date').value,book.today);}catch(error){commonError('date',error.message);return null;}try{note=normalizeCheckNote(el('note').value);}catch(error){commonError('note',error.message);return null;}
+    const prepared=[];let invalid=null;for(const [accountId,raw]of filledEntries(book)){const account=book.accounts.find((item)=>item.id===accountId);try{if(!account)throw new Error('这个账户当前不可更新，请先重新读取账户。');const amount=normalizeCheckAmount(raw,currencies[account.currency].decimals);prepared.push({accountId,amount});if(book.results.get(accountId)?.kind==='error')book.results.delete(accountId);}catch(error){book.results.set(accountId,{kind:'error',message:error.message});invalid??=accountId;}}
+    if(invalid){setStatus('有金额需要修正，本次没有发送任何记录。',true);focusRow(invalid);return null;}book.date=date;book.note=note;return prepared.map(({accountId,amount})=>freezeOperation({accountId,key:crypto.randomUUID(),body:{amount,asOfDate:date,note}}));
+  }
+  function applyAccount(book,data){const account=data?.account;if(!account||!uuid.test(account.id))return;const index=book.accounts.findIndex((item)=>item.id===account.id);if(index>=0)book.accounts[index]=account;}
+  async function runOperations(book){
+    if(state.saving||!book.loaded||book.storageError||!book.operations.length)return;state.saving=true;clearErrors();setStatus('');const queue=[...book.operations];let succeeded=0,rejected=0,stopped=false;render();
+    try{
+      for(let index=0;index<queue.length;index++){
+        const operation=queue[index];book.results.set(operation.accountId,{kind:'pending',message:'正在保存…'});el('progress').textContent='正在处理 '+(index+1)+' / '+queue.length+'；已确认成功 '+succeeded+'，明确未保存 '+rejected+'。';renderRows();
+        let response,data;try{response=await fetch('/api/finance/accounts/'+encodeURIComponent(operation.accountId)+'/balances',{method:'POST',credentials:'same-origin',redirect:'error',headers:{Accept:'application/json','Content-Type':'application/json','Idempotency-Key':operation.key},body:JSON.stringify(operation.body)});try{data=await response.json();}catch{if(response.ok)throw new Error('未收到完整确认，提交结果待确认。');data={error:response.status===401?'登录已过期，请重新登录。':'这条余额未能保存，请稍后重试。'};}}
+        catch(error){book.results.set(operation.accountId,{kind:'error',message:'结果待确认。可重试确认，同次提交不会重复保存。'});setStatus(error?.message||'网络连接中断，剩余账户尚未继续处理。',true);stopped=true;break;}
+        if(response.ok){
+          try{persist(book,book.operations.filter((item)=>item.key!==operation.key));}catch{book.storageError='这条记录已保存，但暂时无法更新提交进度。请保留本页，重新读取后再确认。';book.results.set(operation.accountId,{kind:'error',message:book.storageError});setStatus(book.storageError,true,false,true);stopped=true;break;}
+          book.drafts.delete(operation.accountId);book.results.set(operation.accountId,{kind:'success',message:'已保存 · '+operation.body.asOfDate});applyAccount(book,data);succeeded++;continue;
+        }
+        const message=typeof data?.error==='string'?data.error:'这条余额未能保存。';
+        if([400,403,404,409,413,415,422].includes(response.status)){
+          try{persist(book,book.operations.filter((item)=>item.key!==operation.key));}catch{book.storageError='暂时无法更新提交进度，请保留本页后重试。';setStatus(book.storageError,true,false,true);stopped=true;break;}
+          book.drafts.set(operation.accountId,operation.body.amount);book.results.set(operation.accountId,{kind:'error',message});rejected++;continue;
+        }
+        book.results.set(operation.accountId,{kind:'error',message:response.status===401?'请重新登录，提交保留待确认。':message+' 结果待确认，可重试确认本次提交。'});setStatus(response.status===401?'登录已过期，已停止剩余账户。请重新登录后重试未完成提交。':message+' 已停止剩余账户，请重试未完成提交。',true,response.status===401||data?.code==='SIGN_IN_REQUIRED');stopped=true;break;
+      }
+      el('progress').textContent='已确认保存 '+succeeded+' 个；明确未保存 '+rejected+' 个；待确认或待处理 '+book.operations.length+' 个。';if(!stopped)setStatus(rejected?'部分账户未保存，请修正对应行后再次保存。':'本次 '+succeeded+' 个账户已保存。',rejected>0);
+    }finally{state.saving=false;render();}
+  }
+  el('save').addEventListener('click',async()=>{const book=getBook();if(state.saving||book.operations.length||book.storageError)return;const operations=preflight(book);if(!operations?.length){if(operations)setStatus('请填写至少一个账户的新余额；留空不会提交。');return;}try{persist(book,operations);}catch{book.storageError='暂时无法保留提交进度，本次未发送。请允许浏览器保存会话数据后重新读取。';setStatus(book.storageError,true,false,true);render();return;}for(const operation of operations)book.results.set(operation.accountId,{kind:'pending',message:'等待保存'});await runOperations(book);});
+  el('retry-pending').addEventListener('click',()=>runOperations(getBook()));
+  el('rows').addEventListener('input',(event)=>{const id=event.target.dataset.checkAmount;if(!id||state.saving)return;const book=getBook();if(book.operations.some((operation)=>operation.accountId===id))return;book.drafts.set(id,event.target.value);book.results.delete(id);event.target.removeAttribute('aria-invalid');const result=document.getElementById('balance-check-result-'+id);if(result){result.textContent='';result.hidden=true;}updateSelection();});
+  el('rows').addEventListener('click',(event)=>{const remove=event.target.closest('[data-check-remove]');if(remove&&!state.saving){const book=getBook();const id=remove.dataset.checkRemove;if(!book.operations.some((operation)=>operation.accountId===id)){book.drafts.delete(id);book.results.delete(id);renderRows();}return;}const button=event.target.closest('[data-check-unchanged]');if(!button||state.saving)return;const book=getBook();const account=book.accounts.find((item)=>item.id===button.dataset.checkUnchanged);if(!account||book.operations.some((operation)=>operation.accountId===account.id))return;book.drafts.set(account.id,currentAmount(account));book.results.delete(account.id);renderRows();document.getElementById('balance-check-amount-'+account.id)?.focus();});
+  el('date').addEventListener('input',()=>{getBook().date=el('date').value;el('date').removeAttribute('aria-invalid');el('date-error').hidden=true;});el('note').addEventListener('input',()=>{getBook().note=el('note').value;el('note').removeAttribute('aria-invalid');el('note-error').hidden=true;});
+  const tabs=[...document.querySelectorAll('[data-check-ledger]')];function chooseLedger(ledger){if(state.saving||!Object.hasOwn(ledgerLabels,ledger)||ledger===state.ledger)return;state.ledger=ledger;el('progress').textContent='';clearErrors();render();loadAccounts();}
+  tabs.forEach((button,index)=>{button.addEventListener('click',()=>chooseLedger(button.dataset.checkLedger));button.addEventListener('keydown',(event)=>{if(state.saving)return;let next;if(event.key==='ArrowRight')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();chooseLedger(tabs[next].dataset.checkLedger);tabs[next].focus();});});
+  el('currency').addEventListener('change',()=>{if(state.saving)return;state.currency=el('currency').value;render();});el('pending-only').addEventListener('change',()=>{if(state.saving)return;state.pendingOnly=el('pending-only').checked;renderRows();});el('load-retry').addEventListener('click',()=>{const book=getBook();if(book.storageError){try{book.operations=readOperations(book.ledger);book.storageError='';}catch(error){setStatus(error.message,true);return;}}loadAccounts();});
+  el('back-link').addEventListener('click',(event)=>{if(state.saving)event.preventDefault();});
+  function restoreUrl(){const params=new URLSearchParams(location.search);state.ledger=params.get('ledger')==='family'?'family':'personal';const currency=params.get('currency');state.currency=currency==='all'||Object.hasOwn(currencies,currency)?currency:'all';}
+  window.addEventListener('popstate',()=>{if(state.saving){syncControls();return;}restoreUrl();render();loadAccounts();});
+  restoreUrl();render();loadAccounts();
+`;
+
+export function renderBalanceCheckScript(ownerId: string, currencies: object, accountTypes: object): string {
+  const slash = String.fromCharCode(92);
+  const configuration = JSON.stringify({ ownerId, currencies, accountTypes }).replaceAll('<', slash + 'u003c').replaceAll(String.fromCharCode(0x2028), slash + 'u2028').replaceAll(String.fromCharCode(0x2029), slash + 'u2029');
+  return `<script type="module">(()=>{const {ownerId,currencies,accountTypes}=${configuration};const normalizeCheckAmount=(${normalizeCheckAmount.toString()});const validateCheckDate=(${validateCheckDate.toString()});const normalizeCheckNote=(${normalizeCheckNote.toString()});const isCheckedThisMonth=(${isCheckedThisMonth.toString()});${BALANCE_CHECK_SCRIPT}})();</script>`;
+}
