@@ -112,7 +112,23 @@ export function buildQuickStepsPayload(fields: {
     : new Date(Date.parse(today + 'T12:00:00Z') - (Number(fields.days) - 1) * 86400000).toISOString().slice(0, 10);
   const values = batch ? lines(fields.values, '每日' + label) : lines(fields.value, label);
   const dates = batch ? lines(fields.dates, '每日日期') : [shanghaiDay(at.time)];
-  if (values.length !== dates.length) throw new Error('每日' + label + '与日期条数不一致。请从同一批按天分组的健康样本提取两列，并保持相同顺序。');
+  const counts = '收到数值 ' + values.length + ' 条，日期 ' + dates.length + ' 条。';
+  const encodedColumns = batch ? [
+    { raw: fields.values, name: '数值列' }, { raw: fields.dates, name: '日期列' },
+  ].filter((column) => /%(?:25)*(?:0a|0d)/i.test(column.raw ?? '')).map((column) => column.name) : [];
+  const encodingHint = encodedColumns.length ? encodedColumns.join('、') + '仍含编码换行（%0A / %0D），可能重复编码。请将各列合并文本后只编码一次，拼接时使用对应编码结果，不要再次编码整个地址。' : '';
+  if (values.length !== dates.length) {
+    let hint = '请从同一份按天分组的健康样本提取两列，并保持相同顺序。';
+    if (encodingHint) hint = encodingHint;
+    else if (values.length === 1) hint = '数值列只有 1 项。请检查数值循环结束后的“合并文本”是否使用整个数值循环的“重复结果”，不要只取最后一项或把整批数值合计成一个数。';
+    else if (dates.length === 1) hint = '日期列只有 1 项。请让日期循环遍历同一份每日样本，逐项取得开始日期，再在循环外合并整个日期循环的“重复结果”，不要使用本次查询时间或最后一项日期。';
+    else if (values.length > dates.length && values.length % dates.length === 0
+        && values.every((value, index) => value === values[index % dates.length])) {
+      hint = '数值列看起来把整组反复输出了 ' + (values.length / dates.length) + ' 次。请把数值循环内“获取健康样本详细信息”的输入改为本循环的“重复项目”，不要接整份每日样本；循环外再合并完整“重复结果”。';
+    }
+    throw new Error('每日' + label + '与日期条数不一致。' + counts + hint + ' 本次未导入，请修正后重试，不要删行或补日期凑齐。');
+  }
+  if (encodingHint) throw new Error('每日' + label + '数据仍含编码换行。' + counts + encodingHint + ' 本次未导入，请修正后重试。');
   const measurements = new Map<string, {
     id: string; metric: 'steps' | 'active_energy'; value: number; unit: 'count' | 'kcal';
     aggregation: 'daily'; source: string; startDate: string; endDate: string;

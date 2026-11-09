@@ -342,3 +342,67 @@ void test('energy range mode remains self-contained in the browser and is forwar
   assert.equal(result.deviceToken, 'jso_sync_' + 'a'.repeat(43));
   assert.deepEqual(parseSyncPayload(result.payloadText).measurements.map((row) => [measurementDay(row), row.value]), [['2026-10-11', 100], ['2026-11-09', 0]]);
 });
+
+void test('a synthetic 17-by-17 whole-list output reports actual counts and the Repeat Item fix without dropping rows', () => {
+  const block = Array.from({ length: 17 }, (_, index) => String(100 + index));
+  const dates = Array.from({ length: 17 }, (_, index) => new Date(Date.parse('2026-11-09T12:00:00Z') - index * 86400000).toISOString().slice(0, 10));
+  const repeated = { ...energyBatch, values: Array.from({ length: 17 }, () => block.join('\n')).join('\n'), dates: dates.join('\n') };
+  const assertDiagnosis = (error: unknown) => error instanceof Error
+    && error.message.startsWith('每日活动能量与日期条数不一致。')
+    && error.message.includes('收到数值 289 条，日期 17 条。')
+    && error.message.includes('整组反复输出了 17 次')
+    && error.message.includes('输入改为本循环的“重复项目”')
+    && error.message.includes('本次未导入');
+  assert.throws(() => buildQuickStepsPayload(repeated), assertDiagnosis);
+  const embedded = runInNewContext('(' + buildQuickStepsPayload.toString() + ')', { TextEncoder });
+  assert.throws(() => embedded(repeated), (error: unknown) => {
+    const message = String((error as { message?: unknown }).message);
+    return message.includes('数值 289 条，日期 17 条') && message.includes('整组反复输出') && message.includes('重复项目');
+  });
+  assert.equal(repeated.values.split('\n').length, 289, 'diagnosis must not alter the supplied columns');
+});
+
+void test('a nonidentical or incomplete repeated block gets counts without claiming the whole list was repeated', () => {
+  const block = Array.from({ length: 17 }, (_, index) => String(100 + index));
+  const dates = Array.from({ length: 17 }, (_, index) => new Date(Date.parse('2026-11-09T12:00:00Z') - index * 86400000).toISOString().slice(0, 10));
+  for (const values of [[...block, ...block.slice(0, -1), '999'], [...block, ...block, '999']]) {
+    assert.throws(() => buildQuickStepsPayload({ ...energyBatch, values: values.join('\n'), dates: dates.join('\n') }), (error: unknown) => {
+      return error instanceof Error && error.message.includes('收到数值 ' + values.length + ' 条，日期 17 条。')
+        && !error.message.includes('整组反复输出') && error.message.includes('本次未导入');
+    });
+  }
+});
+
+void test('single-column mismatches point to the correct loop and never guess dates or repeat one value', () => {
+  assert.throws(() => buildQuickStepsPayload({ ...energyBatch, values: '100', dates: '2026-11-07\n2026-11-08\n2026-11-09' }), (error: unknown) => {
+    return error instanceof Error && error.message.includes('数值 1 条，日期 3 条') && error.message.includes('数值列只有 1 项') && error.message.includes('整个数值循环的“重复结果”');
+  });
+  assert.throws(() => buildQuickStepsPayload({ ...energyBatch, values: '100\n100\n100', dates: '2026-11-09' }), (error: unknown) => {
+    return error instanceof Error && error.message.includes('数值 3 条，日期 1 条') && error.message.includes('日期列只有 1 项')
+      && error.message.includes('逐项取得开始日期') && !error.message.includes('整组反复输出');
+  });
+});
+
+void test('residual encoded newlines identify the affected column and remain rejected instead of decoded again', () => {
+  const cases = [
+    { values: '100%0A200', dates: '2026-11-08\n2026-11-09', counts: '数值 1 条，日期 2 条', column: '数值列' },
+    { values: '100\n200', dates: '2026-11-08%0D%0A2026-11-09', counts: '数值 2 条，日期 1 条', column: '日期列' },
+    { values: '100%250A200', dates: '2026-11-08%250A2026-11-09', counts: '数值 1 条，日期 1 条', column: '数值列、日期列' },
+  ];
+  for (const item of cases) {
+    assert.throws(() => buildQuickStepsPayload({ ...energyBatch, values: item.values, dates: item.dates }), (error: unknown) => {
+      return error instanceof Error && error.message.includes(item.counts) && error.message.includes(item.column + '仍含编码换行')
+        && error.message.includes('可能重复编码') && error.message.includes('只编码一次') && error.message.includes('本次未导入');
+    });
+  }
+});
+
+void test('equal-length repeated daily totals remain valid and steps reuse count diagnostics without changing the 90-day contract', () => {
+  const valid = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, values: '100\n200\n100\n200',
+    dates: '2026-11-08\n2026-11-09\n2026-11-08\n2026-11-09' }));
+  assert.deepEqual(valid.measurements.map((row) => [measurementDay(row), row.value]), [['2026-11-08', 100], ['2026-11-09', 200]]);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, days: '90', values: '1000\n2000\n1000\n2000', dates: '2026-11-08\n2026-11-09' }), (error: unknown) => {
+    return error instanceof Error && error.message.startsWith('每日步数与日期条数不一致。')
+      && error.message.includes('数值 4 条，日期 2 条') && error.message.includes('整组反复输出了 2 次');
+  });
+});
