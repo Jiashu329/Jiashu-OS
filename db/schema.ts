@@ -68,3 +68,18 @@ export const financeBalanceEntries = sqliteTable('finance_balance_entries', {
   note: text('note').notNull(),
   createdAt: text('created_at').notNull(),
 }, (table) => [index('finance_balances_owner_account_date_idx').on(table.userId, table.accountId, table.asOfDate, table.sequence)]);
+
+export const financeGoalPlans = sqliteTable('finance_goal_plans', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  ledger: text('ledger').notNull(),
+  currency: text('currency').notNull(),
+  name: text('name').notNull(),
+  targetMinor: text('target_minor').notNull(),
+  deadline: text('deadline').notNull(),
+  accountIdsJson: text('account_ids_json').notNull(),
+  creationHash: text('creation_hash').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  archivedAt: text('archived_at'),
+}, (table) => [index('finance_goal_plans_owner_ledger_idx').on(table.userId, table.ledger)]);

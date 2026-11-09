@@ -36,6 +36,13 @@
       "when": 1794227571528,
       "tag": "0004_skinny_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794233613749,
+      "tag": "0005_fresh_dragon_lord",
+      "breakpoints": true
     }
   ]
 }
