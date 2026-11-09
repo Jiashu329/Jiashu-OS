@@ -95,6 +95,17 @@ export const financeRunwaySettings = sqliteTable('finance_runway_settings', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [primaryKey({ columns: [table.userId, table.ledger, table.currency] })]);
 
+export const weightPlanSettings = sqliteTable('health_weight_plan_settings', {
+  userId: text('user_id').primaryKey(),
+  baselineWeight: real('baseline_weight').notNull(),
+  targetWeight: real('target_weight').notNull(),
+  startDate: text('start_date').notNull(),
+  deadline: text('deadline').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const healthRecordOverrides = sqliteTable('health_record_overrides', {
   userId: text('user_id').notNull(),
   recordKey: text('record_key').notNull(),
