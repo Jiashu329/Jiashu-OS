@@ -1,18 +1,19 @@
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD, APP_LOGO_SRC } from '../../lib/branding';
 import { requireChatGPTUser } from '../chatgpt-auth';
+import { multiDayStepsGuide } from '../../lib/steps-guide';
 
 export const dynamic = 'force-dynamic';
 
 function activityEnergyGuide(html: string) {
   // The route accepts one fixed metric enum; none of the query text is placed
-  // into HTML. Keep the already-validated steps guide unchanged by default.
+  // into HTML. Retain the original single-day shell for the energy guide.
   let page = html.replaceAll('步数', '活动能量');
   function swap(from: string, to: string) {
     if (!page.includes(from)) throw new Error('Activity energy guide template mismatch');
     page = page.replace(from, to);
   }
-  swap('<section class="card prepare"', '<section class="card prepare"><h2>复用步数快捷指令</h2><ol><li>在快捷指令里长按 <strong>同步步数</strong> → <strong>复制</strong>，把新副本命名为 <strong>同步活动能量</strong>。</li><li>在“查找健康样本”里，把类型改为 <strong>活动能量 / 活动热量</strong>；若有单位选项，选 <strong>千卡（kcal）</strong>。今天、来源和按天分组保持一致。</li><li>核实输出单位后，在本页生成活动能量地址，只替换“文本”动作最前面的地址。原来的两个蓝色变量 <span class="variable">健康样本详细信息</span>、<span class="variable">格式化日期</span> 及中间的 <code class="code">&amp;at=</code> 都保留。</li></ol><p class="note">类型及单位、同步地址这两处都改完，再运行，并在网站核对日期与单位。</p><a class="btn primary" href="#generate-address" data-jump-address>直接去生成活动能量地址 ↓</a></section><section class="card prepare"');
+  swap('<section class="card prepare"', '<section class="card prepare"><h2>复用旧版单日步数快捷指令</h2><p>这一页同步今天的活动能量。若你已经升级为多日步数指令，请按下方 8 步另建活动能量指令，不要直接替换多日指令的地址。</p><ol><li>在快捷指令里长按旧版单日 <strong>同步步数</strong> → <strong>复制</strong>，把新副本命名为 <strong>同步活动能量</strong>。</li><li>在“查找健康样本”里，把类型改为 <strong>活动能量 / 活动热量</strong>；若有单位选项，选 <strong>千卡（kcal）</strong>。今天、来源和按天分组保持一致。</li><li>核实输出单位后，在本页生成活动能量地址，只替换“文本”动作最前面的地址。原来的两个蓝色变量 <span class="variable">健康样本详细信息</span>、<span class="variable">格式化日期</span> 及中间的 <code class="code">&amp;at=</code> 都保留。</li></ol><p class="note">类型及单位、同步地址这两处都改完，再运行，并在网站核对日期与单位。</p><a class="btn primary" href="#generate-address" data-jump-address>直接去生成活动能量地址 ↓</a></section><section class="card prepare"');
   swap('</select><p class="muted">第 1 步选择同一个来源；同步地址到第 6 步再生成。</p>', '</select><label for="energy-unit" style="margin-top:16px">健康样本实际输出的单位</label><select class="field" id="energy-unit"><option value="" disabled selected>先核实单位，再选择</option><option value="kcal">千卡 · kcal</option><option value="kJ">千焦 · kJ</option></select><p class="muted">网页选择要与“获取健康样本详细信息”实际输出的单位一致。若“查找健康样本”有单位选项，建议先选千卡 kcal；没有该选项时，先查看样本的“单位”，不要猜。</p><p class="muted">第 1 步选择同一个来源；同步地址到第 6 步再生成。</p>');
   swap('<dt>类型</dt><dd>活动能量</dd>', '<dt>类型</dt><dd>活动能量 / 活动热量</dd><dt>单位（有此选项时）</dt><dd>千卡（kcal）</dd>');
   swap('<p class="note">来源和分组选项可能需要点开“显示更多”。健康数据里有多个设备时，先只选上面那个来源。</p>', '<p class="note">来源、单位和分组选项可能需要点开“显示更多”。先固定一个来源。若没有单位选项，到第 3 步核实样本实际单位后，再回到本页上方选择。</p>');
@@ -93,7 +94,7 @@ $('copy-address').addEventListener('click',async()=>{if(!deviceToken)return;cons
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这段文字。';}));
 updateSource();showStep(0,false);
 </script></body></html>`;
-  return new Response(isEnergy ? activityEnergyGuide(html) : html, { headers: {
+  return new Response(isEnergy ? activityEnergyGuide(html) : multiDayStepsGuide(html), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',
