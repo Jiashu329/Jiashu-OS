@@ -5,33 +5,11 @@ import { multiDayStepsGuide } from '../../lib/steps-guide';
 
 export const dynamic = 'force-dynamic';
 
-function activityEnergyGuide(html: string) {
-  // The route accepts one fixed metric enum; none of the query text is placed
-  // into HTML. Retain the original single-day shell for the energy guide.
-  let page = html.replaceAll('步数', '活动能量');
-  function swap(from: string, to: string) {
-    if (!page.includes(from)) throw new Error('Activity energy guide template mismatch');
-    page = page.replace(from, to);
-  }
-  swap('<section class="card prepare"', '<section class="card prepare"><h2>复用旧版单日步数快捷指令</h2><p>这一页同步今天的活动能量。若你已经升级为多日步数指令，请按下方 8 步另建活动能量指令，不要直接替换多日指令的地址。</p><ol><li>在快捷指令里长按旧版单日 <strong>同步步数</strong> → <strong>复制</strong>，把新副本命名为 <strong>同步活动能量</strong>。</li><li>在“查找健康样本”里，把类型改为 <strong>活动能量 / 活动热量</strong>；若有单位选项，选 <strong>千卡（kcal）</strong>。今天、来源和按天分组保持一致。</li><li>核实输出单位后，在本页生成活动能量地址，只替换“文本”动作最前面的地址。原来的两个蓝色变量 <span class="variable">健康样本详细信息</span>、<span class="variable">格式化日期</span> 及中间的 <code class="code">&amp;at=</code> 都保留。</li></ol><p class="note">类型及单位、同步地址这两处都改完，再运行，并在网站核对日期与单位。</p><a class="btn primary" href="#generate-address" data-jump-address>直接去生成活动能量地址 ↓</a></section><section class="card prepare"');
-  swap('</select><p class="muted">第 1 步选择同一个来源；同步地址到第 6 步再生成。</p>', '</select><label for="energy-unit" style="margin-top:16px">健康样本实际输出的单位</label><select class="field" id="energy-unit"><option value="" disabled selected>先核实单位，再选择</option><option value="kcal">千卡 · kcal</option><option value="kJ">千焦 · kJ</option></select><p class="muted">网页选择要与“获取健康样本详细信息”实际输出的单位一致。若“查找健康样本”有单位选项，建议先选千卡 kcal；没有该选项时，先查看样本的“单位”，不要猜。</p><p class="muted">第 1 步选择同一个来源；同步地址到第 6 步再生成。</p>');
-  swap('<dt>类型</dt><dd>活动能量</dd>', '<dt>类型</dt><dd>活动能量 / 活动热量</dd><dt>单位（有此选项时）</dt><dd>千卡（kcal）</dd>');
-  swap('<p class="note">来源和分组选项可能需要点开“显示更多”。健康数据里有多个设备时，先只选上面那个来源。</p>', '<p class="note">来源、单位和分组选项可能需要点开“显示更多”。先固定一个来源。若没有单位选项，到第 3 步核实样本实际单位后，再回到本页上方选择。</p>');
-  swap('<p>这一步的结果，就是今天的活动能量。稍后会把这个结果放进同步地址里。</p>', '<p>这一步取“值”，就是今天的活动能量数值。</p><p class="note">若“查找健康样本”里能明确选择单位，选定后在本页选择同一个单位。若找不到单位选项，先把“查找健康样本”和“健康样本详细信息”的编辑页截图发给助手，核实后再继续。</p><p class="muted">“值”这个选项本身不是单位设置。网站会根据你明确选定的单位处理数值。</p>');
-  swap('<section class="card instruction" data-step="5"', '<section class="card instruction" id="generate-address" data-step="5"');
-  swap('再核对活动能量和日期。', '再核对活动能量、日期和单位（网站统一显示千卡）。');
-  swap('核对网站显示的数值与记录日期。', '网页统一以千卡显示，所选输入单位需与手机一致。');
-  swap("if(deviceToken)$('address').value=location.origin+'/sync#quick=steps&device='+encodeURIComponent(deviceToken)+'&source='+encodeURIComponent(selected)+'&value=';", "const unit=$('energy-unit').value;$('copy-address').disabled=!unit;if(deviceToken)$('address').value=unit?location.origin+'/sync#quick=active_energy&unit='+encodeURIComponent(unit)+'&device='+encodeURIComponent(deviceToken)+'&source='+encodeURIComponent(selected)+'&value=':'';");
-  swap("$('generate').addEventListener('click',async()=>{if(generating||pairedOnce)return;generating=true;", "$('energy-unit').addEventListener('change',()=>{updateSource();if(deviceToken)setAddressStatus('单位已更新，请重新复制同步地址。');});\n$('generate').addEventListener('click',async()=>{if(generating||pairedOnce)return;if(!$('energy-unit').value){setAddressStatus('请先核实样本实际单位，并在上方选择 kcal 或 kJ。',true);$('energy-unit').focus();return;}generating=true;");
-  swap('updateSource();showStep(0,false);', "document.querySelectorAll('[data-jump-address]').forEach((link)=>link.addEventListener('click',(event)=>{event.preventDefault();showStep(5);if(!$('energy-unit').value){$('energy-unit').focus();$('energy-unit').scrollIntoView({behavior:'smooth',block:'center'});setAddressStatus('先在上方选择已经核实的单位，再生成活动能量地址。',true);}}));\nupdateSource();showStep(0,false);");
-  return page;
-}
-
 export async function GET(request: Request) {
   const isEnergy = new URL(request.url).searchParams.get('metric') === 'active_energy';
   await requireChatGPTUser(isEnergy ? '/connect-steps?metric=active_energy' : '/connect-steps');
   const html = String.raw`<!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>同步步数 · Jiashu OS</title><style>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>同步${isEnergy ? '活动能量' : '步数'} · Jiashu OS</title><style>
 ${APP_THEME_CSS}
 :root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6;background:var(--bg);color:var(--ink)}
 *{box-sizing:border-box}body{margin:0}button,input,select{font:inherit;color:inherit}a{color:var(--primary-hover)}button,a{touch-action:manipulation;-webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.55}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}[hidden]{display:none!important}
@@ -94,7 +72,7 @@ $('copy-address').addEventListener('click',async()=>{if(!deviceToken)return;cons
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这段文字。';}));
 updateSource();showStep(0,false);
 </script></body></html>`;
-  return new Response(isEnergy ? activityEnergyGuide(html) : multiDayStepsGuide(html), { headers: {
+  return new Response(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps'), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

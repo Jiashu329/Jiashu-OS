@@ -100,8 +100,12 @@ export function buildQuickStepsPayload(fields: {
 
   const batch = fields.values != null || fields.dates != null;
   if (batch && fields.value != null) throw new Error('同步地址同时包含单日和多日数据，请使用新引导生成的多日地址，不要混用 value 与 values、dates。');
-  if (fields.days != null && (!batch || metric !== 'steps' || !/^(?:[1-9]|[1-8]\d|90)$/.test(fields.days))) {
-    throw new Error('步数同步天数需要为 1 至 90 的整数，且只用于多日步数地址，请重新复制配置指引生成的地址。');
+  if (fields.days != null) {
+    const validDays = metric === 'steps' ? /^(?:[1-9]|[1-8]\d|90)$/ : /^(?:[1-9]|[12]\d|30)$/;
+    if (!batch || fields.days.trim() !== fields.days || !validDays.test(fields.days)) {
+      throw new Error(label + '同步天数需要为 1 至 ' + (metric === 'steps' ? '90' : '30')
+        + ' 的整数，且只用于多日' + label + '地址，请重新复制配置指引生成的地址。');
+    }
   }
   const today = shanghaiDay(at.time);
   const firstDay = fields.days == null ? null
@@ -135,7 +139,7 @@ export function buildQuickStepsPayload(fields: {
       endDate: end === at.time ? at.value : new Date(end).toISOString(),
     });
   }
-  if (firstDay && measurements.size === 0) throw new Error('查询结果中没有所选日期范围内的步数，请核对查询天数、样本日期和手机时区；没有记录时不要补零。');
+  if (firstDay && measurements.size === 0) throw new Error('查询结果中没有所选日期范围内的' + label + '，请核对查询天数、样本日期和手机时区；没有记录时不要补零。');
   const payload = {
     version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt: at.value,
     measurements: [...measurements.values()].sort((left, right) => left.startDate.localeCompare(right.startDate)),

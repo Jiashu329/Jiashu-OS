@@ -224,7 +224,7 @@ void test('range mode rejects bad configuration, empty retained results and malf
     assert.throws(() => buildQuickStepsPayload({ ...batch, days }), /同步天数/);
   }
   assert.throws(() => buildQuickStepsPayload({ ...fields, days: '7' }), /同步天数/);
-  assert.throws(() => buildQuickStepsPayload({ ...batch, metric: 'active_energy', unit: 'kcal', days: '7' }), /同步天数/);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, metric: 'active_energy', unit: 'kcal', days: '31' }), /活动能量同步天数/);
   assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '123', dates: '2026-11-01' }), /没有所选日期范围/);
   assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '123\n8200', dates: '2026-11-01' }), /条数不一致/);
   assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '不是数值\n8200', dates: '2026-11-01\n2026-11-09' }), /不是数字/);
@@ -249,4 +249,96 @@ void test('actual page fragment parser forwards encoded daily columns into the e
   assert.throws(() => parseFragment('#' + params.toString() + '&padding=' + 'x'.repeat(32768)), /32 KB/);
   const embedded = runInNewContext('(' + buildQuickStepsPayload.toString() + ')', { TextEncoder });
   assert.equal(parseSyncPayload(JSON.stringify(embedded({ ...batch, days: '1' }))).measurements.length, 1);
+});
+
+const energyBatch = { metric: 'active_energy', unit: 'kcal', days: '30', at: fields.at, source: 'Apple Watch',
+  values: '123\n450.25\n0\n300.5', dates: '2026-10-10\n2026-11-09\n2026-10-20\n2026-10-11' };
+
+void test('energy rolling range retains Shanghai today and the preceding 29 days by paired dates without inventing missing days', () => {
+  const output = parseSyncPayload(buildQuickStepsPayload(energyBatch));
+  assert.deepEqual(output.measurements.map((row) => [measurementDay(row), row.value]), [
+    ['2026-10-11', 300.5], ['2026-10-20', 0], ['2026-11-09', 450.25],
+  ]);
+  assert.equal(output.measurements[0].startDate, '2026-10-10T16:00:00.000Z');
+  assert.equal(output.measurements[0].endDate, '2026-10-11T16:00:00.000Z');
+  assert.equal(output.measurements[2].endDate, output.exportedAt, 'today remains a partial total ending at the capture instant');
+  assert.equal(buildHealthSummary(output.measurements).metrics.active_energy.points.length, 3);
+  const withoutExtra = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, values: '300.5\n450.25', dates: '2026-10-11\n2026-11-09' }));
+  assert.deepEqual(withoutExtra.measurements.map(measurementDay), ['2026-10-11', '2026-11-09'], 'a missing queried extra day never discards the first retained day');
+});
+
+void test('energy range limits and empty-window errors name energy while the steps 90-day contract remains supported', () => {
+  for (const days of ['1', '7', '30']) {
+    const output = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, days }));
+    assert.ok(output.measurements.length > 0);
+  }
+  for (const days of ['', '0', '31', '90', '-1', '1.5', '01', '30.0', ' 7', '7\n', 'NaN', 'constructor']) {
+    assert.throws(() => buildQuickStepsPayload({ ...energyBatch, days }), /活动能量同步天数需要为 1 至 30/);
+  }
+  assert.throws(() => buildQuickStepsPayload({ ...fields, metric: 'active_energy', unit: 'kcal', days: '30' }), /多日活动能量地址/);
+  assert.throws(() => buildQuickStepsPayload({ ...energyBatch, values: '123', dates: '2026-10-10' }), /日期范围内的活动能量/);
+  assert.equal(parseSyncPayload(buildQuickStepsPayload({ ...batch, days: '90' })).measurements.length, 3);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, days: '91' }), /步数同步天数需要为 1 至 90/);
+});
+
+void test('legacy energy single-day and unrestricted batches still accept old links without days', () => {
+  const single = parseSyncPayload(buildQuickStepsPayload({ ...fields, metric: 'active_energy', unit: 'kcal', value: '450.25' }));
+  assert.equal(single.measurements[0].value, 450.25);
+  const unrestricted = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, days: undefined }));
+  assert.deepEqual(unrestricted.measurements.map(measurementDay), ['2026-10-10', '2026-10-11', '2026-10-20', '2026-11-09']);
+  assert.equal(single.measurements[0].id, unrestricted.measurements.at(-1)!.id);
+});
+
+void test('multi-day energy explicitly converts kJ to kcal, retains zero and enforces duplicate-day totals without summing', () => {
+  const input = { ...energyBatch, unit: 'kJ', values: '418.4\n0\n1\n83,680',
+    dates: '2026-11-06\n2026-11-07\n2026-11-08\n2026-11-09' };
+  const output = parseSyncPayload(buildQuickStepsPayload(input));
+  assert.deepEqual(output.measurements.map((row) => row.value), [100, 0, 0.239006, 20000]);
+  assert.ok(output.measurements.every((row) => row.unit === 'kcal' && row.metric === 'active_energy'));
+  const duplicate = parseSyncPayload(buildQuickStepsPayload({ ...input, values: '418.4\n418.400000', dates: '2026-11-09\n2026-11-08T16:00:00Z' }));
+  assert.equal(duplicate.measurements.length, 1);
+  assert.equal(duplicate.measurements[0].value, 100);
+  assert.throws(() => buildQuickStepsPayload({ ...input, values: '418.4\n836.8', dates: '2026-11-09\n2026-11-09' }), /同一天出现不同的活动能量总量/);
+  assert.throws(() => buildQuickStepsPayload({ ...input, unit: null }), /选择手机读取值的能量单位/);
+  assert.throws(() => buildQuickStepsPayload({ ...input, values: '1\n2', dates: '2026-11-09' }), /活动能量与日期条数不一致/);
+});
+
+void test('energy date clipping follows Shanghai midnight across leap months and year boundaries', () => {
+  const output = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, at: '2028-02-29T16:30:00Z',
+    values: '100\n200\n300\n400', dates: '2028-01-31T15:59:59Z\n2028-01-31T16:00:00Z\n2028-02-29T15:59:59Z\n2028-02-29T16:00:00Z' }));
+  assert.deepEqual(output.measurements.map((row) => [measurementDay(row), row.value]), [
+    ['2028-02-01', 200], ['2028-02-29', 300], ['2028-03-01', 400],
+  ]);
+  assert.equal(output.measurements[2].startDate, '2028-02-29T16:00:00.000Z');
+  assert.equal(output.measurements[2].endDate, '2028-02-29T16:30:00.000Z');
+  const newYear = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, at: '2027-01-01T01:00:00+08:00',
+    values: '100\n200\n300', dates: '2026-12-02\n2026-12-03\n2027-01-01' }));
+  assert.deepEqual(newYear.measurements.map(measurementDay), ['2026-12-03', '2027-01-01']);
+});
+
+void test('energy replay and later partial exports retain stable daily keys and original historical intervals', () => {
+  const first = parseSyncPayload(buildQuickStepsPayload(energyBatch));
+  assert.deepEqual(parseSyncPayload(buildQuickStepsPayload(energyBatch)), first);
+  const later = parseSyncPayload(buildQuickStepsPayload({ ...energyBatch, at: '2026-11-09T12:00:00+08:00', values: '123\n500.75\n0\n300.5' }));
+  assert.deepEqual(later.measurements.slice(0, -1), first.measurements.slice(0, -1));
+  assert.equal(measurementKey(later.measurements.at(-1)!), measurementKey(first.measurements.at(-1)!));
+  assert.equal(later.measurements.at(-1)!.id, 'quick-active_energy:2026-11-09');
+  assert.equal(later.measurements.at(-1)!.value, 500.75);
+  assert.ok(Date.parse(later.exportedAt) > Date.parse(first.exportedAt));
+});
+
+void test('energy range mode remains self-contained in the browser and is forwarded by the existing fragment parser', () => {
+  const embedded = runInNewContext('(' + buildQuickStepsPayload.toString() + ')', { TextEncoder });
+  const output = parseSyncPayload(JSON.stringify(embedded(energyBatch)));
+  assert.deepEqual(output, parseSyncPayload(buildQuickStepsPayload(energyBatch)));
+  const script = [...renderApp().matchAll(/<script type="module">([\s\S]*?)<\/script>/g)]
+    .map((match) => match[1]).find((script) => script.includes('function parseSyncFragment('))!;
+  const parseFragment = runInNewContext('(' + script.slice(script.indexOf('function parseSyncFragment('), script.indexOf('function handoffNotice(')).trim() + ')', {
+    URLSearchParams, TextEncoder, quickStepsPayload: embedded,
+  });
+  const params = new URLSearchParams({ quick: 'active_energy', unit: 'kJ', days: '30', device: 'jso_sync_' + 'a'.repeat(43),
+    source: 'Apple Watch', values: '123\n418.4\n0', dates: '2026-10-10\n2026-10-11T00:00:00+08:00\n2026-11-09', at: fields.at });
+  const result = parseFragment('#' + params);
+  assert.equal(result.deviceToken, 'jso_sync_' + 'a'.repeat(43));
+  assert.deepEqual(parseSyncPayload(result.payloadText).measurements.map((row) => [measurementDay(row), row.value]), [['2026-10-11', 100], ['2026-11-09', 0]]);
 });
