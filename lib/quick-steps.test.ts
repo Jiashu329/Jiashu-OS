@@ -192,6 +192,44 @@ void test('batch row and byte limits are enforced before processing oversized in
   assert.throws(() => buildQuickStepsPayload({ ...batch, dates: '日'.repeat(180000) }), /512 KB/);
 });
 
+void test('an expanded rolling query excludes only dates before the requested Shanghai window', () => {
+  const output = parseSyncPayload(buildQuickStepsPayload({
+    ...batch, days: '7', values: '123\n4000\n6000\n8200',
+    dates: '2026-11-01\n2026-11-03\n2026-11-07\n2026-11-09',
+  }));
+  assert.deepEqual(output.measurements.map((row) => [measurementDay(row), row.value]), [
+    ['2026-11-03', 4000], ['2026-11-07', 6000], ['2026-11-09', 8200],
+  ]);
+  // A missing extra day must not make us discard the first valid day's total.
+  const missing = parseSyncPayload(buildQuickStepsPayload({ ...batch, days: '7', values: '4000\n8200', dates: '2026-11-03\n2026-11-09' }));
+  assert.equal(missing.measurements[0].value, 4000);
+  assert.equal(missing.measurements.length, 2);
+  // Without the new range field existing multi-day shortcuts retain all dates.
+  assert.equal(parseSyncPayload(buildQuickStepsPayload({ ...batch, values: '123\n8200', dates: '2026-11-01\n2026-11-09' })).measurements.length, 2);
+});
+
+void test('range clipping respects Shanghai midnight, month boundaries and replay time', () => {
+  const inputs = { ...batch, days: '1', at: '2028-02-29T16:30:00Z', values: '1000\n2000', dates: '2028-02-29T15:59:59Z\n2028-02-29T16:00:00Z' };
+  const output = parseSyncPayload(buildQuickStepsPayload(inputs));
+  assert.equal(output.measurements.length, 1);
+  assert.equal(measurementDay(output.measurements[0]), '2028-03-01');
+  assert.equal(output.measurements[0].value, 2000);
+  assert.equal(output.exportedAt, '2028-02-29T16:30:00.000Z');
+  assert.deepEqual(parseSyncPayload(buildQuickStepsPayload(inputs)), output);
+  for (const days of ['30', '90']) assert.equal(buildQuickStepsPayload({ ...batch, days }).measurements.length, 3);
+});
+
+void test('range mode rejects bad configuration, empty retained results and malformed paired columns', () => {
+  for (const days of ['', '0', '91', '-1', '7.5', '07', 'NaN', 'constructor']) {
+    assert.throws(() => buildQuickStepsPayload({ ...batch, days }), /同步天数/);
+  }
+  assert.throws(() => buildQuickStepsPayload({ ...fields, days: '7' }), /同步天数/);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, metric: 'active_energy', unit: 'kcal', days: '7' }), /同步天数/);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '123', dates: '2026-11-01' }), /没有所选日期范围/);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '123\n8200', dates: '2026-11-01' }), /条数不一致/);
+  assert.throws(() => buildQuickStepsPayload({ ...batch, days: '7', values: '不是数值\n8200', dates: '2026-11-01\n2026-11-09' }), /不是数字/);
+});
+
 void test('actual page fragment parser forwards encoded daily columns into the embedded helper', () => {
   const script = [...renderApp().matchAll(/<script type="module">([\s\S]*?)<\/script>/g)]
     .map((match) => match[1]).find((script) => script.includes('function parseSyncFragment('))!;
@@ -200,8 +238,8 @@ void test('actual page fragment parser forwards encoded daily columns into the e
   const parseFragment = runInNewContext('(' + script.slice(start, end).trim() + ')', {
     URLSearchParams, TextEncoder, quickStepsPayload: buildQuickStepsPayload,
   });
-  const params = new URLSearchParams({ quick: 'steps', device: 'jso_sync_' + 'a'.repeat(43), source: fields.source,
-    values: '8,200\n6000', dates: '2026-11-09T00:00:00+08:00\n2026-11-08T00:00:00+08:00', at: fields.at });
+  const params = new URLSearchParams({ quick: 'steps', device: 'jso_sync_' + 'a'.repeat(43), source: fields.source, days: '7',
+    values: '8,200\n6000\n123', dates: '2026-11-09T00:00:00+08:00\n2026-11-08T00:00:00+08:00\n2026-11-01', at: fields.at });
   const result = parseFragment('#' + params.toString());
   assert.equal(result.deviceToken, 'jso_sync_' + 'a'.repeat(43));
   const accepted = parseSyncPayload(result.payloadText);
@@ -210,5 +248,5 @@ void test('actual page fragment parser forwards encoded daily columns into the e
   assert.equal(parseSyncPayload(parseFragment('#quick=active_energy&unit=kJ&source=iPhone&value=418.4&at=2026-11-09T10:00:00+08:00').payloadText).measurements[0].value, 100);
   assert.throws(() => parseFragment('#' + params.toString() + '&padding=' + 'x'.repeat(32768)), /32 KB/);
   const embedded = runInNewContext('(' + buildQuickStepsPayload.toString() + ')', { TextEncoder });
-  assert.equal(parseSyncPayload(JSON.stringify(embedded(batch))).measurements.length, 3);
+  assert.equal(parseSyncPayload(JSON.stringify(embedded({ ...batch, days: '1' }))).measurements.length, 1);
 });

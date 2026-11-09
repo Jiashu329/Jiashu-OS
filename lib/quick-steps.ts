@@ -1,10 +1,10 @@
 /** Self-contained so the same function can be embedded in the private page. */
 export function buildQuickStepsPayload(fields: {
-  value?: string | null; values?: string | null; dates?: string | null;
+  value?: string | null; values?: string | null; dates?: string | null; days?: string | null;
   at: string | null; source: string | null; metric?: string | null; unit?: string | null;
 }) {
   const maximumBytes = 512 * 1024;
-  const columns = [fields.value, fields.values, fields.dates, fields.at, fields.source, fields.metric, fields.unit];
+  const columns = [fields.value, fields.values, fields.dates, fields.days, fields.at, fields.source, fields.metric, fields.unit];
   if (columns.some((value) => typeof value === 'string' && value.length > maximumBytes)
       || new TextEncoder().encode(columns.map((value) => value ?? '').join('\n')).byteLength > maximumBytes) {
     throw new Error('这次同步数据超过 512 KB，请缩短查询日期范围，或通过文件分批导入。');
@@ -100,6 +100,12 @@ export function buildQuickStepsPayload(fields: {
 
   const batch = fields.values != null || fields.dates != null;
   if (batch && fields.value != null) throw new Error('同步地址同时包含单日和多日数据，请使用新引导生成的多日地址，不要混用 value 与 values、dates。');
+  if (fields.days != null && (!batch || metric !== 'steps' || !/^(?:[1-9]|[1-8]\d|90)$/.test(fields.days))) {
+    throw new Error('步数同步天数需要为 1 至 90 的整数，且只用于多日步数地址，请重新复制配置指引生成的地址。');
+  }
+  const today = shanghaiDay(at.time);
+  const firstDay = fields.days == null ? null
+    : new Date(Date.parse(today + 'T12:00:00Z') - (Number(fields.days) - 1) * 86400000).toISOString().slice(0, 10);
   const values = batch ? lines(fields.values, '每日' + label) : lines(fields.value, label);
   const dates = batch ? lines(fields.dates, '每日日期') : [shanghaiDay(at.time)];
   if (values.length !== dates.length) throw new Error('每日' + label + '与日期条数不一致。请从同一批按天分组的健康样本提取两列，并保持相同顺序。');
@@ -110,6 +116,9 @@ export function buildQuickStepsPayload(fields: {
   for (let index = 0; index < values.length; index++) {
     const value = numeric(values[index]);
     const day = dailyDate(dates[index], index);
+    // Query an extra day in Shortcuts so every retained historical day is
+    // complete. Filter the paired row by its date, never by list position.
+    if (firstDay && day < firstDay) continue;
     const start = midnight(day);
     if (new Date(start).getUTCFullYear() < 1970) throw new Error('第 ' + (index + 1) + ' 行日期超出支持范围，请核对原健康样本。');
     const nextDay = new Date(Date.parse(day + 'T12:00:00Z') + 86400000).toISOString().slice(0, 10);
@@ -126,6 +135,7 @@ export function buildQuickStepsPayload(fields: {
       endDate: end === at.time ? at.value : new Date(end).toISOString(),
     });
   }
+  if (firstDay && measurements.size === 0) throw new Error('查询结果中没有所选日期范围内的步数，请核对查询天数、样本日期和手机时区；没有记录时不要补零。');
   const payload = {
     version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt: at.value,
     measurements: [...measurements.values()].sort((left, right) => left.startDate.localeCompare(right.startDate)),

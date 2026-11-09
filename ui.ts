@@ -114,7 +114,7 @@ ${HEALTH_GOALS_CSS}
         ? quickWeightPayload({values:params.get('values'),dates:params.get('dates'),at:params.get('at'),source:params.get('source'),unit:params.get('unit'),leanValues:params.get('leanValues'),leanDates:params.get('leanDates'),leanUnit:params.get('leanUnit')})
         : params.get('quick')==='sleep'
         ? quickSleepPayload({states:params.get('states'),starts:params.get('starts'),ends:params.get('ends'),at:params.get('at'),source:params.get('source'),days:params.get('days')})
-        : quickStepsPayload({value:params.get('value'),values:params.get('values'),dates:params.get('dates'),at:params.get('at'),source:params.get('source'),metric:params.get('quick'),unit:params.get('unit')}));
+        : quickStepsPayload({value:params.get('value'),values:params.get('values'),dates:params.get('dates'),days:params.get('days'),at:params.get('at'),source:params.get('source'),metric:params.get('quick'),unit:params.get('unit')}));
     }
     if(!payloadText)throw new Error('没有收到同步内容，请重新运行快捷指令。');
     let payload;try{payload=JSON.parse(payloadText);}catch{throw new Error('同步内容不是完整的 JSON，请检查快捷指令配置。');}
