@@ -2,34 +2,37 @@
 export function buildQuickWeightPayload(fields: {
   values: string | null; dates: string | null; at: string | null;
   source: string | null; unit: string | null;
+  leanValues?: string | null; leanDates?: string | null; leanUnit?: string | null;
 }) {
   const maximumBytes = 512 * 1024;
-  const columns = [fields.values, fields.dates, fields.at, fields.source, fields.unit];
+  const columns = [fields.values, fields.dates, fields.at, fields.source, fields.unit, fields.leanValues, fields.leanDates, fields.leanUnit];
   if (columns.some((value) => typeof value === 'string' && value.length > maximumBytes)
       || new TextEncoder().encode(columns.map((value) => value ?? '').join('\n')).byteLength > maximumBytes) {
-    throw new Error('这次体重数据超过 512 KB，请缩短查询日期范围，或通过文件分批导入。');
+    throw new Error('这次体重与去脂体重数据超过 512 KB，请缩短查询日期范围，或通过文件分批导入。');
   }
-  const unit = fields.unit;
-  if (unit !== 'kg' && unit !== 'lb' && unit !== 'jin') {
-    throw new Error('请在网站选择手机读取值的体重单位：千克（kg）、磅（lb）或斤，再重新复制同步地址。');
+  function hasText(raw: string | null | undefined) {
+    return typeof raw === 'string' && raw.trim().length > 0;
+  }
+  if (![fields.values, fields.dates, fields.leanValues, fields.leanDates].some(hasText)) {
+    throw new Error('没有收到体重或去脂体重记录。请确认苹果健康中有对应记录，并点选对应的蓝色变量；没有记录时不要填入 0。');
   }
   const rawSource = fields.source;
   if (typeof rawSource !== 'string' || !rawSource.trim() || rawSource.trim().length > 120
       || /[\u0000-\u001f\u007f]/.test(rawSource)) {
-    throw new Error('没有收到有效的体重来源，请选择一个实际数据来源，再复制网站生成的同步地址。');
+    throw new Error('没有收到有效的体重与去脂体重来源，请选择一个实际数据来源，再复制网站生成的同步地址。');
   }
   const source = rawSource.trim();
 
-  function lines(raw: string | null, label: string) {
+  function lines(raw: string | null | undefined, label: string, kind: string) {
     if (typeof raw !== 'string' || !raw.trim()) {
-      throw new Error('没有收到' + label + '。请确认苹果健康已有体重记录，并点选对应的蓝色变量；没有记录时不要填入 0。');
+      throw new Error('没有收到' + label + '。请确认苹果健康已有' + kind + '记录，并点选对应的蓝色变量；没有记录时不要填入 0。');
     }
     if (/\r(?!\n)/.test(raw)) throw new Error(label + '的分行格式不正确，请在“合并文本”里选择“新行”。');
     const result = raw.split(/\r\n|\n/);
-    if (result.length > 300) throw new Error('单次最多接收 300 条体重记录，请缩短查询日期范围，或通过文件分批导入。');
+    if (result.length > 300) throw new Error('单次每类最多接收 300 条记录，请缩短' + kind + '查询日期范围，或通过文件分批导入。');
     for (let index = 0; index < result.length; index++) {
       if (!result[index].trim()) {
-        throw new Error(label + '第 ' + (index + 1) + ' 行为空。请让体重值和测量日期来自同一批健康样本，并保留相同顺序。');
+        throw new Error(label + '第 ' + (index + 1) + ' 行为空。请让' + kind + '数值和它的测量日期来自同一批健康样本，并保留相同顺序。');
       }
       result[index] = result[index].trim();
     }
@@ -71,51 +74,62 @@ export function buildQuickWeightPayload(fields: {
     return { value, time, canonical: normalized.toISOString() };
   }
 
-  const values = lines(fields.values, '体重值');
-  const dates = lines(fields.dates, '测量日期');
-  if (values.length !== dates.length) {
-    throw new Error('体重值和测量日期的条数不一致。请从同一批健康样本提取两列，不要单独筛选或排序其中一列。');
-  }
   const at = timestamp(fields.at, '本次同步时间');
   const grouped = /^\d{1,3}([,，\u00a0\u202f ])\d{3}(?:\1\d{3})*(?:\.\d+)?$/;
-  const factor = unit === 'lb' ? 0.45359237 : unit === 'jin' ? 0.5 : 1;
   const measurements = new Map<string, {
-    id: string; metric: 'weight'; value: number; unit: 'kg';
+    id: string; metric: 'weight' | 'lean_body_mass'; value: number; unit: 'kg';
     aggregation: 'sample'; source: string; startDate: string;
   }>();
-  for (let index = 0; index < values.length; index++) {
-    const raw = values[index];
-    if (!/^\d+(?:\.\d+)?$/.test(raw) && !grouped.test(raw)) {
-      throw new Error('第 ' + (index + 1) + ' 条体重不是有效数字。请提取健康样本的数值，不要包含单位、变量名称或使用小数逗号。');
+  function addMetric(metric: 'weight' | 'lean_body_mass', kind: string, rawValues: string | null | undefined, rawDates: string | null | undefined, unit: string | null | undefined) {
+    // Each category owns its own pair of columns; an absent category must not
+    // erase the other one or be matched to the other category by row number.
+    if (!hasText(rawValues) && !hasText(rawDates)) return;
+    if (unit !== 'kg' && unit !== 'lb' && unit !== 'jin') {
+      throw new Error('请在网站选择手机读取值的' + kind + '单位：千克（kg）、磅（lb）或斤，再重新复制同步地址。');
     }
-    const kilograms = Number(raw.replace(/[,，\u00a0\u202f ]/g, '')) * factor;
-    if (!Number.isFinite(kilograms) || kilograms < 10 || kilograms > 600) {
-      throw new Error('第 ' + (index + 1) + ' 条体重换算后需在 10 至 600 kg 之间，请核对体重数值和所选单位；不要用 0 代替缺失记录。');
+    const values = lines(rawValues, kind + '值', kind);
+    const dates = lines(rawDates, kind + '测量日期', kind);
+    if (values.length !== dates.length) {
+      throw new Error(kind + '值和它的测量日期条数不一致。请从同一批' + kind + '健康样本提取两列，不要单独筛选或排序其中一列。');
     }
-    const value = Math.round(kilograms * 1000000) / 1000000;
-    const measuredAt = timestamp(dates[index], '第 ' + (index + 1) + ' 条测量日期');
-    if (measuredAt.time > at.time + 5 * 60000) {
-      throw new Error('第 ' + (index + 1) + ' 条测量日期晚于本次同步时间，请核对原健康样本日期与“当前日期”变量是否接反。');
+    const factor = unit === 'lb' ? 0.45359237 : unit === 'jin' ? 0.5 : 1;
+    const minimum = metric === 'weight' ? 10 : 1;
+    for (let index = 0; index < values.length; index++) {
+      const raw = values[index];
+      if (!/^\d+(?:\.\d+)?$/.test(raw) && !grouped.test(raw)) {
+        throw new Error('第 ' + (index + 1) + ' 条' + kind + '不是有效数字。请提取健康样本的数值，不要包含单位、变量名称或使用小数逗号。');
+      }
+      const kilograms = Number(raw.replace(/[,，\u00a0\u202f ]/g, '')) * factor;
+      if (!Number.isFinite(kilograms) || kilograms < minimum || kilograms > 600) {
+        throw new Error('第 ' + (index + 1) + ' 条' + kind + '换算后需在 ' + minimum + ' 至 600 kg 之间，请核对数值和所选单位；不要用 0 代替缺失记录。');
+      }
+      const value = Math.round(kilograms * 1000000) / 1000000;
+      const measuredAt = timestamp(dates[index], '第 ' + (index + 1) + ' 条' + kind + '测量日期');
+      if (measuredAt.time > at.time + 5 * 60000) {
+        throw new Error('第 ' + (index + 1) + ' 条' + kind + '测量日期晚于本次同步时间，请核对原健康样本日期与“当前日期”变量是否接反。');
+      }
+      // Retain existing weight IDs. Re-exporting either category preserves its
+      // identity, while the two categories remain independent at the same time.
+      const id = (metric === 'weight' ? 'quick-weight:' : 'quick-lean-body-mass:') + measuredAt.canonical;
+      const previous = measurements.get(id);
+      if (previous) {
+        if (previous.value !== value) throw new Error('同一个测量时刻出现不同' + kind + '，请在苹果健康核对重复记录，保留一个选定来源后重试。');
+        continue;
+      }
+      measurements.set(id, { id, metric, value, unit: 'kg', aggregation: 'sample', source, startDate: measuredAt.canonical });
     }
-    // A rerun keeps the original identity even when exportedAt or row order
-    // changes. One selected-source reading is represented at each instant.
-    const id = 'quick-weight:' + measuredAt.canonical;
-    const previous = measurements.get(id);
-    if (previous) {
-      if (previous.value !== value) throw new Error('同一个测量时刻出现不同体重，请在苹果健康核对重复记录，保留一个选定来源后重试。');
-      continue;
-    }
-    measurements.set(id, { id, metric: 'weight', value, unit: 'kg', aggregation: 'sample', source, startDate: measuredAt.canonical });
   }
+  addMetric('weight', '体重', fields.values, fields.dates, fields.unit);
+  addMetric('lean_body_mass', '去脂体重', fields.leanValues, fields.leanDates, fields.leanUnit);
   const payload = {
     version: 1 as const,
     source: 'apple-health-shortcuts' as const,
     timezone: 'Asia/Shanghai' as const,
     exportedAt: at.value,
-    measurements: [...measurements.values()].sort((left, right) => left.startDate.localeCompare(right.startDate)),
+    measurements: [...measurements.values()].sort((left, right) => left.startDate.localeCompare(right.startDate) || left.metric.localeCompare(right.metric)),
   };
   if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > maximumBytes) {
-    throw new Error('组装后的体重数据超过 512 KB，请缩短查询日期范围，或通过文件分批导入。');
+    throw new Error('组装后的体重与去脂体重数据超过 512 KB，请缩短查询日期范围，或通过文件分批导入。');
   }
   return payload;
 }

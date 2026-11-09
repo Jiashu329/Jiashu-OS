@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { buildBodyComposition } from '../lib/body-composition';
 import {
   createSyncConnection,
   findSyncConnection,
@@ -35,6 +36,7 @@ export async function readHealth(userId: string, days: number) {
   const measurements = rows.results.map((row) => JSON.parse(row.measurement_json) as HealthMeasurement);
   return {
     summary: buildHealthSummary(measurements),
+    bodyComposition: buildBodyComposition(measurements),
     measurements,
     lastSync: last?.received_at ?? null,
   };

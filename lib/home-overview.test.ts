@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildHealthSummary, type HealthMeasurement } from './health.ts';
+import { buildBodyComposition } from './body-composition.ts';
 import { buildHomeOverview, type HomeFinanceInput, type HomeHealthInput, type HomeOverviewSources } from './home-overview.ts';
 
 const NOW = '2026-11-09T08:00:00Z';
@@ -131,6 +132,28 @@ test('all-current data produces a review action, with no diagnosis, goal or stat
   assert.equal(output.priorities[0].id, 'review-trends');
   assert.equal(output.priorities[0].tone, 'neutral');
   assert.equal(output.asOf, NOW.replace('Z', '.000Z'));
+});
+
+test('home composition indicators use server pairs instead of mixing independent latest samples', () => {
+  const rows: HealthMeasurement[] = [
+    { id: 'weight-old', metric: 'weight', value: 70, unit: 'kg', source: 'scale', startDate: '2026-11-08T07:00:00+08:00' },
+    { id: 'lean-old', metric: 'lean_body_mass', value: 56, unit: 'kg', source: 'scale', startDate: '2026-11-08T07:00:00+08:00' },
+    { id: 'weight-new', metric: 'weight', value: 75, unit: 'kg', source: 'scale', startDate: '2026-11-09T07:00:00+08:00' },
+    { id: 'lean-new', metric: 'lean_body_mass', value: 58, unit: 'kg', source: 'scale', startDate: '2026-11-09T08:00:00+08:00' },
+  ];
+  const input = { ...health(rows), bodyComposition: buildBodyComposition(rows) };
+  const output = buildHomeOverview(sources({ health: input }), NOW);
+  const metric = (key: string) => output.health.metrics.find((item) => item.metric === key)!;
+  assert.equal(metric('weight').value, 75);
+  assert.equal(metric('lean_body_mass').value, 58);
+  assert.equal(metric('body_fat').value, 20);
+  assert.equal(metric('body_fat').day, '2026-11-08');
+  assert.deepEqual(metric('body_fat').points, [{ day: '2026-11-08', value: 20 }]);
+  assert.equal(metric('body_fat').observedDays7, 1);
+  // Older clients without a server-derived field must not improvise a pair.
+  const legacy = buildHomeOverview(sources({ health: health(rows) }), NOW);
+  assert.equal(legacy.health.metrics.find((item) => item.metric === 'body_fat')!.value, null);
+  assert.equal(output.health.recordedMetricCount, 3);
 });
 
 test('stale balances outrank an empty ledger setup while preserving order within each tone', () => {

@@ -1,16 +1,18 @@
 import type { HealthMetric, HealthSummary } from './health.ts';
 import { shanghaiDay } from './health.ts';
 import { buildFinanceSummary, type FinanceSummaryAccount, type LedgerKind } from './finance.ts';
+import type { BodyComposition } from './body-composition.ts';
 
-export interface HomeHealthInput { summary: HealthSummary; lastSync: string | null }
+export interface HomeHealthInput { summary: HealthSummary; lastSync: string | null; bodyComposition?: BodyComposition }
 export interface HomeFinanceInput { accounts: readonly (FinanceSummaryAccount & { asOfDate: string })[] }
 export interface HomeOverviewSources {
   health: HomeHealthInput | null;
   personal: HomeFinanceInput | null;
   family: HomeFinanceInput | null;
 }
+export type HomeMetric = HealthMetric | 'body_fat';
 export interface HomeHealthMetric {
-  metric: HealthMetric;
+  metric: HomeMetric;
   label: string;
   value: number | null;
   unit: string;
@@ -52,11 +54,13 @@ export interface HomeOverview {
   priorities: HomePriority[];
 }
 
-const metricDefinitions: { metric: HealthMetric; label: string; unit: string }[] = [
+const metricDefinitions: { metric: HomeMetric; label: string; unit: string }[] = [
   { metric: 'steps', label: '步数', unit: '步' },
   { metric: 'sleep', label: '睡眠', unit: '小时' },
   { metric: 'active_energy', label: '活动能量', unit: '千卡' },
   { metric: 'weight', label: '体重', unit: 'kg' },
+  { metric: 'lean_body_mass', label: '去脂体重', unit: 'kg' },
+  { metric: 'body_fat', label: '估算体脂率', unit: '%' },
 ];
 
 function daysBefore(day: string, days: number): string {
@@ -65,7 +69,8 @@ function daysBefore(day: string, days: number): string {
 
 function healthOverview(input: HomeHealthInput | null, today: string): HomeOverview['health'] {
   const metrics = metricDefinitions.map(({ metric, label, unit }): HomeHealthMetric => {
-    const allPoints = (input?.summary.metrics[metric].points ?? [])
+    const candidatePoints = metric === 'body_fat' ? input?.bodyComposition?.points ?? [] : input?.summary.metrics[metric]?.points ?? [];
+    const allPoints = candidatePoints
       .filter((point) => point.day >= daysBefore(today, 89) && point.day <= today)
       .sort((left, right) => left.day.localeCompare(right.day));
     const latest = allPoints.at(-1);
@@ -73,7 +78,7 @@ function healthOverview(input: HomeHealthInput | null, today: string): HomeOverv
       .map(({ day, value }) => ({ day, value }));
     return {
       metric, label, unit, value: latest?.value ?? null, day: latest?.day ?? null,
-      freshness: !latest ? 'missing' : latest.day >= daysBefore(today, metric === 'weight' ? 7 : 1) ? 'current' : 'stale',
+      freshness: !latest ? 'missing' : latest.day >= daysBefore(today, ['weight', 'lean_body_mass', 'body_fat'].includes(metric) ? 7 : 1) ? 'current' : 'stale',
       points,
       average7: points.length ? points.reduce((sum, point) => sum + point.value, 0) / points.length : null,
       observedDays7: points.length,
@@ -120,7 +125,7 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     detail: unavailableLedgers.map((ledger) => ledger === 'personal' ? '个人账本' : '家庭账本').join('、') + '暂时无法读取，已保存的记录不会因此变成零。',
     href: '/finance?ledger=' + unavailableLedgers[0], actionLabel: '查看账本',
   });
-  const dailyMetrics = health.metrics.filter((metric) => metric.metric !== 'weight');
+  const dailyMetrics = health.metrics.filter((metric) => ['steps', 'sleep', 'active_energy'].includes(metric.metric));
   const stale = dailyMetrics.filter((metric) => metric.freshness === 'stale');
   if (health.status === 'ready' && stale.length) priorities.push({
     id: 'health-stale', tone: 'attention', title: '更新最近的健康记录',
@@ -150,8 +155,8 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
   const weight = health.metrics.find((metric) => metric.metric === 'weight')!;
   if (health.status === 'ready' && weight.freshness !== 'current') priorities.push({
     id: 'weight-record', tone: 'setup', title: '留下一次近期体重记录',
-    detail: weight.day ? '最近一次体重记录为' + weight.day + '；运行体重快捷指令更新记录后，再观察趋势。' : '近90天暂无体重记录。可从苹果健康同步已有测量记录，保留每次称重的原始日期。',
-    href: '/connect-weight', actionLabel: '接入体重同步',
+    detail: weight.day ? '最近一次体重记录为' + weight.day + '；运行体重与去脂体重快捷指令更新记录后，再观察趋势。' : '近90天暂无体重记录。可在同一份指引中同步体重与去脂体重，保留原始测量日期。',
+    href: '/connect-weight', actionLabel: '接入体重与去脂体重',
   });
   if (!priorities.length) priorities.push({
     id: 'review-trends', tone: 'neutral', title: '回顾最近一周的记录',

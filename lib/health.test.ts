@@ -157,6 +157,46 @@ test("weight samples remain individually identifiable; daily chart shows the lat
   assert.equal(summary.metrics.weight.points.length, 1);
 });
 
+test("lean body mass is a raw point sample with independent identities and latest daily values", () => {
+  const sync = parseSyncPayload(payload([
+    { id: "lean-morning", metric: "lean_body_mass", value: 56, unit: "kg", startDate: "2026-11-08T07:00:00+08:00", source: "selected-scale" },
+    { id: "lean-evening", metric: "lean_body_mass", value: 56.2, unit: "kg", startDate: "2026-11-08T20:00:00+08:00", source: "selected-scale", aggregation: "sample" },
+    { id: "weight", metric: "weight", value: 70, unit: "kg", startDate: "2026-11-08T07:00:00+08:00" },
+  ]));
+  assert.equal(measurementKey(sync.measurements[0]), "lean_body_mass:lean-morning");
+  assert.equal(measurementKey(sync.measurements[1]), "lean_body_mass:lean-evening");
+  assert.equal(measurementKey(sync.measurements[2]), "weight:weight");
+  assert.ok(sync.measurements.every((measurement) => measurement.aggregation === "sample"));
+  const summary = buildHealthSummary([...sync.measurements].reverse());
+  assert.equal(summary.measurementCount, 3);
+  assert.equal(summary.metrics.lean_body_mass.latestValue, 56.2);
+  assert.equal(summary.metrics.lean_body_mass.points.length, 1);
+  assert.equal(summary.metrics.weight.latestValue, 70);
+  assert.deepEqual(parseSyncPayload(JSON.stringify(sync)), sync);
+});
+
+test("lean mass bounds and sample semantics are validated; derived fat is never imported", () => {
+  const lean = { id: "lean", metric: "lean_body_mass", value: 56, unit: "kg", startDate: "2026-11-08T07:00:00+08:00", source: "scale" };
+  for (const value of [0, 0.999, 600.001, NaN, Infinity, "56"]) invalid(payload([{ ...lean, value }]), ".value");
+  for (const value of [1, 600]) assert.equal(parseSyncPayload(payload([{ ...lean, value }])).measurements[0].value, value);
+  invalid(payload([{ ...lean, unit: "lb" }]), ".unit");
+  invalid(payload([{ ...lean, aggregation: "daily" }]), ".aggregation");
+  invalid(payload([{ ...lean, metric: "body_fat", unit: "%", value: 20 }]), ".metric");
+});
+
+test("sample measurement recency uses its original start even when a legacy end date is present", () => {
+  const mass = parseSyncPayload(payload([
+    { id: "weight-with-end", metric: "weight", value: 70, unit: "kg", startDate: "2026-11-08T07:00:00+08:00", endDate: "2026-11-09T08:00:00+08:00" },
+    { id: "lean-with-end", metric: "lean_body_mass", value: 56, unit: "kg", startDate: "2026-11-08T20:00:00+08:00", endDate: "2026-11-09T09:00:00+08:00" },
+  ])).measurements;
+  const summary = buildHealthSummary(mass);
+  assert.equal(summary.metrics.lean_body_mass.latestDate, "2026-11-08T12:00:00.000Z");
+  assert.equal(summary.lastMeasurementAt, "2026-11-08T12:00:00.000Z");
+  // Daily aggregates still describe a period and retain its ending timestamp.
+  const daily = parseSyncPayload(payload([step])).measurements;
+  assert.equal(buildHealthSummary([...mass, ...daily]).lastMeasurementAt, "2026-11-08T16:00:00.000Z");
+});
+
 test("gaps in daily observations stay gaps instead of zero-filled days", () => {
   const sync = parseSyncPayload(payload([
     { ...step, id: "day-6", startDate: "2026-11-06T00:00:00+08:00", endDate: "2026-11-07T00:00:00+08:00" },

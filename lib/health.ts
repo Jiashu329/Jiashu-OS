@@ -1,8 +1,9 @@
 /**
  * Versioned Apple Health → website contract.
  *
- * The sender must select ONE source for each metric/day and send an already
- * aggregated daily total. This module never adds raw phone/watch samples.
+ * Steps, energy, and sleep use one selected source per metric/day and an
+ * already aggregated daily total. Body mass metrics retain individual samples.
+ * This module never adds raw phone/watch activity or sleep samples.
  * Sleep belongs to the Shanghai calendar date on which its interval ends;
  * it is not split or redistributed across midnight.
  */
@@ -13,6 +14,7 @@ export const MAX_MEASUREMENTS = 1000;
 
 export const METRIC_INFO = {
   weight: { label: "体重", unit: "kg", minimum: 10, maximum: 600 },
+  lean_body_mass: { label: "去脂体重", unit: "kg", minimum: 1, maximum: 600 },
   steps: { label: "步数", unit: "count", minimum: 0, maximum: 200000 },
   active_energy: { label: "活动能量", unit: "kcal", minimum: 0, maximum: 20000 },
   sleep: { label: "睡眠", unit: "hours", minimum: 0, maximum: 24 },
@@ -30,7 +32,7 @@ export interface HealthMeasurement {
   startDate: string;
   endDate?: string;
   source?: string;
-  /** Required for steps, energy, and sleep; optional/sample for body weight. */
+  /** Required for steps, energy, and sleep; optional/sample for body mass measurements. */
   aggregation?: "daily" | "sample";
 }
 
@@ -38,7 +40,7 @@ export interface HealthSyncPayload {
   version: 1;
   source: "apple-health-shortcuts";
   timezone: typeof HEALTH_TIMEZONE;
-  /** Compare this value when an API upserts a daily total; old exports must not replace newer ones. */
+  /** Compare this value on upsert; old exports must not replace newer records. */
   exportedAt: string;
   measurements: HealthMeasurement[];
 }
@@ -119,9 +121,15 @@ export function measurementDay(measurement: HealthMeasurement): string {
   return shanghaiDay(measurement.startDate);
 }
 
-/** Daily totals have a stable metric/day key; body-weight samples retain their sender-provided ID. */
+function isSampleMetric(metric: HealthMetric): boolean {
+  return metric === "weight" || metric === "lean_body_mass";
+}
+
+/** Daily totals have a stable metric/day key; mass samples retain their sender-provided ID. */
 export function measurementKey(measurement: HealthMeasurement): string {
-  return measurement.metric === "weight" ? `weight:${measurement.id}` : `${measurement.metric}:${measurementDay(measurement)}`;
+  return isSampleMetric(measurement.metric)
+    ? `${measurement.metric}:${measurement.id}`
+    : `${measurement.metric}:${measurementDay(measurement)}`;
 }
 
 /**
@@ -191,8 +199,8 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
     if (item.source !== undefined && (typeof item.source !== "string" || item.source.trim() !== item.source || !sourcePattern.test(item.source))) {
       add(`${path}.source`, "Expected a non-empty source identifier of at most 120 characters");
     }
-    if (metric === "weight") {
-      if (item.aggregation !== undefined && item.aggregation !== "sample") add(`${path}.aggregation`, "Weight is a point sample, not a daily total");
+    if (isSampleMetric(metric)) {
+      if (item.aggregation !== undefined && item.aggregation !== "sample") add(`${path}.aggregation`, "Body mass is a point sample, not a daily total");
     } else {
       if (item.aggregation !== "daily") add(`${path}.aggregation`, "Send an explicit daily aggregate; raw samples must not be added together here");
       if (!endDate) add(`${path}.endDate`, "A daily aggregate requires an ending timestamp");
@@ -221,7 +229,7 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
       startDate: startDate!,
       ...(endDate ? { endDate } : {}),
       ...(item.source !== undefined ? { source: item.source as string } : {}),
-      ...(metric === "weight" ? { aggregation: "sample" as const } : { aggregation: "daily" as const }),
+      ...(isSampleMetric(metric) ? { aggregation: "sample" as const } : { aggregation: "daily" as const }),
     };
     const serialized = JSON.stringify(measurement);
     const priorID = byID.get(measurement.id);
@@ -272,7 +280,7 @@ export interface HealthSummary {
  * No filling gaps with zero. Daily totals are replaced, never summed. If a
  * caller supplies repeated daily keys, later array entries take precedence;
  * the persistence layer must first order/resolve them by exportedAt.
- * Multiple weight samples on one day become the last measurement of that day.
+ * Multiple mass samples on one day become the last measurement of that day.
  */
 export function buildHealthSummary(input: readonly HealthMeasurement[]): HealthSummary {
   const unique = new Map<string, HealthMeasurement>();
@@ -286,7 +294,7 @@ export function buildHealthSummary(input: readonly HealthMeasurement[]): HealthS
       const day = measurementDay(row);
       const measuredAt = row.metric === "sleep" ? row.endDate! : row.startDate;
       const previous = daily.get(day);
-      if (metric !== "weight" || !previous || Date.parse(measuredAt) >= Date.parse(previous.measuredAt)) {
+      if (!isSampleMetric(metric) || !previous || Date.parse(measuredAt) >= Date.parse(previous.measuredAt)) {
         daily.set(day, { day, value: row.value, measuredAt, source: row.source ?? null });
       }
     }
@@ -302,7 +310,7 @@ export function buildHealthSummary(input: readonly HealthMeasurement[]): HealthS
     };
   }
   const lastMeasurementAt = measurements.reduce<string | null>((latest, row) => {
-    const timestamp = row.endDate ?? row.startDate;
+    const timestamp = isSampleMetric(row.metric) ? row.startDate : row.endDate ?? row.startDate;
     return latest === null || Date.parse(timestamp) > Date.parse(latest) ? timestamp : latest;
   }, null);
   return { metrics, measurementCount: measurements.length, lastMeasurementAt };
