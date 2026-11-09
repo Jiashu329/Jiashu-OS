@@ -150,8 +150,8 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
   const weight = health.metrics.find((metric) => metric.metric === 'weight')!;
   if (health.status === 'ready' && weight.freshness !== 'current') priorities.push({
     id: 'weight-record', tone: 'setup', title: '留下一次近期体重记录',
-    detail: weight.day ? '最近一次体重记录为' + weight.day + '；有近期记录后再观察变化。' : '近90天暂无体重记录。有记录后，可通过健康模块导入。',
-    href: '/health', actionLabel: '查看健康记录',
+    detail: weight.day ? '最近一次体重记录为' + weight.day + '；运行体重快捷指令更新记录后，再观察趋势。' : '近90天暂无体重记录。可从苹果健康同步已有测量记录，保留每次称重的原始日期。',
+    href: '/connect-weight', actionLabel: '接入体重同步',
   });
   if (!priorities.length) priorities.push({
     id: 'review-trends', tone: 'neutral', title: '回顾最近一周的记录',
