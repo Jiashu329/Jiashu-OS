@@ -83,7 +83,7 @@ test('category interpretation stays server-owned and no duration is fabricated',
 
 test('source, number of segments and request size are bounded', () => {
   for (const source of [null, '', 'x'.repeat(121), 'watch\n']) assert.throws(() => buildQuickSleepPayload({ ...base, source }));
-  assert.throws(() => buildQuickSleepPayload({ ...base, states: Array(301).fill('1').join('\n') }), /300/);
+  assert.throws(() => buildQuickSleepPayload({ ...base, states: Array(3001).fill('1').join('\n') }), /3000/);
   assert.throws(() => buildQuickSleepPayload({ ...base, states: 'x'.repeat(512 * 1024 + 1) }), /512 KB/);
   const expanded = {
     ...base,
@@ -100,4 +100,43 @@ test('the serialized function works in isolation with no captured imports', () =
   const payload = build(base);
   // JSON erases the other vm realm's object prototype before backend parsing.
   assert.equal(parseMobileSyncPayload(JSON.parse(JSON.stringify(payload))).measurements[0].value, 8);
+});
+
+test('multi-day shortcut columns stay paired in original order and become separate daily totals', () => {
+  const fields = {
+    ...base, days: '7', states: '深度睡眠\n3\nREM',
+    starts: '2026-11-08T23:00:00+08:00\n2026-11-06T23:00:00+08:00\n2026-11-07T23:00:00+08:00',
+    ends: '2026-11-09T07:00:00+08:00\n2026-11-07T06:00:00+08:00\n2026-11-08T05:00:00+08:00',
+  };
+  const before = structuredClone(fields);
+  const payload = buildQuickSleepPayload(fields);
+  assert.equal(payload.sleepReport.days, 7);
+  assert.deepEqual(payload.sleepReport.segments.map((segment) => segment.state), ['深度睡眠', '3', 'REM']);
+  assert.deepEqual(payload.sleepReport.segments.map((segment) => segment.startDate), fields.starts.split('\n'));
+  const parsed = parseMobileSyncPayload(payload);
+  assert.deepEqual(parsed.measurements.map((record) => [record.id, record.value]), [
+    ['sleep-report:2026-11-07', 7], ['sleep-report:2026-11-08', 6], ['sleep-report:2026-11-09', 8],
+  ]);
+  assert.deepEqual(fields, before);
+});
+
+test('range is explicit and bounded while old shortcuts retain a single day', () => {
+  assert.ok(!Object.hasOwn(buildQuickSleepPayload(base).sleepReport, 'days'));
+  assert.ok(!Object.hasOwn(buildQuickSleepPayload({ ...base, days: null }).sleepReport, 'days'));
+  for (const days of ['1', '7', '30']) assert.equal(buildQuickSleepPayload({ ...base, days }).sleepReport.days, Number(days));
+  for (const days of ['', '0', '31', '1.5', '-1', '7days', ' 7', '01']) {
+    assert.throws(() => buildQuickSleepPayload({ ...base, days }), /1 至 30 天/);
+  }
+  const build = vm.runInNewContext('(' + buildQuickSleepPayload.toString() + ')', { TextEncoder, Intl, Date, JSON, Error });
+  assert.equal(build({ ...base, days: '30' }).sleepReport.days, 30);
+});
+
+test('larger multi-day batches remain bounded independently of URL transport', () => {
+  const payload = buildQuickSleepPayload({ ...base, days: '30',
+    states: Array(3000).fill('1').join('\n'),
+    starts: Array(3000).fill(base.starts).join('\n'),
+    ends: Array(3000).fill(base.ends).join('\n'),
+  });
+  assert.equal(payload.sleepReport.segments.length, 3000);
+  assert.equal(parseMobileSyncPayload(payload).measurements[0].value, 8);
 });

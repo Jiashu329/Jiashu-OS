@@ -1,7 +1,7 @@
 /** Self-contained: the private page embeds this function without module imports. */
-export function buildQuickSleepPayload(fields: { states: string | null; starts: string | null; ends: string | null; at: string | null; source: string | null }) {
+export function buildQuickSleepPayload(fields: { states: string | null; starts: string | null; ends: string | null; at: string | null; source: string | null; days?: string | null }) {
   const maximumBytes = 512 * 1024;
-  const columns = [fields.states, fields.starts, fields.ends, fields.at, fields.source];
+  const columns = [fields.states, fields.starts, fields.ends, fields.at, fields.source, fields.days];
   if (columns.some((value) => typeof value === 'string' && value.length > maximumBytes)
       || new TextEncoder().encode(columns.map((value) => value ?? '').join('\n')).byteLength > maximumBytes) {
     throw new Error('这次睡眠数据超过 512 KB，请缩短快捷指令查询的日期范围。');
@@ -13,7 +13,7 @@ export function buildQuickSleepPayload(fields: { states: string | null; starts: 
     }
     if (/\r(?!\n)/.test(raw)) throw new Error(label + '的分行格式不正确，请在“合并文本”里选择“新行”。');
     const result = raw.split(/\r\n|\n/);
-    if (result.length > 300) throw new Error('单次最多接收 300 段睡眠记录，请缩短查询的日期范围。');
+    if (result.length > 3000) throw new Error('单次最多接收 3000 段睡眠记录，请按完整日期窗口分批同步。');
     for (let index = 0; index < result.length; index++) {
       if (!result[index].trim()) {
         throw new Error(label + '第 ' + (index + 1) + ' 行为空。请让三列来自同一批健康样本，并保留原来的顺序。');
@@ -61,6 +61,9 @@ export function buildQuickSleepPayload(fields: { states: string | null; starts: 
     throw new Error('睡眠状态、开始时间和结束时间的条数不一致。请从同一批健康样本分别取出三列，不要单独筛选或排序其中一列。');
   }
   const at = timestamp(fields.at, '本次同步时间');
+  if (fields.days != null && (typeof fields.days !== 'string' || !/^(?:[1-9]|[12]\d|30)$/.test(fields.days))) {
+    throw new Error('睡眠同步范围必须为 1 至 30 天，请重新复制引导生成的同步地址。');
+  }
   const rawSource = fields.source;
   if (typeof rawSource !== 'string' || !rawSource.trim() || rawSource.trim().length > 120
       || /[\u0000-\u001f\u007f]/.test(rawSource)) {
@@ -83,7 +86,9 @@ export function buildQuickSleepPayload(fields: { states: string | null; starts: 
     timezone: 'Asia/Shanghai' as const,
     exportedAt: at.value,
     measurements: [],
-    sleepReport: { day: part('year') + '-' + part('month') + '-' + part('day'), source, segments },
+    // Missing days keeps existing shortcuts on their original single-day contract.
+    sleepReport: { day: part('year') + '-' + part('month') + '-' + part('day'), source, segments,
+      ...(fields.days == null ? {} : { days: Number(fields.days) }) },
   };
   if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > maximumBytes) {
     throw new Error('组装后的睡眠数据超过 512 KB，请缩短查询的日期范围。');

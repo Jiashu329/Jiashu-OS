@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HealthValidationError, MAX_SYNC_BYTES, measurementDay, parseSyncPayload } from "./health.ts";
-import { MAX_SLEEP_SEGMENTS, parseMobileSyncPayload } from "./mobile-sync.ts";
+import { MAX_SLEEP_DAYS, MAX_SLEEP_SEGMENTS, parseMobileSyncPayload } from "./mobile-sync.ts";
 
 const base = () => ({ version: 1, source: "apple-health-shortcuts", timezone: "Asia/Shanghai", exportedAt: "2026-11-09T14:00:00+08:00", measurements: [] as unknown[] });
 const segment = (state: unknown = "asleep", startDate = "2026-11-08T23:00:00+08:00", endDate = "2026-11-09T07:00:00+08:00") => ({ state, startDate, endDate });
@@ -112,4 +112,104 @@ test("payload and segment limits include the optional sleep report", () => {
   invalid({ ...upload(), padding: "x".repeat(MAX_SYNC_BYTES) }, "$");
   invalid(" ".repeat(MAX_SYNC_BYTES + 1), "$");
   invalid("not JSON", "$");
+});
+
+test("multiple nights produce separate daily totals while preserving the original sample order", () => {
+  const input = { ...base(), sleepReport: { ...report([
+    segment(4),
+    segment(1, "2026-11-07T23:00:00+08:00", "2026-11-08T06:00:00+08:00"),
+    segment(3, "2026-11-08T23:00:00+08:00", "2026-11-09T03:00:00+08:00"),
+    segment(3, "2026-11-07T23:00:00+08:00", "2026-11-08T02:00:00+08:00"),
+  ]), days: 3 } };
+  const snapshot = structuredClone(input);
+  const result = parseMobileSyncPayload(input);
+  assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [
+    ["2026-11-08", 7], ["2026-11-09", 8],
+  ]);
+  assert.deepEqual(input, snapshot);
+  assert.deepEqual(parseSyncPayload(result), result);
+  assert.deepEqual(parseMobileSyncPayload({ ...upload([segment()]), sleepReport: { ...report([segment()]), days: 1 } }),
+    parseMobileSyncPayload(upload([segment()])));
+});
+
+test("noon-crossing intervals are split and overlaps unioned within each reporting day", () => {
+  const result = parseMobileSyncPayload({ ...base(), sleepReport: { ...report([
+    segment(1, "2026-11-08T10:00:00+08:00", "2026-11-08T14:00:00+08:00"),
+    segment(3, "2026-11-08T11:00:00+08:00", "2026-11-08T13:00:00+08:00"),
+    segment(5, "2026-11-08T09:00:00+08:00", "2026-11-08T12:00:00+08:00"),
+  ]), days: 2 } });
+  assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [
+    ["2026-11-08", 3], ["2026-11-09", 2],
+  ]);
+  assert.equal(result.measurements[0].endDate, result.measurements[1].startDate);
+});
+
+test("missing and awake-only dates remain absent, and only the last day is clipped at export", () => {
+  const result = parseMobileSyncPayload({ ...base(), exportedAt: "2026-11-09T06:00:00+08:00", sleepReport: { ...report([
+    segment(1),
+    segment(1, "2026-11-06T23:00:00+08:00", "2026-11-07T07:00:00+08:00"),
+    segment(0, "2026-11-07T22:00:00+08:00", "2026-11-08T08:00:00+08:00"),
+    segment(2, "2026-11-07T23:00:00+08:00", "2026-11-08T07:00:00+08:00"),
+  ]), days: 4 } });
+  assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [
+    ["2026-11-07", 8], ["2026-11-09", 7],
+  ]);
+  assert.equal(result.measurements[0].endDate, "2026-11-07T04:00:00.000Z");
+  assert.equal(result.measurements[1].endDate, "2026-11-08T22:00:00.000Z");
+  invalid({ ...base(), exportedAt: "2026-11-08T23:00:00+08:00", sleepReport: { ...report(), days: 2 } }, "sleepReport.day");
+});
+
+test("reporting ranges follow calendar days across leap days and year boundaries", () => {
+  for (const [day, previous, start, end] of [
+    ["2024-03-01", "2024-02-29", "2024-02-28T23:00:00+08:00", "2024-02-29T07:00:00+08:00"],
+    ["2026-01-01", "2025-12-31", "2025-12-30T23:00:00+08:00", "2025-12-31T07:00:00+08:00"],
+  ]) {
+    const result = parseMobileSyncPayload({ ...base(), exportedAt: `${day}T14:00:00+08:00`, sleepReport: {
+      ...report([segment(1, start, end)]), day, days: 2,
+    } });
+    assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [[previous, 8]]);
+  }
+});
+
+test("historical Shanghai DST boundaries use local noon rather than fixed 24-hour windows", () => {
+  const spring = parseMobileSyncPayload({ ...base(), exportedAt: "1991-04-15T14:00:00+09:00", sleepReport: {
+    ...report([segment(1, "1991-04-13T12:00:00+08:00", "1991-04-14T12:00:00+09:00")]), day: "1991-04-15", days: 2,
+  } });
+  assert.equal(spring.measurements[0].value, 23);
+  assert.equal(measurementDay(spring.measurements[0]), "1991-04-14");
+  const fall = parseMobileSyncPayload({ ...base(), exportedAt: "1991-09-16T14:00:00+08:00", sleepReport: {
+    ...report([segment(1, "1991-09-14T23:00:00+09:00", "1991-09-15T07:00:00+08:00")]), day: "1991-09-16", days: 2,
+  } });
+  assert.equal(fall.measurements[0].value, 9);
+  assert.equal(fall.measurements[0].startDate, "1991-09-14T03:00:00.000Z");
+  assert.equal(fall.measurements[0].endDate, "1991-09-15T04:00:00.000Z");
+  invalid({ ...base(), exportedAt: "1991-09-16T14:00:00+08:00", sleepReport: {
+    ...report([segment(1, "1991-09-14T12:00:00+09:00", "1991-09-15T12:00:00+08:00")]), day: "1991-09-16", days: 2,
+  } }, "measurements[0].value");
+});
+
+test("multi-day ranges reject invalid counts, unsupported dates and conflicting totals", () => {
+  for (const days of [undefined, null, "2", 0, -1, 1.5, MAX_SLEEP_DAYS + 1, NaN, Infinity]) {
+    invalid({ ...base(), sleepReport: { ...report(), days } }, "sleepReport.days");
+  }
+  assert.deepEqual(parseMobileSyncPayload({ ...base(), sleepReport: { ...report(), days: MAX_SLEEP_DAYS } }).measurements, []);
+  invalid({ ...base(), sleepReport: { ...report(), day: "1970-01-02", days: 2 } }, "sleepReport.day");
+  assert.deepEqual(parseMobileSyncPayload({ ...base(), sleepReport: { ...report(), day: "1970-01-02", days: 1 } }).measurements, []);
+  const previous = {
+    id: "previous-sleep", metric: "sleep", value: 7, unit: "hours", aggregation: "daily", source: "watch",
+    startDate: "2026-11-07T23:00:00+08:00", endDate: "2026-11-08T06:00:00+08:00",
+  };
+  invalid({ ...base(), measurements: [previous], sleepReport: { ...report(), days: 2 } }, "sleepReport");
+  invalid({ ...base(), measurements: [previous], sleepReport: { ...report([segment(0)]), days: 2 } }, "sleepReport");
+});
+
+test("multiple sleep days still obey the combined measurement limit and validate out-of-range samples", () => {
+  const measurements = Array.from({ length: 1000 }, (_, index) => ({
+    id: `weight-${index}`, metric: "weight", value: 70, unit: "kg", aggregation: "sample",
+    startDate: "2026-11-09T07:00:00+08:00",
+  }));
+  invalid({ ...upload([segment()]), measurements, sleepReport: { ...report([segment()]), days: 2 } }, "measurements");
+  invalid({ ...base(), sleepReport: { ...report([
+    segment("unknown", "2026-10-01T23:00:00+08:00", "2026-10-02T07:00:00+08:00"),
+  ]), days: 2 } }, ".state");
 });

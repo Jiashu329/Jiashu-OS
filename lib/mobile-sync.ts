@@ -9,7 +9,8 @@ import {
 } from "./health.ts";
 import type { HealthSyncPayload, ValidationIssue } from "./health.ts";
 
-export const MAX_SLEEP_SEGMENTS = 300;
+export const MAX_SLEEP_SEGMENTS = 3000;
+export const MAX_SLEEP_DAYS = 30;
 
 /** Apple Health sleep enum: 0 in bed, 1 asleep, 2 awake, 3 core, 4 deep, 5 REM. */
 export type AppleSleepState = 0 | 1 | 2 | 3 | 4 | 5;
@@ -66,7 +67,7 @@ function shanghaiNoon(day: string): number {
 /**
  * Optional mobile adapter. The sender must filter sleep samples to one selected
  * source. We count only asleep states and union intervals; in-bed/awake samples
- * never become sleep hours. This is a fixed reporting window, not an assertion
+ * never become sleep hours. Each day uses a fixed reporting window, not an assertion
  * that the result equals every roll-up shown in Apple's Health app.
  */
 export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
@@ -86,10 +87,14 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
   if (!object(sleepReport)) return fail("sleepReport", "Expected an object");
   const issues: ValidationIssue[] = [];
   const add = (path: string, message: string) => { if (issues.length < 20) issues.push({ path, message }); };
-  const reportKeys = new Set(["day", "source", "segments"]);
+  const reportKeys = new Set(["day", "days", "source", "segments"]);
   for (const key of Object.keys(sleepReport)) if (!reportKeys.has(key)) add(`sleepReport.${key}`, "Unknown field");
   if (typeof sleepReport.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(sleepReport.day) || sleepReport.day.trim() !== sleepReport.day) {
     add("sleepReport.day", "Expected a YYYY-MM-DD calendar date");
+  }
+  const days = Object.hasOwn(sleepReport, "days") ? sleepReport.days : 1;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > MAX_SLEEP_DAYS) {
+    add("sleepReport.days", `Expected an integer from 1 to ${MAX_SLEEP_DAYS}`);
   }
   if (typeof sleepReport.source !== "string" || sleepReport.source.trim() !== sleepReport.source || sleepReport.source.length < 1
     || sleepReport.source.length > 120 || /[\u0000-\u001f\u007f]/.test(sleepReport.source)) add("sleepReport.source", "Expected one selected source identifier of 1–120 characters");
@@ -97,15 +102,25 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
   else if (sleepReport.segments.length > MAX_SLEEP_SEGMENTS) add("sleepReport.segments", `At most ${MAX_SLEEP_SEGMENTS} segments are allowed`);
   if (issues.length) throw new HealthValidationError(issues);
 
-  const day = sleepReport.day as string;
-  const windowNoon = shanghaiNoon(day);
-  const previousDay = new Date(Date.parse(`${day}T12:00:00Z`) - 86400000).toISOString().slice(0, 10);
-  const windowStart = shanghaiNoon(previousDay);
-  const windowEnd = Math.min(windowNoon, Date.parse(standard.exportedAt));
-  if (windowEnd <= windowStart || shanghaiDay(new Date(windowEnd).toISOString()) !== day) {
-    return fail("sleepReport.day", "The reporting window must end on its stated day and not after exportedAt");
-  }
-  if (standard.measurements.some((measurement) => measurement.metric === "sleep" && measurementDay(measurement) === day)) {
+  const finalDay = sleepReport.day as string;
+  // Validate before calendar arithmetic so dates such as February 30 cannot
+  // normalize silently. Step calendar dates in UTC, then resolve each local
+  // noon independently: Shanghai's historical DST windows are not all 24 hours.
+  shanghaiNoon(finalDay);
+  const finalCalendarDay = Date.parse(`${finalDay}T12:00:00Z`);
+  const calendarDay = (offset: number) => new Date(finalCalendarDay + offset * 86400000).toISOString().slice(0, 10);
+  const windows = Array.from({ length: days as number }, (_, index) => {
+    const offset = index - (days as number) + 1;
+    const day = calendarDay(offset);
+    const start = shanghaiNoon(calendarDay(offset - 1));
+    const end = Math.min(shanghaiNoon(day), Date.parse(standard.exportedAt));
+    if (end <= start || shanghaiDay(new Date(end).toISOString()) !== day) {
+      return fail("sleepReport.day", "The reporting window must end on its stated day and not after exportedAt");
+    }
+    return { day, start, end };
+  });
+  const reportingDays = new Set(windows.map((window) => window.day));
+  if (standard.measurements.some((measurement) => measurement.metric === "sleep" && reportingDays.has(measurementDay(measurement)))) {
     return fail("sleepReport", "Do not send both sleepReport and a sleep measurement for the same day");
   }
 
@@ -125,30 +140,36 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
     if (!end) add(`${path}.endDate`, "Expected a valid ISO timestamp with a timezone");
     if (start && end && Date.parse(end) <= Date.parse(start)) add(`${path}.endDate`, "End must be after start");
     if (issues.length !== before || parsedState === 0 || parsedState === 2) continue;
-    const clippedStart = Math.max(Date.parse(start!), windowStart);
-    const clippedEnd = Math.min(Date.parse(end!), windowEnd);
-    if (clippedEnd > clippedStart) intervals.push([clippedStart, clippedEnd]);
+    intervals.push([Date.parse(start!), Date.parse(end!)]);
   }
   if (issues.length) throw new HealthValidationError(issues);
   if (intervals.length === 0) return standard;
 
   intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
-  let [currentStart, currentEnd] = intervals[0];
-  let totalMilliseconds = 0;
-  for (const [start, end] of intervals.slice(1)) {
-    if (start <= currentEnd) currentEnd = Math.max(currentEnd, end);
-    else { totalMilliseconds += currentEnd - currentStart; currentStart = start; currentEnd = end; }
-  }
-  totalMilliseconds += currentEnd - currentStart;
+  const sleepMeasurements = windows.flatMap((window) => {
+    const clipped = intervals.map(([start, end]): [number, number] => [Math.max(start, window.start), Math.min(end, window.end)])
+      .filter(([start, end]) => end > start);
+    // Missing dates and awake/in-bed-only dates stay absent rather than
+    // overwriting saved sleep with a fabricated zero-hour record.
+    if (clipped.length === 0) return [];
+    let [currentStart, currentEnd] = clipped[0];
+    let totalMilliseconds = 0;
+    for (const [start, end] of clipped.slice(1)) {
+      if (start <= currentEnd) currentEnd = Math.max(currentEnd, end);
+      else { totalMilliseconds += currentEnd - currentStart; currentStart = start; currentEnd = end; }
+    }
+    totalMilliseconds += currentEnd - currentStart;
+    return [{
+      id: `sleep-report:${window.day}`, metric: "sleep", value: totalMilliseconds / 3600000,
+      unit: "hours", aggregation: "daily", source: sleepReport.source,
+      startDate: new Date(window.start).toISOString(), endDate: new Date(window.end).toISOString(),
+    }];
+  });
 
   // Run the completed result through the original contract, retaining all of
   // its ID, range, date, source, and maximum-record-count protections.
   return parseSyncPayload({
     ...standard,
-    measurements: [...standard.measurements, {
-      id: `sleep-report:${day}`, metric: "sleep", value: totalMilliseconds / 3600000,
-      unit: "hours", aggregation: "daily", source: sleepReport.source,
-      startDate: new Date(windowStart).toISOString(), endDate: new Date(windowEnd).toISOString(),
-    }],
+    measurements: [...standard.measurements, ...sleepMeasurements],
   });
 }

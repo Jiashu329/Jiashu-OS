@@ -48,15 +48,29 @@ export async function POST(request: Request) {
     const payload = parseMobileSyncPayload(body);
     const parsedBody = JSON.parse(body);
     const requestedSleep = Object.hasOwn(parsedBody, 'sleepReport');
-    const sleepReportDay = requestedSleep ? parsedBody.sleepReport.day : null;
+    let sleepDays = 0;
+    if (requestedSleep) {
+      // The adapter validates this calendar range before the repository sees
+      // any data. Count only generated days in this report, not unrelated
+      // sleep measurements that may accompany it in a general health upload.
+      const lastDay = parsedBody.sleepReport.day;
+      const firstDay = new Date(Date.parse(lastDay + 'T12:00:00Z')
+        - ((parsedBody.sleepReport.days ?? 1) - 1) * 86400000).toISOString().slice(0, 10);
+      const recordedDays = new Set(payload.measurements.filter((record) => {
+        if (record.metric !== 'sleep') return false;
+        const day = measurementDay(record);
+        return day >= firstDay && day <= lastDay;
+      }).map(measurementDay));
+      sleepDays = recordedDays.size;
+    }
     if (Date.parse(payload.exportedAt) > Date.now() + 5 * 60000) {
       return json({ error: '导出时间晚于当前时间，请检查 iPhone 的日期与时区。' }, 400);
     }
     const result = await importHealth(user.userId, payload, deviceId);
-    if (requestedSleep && !payload.measurements.some((record) => record.metric === 'sleep' && measurementDay(record) === sleepReportDay)) {
-      return json({ ...result, sleepStatus: 'no-asleep-data', message: '已接收记录，但本次睡眠窗口没有可计入的入睡片段。卧床与清醒不会计作睡眠，睡眠时长仍保留为空。' });
+    if (requestedSleep && sleepDays === 0) {
+      return json({ ...result, sleepStatus: 'no-asleep-data', sleepDays, message: '已接收记录，但本次日期范围没有可计入的入睡片段。卧床与清醒不会计作睡眠；缺失日期不补零，网站已有睡眠记录会保留。' });
     }
-    return json({ ...result, ...(requestedSleep ? { sleepStatus: 'recorded' } : {}) });
+    return json({ ...result, ...(requestedSleep ? { sleepStatus: 'recorded', sleepDays } : {}) });
   } catch (error) {
     if (error instanceof SyncDeviceInvalidError) return json({ error: '同步设备密钥无效或已撤销，请重新连接设备。', code: 'SYNC_DEVICE_INVALID' }, 403);
     if (error instanceof RangeError) return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413);
