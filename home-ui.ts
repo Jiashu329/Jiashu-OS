@@ -1,5 +1,6 @@
 import { APP_BRAND_HEAD } from './lib/branding.ts';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from './lib/app-sidebar.ts';
+import { HEALTH_GOALS_CSS, renderHealthGoals } from './lib/health-goals-ui.ts';
 
 export function renderHomeApp(): string {
   return String.raw`<!doctype html>
@@ -21,6 +22,7 @@ export function renderHomeApp(): string {
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 
 ${APP_SIDEBAR_CSS}
+${HEALTH_GOALS_CSS}
 </style></head><body>
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><defs>
 <symbol id="h-sync" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></symbol>
@@ -30,6 +32,7 @@ ${APP_SIDEBAR_CSS}
 <div class="app">${renderAppSidebar('home')}<main class="main">
 <header class="heading"><div><h1>总览</h1><time id="today-date"></time></div><div class="heading-actions"><span class="updated" id="updated-at"></span><button class="btn" id="refresh" type="button"><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><use href="#h-sync"/></svg><span id="refresh-label">刷新</span></button></div></header>
 <div class="status" id="page-status" role="status" aria-live="polite"><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><use href="#h-info"/></svg><div class="status-copy"><strong id="status-title">加载中</strong><span class="status-detail" id="status-detail">正在读取健康和账本数据。</span></div><a id="sign-in-link" href="/signin-with-chatgpt?return_to=%2F" hidden>重新登录</a></div>
+${renderHealthGoals('home')}
 <div id="overview-content" aria-busy="true">
 <section class="focus" id="focus-section" aria-labelledby="focus-title" hidden><div class="focus-head"><h2 id="focus-title">待处理</h2></div><div class="priority-grid" id="priorities"></div></section>
 <section aria-labelledby="health-title"><div class="section-head"><div><h2 id="health-title">健康</h2><p>最新记录与近 7 天趋势</p></div><a class="text-link" href="/health">查看趋势<svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><use href="#h-arrow"/></svg></a></div><div class="health-grid" id="health-metrics"></div></section>
@@ -62,6 +65,7 @@ function renderData(data){const health=data.health;renderHealth(health,data.toda
 function renderUnavailable(){renderHealth(null,'');renderLedger(null,'personal');renderLedger(null,'family');renderPriorities([]);$('overview-content').hidden=true;$('sync-title').textContent='同步状态暂不可用';$('sync-detail').textContent='请刷新后重试。';$('updated-at').textContent='尚未读取成功';}
 async function loadOverview(){if(state.loading)return;const sequence=++state.sequence;state.controller?.abort();const controller=new AbortController();state.controller=controller;state.loading=true;$('refresh').disabled=true;$('refresh-label').textContent='加载中';$('overview-content').setAttribute('aria-busy','true');setStatus('加载中','正在读取健康和账本数据。');try{const response=await fetch('/api/overview',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'},signal:controller.signal});if(!response.ok){const error=new Error(response.status===401?'登录已过期，请重新登录后查看。':'请稍后点击刷新重试。');error.status=response.status;throw error;}const data=await response.json();if(sequence!==state.sequence)return;if(!data||typeof data!=='object'||!data.health||!data.finance||!validDay(data.today))throw new Error('返回的数据暂时无法读取，请刷新重试。');state.data=data;state.lastLoaded=Date.now();renderData(data);}catch(error){if(sequence!==state.sequence||error?.name==='AbortError')return;state.data=null;renderUnavailable();setStatus('加载失败',error?.message||'请稍后点击刷新重试。',true,error?.status===401);}finally{if(sequence===state.sequence){state.loading=false;state.controller=null;$('refresh').disabled=false;$('refresh-label').textContent='刷新';$('overview-content').setAttribute('aria-busy','false');}}}
 $('refresh').addEventListener('click',loadOverview);
+$('refresh').addEventListener('click',()=>window.dispatchEvent(new Event('health-goals-refresh')));
 window.addEventListener('pageshow',(event)=>{if(event.persisted&&!document.documentElement.hasAttribute('data-sync-handoff'))loadOverview();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&Date.now()-state.lastLoaded>30000&&!document.documentElement.hasAttribute('data-sync-handoff'))loadOverview();});
 $('today-date').textContent=dayFormatter.format(new Date());$('today-date').dateTime=new Date().toISOString();

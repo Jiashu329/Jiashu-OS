@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const healthMeasurements = sqliteTable('health_measurements', {
   userId: text('user_id').notNull(),
@@ -35,6 +35,14 @@ export const syncDevices = sqliteTable('sync_devices', {
 }, (table) => [
   index('sync_devices_user_revoked_idx').on(table.userId, table.revokedAt),
 ]);
+
+export const healthGoalSettings = sqliteTable('health_goal_settings', {
+  userId: text('user_id').primaryKey(),
+  stepsTarget: integer('steps_target'),
+  sleepTarget: real('sleep_target'),
+  activeEnergyTarget: real('active_energy_target'),
+  updatedAt: text('updated_at').notNull(),
+});
 
 export const financeAccounts = sqliteTable('finance_accounts', {
   id: text('id').primaryKey(),
