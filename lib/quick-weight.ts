@@ -40,7 +40,11 @@ export function buildQuickWeightPayload(fields: {
   }
 
   function timestamp(raw: string | null, label: string) {
-    if (typeof raw !== 'string') throw new Error('没有收到' + label + '，请使用包含时间的 ISO 8601 日期。');
+    if (typeof raw !== 'string') {
+      if (label === '本次同步时间') throw new Error('同步地址中没有收到 at= 本次同步时间。若已添加日期变量，请检查地址是否被空格或换行截断，以及最后的 &at= 是否正确拼接；可按同步引导先清理最终地址中的空白，再打开 URL。');
+      throw new Error('没有收到' + label + '，请使用包含时间的 ISO 8601 日期。');
+    }
+    if (label === '本次同步时间' && !raw.trim()) throw new Error('同步地址已有 at=，但本次同步时间是空的。请把“本次同步时间编码”的蓝色变量放在 &at= 后面，再运行快捷指令。');
     // URLSearchParams converts a literal + to a space. Restore only the
     // unambiguous trailing timezone, never arbitrary whitespace in the date.
     const value = raw.trim().replace(/ (\d{2}:\d{2})$/, '+$1');
