@@ -120,7 +120,7 @@ test('any stale balance triggers a reminder, with exact 30-day boundary and inde
   assert.ok(unavailable.priorities.every((item) => item.tone === 'attention'));
 });
 
-test('all-current data produces a review action, with no diagnosis, goal or status score', () => {
+test('all-current data needs no filler priority or status score', () => {
   const output = buildHomeOverview(sources({
     health: health([
       dayMetric('steps', '2026-11-08', 5000), dayMetric('active_energy', '2026-11-08', 300),
@@ -128,9 +128,7 @@ test('all-current data produces a review action, with no diagnosis, goal or stat
       { id: 'weight', metric: 'weight', value: 70, unit: 'kg', startDate: '2026-11-08T08:00:00+08:00' },
     ]), personal: { accounts: [account('personal')] }, family: { accounts: [account('family')] },
   }), NOW);
-  assert.equal(output.priorities.length, 1);
-  assert.equal(output.priorities[0].id, 'review-trends');
-  assert.equal(output.priorities[0].tone, 'neutral');
+  assert.deepEqual(output.priorities, []);
   assert.equal(output.asOf, NOW.replace('Z', '.000Z'));
 });
 

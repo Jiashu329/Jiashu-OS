@@ -117,24 +117,24 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
   const priorities: HomePriority[] = [];
   if (health.status === 'unavailable') priorities.push({
     id: 'health-unavailable', tone: 'attention', title: '重新读取健康数据',
-    detail: '健康记录暂时无法读取，恢复后再判断近期状态。', href: '/health', actionLabel: '查看健康模块',
+    detail: '健康记录读取失败，请重试。', href: '/health', actionLabel: '查看健康',
   });
   const unavailableLedgers = (['personal', 'family'] as const).filter((ledger) => finance[ledger].status === 'unavailable');
   if (unavailableLedgers.length) priorities.push({
     id: 'finance-unavailable', tone: 'attention', title: '重新读取财务账本',
-    detail: unavailableLedgers.map((ledger) => ledger === 'personal' ? '个人账本' : '家庭账本').join('、') + '暂时无法读取，已保存的记录不会因此变成零。',
+    detail: unavailableLedgers.map((ledger) => ledger === 'personal' ? '个人账本' : '家庭账本').join('、') + '读取失败，请重试。',
     href: '/finance?ledger=' + unavailableLedgers[0], actionLabel: '查看账本',
   });
   const dailyMetrics = health.metrics.filter((metric) => ['steps', 'sleep', 'active_energy'].includes(metric.metric));
   const stale = dailyMetrics.filter((metric) => metric.freshness === 'stale');
   if (health.status === 'ready' && stale.length) priorities.push({
     id: 'health-stale', tone: 'attention', title: '更新最近的健康记录',
-    detail: stale.map((metric) => metric.label).join('、') + '的最新记录早于昨天。运行已配置的快捷指令，再查看近期变化。',
+    detail: stale.map((metric) => metric.label).join('、') + '的最新记录早于昨天。运行对应快捷指令更新。',
     href: '/sync', actionLabel: '查看数据同步',
   });
   if (health.status === 'ready' && dailyMetrics.every((metric) => metric.freshness === 'missing')) priorities.push({
     id: 'health-setup', tone: 'setup', title: '接入第一项日常健康数据',
-    detail: '近90天还没有步数、睡眠或活动能量记录，可以从已有的步数开始。',
+    detail: '近90天暂无步数、睡眠或活动能量记录。',
     href: '/sync', actionLabel: '接入健康数据',
   });
   for (const ledger of ['personal', 'family'] as const) {
@@ -148,20 +148,15 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     });
     else if (!book.accountCount) priorities.push({
       id: ledger + '-setup', tone: 'setup', title: '建立' + label,
-      detail: '添加一个账户和当前余额，让' + (ledger === 'personal' ? '个人' : '家庭') + '资产与负债有独立的视图。',
+      detail: '暂无账户，添加账户和当前余额。',
       href: '/finance?ledger=' + ledger, actionLabel: '添加首个账户',
     });
   }
   const weight = health.metrics.find((metric) => metric.metric === 'weight')!;
   if (health.status === 'ready' && weight.freshness !== 'current') priorities.push({
-    id: 'weight-record', tone: 'setup', title: '留下一次近期体重记录',
-    detail: weight.day ? '最近一次体重记录为' + weight.day + '；运行体重与去脂体重快捷指令更新记录后，再观察趋势。' : '近90天暂无体重记录。可在同一份指引中同步体重与去脂体重，保留原始测量日期。',
+    id: 'weight-record', tone: 'setup', title: '更新体重记录',
+    detail: weight.day ? '最近记录：' + weight.day + '。运行体重同步快捷指令更新。' : '近90天暂无体重记录，可同步苹果健康中的测量数据。',
     href: '/connect-weight', actionLabel: '接入体重与去脂体重',
-  });
-  if (!priorities.length) priorities.push({
-    id: 'review-trends', tone: 'neutral', title: '回顾最近一周的记录',
-    detail: '查看已保存的近期记录，结合趋势和自己的感受安排下一步。',
-    href: '/health', actionLabel: '查看健康趋势',
   });
   const toneOrder = { attention: 0, setup: 1, neutral: 2 } as const;
   priorities.sort((left, right) => toneOrder[left.tone] - toneOrder[right.tone]);
