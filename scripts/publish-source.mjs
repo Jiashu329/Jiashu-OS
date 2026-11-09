@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, cpSync, rmSync } from 'node:fs';
 import readline from 'node:readline/promises';
 
 // Repository credentials are accepted on hidden stdin and used only in child
@@ -57,5 +57,10 @@ run('git', ['push', remote.href, `HEAD:refs/heads/${branch}`], childEnv);
 const remoteHead = run('git', ['ls-remote', remote.href, `refs/heads/${branch}`], childEnv).split(/\s/)[0];
 if (remoteHead !== commit_sha) throw new Error('Pushed source verification failed');
 mkdirSync(archive_path.slice(0, archive_path.lastIndexOf('/')), { recursive: true });
-run('tar', ['-czf', archive_path, '-C', 'dist', '.']);
+const stage = `${process.cwd()}/outputs/.deployment-stage`;
+rmSync(stage, { recursive: true, force: true });
+mkdirSync(stage, { recursive: true });
+cpSync('dist', `${stage}/dist`, { recursive: true });
+cpSync('dist/.openai', `${stage}/.openai`, { recursive: true });
+run('tar', ['-czf', archive_path, '-C', stage, '.']);
 process.stdout.write(JSON.stringify({ project_id, commit_sha, archive: archive_path }) + '\n');
