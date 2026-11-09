@@ -73,10 +73,29 @@ test("Apple enum states and common Chinese/English labels are recognized precise
   for (const state of [1, 3, 4, 5, "1", "asleep", "Asleep (Core)", "Asleep (Deep)", "Asleep (REM)", "已入睡", "核心睡眠", "深度睡眠", "快速眼动睡眠", "已入睡（核心）", "睡眠（深度）", "已入睡（REM）"]) {
     assert.equal(parseMobileSyncPayload(upload([segment(state)])).measurements[0].value, 8, String(state));
   }
-  for (const state of [0, 2, "in_bed", "In Bed", "awake", "卧床时间", "清醒"]) {
+  for (const state of [0, 2, "in_bed", "In Bed", "awake", "卧床时间", "清醒", "清醒时间"]) {
     assert.deepEqual(parseMobileSyncPayload(upload([segment(state)])).measurements, [], String(state));
   }
   for (const state of [-1, 6, 1.5, NaN, null, true, "", "not asleep", "unknown", "asleep\n"]) invalid(upload([segment(state)]), ".state");
+});
+
+test("iPhone display labels preserve sleep stages and exclude awake time across a 30-day import", () => {
+  const input = { ...base(), sleepReport: { ...report([
+    segment("核心睡眠", "2026-10-11T23:00:00+08:00", "2026-10-12T00:00:00+08:00"),
+    segment("清醒时间", "2026-10-12T00:00:00+08:00", "2026-10-12T00:15:00+08:00"),
+    segment("深度睡眠", "2026-10-12T00:15:00+08:00", "2026-10-12T01:15:00+08:00"),
+    segment("快速动眼睡眠", "2026-10-12T01:15:00+08:00", "2026-10-12T02:15:00+08:00"),
+    segment("清醒时间", "2026-10-13T03:00:00+08:00", "2026-10-13T04:00:00+08:00"),
+  ]), days: 30 } };
+  const before = structuredClone(input);
+  const parsed = parseMobileSyncPayload(input);
+  assert.deepEqual(parsed.measurements.map((record) => [measurementDay(record), record.value]), [["2026-10-12", 3]]);
+  assert.deepEqual(input, before);
+  assert.deepEqual(parseMobileSyncPayload({ ...base(), sleepReport: { ...report([
+    segment("清醒时间", "2026-10-12T00:00:00+08:00", "2026-10-12T00:15:00+08:00"),
+  ]), days: 30 } }).measurements, []);
+  // Recognize Apple's exact label without accepting arbitrary suffixes.
+  invalid(upload([segment("未知时间")]), ".state");
 });
 
 test("sleep source, object shape, and segment fields are strict", () => {

@@ -19,7 +19,7 @@ const stateAliases: Readonly<Record<string, AppleSleepState>> = {
   "0": 0, in_bed: 0, "in bed": 0, inbed: 0, 卧床: 0, 卧床时间: 0, 卧床中: 0, 在床上: 0,
   "1": 1, asleep: 1, "asleep unspecified": 1, "asleep (unspecified)": 1, asleepunspecified: 1,
   睡眠: 1, 已入睡: 1, 入睡: 1, 睡着: 1, "睡眠(未指定)": 1, "已入睡(未指定)": 1, "睡眠(未分类)": 1,
-  "2": 2, awake: 2, 清醒: 2, 醒着: 2, 已醒: 2,
+  "2": 2, awake: 2, 清醒: 2, 清醒时间: 2, 醒着: 2, 已醒: 2,
   "3": 3, core: 3, "asleep core": 3, "asleep (core)": 3, asleepcore: 3,
   核心: 3, 核心睡眠: 3, "已入睡(核心)": 3, "睡眠(核心)": 3,
   "4": 4, deep: 4, "asleep deep": 4, "asleep (deep)": 4, asleepdeep: 4,

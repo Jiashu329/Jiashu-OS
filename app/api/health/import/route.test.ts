@@ -19,6 +19,7 @@ interface ImportResult {
   message?: string;
 }
 interface ImportError {
+  error: string;
   code: string;
   issues: Array<{ path: string; message: string }>;
 }
@@ -162,7 +163,44 @@ test('invalid sleep range types and bounds fail before writing to the repository
     assert.equal(response.status, 400, String(days));
     const result = await readError(response);
     assert.equal(result.code, 'INVALID_HEALTH_SYNC');
+    assert.equal(result.error, '同步数据格式不正确，请检查数据类型、单位、日期和每日汇总设置。');
     assert.ok(result.issues.some((issue) => issue.path === 'sleepReport.days'));
   }
   assert.deepEqual(f.writes, []);
+});
+
+test('an unknown sleep state identifies its one-based segment without echoing health values', async () => {
+  const f = fixture();
+  const unknown = { ...segment('2026-11-09'), state: 'synthetic-unknown-state' };
+  const response = await f.post(upload([segment('2026-11-08'), unknown], 30));
+  assert.equal(response.status, 400);
+  const result = await readError(response);
+  assert.equal(result.code, 'INVALID_HEALTH_SYNC');
+  assert.match(result.error, /第 2 段的睡眠状态无法识别/);
+  assert.match(result.error, /原健康样本的 0–5 状态编号或支持的状态名称/);
+  assert.equal(result.issues[0].path, 'sleepReport.segments[1].state');
+  assert.equal(result.error.includes(unknown.state), false);
+  assert.equal(result.error.includes(unknown.startDate), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('a 30-day iPhone upload accepts Chinese sleep labels and excludes awake time', async () => {
+  const f = fixture();
+  const payload = upload([
+    { state: '核心睡眠', startDate: '2026-10-12T00:00:00+08:00', endDate: '2026-10-12T01:00:00+08:00' },
+    { state: '清醒时间', startDate: '2026-10-12T01:00:00+08:00', endDate: '2026-10-12T01:30:00+08:00' },
+    { state: '深度睡眠', startDate: '2026-10-12T01:30:00+08:00', endDate: '2026-10-12T02:00:00+08:00' },
+    { state: '快速动眼睡眠', startDate: '2026-10-12T02:00:00+08:00', endDate: '2026-10-12T03:00:00+08:00' },
+    { state: '核心睡眠', startDate: '2026-10-20T00:00:00+08:00', endDate: '2026-10-20T01:00:00+08:00' },
+  ], 30);
+  payload.sleepReport.source = 'iPhone';
+  const response = await f.post(payload);
+  assert.equal(response.status, 200);
+  const result = await readImport(response);
+  assert.equal(result.sleepStatus, 'recorded');
+  assert.equal(result.sleepDays, 2);
+  assert.equal(result.imported, 2);
+  assert.deepEqual(f.writes[0].measurements.map((record) => [measurementDay(record), record.value, record.source]), [
+    ['2026-10-12', 2.5, 'iPhone'], ['2026-10-20', 1, 'iPhone'],
+  ]);
 });

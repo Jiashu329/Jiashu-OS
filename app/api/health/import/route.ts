@@ -75,7 +75,11 @@ export async function POST(request: Request) {
     if (error instanceof SyncDeviceInvalidError) return json({ error: '同步设备密钥无效或已撤销，请重新连接设备。', code: 'SYNC_DEVICE_INVALID' }, 403);
     if (error instanceof RangeError) return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413);
     if (error instanceof HealthValidationError) {
-      return json({ error: '同步数据格式不正确，请检查数据类型、单位、日期和每日汇总设置。', code: error.code, issues: error.issues }, 400);
+      const stateIssue = error.issues[0]?.path.match(/^sleepReport\.segments\[(\d+)\]\.state$/);
+      const message = stateIssue
+        ? '第 ' + (Number(stateIssue[1]) + 1) + ' 段的睡眠状态无法识别。请使用原健康样本的 0–5 状态编号或支持的状态名称。'
+        : '同步数据格式不正确，请检查数据类型、单位、日期和每日汇总设置。';
+      return json({ error: message, code: error.code, issues: error.issues }, 400);
     }
     return unavailable();
   }
