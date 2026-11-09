@@ -1,0 +1,13 @@
+{
+  "id": "/",
+  "name": "Jiashu OS · 健康",
+  "short_name": "Jiashu OS",
+  "description": "看清身体状态与健康数据的变化。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f5ef",
+  "theme_color": "#193e34",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
