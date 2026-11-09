@@ -83,3 +83,14 @@ export const financeGoalPlans = sqliteTable('finance_goal_plans', {
   updatedAt: text('updated_at').notNull(),
   archivedAt: text('archived_at'),
 }, (table) => [index('finance_goal_plans_owner_ledger_idx').on(table.userId, table.ledger)]);
+
+export const financeRunwaySettings = sqliteTable('finance_runway_settings', {
+  userId: text('user_id').notNull(),
+  ledger: text('ledger').notNull(),
+  currency: text('currency').notNull(),
+  monthlyExpenseMinor: text('monthly_expense_minor').notNull(),
+  targetMonths: integer('target_months').notNull(),
+  accountIdsJson: text('account_ids_json').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.ledger, table.currency] })]);
