@@ -94,3 +94,35 @@ export const financeRunwaySettings = sqliteTable('finance_runway_settings', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [primaryKey({ columns: [table.userId, table.ledger, table.currency] })]);
+
+export const healthRecordOverrides = sqliteTable('health_record_overrides', {
+  userId: text('user_id').notNull(),
+  recordKey: text('record_key').notNull(),
+  metric: text('metric').notNull(),
+  day: text('day').notNull(),
+  overrideJson: text('override_json'),
+  deleted: integer('deleted').notNull(),
+  revision: integer('revision').notNull(),
+  lastChangeId: text('last_change_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.recordKey] }),
+  index('health_record_overrides_owner_day_idx').on(table.userId, table.day),
+]);
+
+export const healthRecordChanges = sqliteTable('health_record_changes', {
+  userId: text('user_id').notNull(),
+  changeId: text('change_id').notNull(),
+  recordKey: text('record_key').notNull(),
+  requestHash: text('request_hash').notNull(),
+  action: text('action').notNull(),
+  targetRevision: integer('target_revision').notNull(),
+  beforeStateJson: text('before_state_json'),
+  afterStateJson: text('after_state_json').notNull(),
+  reason: text('reason').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.changeId] }),
+  index('health_record_changes_owner_record_idx').on(table.userId, table.recordKey, table.createdAt),
+]);

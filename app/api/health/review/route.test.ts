@@ -8,6 +8,7 @@ import type { GoalTargets } from '../../../../lib/health-goals.ts';
 import { buildHealthSummary, measurementDay, measurementKey, type HealthMeasurement } from '../../../../lib/health.ts';
 import { buildBodyComposition } from '../../../../lib/body-composition.ts';
 import * as weekly from '../../../../lib/health-weekly.ts';
+import * as recordsStore from '../../../../db/health-records-store.ts';
 
 const NOW = new Date('2026-11-12T08:00:00.000Z');
 const ORIGIN = 'https://synthetic-weekly.example';
@@ -24,7 +25,7 @@ function loadExports(path: URL, bindings: Record<string, unknown>, names: string
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   const migrations = new URL('../../../../drizzle/', import.meta.url);
-  for (const name of readdirSync(migrations).filter((name) => /^000[04]_.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(name, migrations), 'utf8'));
+  for (const name of readdirSync(migrations).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(name, migrations), 'utf8'));
   t.after(() => sqlite.close());
   const queries: string[] = [];
   const db = {
@@ -45,7 +46,7 @@ function fixture(t: TestContext) {
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => userId ? { userId } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable']);
-  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
+  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, ...repository, ...weekly, env, readGoalSettings,
     parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, NOW),

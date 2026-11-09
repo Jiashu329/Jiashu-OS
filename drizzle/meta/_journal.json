@@ -50,6 +50,13 @@
       "when": 1794234211616,
       "tag": "0006_natural_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794234716958,
+      "tag": "0007_superb_caretaker",
+      "breakpoints": true
     }
   ]
 }
