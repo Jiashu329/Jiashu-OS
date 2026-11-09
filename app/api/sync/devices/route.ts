@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     }
     const deviceToken = createSyncToken();
     const deviceId = await createSyncDevice(user.userId, label.trim(), await hashSyncToken(deviceToken));
-    if (!deviceId) return json({ error: '最多连接 3 个设备，请先撤销不再使用的设备。', code: 'SYNC_DEVICE_LIMIT' }, 409);
+    if (!deviceId) return json({ error: '暂时未能生成同步地址，请稍后重试。', code: 'SYNC_CONNECTION_NOT_CREATED' }, 503);
     // This is the only response that contains the plaintext app-scoped token.
     return json({ deviceId, deviceToken }, 201);
   } catch (error) {

@@ -1,5 +1,12 @@
 import { env } from 'cloudflare:workers';
 import {
+  createSyncConnection,
+  findSyncConnection,
+  listSyncConnections,
+  revokeSyncConnection,
+  type SyncDeviceMetadata,
+} from './sync-connections';
+import {
   buildHealthSummary,
   measurementDay,
   measurementKey,
@@ -88,48 +95,22 @@ export async function importHealth(userId: string, payload: HealthSyncPayload, d
   return { ok: true, imported, skipped: payload.measurements.length - imported, lastSync: receivedAt };
 }
 
-export interface SyncDeviceMetadata {
-  deviceId: string;
-  label: string;
-  createdAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-}
+export type { SyncDeviceMetadata } from './sync-connections';
 
 export async function listSyncDevices(userId: string): Promise<SyncDeviceMetadata[]> {
-  const result = await database().prepare(`
-    SELECT id AS deviceId, label, created_at AS createdAt,
-      last_used_at AS lastUsedAt, revoked_at AS revokedAt
-    FROM sync_devices WHERE user_id = ?
-    ORDER BY (revoked_at IS NULL) DESC, created_at DESC LIMIT 25
-  `).bind(userId).all<SyncDeviceMetadata>();
-  return result.results;
+  return listSyncConnections(database(), userId);
 }
 
 export async function createSyncDevice(userId: string, label: string, tokenHash: string): Promise<string | null> {
-  const deviceId = crypto.randomUUID();
-  const result = await database().prepare(`
-    INSERT INTO sync_devices (id, user_id, label, token_hash, created_at)
-    SELECT ?, ?, ?, ?, ? WHERE (
-      SELECT COUNT(*) FROM sync_devices WHERE user_id = ? AND revoked_at IS NULL
-    ) < 3
-  `).bind(deviceId, userId, label, tokenHash, new Date().toISOString(), userId).run();
-  return result.meta.changes === 1 ? deviceId : null;
+  return createSyncConnection(database(), userId, label, tokenHash);
 }
 
 export async function findSyncDevice(userId: string, tokenHash: string): Promise<string | null> {
-  const row = await database().prepare(`
-    SELECT id FROM sync_devices WHERE user_id = ? AND token_hash = ? AND revoked_at IS NULL LIMIT 1
-  `).bind(userId, tokenHash).first<{ id: string }>();
-  return row?.id ?? null;
+  return findSyncConnection(database(), userId, tokenHash);
 }
 
 export async function revokeSyncDevice(userId: string, deviceId: string): Promise<boolean> {
-  const result = await database().prepare(`
-    UPDATE sync_devices SET revoked_at = COALESCE(revoked_at, ?)
-    WHERE id = ? AND user_id = ?
-  `).bind(new Date().toISOString(), deviceId, userId).run();
-  return result.meta.changes === 1;
+  return revokeSyncConnection(database(), userId, deviceId);
 }
 
 export async function exportHealth(userId: string): Promise<HealthSyncPayload> {
