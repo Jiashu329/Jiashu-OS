@@ -1,5 +1,5 @@
 import { findSyncDevice, importHealth, SyncDeviceInvalidError } from '../../../../db/health-repository';
-import { HealthValidationError, MAX_SYNC_BYTES } from '../../../../lib/health';
+import { HealthValidationError, MAX_SYNC_BYTES, measurementDay } from '../../../../lib/health';
 import { parseMobileSyncPayload } from '../../../../lib/mobile-sync';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated, unavailable } from '../../_shared';
 import { hashSyncToken, isSyncToken } from '../../sync/devices/tokens';
@@ -44,11 +44,19 @@ export async function POST(request: Request) {
       deviceId = await findSyncDevice(user.userId, await hashSyncToken(token));
       if (!deviceId) throw new SyncDeviceInvalidError();
     }
-    const payload = parseMobileSyncPayload(await limitedBody(request));
+    const body = await limitedBody(request);
+    const payload = parseMobileSyncPayload(body);
+    const parsedBody = JSON.parse(body);
+    const requestedSleep = Object.hasOwn(parsedBody, 'sleepReport');
+    const sleepReportDay = requestedSleep ? parsedBody.sleepReport.day : null;
     if (Date.parse(payload.exportedAt) > Date.now() + 5 * 60000) {
       return json({ error: '导出时间晚于当前时间，请检查 iPhone 的日期与时区。' }, 400);
     }
-    return json(await importHealth(user.userId, payload, deviceId));
+    const result = await importHealth(user.userId, payload, deviceId);
+    if (requestedSleep && !payload.measurements.some((record) => record.metric === 'sleep' && measurementDay(record) === sleepReportDay)) {
+      return json({ ...result, sleepStatus: 'no-asleep-data', message: '已接收记录，但本次睡眠窗口没有可计入的入睡片段。卧床与清醒不会计作睡眠，睡眠时长仍保留为空。' });
+    }
+    return json({ ...result, ...(requestedSleep ? { sleepStatus: 'recorded' } : {}) });
   } catch (error) {
     if (error instanceof SyncDeviceInvalidError) return json({ error: '同步设备密钥无效或已撤销，请重新连接设备。', code: 'SYNC_DEVICE_INVALID' }, 403);
     if (error instanceof RangeError) return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413);
