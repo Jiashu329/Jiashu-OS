@@ -4,17 +4,22 @@ type AppPage = 'home' | 'health' | 'finance' | 'sync';
 
 // Keep the shell and its breakpoints shared by every full application page.
 export const APP_SIDEBAR_CSS = String.raw`
-.app{min-height:100dvh;display:grid;grid-template-columns:208px minmax(0,1fr)}
-.sidebar{position:sticky;top:0;height:100dvh;display:flex;flex-direction:column;padding:24px 16px;background:var(--paper);border-right:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 8px;font-size:18px;line-height:1.5;font-weight:650;white-space:nowrap}
+.app{min-height:100dvh;display:grid;grid-template-columns:224px minmax(0,1fr)}
+.sidebar{position:sticky;top:0;height:100dvh;display:flex;flex-direction:column;padding:28px 16px 20px;background:var(--paper);border-right:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 8px;font-size:18px;line-height:1.5;font-weight:650;letter-spacing:-.3px;white-space:nowrap}
 .brand-mark{display:block;flex:none;width:36px;height:36px;object-fit:cover;border-radius:9px}
-.nav{display:grid;gap:4px;margin:28px 0 0}
-.nav-link{display:flex;align-items:center;gap:10px;width:100%;min-height:42px;margin:0;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:inherit;font-size:14px;line-height:1.5;font-weight:400;text-align:left;text-decoration:none;white-space:nowrap}
-.nav-link:hover{background:#f2f4f6}
-.nav-link.active{background:var(--soft);color:var(--green);font-weight:600}
+.workspace-label{margin:30px 12px 10px;font-size:10px;line-height:1.5;font-weight:550;letter-spacing:1.25px;color:var(--muted)}
+.nav{display:grid;gap:6px;margin:0}
+.nav-link{position:relative;display:flex;align-items:center;gap:11px;width:100%;min-height:44px;margin:0;padding:11px 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:inherit;font-size:14px;line-height:1.5;font-weight:400;text-align:left;text-decoration:none;white-space:nowrap}
+.nav-link:hover{background:var(--hover);color:var(--ink)}
+.nav-link.active{background:var(--soft);color:var(--primary-hover);font-weight:600}
+.nav-link.active::before{content:"";position:absolute;top:12px;bottom:12px;left:-8px;width:3px;border-radius:3px;background:var(--primary)}
 .nav-link:focus-visible,.brand:focus-visible{outline:2px solid var(--green);outline-offset:3px}
 .nav-link svg{display:block;flex:0 0 18px;width:18px;height:18px;pointer-events:none}
-@media(max-width:980px){.app{grid-template-columns:1fr}.sidebar{position:static;height:auto;flex-direction:row;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0}.nav{display:flex;gap:4px;margin:0}.nav-link{width:auto}}
+.sidebar-foot{display:flex;align-items:center;gap:10px;margin-top:auto;padding:18px 10px 0;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.space-avatar{display:grid;place-items:center;width:30px;height:30px;flex:none;border:1px solid #d3dff4;border-radius:50%;background:var(--soft);color:var(--primary-hover);font-size:13px;font-weight:600}
+.sidebar-foot strong{display:block;color:var(--ink);font-size:12px;font-weight:550}.sidebar-foot small{display:block;margin-top:2px;font-size:10px}
+@media(max-width:980px){.app{grid-template-columns:1fr}.sidebar{position:static;height:auto;flex-direction:row;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0}.workspace-label,.sidebar-foot{display:none}.nav{display:flex;gap:4px;margin:0}.nav-link{width:auto}.nav-link.active::before{display:none}}
 @media(max-width:760px){.sidebar{flex-direction:column;align-items:stretch;gap:14px;padding:16px}.brand{align-self:flex-start}.nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}.nav-link{justify-content:center;gap:6px;padding:10px 6px}}
 @media(max-width:500px){.brand{min-height:32px;font-size:17px}.brand-mark{width:32px;height:32px;border-radius:8px}.nav-link{gap:5px;padding:10px 4px;font-size:13px}}
 `;
@@ -37,5 +42,5 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
     return `<a ${attributes} href="${href}">${icon}${label}</a>`;
   }).join('');
 
-  return `<aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><nav class="nav">${items}</nav></aside>`;
+  return `<aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">PERSONAL SPACE</div><nav class="nav">${items}</nav><div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside>`;
 }
