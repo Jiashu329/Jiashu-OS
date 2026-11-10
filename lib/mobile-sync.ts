@@ -7,7 +7,7 @@ import {
   measurementDay,
   shanghaiDay,
 } from "./health.ts";
-import type { HealthSyncPayload, ValidationIssue } from "./health.ts";
+import type { HealthSyncPayload, SleepStages, ValidationIssue } from "./health.ts";
 
 export const MAX_SLEEP_SEGMENTS = 3000;
 export const MAX_SLEEP_DAYS = 30;
@@ -124,7 +124,7 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
     return fail("sleepReport", "Do not send both sleepReport and a sleep measurement for the same day");
   }
 
-  const intervals: Array<[number, number]> = [];
+  const intervals: Array<[number, number, AppleSleepState]> = [];
   const segmentKeys = new Set(["state", "startDate", "endDate"]);
   for (const [index, segment] of (sleepReport.segments as unknown[]).entries()) {
     if (issues.length >= 20) break;
@@ -139,30 +139,61 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
     if (!start) add(`${path}.startDate`, "Expected a valid ISO timestamp with a timezone");
     if (!end) add(`${path}.endDate`, "Expected a valid ISO timestamp with a timezone");
     if (start && end && Date.parse(end) <= Date.parse(start)) add(`${path}.endDate`, "End must be after start");
-    if (issues.length !== before || parsedState === 0 || parsedState === 2) continue;
-    intervals.push([Date.parse(start!), Date.parse(end!)]);
+    if (issues.length !== before || parsedState === null) continue;
+    intervals.push([Date.parse(start!), Date.parse(end!), parsedState]);
   }
   if (issues.length) throw new HealthValidationError(issues);
   if (intervals.length === 0) return standard;
 
-  intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
   const sleepMeasurements = windows.flatMap((window) => {
-    const clipped = intervals.map(([start, end]): [number, number] => [Math.max(start, window.start), Math.min(end, window.end)])
-      .filter(([start, end]) => end > start);
+    const events: Array<{ time: number; state: AppleSleepState; delta: number }> = [];
+    for (const [start, end, parsedState] of intervals) {
+      const clippedStart = Math.max(start, window.start);
+      const clippedEnd = Math.min(end, window.end);
+      if (clippedEnd > clippedStart) {
+        events.push({ time: clippedStart, state: parsedState, delta: 1 }, { time: clippedEnd, state: parsedState, delta: -1 });
+      }
+    }
+    if (events.length === 0) return [];
+
+    // Partition each day's timeline so detailed stages replace overlapping
+    // generic asleep records. Conflicting detailed stages stay unclassified
+    // instead of choosing one arbitrarily or counting the same time twice.
+    events.sort((left, right) => left.time - right.time);
+    const active = [0, 0, 0, 0, 0, 0];
+    const milliseconds: SleepStages = { unspecified: 0, core: 0, deep: 0, rem: 0, awake: 0, inBed: 0 };
+    let previousTime = events[0].time;
+    for (const event of events) {
+      const duration = event.time - previousTime;
+      if (duration > 0) {
+        if (active[0] > 0) milliseconds.inBed += duration;
+        if (active[2] > 0) milliseconds.awake += duration;
+        const detailed = [3, 4, 5].filter((stage) => active[stage] > 0);
+        if (detailed.length === 1) {
+          const key = detailed[0] === 3 ? "core" : detailed[0] === 4 ? "deep" : "rem";
+          milliseconds[key] += duration;
+        } else if (detailed.length > 1 || active[1] > 0) milliseconds.unspecified += duration;
+      }
+      active[event.state] += event.delta;
+      previousTime = event.time;
+    }
+    const totalMilliseconds = milliseconds.unspecified + milliseconds.core + milliseconds.deep + milliseconds.rem;
     // Missing dates and awake/in-bed-only dates stay absent rather than
     // overwriting saved sleep with a fabricated zero-hour record.
-    if (clipped.length === 0) return [];
-    let [currentStart, currentEnd] = clipped[0];
-    let totalMilliseconds = 0;
-    for (const [start, end] of clipped.slice(1)) {
-      if (start <= currentEnd) currentEnd = Math.max(currentEnd, end);
-      else { totalMilliseconds += currentEnd - currentStart; currentStart = start; currentEnd = end; }
-    }
-    totalMilliseconds += currentEnd - currentStart;
+    if (totalMilliseconds === 0) return [];
+    const sleepStages: SleepStages = {
+      unspecified: milliseconds.unspecified / 3600000,
+      core: milliseconds.core / 3600000,
+      deep: milliseconds.deep / 3600000,
+      rem: milliseconds.rem / 3600000,
+      awake: milliseconds.awake / 3600000,
+      inBed: milliseconds.inBed / 3600000,
+    };
     return [{
       id: `sleep-report:${window.day}`, metric: "sleep", value: totalMilliseconds / 3600000,
       unit: "hours", aggregation: "daily", source: sleepReport.source,
       startDate: new Date(window.start).toISOString(), endDate: new Date(window.end).toISOString(),
+      sleepStages,
     }];
   });
 

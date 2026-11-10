@@ -36,6 +36,7 @@ test("generic asleep and overlapping sleep stages are unioned rather than counte
   assert.equal(measurementDay(sleep), "2026-11-09");
   assert.equal(sleep.startDate, "2026-11-08T04:00:00.000Z");
   assert.equal(sleep.endDate, "2026-11-09T04:00:00.000Z");
+  assert.deepEqual(sleep.sleepStages, { unspecified: 1, core: 3, deep: 1, rem: 3, awake: 1, inBed: 10 });
   assert.deepEqual(parseSyncPayload(result), result);
 });
 
@@ -46,6 +47,7 @@ test("separated intervals are added and duplicates do not inflate the total", ()
     segment(4, "2026-11-09T03:00:00+08:00", "2026-11-09T05:00:00+08:00"),
   ]));
   assert.equal(result.measurements[0].value, 5);
+  assert.deepEqual(result.measurements[0].sleepStages, { unspecified: 0, core: 3, deep: 2, rem: 0, awake: 0, inBed: 0 });
 });
 
 test("segments are clipped to the previous-noon/current-noon Shanghai window", () => {
@@ -54,13 +56,55 @@ test("segments are clipped to the previous-noon/current-noon Shanghai window", (
     segment(5, "2026-11-09T10:00:00+08:00", "2026-11-09T14:00:00+08:00"),
   ]));
   assert.equal(result.measurements[0].value, 4);
+  assert.deepEqual(result.measurements[0].sleepStages, { unspecified: 2, core: 0, deep: 0, rem: 2, awake: 0, inBed: 0 });
 });
 
 test("a partial current-day report is clipped to exportedAt", () => {
   const result = parseMobileSyncPayload({ ...upload([segment()]), exportedAt: "2026-11-09T06:00:00+08:00" });
   assert.equal(result.measurements[0].value, 7);
   assert.equal(result.measurements[0].endDate, "2026-11-08T22:00:00.000Z");
+  assert.deepEqual(result.measurements[0].sleepStages, { unspecified: 7, core: 0, deep: 0, rem: 0, awake: 0, inBed: 0 });
   invalid({ ...upload([segment()]), exportedAt: "2026-11-08T23:00:00+08:00" }, "sleepReport.day");
+});
+
+test("stage breakdown is independent of input order and generic or detailed duplicates", () => {
+  const segments = [
+    segment(1), segment(1),
+    segment(3, "2026-11-08T23:00:00+08:00", "2026-11-09T02:00:00+08:00"),
+    segment(3, "2026-11-09T00:00:00+08:00", "2026-11-09T02:00:00+08:00"),
+    segment(4, "2026-11-09T02:00:00+08:00", "2026-11-09T04:00:00+08:00"),
+    segment(5, "2026-11-09T04:00:00+08:00", "2026-11-09T06:00:00+08:00"),
+  ];
+  const forward = parseMobileSyncPayload(upload(segments));
+  const backward = parseMobileSyncPayload(upload([...segments].reverse()));
+  assert.deepEqual(forward, backward);
+  assert.deepEqual(forward.measurements[0].sleepStages, { unspecified: 1, core: 3, deep: 2, rem: 2, awake: 0, inBed: 0 });
+});
+
+test("awake and in-bed intervals are unioned separately and never added to sleep", () => {
+  const result = parseMobileSyncPayload(upload([
+    segment(1),
+    segment(2, "2026-11-08T22:00:00+08:00", "2026-11-09T00:00:00+08:00"),
+    segment(2, "2026-11-08T23:00:00+08:00", "2026-11-09T01:00:00+08:00"),
+    segment(0, "2026-11-08T22:00:00+08:00", "2026-11-09T08:00:00+08:00"),
+    segment(0, "2026-11-08T22:00:00+08:00", "2026-11-09T08:00:00+08:00"),
+  ]));
+  assert.equal(result.measurements[0].value, 8);
+  assert.deepEqual(result.measurements[0].sleepStages, { unspecified: 8, core: 0, deep: 0, rem: 0, awake: 3, inBed: 10 });
+});
+
+test("all stage totals share the same partial reporting window, including awake and in-bed", () => {
+  const result = parseMobileSyncPayload({
+    ...upload([
+      segment(1),
+      segment(4, "2026-11-09T03:00:00+08:00", "2026-11-09T07:00:00+08:00"),
+      segment(2, "2026-11-08T10:00:00+08:00", "2026-11-08T14:00:00+08:00"),
+      segment(0, "2026-11-08T10:00:00+08:00", "2026-11-09T08:00:00+08:00"),
+    ]),
+    exportedAt: "2026-11-09T06:00:00+08:00",
+  });
+  assert.equal(result.measurements[0].value, 7);
+  assert.deepEqual(result.measurements[0].sleepStages, { unspecified: 4, core: 0, deep: 3, rem: 0, awake: 2, inBed: 18 });
 });
 
 test("empty, out-of-window, in-bed and awake-only reports preserve unknown sleep", () => {
@@ -90,6 +134,7 @@ test("iPhone display labels preserve sleep stages and exclude awake time across 
   const before = structuredClone(input);
   const parsed = parseMobileSyncPayload(input);
   assert.deepEqual(parsed.measurements.map((record) => [measurementDay(record), record.value]), [["2026-10-12", 3]]);
+  assert.deepEqual(parsed.measurements[0].sleepStages, { unspecified: 0, core: 1, deep: 1, rem: 1, awake: 0.25, inBed: 0 });
   assert.deepEqual(input, before);
   assert.deepEqual(parseMobileSyncPayload({ ...base(), sleepReport: { ...report([
     segment("清醒时间", "2026-10-12T00:00:00+08:00", "2026-10-12T00:15:00+08:00"),
@@ -145,6 +190,10 @@ test("multiple nights produce separate daily totals while preserving the origina
   assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [
     ["2026-11-08", 7], ["2026-11-09", 8],
   ]);
+  assert.deepEqual(result.measurements.map((measurement) => measurement.sleepStages), [
+    { unspecified: 4, core: 3, deep: 0, rem: 0, awake: 0, inBed: 0 },
+    { unspecified: 4, core: 0, deep: 4, rem: 0, awake: 0, inBed: 0 },
+  ]);
   assert.deepEqual(input, snapshot);
   assert.deepEqual(parseSyncPayload(result), result);
   assert.deepEqual(parseMobileSyncPayload({ ...upload([segment()]), sleepReport: { ...report([segment()]), days: 1 } }),
@@ -160,7 +209,33 @@ test("noon-crossing intervals are split and overlaps unioned within each reporti
   assert.deepEqual(result.measurements.map((measurement) => [measurementDay(measurement), measurement.value]), [
     ["2026-11-08", 3], ["2026-11-09", 2],
   ]);
+  assert.deepEqual(result.measurements.map((measurement) => measurement.sleepStages), [
+    { unspecified: 1, core: 0, deep: 0, rem: 2, awake: 0, inBed: 0 },
+    { unspecified: 1, core: 1, deep: 0, rem: 0, awake: 0, inBed: 0 },
+  ]);
   assert.equal(result.measurements[0].endDate, result.measurements[1].startDate);
+});
+
+test("a full 30-day import computes each day's stages independently", () => {
+  const segments = Array.from({ length: 30 }, (_, index) => {
+    const day = new Date(Date.parse("2026-11-09T12:00:00Z") - index * 86400000).toISOString().slice(0, 10);
+    return [
+      segment(1, `${day}T00:00:00+08:00`, `${day}T06:00:00+08:00`),
+      segment(3, `${day}T00:00:00+08:00`, `${day}T02:00:00+08:00`),
+      segment(4, `${day}T02:00:00+08:00`, `${day}T03:00:00+08:00`),
+      segment(5, `${day}T03:00:00+08:00`, `${day}T06:00:00+08:00`),
+      segment(2, `${day}T06:00:00+08:00`, `${day}T06:30:00+08:00`),
+      segment(0, `${day}T00:00:00+08:00`, `${day}T07:00:00+08:00`),
+    ];
+  }).flat();
+  const result = parseMobileSyncPayload({ ...base(), sleepReport: { ...report(segments), days: 30 } });
+  assert.equal(result.measurements.length, 30);
+  assert.equal(measurementDay(result.measurements[0]), "2026-10-11");
+  assert.equal(measurementDay(result.measurements.at(-1)!), "2026-11-09");
+  for (const row of result.measurements) {
+    assert.equal(row.value, 6);
+    assert.deepEqual(row.sleepStages, { unspecified: 0, core: 2, deep: 1, rem: 3, awake: 0.5, inBed: 7 });
+  }
 });
 
 test("missing and awake-only dates remain absent, and only the last day is clipped at export", () => {

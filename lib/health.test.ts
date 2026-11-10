@@ -145,6 +145,50 @@ test("Shanghai date is used across UTC midnight and sleep belongs to its ending 
   assert.deepEqual(summary.metrics.sleep.points.map(({ day, value }) => ({ day, value })), [{ day: "2026-11-08", value: 7.5 }]);
 });
 
+const sleepWithStages = {
+  id: "sleep-with-stages", metric: "sleep", value: 8, unit: "hours",
+  startDate: "2026-11-08T22:00:00+08:00", endDate: "2026-11-09T07:00:00+08:00",
+  source: "selected-watch", aggregation: "daily",
+  sleepStages: { unspecified: 0.5, core: 4, deep: 1.5, rem: 2, awake: 0.5, inBed: 9 },
+};
+
+test("sleep stages round-trip and reach trend summaries without inflating sleep totals", () => {
+  const sync = parseSyncPayload(payload([sleepWithStages]));
+  assert.deepEqual(sync.measurements[0].sleepStages, sleepWithStages.sleepStages);
+  assert.deepEqual(parseSyncPayload(JSON.stringify(sync)), sync);
+  const summary = buildHealthSummary(sync.measurements);
+  assert.equal(summary.metrics.sleep.latestValue, 8);
+  assert.deepEqual(summary.metrics.sleep.points[0].sleepStages, sleepWithStages.sleepStages);
+  const { sleepStages: _stages, ...legacy } = sleepWithStages;
+  const legacySync = parseSyncPayload(payload([legacy]));
+  assert.ok(!Object.hasOwn(legacySync.measurements[0], "sleepStages"));
+  assert.ok(!Object.hasOwn(buildHealthSummary(legacySync.measurements).metrics.sleep.points[0], "sleepStages"));
+});
+
+test("sleep stage objects require all six bounded durations and are sleep-only", () => {
+  invalid(payload([{ ...step, sleepStages: sleepWithStages.sleepStages }]), ".sleepStages");
+  for (const sleepStages of [null, undefined, [], "core", {}, { ...sleepWithStages.sleepStages, extra: 0 }]) {
+    invalid(payload([{ ...sleepWithStages, sleepStages }]), ".sleepStages");
+  }
+  for (const key of Object.keys(sleepWithStages.sleepStages)) {
+    for (const value of [NaN, Infinity, -0.001, 24.001, "1", null, undefined]) {
+      invalid(payload([{ ...sleepWithStages, sleepStages: { ...sleepWithStages.sleepStages, [key]: value } }]), `.sleepStages.${key}`);
+    }
+  }
+});
+
+test("asleep stages must match the total and all stage durations fit the reporting window", () => {
+  invalid(payload([{ ...sleepWithStages, sleepStages: { ...sleepWithStages.sleepStages, core: 5 } }]), ".sleepStages");
+  invalid(payload([{ ...sleepWithStages, sleepStages: { ...sleepWithStages.sleepStages, awake: 10 } }]), ".sleepStages.awake");
+  invalid(payload([{ ...sleepWithStages, sleepStages: { ...sleepWithStages.sleepStages, inBed: 10 } }]), ".sleepStages.inBed");
+  invalid(payload([{ ...sleepWithStages, endDate: "2026-11-09T05:00:00+08:00", sleepStages: { ...sleepWithStages.sleepStages, inBed: 7 } }]), ".sleepStages");
+  const fractional = parseSyncPayload(payload([{
+    ...sleepWithStages, value: 0.3,
+    sleepStages: { unspecified: 0.1, core: 0.2, deep: 0, rem: 0, awake: 0, inBed: 0 },
+  }]));
+  assert.equal(fractional.measurements[0].value, 0.3);
+});
+
 test("weight samples remain individually identifiable; daily chart shows the latest sample", () => {
   const sync = parseSyncPayload(payload([
     { id: "weight-morning", metric: "weight", value: 80, unit: "kg", startDate: "2026-11-08T07:00:00+08:00" },

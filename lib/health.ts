@@ -23,6 +23,16 @@ export const METRIC_INFO = {
 export type HealthMetric = keyof typeof METRIC_INFO;
 export type HealthUnit = (typeof METRIC_INFO)[HealthMetric]["unit"];
 
+/** Hours within the same reporting window; awake and inBed are separate totals. */
+export interface SleepStages {
+  unspecified: number;
+  core: number;
+  deep: number;
+  rem: number;
+  awake: number;
+  inBed: number;
+}
+
 export interface HealthMeasurement {
   id: string;
   metric: HealthMetric;
@@ -34,6 +44,8 @@ export interface HealthMeasurement {
   source?: string;
   /** Required for steps, energy, and sleep; optional/sample for body mass measurements. */
   aggregation?: "daily" | "sample";
+  /** Optional for legacy totals. The four asleep stages sum to value. */
+  sleepStages?: SleepStages;
 }
 
 export interface HealthSyncPayload {
@@ -173,7 +185,9 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
   const byID = new Map<string, string>();
   const byKey = new Map<string, string>();
   const sources = new Map<string, string>();
-  const allowedMeasurementKeys = new Set(["id", "metric", "value", "unit", "startDate", "endDate", "source", "aggregation"]);
+  const allowedMeasurementKeys = new Set(["id", "metric", "value", "unit", "startDate", "endDate", "source", "aggregation", "sleepStages"]);
+  const sleepStageKeys = ["unspecified", "core", "deep", "rem", "awake", "inBed"] as const;
+  const sleepTolerance = 1e-8;
 
   for (const [index, item] of (raw.measurements as unknown[]).entries()) {
     if (issues.length >= 20) break;
@@ -219,6 +233,38 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
         else sources.set(sourceKey, item.source);
       }
     }
+    let sleepStages: SleepStages | undefined;
+    if (Object.hasOwn(item, "sleepStages")) {
+      const stagePath = `${path}.sleepStages`;
+      if (metric !== "sleep") add(stagePath, "Sleep stages are only allowed for sleep measurements");
+      else if (!isObject(item.sleepStages)) add(stagePath, "Expected a sleep stage duration object");
+      else {
+        const stageIssueCount = issues.length;
+        const suppliedStages = item.sleepStages;
+        for (const key of Object.keys(suppliedStages)) {
+          if (!(sleepStageKeys as readonly string[]).includes(key)) add(`${stagePath}.${key}`, "Unknown sleep stage");
+        }
+        for (const key of sleepStageKeys) {
+          const hours = suppliedStages[key];
+          if (typeof hours !== "number" || !Number.isFinite(hours) || hours < 0 || hours > 24) {
+            add(`${stagePath}.${key}`, "Expected finite hours from 0 to 24");
+          } else if (startDate && endDate && hours > (Date.parse(endDate) - Date.parse(startDate)) / 3600000 + sleepTolerance) {
+            add(`${stagePath}.${key}`, "Stage duration cannot exceed the reporting window");
+          }
+        }
+        if (issues.length === stageIssueCount) {
+          const stages = Object.fromEntries(sleepStageKeys.map((key) => [key, suppliedStages[key]])) as unknown as SleepStages;
+          const asleepHours = stages.unspecified + stages.core + stages.deep + stages.rem;
+          if (typeof item.value === "number" && Number.isFinite(item.value) && Math.abs(asleepHours - item.value) > sleepTolerance) {
+            add(stagePath, "Asleep stage durations must sum to the sleep total");
+          }
+          if (startDate && endDate && asleepHours > (Date.parse(endDate) - Date.parse(startDate)) / 3600000 + sleepTolerance) {
+            add(stagePath, "Asleep stage durations cannot exceed the reporting window");
+          }
+          sleepStages = stages;
+        }
+      }
+    }
     if (issues.length !== issueCount) continue;
 
     const measurement: HealthMeasurement = {
@@ -230,6 +276,7 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
       ...(endDate ? { endDate } : {}),
       ...(item.source !== undefined ? { source: item.source as string } : {}),
       ...(isSampleMetric(metric) ? { aggregation: "sample" as const } : { aggregation: "daily" as const }),
+      ...(sleepStages ? { sleepStages } : {}),
     };
     const serialized = JSON.stringify(measurement);
     const priorID = byID.get(measurement.id);
@@ -259,6 +306,7 @@ export interface HealthTrendPoint {
   value: number;
   measuredAt: string;
   source: string | null;
+  sleepStages?: SleepStages;
 }
 
 export interface HealthMetricSummary {
@@ -295,7 +343,9 @@ export function buildHealthSummary(input: readonly HealthMeasurement[]): HealthS
       const measuredAt = row.metric === "sleep" ? row.endDate! : row.startDate;
       const previous = daily.get(day);
       if (!isSampleMetric(metric) || !previous || Date.parse(measuredAt) >= Date.parse(previous.measuredAt)) {
-        daily.set(day, { day, value: row.value, measuredAt, source: row.source ?? null });
+        daily.set(day, { day, value: row.value, measuredAt, source: row.source ?? null,
+          ...(row.metric === "sleep" && row.sleepStages ? { sleepStages: row.sleepStages } : {}),
+        });
       }
     }
     const points = [...daily.values()].sort((left, right) => left.day.localeCompare(right.day));
