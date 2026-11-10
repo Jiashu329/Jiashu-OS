@@ -64,6 +64,13 @@
       "when": 1794235441876,
       "tag": "0008_windy_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794270743880,
+      "tag": "0009_whole_wonder_man",
+      "breakpoints": true
     }
   ]
 }

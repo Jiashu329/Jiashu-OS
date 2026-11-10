@@ -15,7 +15,7 @@ export async function apiUser() {
 }
 
 export function unauthenticated() {
-  return json({ error: '请先在此浏览器中登录网站，再重试同步。', code: 'SIGN_IN_REQUIRED' }, 401);
+  return json({ error: '请先在此浏览器中登录网站，再重试。', code: 'SIGN_IN_REQUIRED' }, 401);
 }
 
 export function unavailable() {

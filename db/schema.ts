@@ -137,3 +137,19 @@ export const healthRecordChanges = sqliteTable('health_record_changes', {
   primaryKey({ columns: [table.userId, table.changeId] }),
   index('health_record_changes_owner_record_idx').on(table.userId, table.recordKey, table.createdAt),
 ]);
+
+export const nutritionEntries = sqliteTable('nutrition_entries', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  date: text('date').notNull(),
+  meal: text('meal').notNull(),
+  name: text('name').notNull(),
+  portion: text('portion').notNull(),
+  note: text('note').notNull(),
+  caloriesTenth: integer('calories_tenth'),
+  creationHash: text('creation_hash').notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  deletedAt: text('deleted_at'),
+}, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date)]);
