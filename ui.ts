@@ -6,7 +6,7 @@ import { buildQuickStepsPayload } from './lib/quick-steps.ts';
 import { buildQuickSleepPayload } from './lib/quick-sleep.ts';
 import { buildQuickWeightPayload } from './lib/quick-weight.ts';
 import { renderSleepChart, renderSleepDetails } from './lib/sleep-chart.ts';
-import { readHealthView, healthViewPath, readInitialHealthView } from './lib/health-navigation.ts';
+import { HEALTH_NAVIGATION_SCRIPT } from './lib/health-navigation.ts';
 
 export function renderApp(): string {
   return String.raw`<!doctype html>
@@ -110,9 +110,7 @@ ${HEALTH_GOALS_CSS}
     body_fat: {label:'估算体脂率',short:'估算体脂率',title:'估算体脂率变化',unit:'%',color:'#9a86a2',subtitle:'仅根据同一来源、同一测量时间的体重与去脂体重计算。',decimals:1}
   };
   const $ = (id) => document.getElementById(id);
-  const readHealthView = (${readHealthView.toString()});
-  const healthViewPath = (${healthViewPath.toString()});
-  const readInitialHealthView = (${readInitialHealthView.toString()});
+  ${HEALTH_NAVIGATION_SCRIPT}
   const initialView = readInitialHealthView(location.pathname,location.search,history.state);
   const state = {measurements:[],bodyComposition:null,lastSync:null,metric:initialView.metric,days:initialView.days,loading:false,config:null};
   let pairedDeviceId = null;

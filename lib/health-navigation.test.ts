@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { healthViewPath, readHealthView, readInitialHealthView } from './health-navigation.ts';
+import { runInNewContext } from 'node:vm';
+import { HEALTH_NAVIGATION_SCRIPT, healthViewPath, readHealthView, readInitialHealthView } from './health-navigation.ts';
 
 test('health deep links restore valid metric and period while invalid filters fall back safely', () => {
   assert.deepEqual(readHealthView('?metric=sleep&days=180'), { metric: 'sleep', days: 180 });
@@ -18,4 +19,19 @@ test('sync restores only a complete valid filter snapshot and never copies arbit
     assert.deepEqual(readInitialHealthView('/sync', '', { healthView }), { metric: 'steps', days: 30 });
   }
   assert.deepEqual(readInitialHealthView('/health', '?metric=weight&days=7', { healthView: { metric: 'sleep', days: 180 } }), { metric: 'weight', days: 7 });
+});
+
+test('literal browser navigation stays equivalent to typed helpers without captured server names', () => {
+  const browser = runInNewContext(HEALTH_NAVIGATION_SCRIPT + '\n({readHealthView,healthViewPath,readInitialHealthView})', { URLSearchParams }) as {
+    readHealthView: typeof readHealthView; healthViewPath: typeof healthViewPath; readInitialHealthView: typeof readInitialHealthView;
+  };
+  const plain = (value: unknown) => JSON.parse(JSON.stringify(value)) as unknown;
+  for (const search of ['', '?metric=sleep&days=180', '?metric=weight', '?metric=bad&days=007', '?metric=active_energy&days=7']) {
+    assert.deepEqual(plain(browser.readHealthView(search)), readHealthView(search));
+  }
+  for (const saved of [null, { healthView: { metric: 'sleep', days: 180 } }, { healthView: { metric: 'sleep', days: '180' } },
+    { healthView: { metric: 'bad', days: 7 } }, { healthView: { metric: 'weight', days: 90, token: 'private' } }]) {
+    assert.deepEqual(plain(browser.readInitialHealthView('/sync', '', saved)), readInitialHealthView('/sync', '', saved));
+  }
+  assert.equal(browser.healthViewPath('weight', 90, true), healthViewPath('weight', 90, true));
 });
