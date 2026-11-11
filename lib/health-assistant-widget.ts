@@ -62,8 +62,11 @@ export function renderHealthAssistantWidget(): string {
 #health-chat .hc-bubble{min-width:0;max-width:100%;padding:11px 13px;border:1px solid var(--line,#dfe5ee);border-radius:3px 13px 13px;background:var(--paper,#fff);overflow-wrap:anywhere;font-size:13px;line-height:1.85}
 #health-chat .is-user .hc-bubble{max-width:90%;border-color:#dbe5f6;border-radius:13px 3px 13px 13px;background:var(--soft,#e8effb);white-space:pre-wrap}
 #health-chat .hc-message-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;color:var(--muted,#606e84);font-size:10px;line-height:1.8}
-#health-chat .hc-copy{flex:none;min-height:25px;padding:2px 5px;border:0;border-radius:5px;background:none;color:var(--muted,#606e84);font-size:10px}
-#health-chat .hc-copy:hover{background:var(--hover,#f0f4fa);color:var(--primary-hover,#45639f)}
+#health-chat .hc-copy,#health-chat .hc-reveal{flex:none;min-height:25px;padding:2px 5px;border:0;border-radius:5px;background:none;color:var(--muted,#606e84);font-size:10px}
+#health-chat .hc-reveal{color:var(--primary-hover,#45639f)}
+#health-chat .hc-copy:hover,#health-chat .hc-reveal:hover{background:var(--hover,#f0f4fa);color:var(--primary-hover,#45639f)}
+#health-chat .hc-cursor{display:inline-block;width:2px;height:1em;margin-left:2px;background:var(--primary,#5574b5);vertical-align:-.12em;animation:health-chat-caret 1s steps(1) infinite}
+@keyframes health-chat-caret{0%,100%{opacity:1}50%{opacity:0}}
 #health-chat .hc-message-sources{width:100%;color:var(--muted,#606e84);font-size:10px}
 #health-chat .hc-message-sources summary{cursor:pointer}
 #health-chat .hc-markdown{white-space:normal}
@@ -108,7 +111,7 @@ export function renderHealthAssistantWidget(): string {
 #health-chat .hc-settings:hover{color:var(--primary-hover,#45639f);text-decoration:underline}
 #health-chat .hc-footnote{margin:7px 0 0;color:#7b879a;font-size:9px;line-height:1.6;text-align:center}
 @media(max-width:600px){#health-chat .hc-launcher{right:16px;bottom:max(16px,env(safe-area-inset-bottom));min-height:46px;padding:10px 15px;font-size:13px}#health-chat .hc-panel{right:10px;bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 20px);height:calc(100dvh - 20px - env(safe-area-inset-bottom));max-height:calc(100dvh - 20px - env(safe-area-inset-bottom));border-radius:15px}#health-chat .hc-head{padding:13px}#health-chat .hc-scroll{padding:13px}#health-chat .hc-question{font-size:16px;line-height:1.55}#health-chat .hc-compose{padding-bottom:max(12px,env(safe-area-inset-bottom))}}
-@media(prefers-reduced-motion:reduce){#health-chat .hc-pending-dots i{animation:none;opacity:.7}}
+@media(prefers-reduced-motion:reduce){#health-chat .hc-pending-dots i{animation:none;opacity:.7}#health-chat .hc-cursor{animation:none}}
 </style><div id="health-chat" data-health-chat-root>
 <button class="hc-launcher" id="health-chat-launcher" type="button" aria-haspopup="dialog" aria-controls="health-chat-panel" aria-expanded="false"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z"/><path d="M8 12h2l1.2-2.5 1.7 5 1.2-2.5H17"/></svg><span id="health-chat-launcher-label">健康助手</span></button>
 <section class="hc-panel" id="health-chat-panel" role="dialog" aria-modal="false" aria-labelledby="health-chat-title" tabindex="-1" hidden>
