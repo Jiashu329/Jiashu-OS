@@ -5,26 +5,29 @@ export const SHORTCUT_TEMPLATE_SCRIPT = String.raw`<script>(()=>{
 ${CLIENT_REQUEST_SCRIPT}
 const $=(id)=>document.getElementById(id);
 const labels={steps:'步数',active_energy:'活动热量',sleep:'睡眠',weight:'体重',lean_body_mass:'去脂体重'};
-const metrics=$('template-check').dataset.metrics.split(',');
+const allowedMetrics=$('template-check').dataset.metrics.split(',');
+const options=Array.from(document.querySelectorAll('[data-check-metric]'));
+let metrics=allowedMetrics.slice();
 let startedAt=null,busy=false,arrived=false;
 function message(text,error=false){$('template-status').textContent=text;$('template-status').classList.toggle('error',error);}
 async function start(){
-  if(busy)return;busy=true;startedAt=null;arrived=false;
+  if(busy||!metrics.length)return;busy=true;options.forEach((input)=>input.disabled=true);startedAt=null;arrived=false;
   $('template-start').disabled=true;$('template-check-now').disabled=true;$('template-confirm').checked=false;$('template-confirm').disabled=true;$('template-results').replaceChildren();
   message('正在取得服务器核对起点，请稍候…');
   try{const data=await requestJSON('/api/health/import');const time=Date.parse(data.checkedAt);
     if(!Number.isFinite(time))throw new Error('未取得服务器核对时间，请刷新后重试。');
     startedAt=time;message('本次核对已开始。请在 iPhone 运行快捷指令，返回后点击“检查新同步”。');
   }catch(error){message(error.message||'暂时无法开始核对，请重试。',true);}
-  finally{busy=false;$('template-start').disabled=false;$('template-check-now').disabled=startedAt===null;}
+  finally{busy=false;options.forEach((input)=>input.disabled=false);$('template-start').disabled=!metrics.length;$('template-check-now').disabled=startedAt===null;}
 }
 $('template-start').addEventListener('click',start);
+options.forEach((input)=>input.addEventListener('change',()=>{metrics=options.filter((field)=>field.checked&&allowedMetrics.includes(field.dataset.checkMetric)).map((field)=>field.dataset.checkMetric);startedAt=null;arrived=false;$('template-check-now').disabled=true;$('template-start').disabled=!metrics.length;$('template-confirm').disabled=true;$('template-confirm').checked=false;$('template-results').replaceChildren();message(metrics.length?'指标选择已更新，请重新开始本次核对。':'请至少选择一项实际有样本的指标。');}));
 $('template-confirm').addEventListener('change',()=>{
   if(arrived&&$('template-confirm').checked)message('本次核对完成：网站已收到相应指标，你已确认来源、日期和数值。此结果不代表后续每次同步都会成功。');
   else if(arrived)message('相应指标已收到，请对照 iPhone 健康 App 核对来源、日期和数值。');
 });
 $('template-check-now').addEventListener('click',async()=>{
-  if(busy||startedAt===null)return;busy=true;$('template-check-now').disabled=true;$('template-start').disabled=true;
+  if(busy||startedAt===null)return;busy=true;options.forEach((input)=>input.disabled=true);$('template-check-now').disabled=true;$('template-start').disabled=true;
   message('正在读取本次核对开始后的同步回执…');
   try{
     const data=await requestJSON('/api/health/import');const attempts=Array.isArray(data.attempts)?data.attempts:[];
@@ -51,8 +54,8 @@ $('template-check-now').addEventListener('click',async()=>{
       $('template-results').append(li);
     }
     arrived=results.every((result)=>result.latest?.valid);$('template-confirm').disabled=!arrived;$('template-confirm').checked=false;
-    message(arrived?'网站已收到所选模板的全部指标（可能数值未变化），请对照 iPhone 核对数值、日期与来源。':'尚未收到全部指标的本次有效记录。请检查读取权限、日期范围、实际来源和同步地址；已有历史与重复批次不会算作本次验收。');
+    message(arrived?'网站已收到本次选择的全部指标（可能数值未变化），请对照 iPhone 核对数值、日期与来源。':'尚未收到全部指标的本次有效记录。请检查读取权限、日期范围、实际来源和同步地址；已有历史与重复批次不会算作本次验收。');
   }catch(error){message(error.message||'暂时无法读取同步结果，请重试。',true);}
-  finally{busy=false;$('template-check-now').disabled=false;$('template-start').disabled=false;}
+  finally{busy=false;options.forEach((input)=>input.disabled=false);$('template-check-now').disabled=false;$('template-start').disabled=!metrics.length;}
 });
 })();</script>`;

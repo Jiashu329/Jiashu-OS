@@ -14,11 +14,6 @@ export function parseNutritionFavorite(input: unknown) {
   if (!validNutritionId(raw.entryId) || !Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1) return fail('请先读取要保存为常用的记录。');
   return { entryId: raw.entryId.toLowerCase(), expectedRevision: Number(raw.expectedRevision) };
 }
-export function parseNutritionFavoriteRemove(input: unknown) {
-  const raw = fields(input, ['expectedRevision']);
-  if (!Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1) return fail('请重新读取常用食物后移除。');
-  return Number(raw.expectedRevision);
-}
 export function parseNutritionCopy(input: unknown, now = Date.now()): NutritionCopyCommand {
   const raw = fields(input, ['action', 'fromDate', 'fromMeal', 'toDate', 'toMeal', 'previewToken']);
   if (raw.action !== 'preview' && raw.action !== 'copy') return fail('请选择预览或复制餐次。');

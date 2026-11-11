@@ -71,3 +71,20 @@ test('same-value new batches support manual checking and use the server clock ra
   assert.match(f.document.getElementById('template-results')!.textContent!, /数值未变化/);
   assert.doesNotMatch(f.document.getElementById('template-status')!.textContent!, /本次核对完成/);
 });
+
+test('a missing lean-mass sample can be explicitly excluded without claiming it was connected', async () => {
+  const f = fixture('weight');
+  const lean = f.document.getElementById('template-metric-lean_body_mass') as HTMLInputElement;
+  // linkedom omits the native checked default on input elements.
+  f.document.querySelectorAll<HTMLInputElement>('[data-check-metric]').forEach((field) => { field.checked = true; });
+  lean.checked = false; lean.dispatchEvent(new f.window.Event('change'));
+  f.click('template-start'); await f.settle();
+  f.responses.push([f.attempt(['weight'])]); f.click('template-check-now'); await f.settle();
+  assert.equal((f.document.getElementById('template-confirm') as HTMLInputElement).disabled, false);
+  assert.equal(f.document.querySelectorAll('#template-results li').length, 1);
+  assert.match(f.document.getElementById('template-results')!.textContent!, /体重/);
+  assert.doesNotMatch(f.document.getElementById('template-results')!.textContent!, /去脂体重/);
+  lean.checked = true; lean.dispatchEvent(new f.window.Event('change'));
+  assert.equal((f.document.getElementById('template-confirm') as HTMLInputElement).disabled, true);
+  assert.equal((f.document.getElementById('template-check-now') as HTMLButtonElement).disabled, true);
+});

@@ -40,10 +40,10 @@ if (auth) {
     `Authorization: Basic ${auth}`);
 }
 gitConfig('http.followRedirects', 'false');
-function run(command, args, env = process.env) {
+function run(command, args, env = process.env, failureMessage = 'Command failed') {
   const result = spawnSync(command, args, { encoding: 'utf8', env, maxBuffer: 8 * 1024 * 1024 });
   if (result.status !== 0) {
-    let output = `${result.stderr || result.stdout || result.error || 'Command failed'}`;
+    let output = `${result.stderr || result.stdout || result.error || failureMessage}`;
     for (const secret of [credential.token, auth].filter(Boolean)) output = output.replaceAll(secret, '[redacted]');
     throw new Error(output);
   }
@@ -59,7 +59,8 @@ if (mode === 'probe') {
 const archive = resolve(archive_path || '');
 if (!archive_path || !archive.startsWith('/workspace/') || !archive.endsWith('.tar.gz')) throw new Error('Expected workspace .tar.gz archive path');
 run('git', ['fetch', remote.href, `${branch}:refs/remotes/sites-release/${branch}`], childEnv);
-run('git', ['merge-base', '--is-ancestor', sourceHead, 'HEAD']);
+run('git', ['merge-base', '--is-ancestor', sourceHead, 'HEAD'], process.env,
+  'Sites source contains new commits. Merge the source branch, commit, and run npm run release:check again before publishing.');
 const commit_sha = checked.commitSha;
 run('git', ['push', remote.href, `HEAD:refs/heads/${branch}`], childEnv);
 const remoteHead = run('git', ['ls-remote', remote.href, `refs/heads/${branch}`], childEnv).split(/\s/)[0];

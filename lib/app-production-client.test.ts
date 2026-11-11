@@ -9,6 +9,8 @@ import { parseHTML } from 'linkedom';
 import { buildHomeOverview } from './home-overview.ts';
 import { buildHealthSummary } from './health.ts';
 import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
+import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
+import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -45,11 +47,11 @@ async function settle(check: () => boolean) {
   }
   assert.ok(check(), 'The built client must finish initialization');
 }
-function storage() {
-  const values = new Map<string, string>();
-  return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); } };
+function storage(seed: Record<string,string> = {}) {
+  const values = new Map<string, string>(Object.entries(seed));
+  return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   let current = new URL(path, 'https://synthetic-production.example');
@@ -59,14 +61,23 @@ async function fixture(marker: string, path: string, width = 1280) {
     replace(path: string) { current = new URL(path, current); },
   };
   const history = { state: null, replaceState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); } };
-  document.querySelectorAll('dialog').forEach((dialog) => Object.assign(dialog, {
-    showModal() { dialog.setAttribute('open', ''); },
-    close() { dialog.removeAttribute('open'); dialog.dispatchEvent(new window.Event('close')); },
-  }));
+  document.querySelectorAll('dialog').forEach((dialog) => {
+    Object.defineProperty(dialog,'open',{configurable:true,get(){return dialog.hasAttribute('open');}});
+    Object.assign(dialog, {
+      showModal() { dialog.setAttribute('open', ''); },
+      close() { dialog.removeAttribute('open'); dialog.dispatchEvent(new window.Event('close')); },
+    });
+  });
   // linkedom intentionally omits a browser select value setter.
   document.querySelectorAll('select').forEach((select) => Object.defineProperty(select, 'value', { writable: true, value: select.getAttribute('value') || select.querySelector('option')?.getAttribute('value') || '' }));
+  document.querySelectorAll('form').forEach((form) => Object.assign(form, { reset() {
+    form.querySelectorAll('input,textarea,select').forEach((element) => {
+      const field = element as unknown as HTMLInputElement;
+      field.value = element.tagName === 'SELECT' ? element.querySelector('option')?.getAttribute('value') ?? '' : element.getAttribute('value') ?? '';
+    });
+  } }));
   Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
-  const sessionStorage = storage();
+  const sessionStorage = storage(seedStorage);
   Object.defineProperty(window, 'sessionStorage', { value: sessionStorage, configurable: true });
   const requests: Array<{ path: string; method: string }> = [];
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -74,23 +85,37 @@ async function fixture(marker: string, path: string, width = 1280) {
   const fetch = async (url: string | URL, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
     requests.push({ path, method });
+    // Initializing any page must remain read-only, even when session storage
+    // contains another signed-in owner's original pending requests.
+    if (method !== 'GET') throw new Error('Unexpected automatic production write: ' + method + ' ' + path);
     if (path === '/api/overview') return Response.json(overview);
     if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
     if (path === '/api/ai/settings') return Response.json({ settings: { configured: false, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
+    const parsed = new URL(path, location.origin);
+    const emptyMealStates = { breakfast:'unrecorded',lunch:'unrecorded',dinner:'unrecorded',snack:'unrecorded' } as const;
+    if (parsed.pathname === '/api/health/nutrition') {
+      const selection = parseNutritionQuery(parsed.searchParams);
+      return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
+    }
+    if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:[]});
+    if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
+    if (parsed.pathname === '/api/health/nutrition/favorites') return Response.json({favorites:[]});
+    if (parsed.pathname === '/api/health/nutrition/status') return Response.json({dayStatus:{date:parsed.searchParams.get('date') ?? today,complete:false,revision:0,meals:emptyMealStates}});
+    if (parsed.pathname === '/api/health/nutrition/review') return Response.json(buildNutritionInsight([],[],parseNutritionInsightQuery(parsed.searchParams)));
     if (path.startsWith('/api/health/assistant?')) return Response.json({ configuration: { ready: false, provider: 'MiniMax', model: 'MiniMax-M3', message: '请先设置连接' }, hasData: false,
       context: { version: 1, timezone: 'Asia/Shanghai', range: { from: today, to: today, today, days: 7 }, health: [], nutrition: { recordedDays: 0, days: [] }, limitations: ['暂无合成测试记录'] }, sources: [] });
     throw new Error('Unexpected production client request: ' + method + ' ' + path);
   };
   const context = { window, document, location, history, navigator: {}, sessionStorage, fetch, URL, URLSearchParams, TextEncoder, AbortController,
     crypto: webcrypto, Intl, Date, Event: window.Event, Element: window.Element, innerWidth: width,
-    setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
+    Headers, setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
   for (const [index, script] of [...document.querySelectorAll('script')].entries()) {
     if (script.getAttribute('src') || !script.textContent?.trim()) continue;
     runInNewContext(script.textContent, context, { timeout: 2000, filename: 'built-app-inline-' + index + '.js' });
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
-  return { window, document, requests, html };
+  return { window, document, requests, html, sessionStorage };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
@@ -185,4 +210,48 @@ test('production shortcut installation page waits for user action before taking 
   assert.equal((f.document.getElementById('template-check-now') as HTMLButtonElement).disabled, false);
   assert.equal((f.document.getElementById('template-confirm') as HTMLInputElement).disabled, true);
   assert.deepEqual(f.requests, [{ path: '/api/health/import', method: 'GET' }]);
+});
+
+test('390px minified nutrition page initializes rich recording, reuse and draft guards without automatic writes or foreign pending recovery',async()=>{
+  const today=new Date(Date.now()+8*60*60*1000).toISOString().slice(0,10);
+  const foreignOwner='another-synthetic-owner',operation='11111111-1111-4111-8111-111111111111';
+  const foreignStorage={
+    ['jiashu-nutrition-create:'+foreignOwner]:JSON.stringify({key:operation,body:{date:today,meal:'breakfast',name:'OTHER_OWNER_PRIVATE_DRAFT',portion:'one',note:'',calories:null}}),
+    ['jiashu-nutrition-copy:'+foreignOwner]:JSON.stringify({key:operation,body:{action:'copy',fromDate:today,fromMeal:'breakfast',toDate:today,toMeal:'lunch',previewToken:'a'.repeat(64)}}),
+    ['jiashu-nutrition-favorite:'+foreignOwner]:JSON.stringify({key:operation,body:{entryId:operation,expectedRevision:1}}),
+  };
+  const f=await fixture('id="nutrition-page"','/health/nutrition',390,foreignStorage);
+  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false'&&f.document.getElementById('nutrition-content')?.hidden===false&&Boolean(f.document.getElementById('nutrition-review-status')?.textContent?.includes('已记录部分')));
+  assert.match(f.html,/name="viewport"/);assert.match(f.html,/@media\(max-width:450px\)/);
+  assert.equal(f.document.querySelectorAll('.nav-link').length,4);
+  assert.equal(f.document.querySelector('[data-context-path="/health/nutrition"]')?.getAttribute('aria-current'),'page');
+  assert.equal(f.document.getElementById('nutrition-total')?.textContent,'暂无记录');
+  assert.equal(f.document.querySelectorAll('[data-nutrition-add-meal]').length,4);
+  assert.equal(f.document.querySelectorAll('[data-nutrition-copy-meal]').length,4);
+  assert.equal(f.document.querySelectorAll('[data-nutrition-skip-meal]').length,4);
+  assert.ok(f.document.querySelector('label[for="nutrition-day"]'));
+  assert.ok(f.document.querySelector('label[for="nutrition-ai-text"]'));
+  assert.equal(f.document.getElementById('nutrition-review-chart')?.querySelectorAll('.is-missing').length,7);
+  assert.match(f.document.getElementById('nutrition-review-summary')?.textContent ?? '',/暂无可比较日期/);
+  assert.equal(f.document.getElementById('nutrition-pending')?.hidden,true);
+  assert.equal(f.document.getElementById('nutrition-copy-pending')?.hidden,true);
+  assert.equal(f.document.getElementById('nutrition-favorite-pending')?.hidden,true);
+  assert.equal((f.document.getElementById('nutrition-add') as HTMLButtonElement).disabled,false);
+  assert.equal((f.document.getElementById('nutrition-copy-open') as HTMLButtonElement).disabled,false);
+  assert.equal(f.document.getElementById('nutrition-batch-dialog')?.hasAttribute('open'),false);
+  assert.equal(f.document.getElementById('nutrition-copy-dialog')?.hasAttribute('open'),false);
+  // Opening the manual form exercises its minified helper references without
+  // parsing a meal, saving, marking status or invoking the provider.
+  f.document.getElementById('nutrition-add')!.dispatchEvent(new f.window.Event('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.document.getElementById('nutrition-dialog')?.hasAttribute('open'),true);
+  assert.equal((f.document.getElementById('nutrition-name') as HTMLInputElement).value,'');
+  assert.ok(f.document.getElementById('nutrition-food-search-button'));
+  assert.equal((f.document.getElementById('nutrition-save') as HTMLButtonElement).disabled,false);
+  f.document.getElementById('nutrition-dialog-close')!.dispatchEvent(new f.window.Event('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.document.getElementById('nutrition-dialog')?.hasAttribute('open'),false);
+  assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'),'true');
+  assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')&&!request.path.includes('/assistant')));
+  assert.deepEqual(f.requests.map((request)=>new URL(request.path,'https://synthetic-production.example').pathname).sort(),['/api/health/nutrition','/api/health/nutrition/favorites','/api/health/nutrition/review']);
+  for(const [key,value] of Object.entries(foreignStorage))assert.equal(f.sessionStorage.getItem(key),value);
+  assert.ok(!f.document.body.textContent?.includes('OTHER_OWNER_PRIVATE_DRAFT'));
 });

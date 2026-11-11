@@ -1,4 +1,4 @@
-import { createNutritionEntry, listNutritionEntries } from '../../../../db/nutrition-store';
+import { createNutritionEntry, readNutritionRangeSnapshot, recentNutritionFoods } from '../../../../db/nutrition-store';
 import { buildNutritionReview, parseNutritionCreate, parseNutritionQuery, presentNutritionEntry } from '../../../../lib/nutrition';
 import { apiUser, json, unauthenticated } from '../../_shared';
 import { invalidNutritionRequestId, nutritionBody, nutritionDatabase, nutritionError, nutritionGuard, nutritionRequestId } from './_shared';
@@ -10,8 +10,11 @@ export async function GET(request: Request) {
   if (!user) return unauthenticated();
   try {
     const selection = parseNutritionQuery(new URL(request.url).searchParams);
-    const entries = await listNutritionEntries(nutritionDatabase(), user.userId, { from: selection.recentFrom, to: selection.recentTo, includeDeleted: true });
-    return json(buildNutritionReview(entries, selection));
+    const snapshot = await readNutritionRangeSnapshot(nutritionDatabase(), user.userId, { from: selection.recentFrom, to: selection.recentTo, includeDeleted: true });
+    const entries = snapshot.entries;
+    const dayStatus = snapshot.statuses.find((status) => status.date === selection.date) ?? { date: selection.date, complete: false, meals: { breakfast: 'unrecorded', lunch: 'unrecorded', dinner: 'unrecorded', snack: 'unrecorded' }, revision: 0 };
+    const recentFoods = await recentNutritionFoods(nutritionDatabase(), user.userId, selection.date);
+    return json({ ...buildNutritionReview(entries, selection), dayStatus, recentFoods });
   } catch (error) { return nutritionError(error); }
 }
 

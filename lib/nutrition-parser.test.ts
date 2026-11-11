@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
+import test from 'node:test';
+import { validAssistantText } from './health-assistant-chat.ts';
+import { shanghaiDay } from './health.ts';
+import type { FoodItem } from './food-catalog.ts';
+import type { NutritionDraft, NutritionParserRequest } from './nutrition-parser.ts';
+
+function fixture(foods: FoodItem[] = []) {
+  const calculations: Array<{ id: string; amount: number; unit: string }> = [];
+  const source = stripTypeScriptTypes(readFileSync(new URL('./nutrition-parser.ts', import.meta.url), 'utf8'), { mode: 'strip' })
+    .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
+  const rules = new Function('searchFoods', 'calculateFoodSelection', 'validAssistantText', 'shanghaiDay', source + '\nreturn {parseNutritionParserRequest,buildNutritionDrafts,NutritionParserError};')(
+    () => foods,
+    (selection: { id: string; amount: number; unit: string }) => {
+      calculations.push(selection);
+      if (!['g', '克', '公克'].includes(selection.unit)) throw new Error('Unsupported portion');
+      const food = foods.find((food) => food.id === selection.id)!;
+      return { caloriesTenth: Math.round(food.kcalPer100g * selection.amount / 10), grams: selection.amount, estimated: false };
+    }, validAssistantText, shanghaiDay,
+  ) as {
+    parseNutritionParserRequest(raw: unknown, now?: number): NutritionParserRequest;
+    buildNutritionDrafts(answer: string, request: NutritionParserRequest): { drafts: NutritionDraft[]; warnings: string[] };
+  };
+  return { ...rules, calculations };
+}
+const now = Date.parse('2026-11-11T16:01:00Z'); // Shanghai is already November 12.
+const base = { text: '昨天午饭吃了150克熟米饭', date: '2026-11-10', today: '2026-11-12', meal: null } satisfies NutritionParserRequest;
+const item = (patch: Record<string, unknown> = {}) => ({ name: '熟米饭', amount: 150, unit: '克', meal: 'lunch', dateText: '昨天', sourceText: '150克熟米饭', ...patch });
+const answer = (...items: Record<string, unknown>[]) => JSON.stringify({ items });
+const cooked = { id: 'synthetic-cooked-rice', name: '熟米饭', aliases: ['白饭'], category: '谷物', state: '熟制', kcalPer100g: 100,
+  source: { name: 'Synthetic fixture', url: 'https://food-fixture.example', recordId: '1', version: 'test' }, portions: [] } satisfies FoodItem;
+
+test('requests validate the entire input, use Shanghai today and preserve explicit defaults', () => {
+  const f = fixture();
+  assert.deepEqual(f.parseNutritionParserRequest({ text: '  吃了一个苹果  ', date: '2026-11-11', meal: 'snack' }, now),
+    { text: '吃了一个苹果', date: '2026-11-11', today: '2026-11-12', meal: 'snack' });
+  assert.equal(f.parseNutritionParserRequest({ text: '苹果', date: '2026-11-12' }, now).meal, null);
+  for (const bad of [null, [], {}, { text: '鸡蛋', date: '2026-02-30' }, { text: '鸡蛋', date: '2026-11-13' },
+    { text: 'x'.repeat(2001), date: '2026-11-11' }, { text: '鸡蛋', date: '2026-11-11', meal: 'other' },
+    { text: '鸡蛋', date: '2026-11-11', userId: 'someone-else' }, { text: 'x\u0000', date: '2026-11-11' }]) {
+    assert.throws(() => f.parseNutritionParserRequest(bad, now));
+  }
+});
+
+test('an exact unique cooked-food match is calculated locally, and relative dates use Shanghai today', () => {
+  const f = fixture([cooked]);
+  const result = f.buildNutritionDrafts(answer(item()), base);
+  assert.equal(result.drafts.length, 1);
+  assert.deepEqual(result.drafts[0].food, { id: cooked.id, amount: 150, unit: '克' });
+  assert.equal(result.drafts[0].calories, '150.0');
+  assert.equal(result.drafts[0].date, '2026-11-11');
+  assert.equal(result.drafts[0].meal, 'lunch');
+  assert.deepEqual(f.calculations, [{ id: cooked.id, amount: 150, unit: '克' }]);
+});
+
+test('unknown food, missing amounts and unsupported bowls remain editable with unknown calories', () => {
+  const unknown = fixture().buildNutritionDrafts(answer(item()), base).drafts[0];
+  assert.equal(unknown.food, null); assert.equal(unknown.calories, null); assert.match(unknown.warnings.join(' '), /暂未找到/);
+  assert.equal(unknown.amount, 150); assert.equal(unknown.unit, '克');
+  const f = fixture([cooked]);
+  const bowlRequest = { ...base, text: '昨天午饭吃了一碗熟米饭' };
+  const bowl = f.buildNutritionDrafts(answer(item({ amount: 1, unit: '碗', sourceText: '一碗熟米饭' })), bowlRequest).drafts[0];
+  assert.equal(bowl.food, null); assert.equal(bowl.calories, null); assert.match(bowl.warnings.join(' '), /改填克重/);
+  assert.equal(bowl.amount, 1); assert.equal(bowl.unit, '碗');
+  const noAmount = f.buildNutritionDrafts(answer(item({ amount: null, unit: null, meal: null, dateText: null, sourceText: '熟米饭' })), base).drafts[0];
+  assert.equal(noAmount.food, null); assert.equal(noAmount.meal, null); assert.equal(noAmount.date, base.date);
+  assert.equal(noAmount.amount, null); assert.equal(noAmount.unit, null);
+  assert.match(noAmount.warnings.join(' '), /餐次/); assert.match(noAmount.warnings.join(' '), /份量/);
+});
+
+test('ambiguous aliases or discarded cooking methods never silently select a food', () => {
+  const ambiguous = fixture([cooked, { ...cooked, id: 'other-rice' }]);
+  assert.equal(ambiguous.buildNutritionDrafts(answer(item()), base).drafts[0].food, null);
+  assert.equal(ambiguous.calculations.length, 0);
+  const rawChicken = { ...cooked, id: 'raw-chicken', name: '鸡胸肉', aliases: [], state: '生鲜' };
+  const f = fixture([rawChicken]);
+  const request = { ...base, text: '午饭吃了150克煎鸡胸肉' };
+  const discarded = f.buildNutritionDrafts(answer(item({ name: '鸡胸肉', sourceText: '150克煎鸡胸肉', dateText: null })), request).drafts[0];
+  assert.equal(discarded.food, null); assert.equal(discarded.calories, null); assert.equal(f.calculations.length, 0);
+});
+
+test('model structure, count, dates and original evidence are strictly bounded, and calories cannot be supplied', () => {
+  const f = fixture([cooked]);
+  for (const raw of ['```json\n{"items":[]}\n```', JSON.stringify({ items: [], calories: 5 }), JSON.stringify({ items: Array(21).fill(item()) }),
+    answer(item({ calories: 999 })), answer(item({ sourceText: '并未出现的食物' })), answer(item({ amount: -1 })),
+    answer(item({ amount: '150' })), answer(item({ unit: '\u0000' })), answer(item({ dateText: '2025-01-01' })), answer(item({ meal: 'system' }))]) {
+    assert.throws(() => f.buildNutritionDrafts(raw, base));
+  }
+  assert.throws(() => f.buildNutritionDrafts(answer(item({ dateText: '明天' })), { ...base, text: '明天吃150克熟米饭' }), /不能晚于今天/);
+  assert.deepEqual(f.buildNutritionDrafts('{"items":[]}', base).drafts, []);
+});

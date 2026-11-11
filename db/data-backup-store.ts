@@ -1,4 +1,4 @@
-import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_TABLES, BackupCapacityError, backupDigest, backupRowKey, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_TABLES, BackupCapacityError, backupDigest, backupFail, backupRowKey, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
 import type { BackupRow, BackupTable, DataBackup } from '../lib/data-backup.ts';
 
 export type BackupDatabase = Pick<D1Database, 'prepare' | 'batch'>;
@@ -15,6 +15,20 @@ function queryBudget(current: Record<BackupTable,BackupRow[]>, additions: Record
   const foreignReads = BACKUP_TABLE_NAMES.filter((table) => 'globalId' in BACKUP_TABLES[table] && additions[table].length > 0).length;
   return 1 + foreignReads + 1 + (existingFinanceAffected(current,additions).length ? 1 : 0) + BACKUP_TABLE_NAMES.reduce((sum,table) => sum + chunks(current[table]).length + chunks(additions[table]).length,0);
 }
+function restoredNutritionStatuses(current: BackupRow[], addedEntries: BackupRow[], addedStatuses: BackupRow[]): BackupRow[] {
+  const statuses=new Map(current.map((row)=>[String(row.date),{...row}]));
+  for(const entry of addedEntries){const date=String(entry.date),prior=statuses.get(date);statuses.set(date,prior?{...prior,complete:0,revision:Number(prior.revision)+1,updated_at:entry.updated_at}:{date,complete:0,meals_json:'{}',revision:1,updated_at:entry.updated_at});}
+  // Only dates proven absent in the target are added/upserted after triggers.
+  for(const row of addedStatuses)statuses.set(String(row.date),{...row});
+  return [...statuses.values()].sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+}
+function finalRestoredTables(current: Record<BackupTable,BackupRow[]>, added: Record<BackupTable,BackupRow[]>) {
+  const rows=Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[...current[table],...added[table]]])) as Record<BackupTable,BackupRow[]>;
+  rows.nutrition_day_status=restoredNutritionStatuses(current.nutrition_day_status,added.nutrition_entries,added.nutrition_day_status);
+  const affected=new Set(existingFinanceAffected(current,added));
+  rows.finance_accounts=rows.finance_accounts.map((row)=>affected.has(String(row.id))?{...row,balance_revision:Number(row.balance_revision)+1}:row);
+  return rows;
+}
 async function readTables(db: BackupDatabase, userId: string): Promise<Record<BackupTable, BackupRow[]>> {
   // One read snapshot, one query regardless of the number of business tables.
   // Each row is its own JSON value, avoiding a large json_group_array cell.
@@ -26,17 +40,24 @@ async function readTables(db: BackupDatabase, userId: string): Promise<Record<Ba
   for (const table of BACKUP_TABLE_NAMES) rows[table].sort((a,b) => 'sequence' in BACKUP_TABLES[table] ? Number(a.sequence)-Number(b.sequence) : backupRowKey(table,a).localeCompare(backupRowKey(table,b)));
   return rows;
 }
+async function validateFavoriteDigests(backup: DataBackup) {
+  for (const row of backup.tables.nutrition_favorites) if (await backupDigest(JSON.parse(row.template_json as string)) !== row.template_hash) backupFail('常用食物的内容摘要与模板不一致。');
+}
 export async function exportDataBackup(db: BackupDatabase, userId: string, now = new Date().toISOString()): Promise<DataBackup> {
   const backup: DataBackup = { kind: 'jiashu-os-backup', version: 2, exportedAt: now, tables: await readTables(db,userId) };
   if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('完整备份超过 8 MiB；当前版本不支持分卷导出，请联系维护者扩容。');
   const empty = Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]])) as unknown as Record<BackupTable,BackupRow[]>;
   const prepared=restorationRows(empty,backup.tables);
-  if (Object.values(backup.tables).reduce((sum,list)=>sum+list.length,0)+prepared.syntheticRows>BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({...backup,tables:prepared.rows})).byteLength>BACKUP_MAX_BYTES) throw new BackupCapacityError('备份包含旧设置升级所需的历史基线后将超过恢复容量；未截断记录。');
+  const restoredTables=finalRestoredTables(empty,prepared.rows);
+  if (Object.values(restoredTables).reduce((sum,list)=>sum+list.length,0)>BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({...backup,tables:restoredTables})).byteLength>BACKUP_MAX_BYTES) throw new BackupCapacityError('备份包含恢复基线和饮食状态生成记录后将超过恢复容量；未截断记录。');
   if (queryBudget(empty,prepared.rows) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('备份过大，超过安全恢复的查询预算；未截断记录。当前版本暂不支持分卷，请联系维护者扩容。');
   // Export and restore use exactly the same validator; never offer an unrestorable download.
-  return parseDataBackup(backup);
+  const parsed = parseDataBackup(backup);
+  await validateFavoriteDigests(parsed);
+  return parsed;
 }
 async function planRestore(db: BackupDatabase, userId: string, backup: DataBackup): Promise<Plan> {
+  await validateFavoriteDigests(backup);
   const current = await readTables(db,userId);
   const additions = Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => [table,[]])) as unknown as Record<BackupTable, BackupRow[]>;
   const summaries: BackupTablePreview[] = [];
@@ -74,10 +95,10 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     summaries.push({ table,label:spec.label,incoming:incoming.length,added:additions[table].length,skipped,conflicts,conflictExamples });
   }
   const total = summaries.reduce((value,r) => ({ incoming:value.incoming+r.incoming,added:value.added+r.added,skipped:value.skipped+r.skipped,conflicts:value.conflicts+r.conflicts }),{ incoming:0,added:0,skipped:0,conflicts:0 });
-  const merged = Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => [table,[...current[table],...additions[table]]])) as Record<BackupTable,BackupRow[]>;
   const prepared = restorationRows(current,additions);
-  const restoredTables=Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[...current[table],...prepared.rows[table]]])) as Record<BackupTable,BackupRow[]>;
-  if (Object.values(merged).reduce((sum,list) => sum+list.length,0)+prepared.syntheticRows > BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables})).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('恢复后的数据将超过完整备份容量，未写入数据。');
+  const restoredTables=finalRestoredTables(current,prepared.rows);
+  if(restoredTables.nutrition_favorites.length>100)throw new BackupCapacityError('恢复后的常用食物将超过100项，未写入数据。请先整理常用食物后重新预览。');
+  if (Object.values(restoredTables).reduce((sum,list) => sum+list.length,0) > BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables})).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('恢复后的数据将超过完整备份容量，未写入数据。');
   if (!total.conflicts) parseDataBackup({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables});
   if (total.added && queryBudget(current,prepared.rows) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('当前数据与备份合并超过安全恢复的查询预算；未写入数据。请联系维护者扩容。');
   const backupHash = await backupDigest(backup);
@@ -120,7 +141,8 @@ export async function restoreDataBackup(db: BackupDatabase, userId: string, inpu
     }
     const columns = spec.columns.filter((c) => c !== 'sequence');
     for (const group of chunks(restored[table])) {
-      inserts.push(db.prepare(`INSERT INTO ${table} (user_id,${columns.join(',')}) SELECT ?,${columns.map((c) => `json_extract(value, '$.${c}')`).join(',')} FROM json_each(?) ORDER BY CAST(key AS INTEGER)`).bind(userId,JSON.stringify(group)));
+      const triggerRestore=table==='nutrition_day_status'?' ON CONFLICT(user_id,date) DO UPDATE SET complete=excluded.complete,meals_json=excluded.meals_json,revision=excluded.revision,updated_at=excluded.updated_at':'';
+      inserts.push(db.prepare(`INSERT INTO ${table} (user_id,${columns.join(',')}) SELECT ?,${columns.map((c) => `json_extract(value, '$.${c}')`).join(',')} FROM json_each(?) WHERE 1 ORDER BY CAST(key AS INTEGER)${triggerRestore}`).bind(userId,JSON.stringify(group)));
     }
   }
   const affected = existingFinanceAffected(plan.current,plan.additions);

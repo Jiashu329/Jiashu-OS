@@ -109,3 +109,28 @@ test('saving fields block internal navigation and unload without offering discar
   f.choice('continue'); f.busy(false); f.block(false); f.guard.saved();
   assert.equal(f.event('beforeunload', f.window).defaultPrevented, false);
 });
+
+test('successful completion dismisses its busy sheet without creating a navigation request', async () => {
+  const f = fixture(); f.edit('正在保存'); f.busy(true); f.block(true);
+  f.event('click', f.document.getElementById('next')!, { button: 0 }); assert.equal(f.sheetOpen(), true);
+  f.busy(false); f.block(false); f.guard.saved(); await Promise.resolve();
+  assert.equal(f.sheetOpen(), false); assert.equal(f.navigated.length, 0); assert.equal(f.guard.dirty, false);
+  // A different navigation already authorized through the ordinary Save choice
+  // must survive a second, busy-only wait sheet opened while that save runs.
+  f.edit('第二次保存');
+  f.form.addEventListener('submit', (event) => { event.preventDefault(); f.busy(true); f.block(true); });
+  f.event('click', f.document.getElementById('next')!, { button: 0 }); f.choice('save');
+  f.event('click', f.document.getElementById('next')!, { button: 0 }); assert.equal(f.sheetOpen(), true);
+  f.busy(false); f.block(false); f.guard.saved(); await Promise.resolve();
+  assert.equal(f.sheetOpen(), false); assert.deepEqual(f.navigated, ['https://draft.example/next']);
+});
+
+test('failed completion dismisses its busy sheet while retaining the editable draft', () => {
+  const f = fixture(); f.edit('保存失败仍保留'); f.busy(true); f.block(true);
+  f.event('click', f.document.getElementById('next')!, { button: 0 }); assert.equal(f.sheetOpen(), true);
+  // Error handlers may run before their finally clause releases busy controls.
+  f.guard.failed(); assert.equal(f.sheetOpen(), false); assert.equal(f.navigated.length, 0);
+  f.busy(false); f.block(false); assert.equal(f.guard.dirty, true); assert.equal(f.input.value, '保存失败仍保留');
+  f.guard.close(); assert.equal(f.sheetOpen(), true);
+  assert.equal((f.document.querySelector('[data-draft-choice="discard"]') as HTMLButtonElement).disabled, false);
+});

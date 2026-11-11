@@ -33,21 +33,6 @@ CREATE TABLE `nutrition_copy_operations` (
 );
 --> statement-breakpoint
 CREATE INDEX `nutrition_copy_operations_owner_created_idx` ON `nutrition_copy_operations` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE TABLE `nutrition_favorites` (
-	`id` text PRIMARY KEY NOT NULL,
-	`user_id` text NOT NULL,
-	`name` text NOT NULL,
-	`portion` text NOT NULL,
-	`note` text NOT NULL,
-	`calories_tenth` integer,
-	`creation_hash` text NOT NULL,
-	`revision` integer NOT NULL,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	`deleted_at` text
-);
---> statement-breakpoint
-CREATE INDEX `nutrition_favorites_owner_deleted_idx` ON `nutrition_favorites` (`user_id`,`deleted_at`);--> statement-breakpoint
 ALTER TABLE `finance_runway_settings` ADD `revision` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE `health_goal_settings` ADD `revision` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE `health_weight_plan_settings` ADD `revision` integer DEFAULT 0 NOT NULL;

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { readHealthRange } from '../../../../db/health-repository';
-import { listNutritionEntries } from '../../../../db/nutrition-store';
+import { readNutritionRangeSnapshot } from '../../../../db/nutrition-store';
 import { consumeAIQuota, readAIQuota } from '../../../../db/ai-usage-store';
 import { AIProviderError, callHealthAssistant } from '../../../../lib/ai-provider';
 import { AISettingsConflictError, readAISettings, resolveUserAIConfiguration } from '../../../../db/ai-settings-store';
@@ -27,13 +27,14 @@ class AssistantRequestError extends Error {}
 async function contextFor(userId: string, period: AssistantDays, scope: AssistantScope, now: number) {
   if (!env.DB) throw new Error('Health storage unavailable');
   const range = assistantRange(period, now);
-  const [health, nutrition, goals, weightPlan] = await Promise.all([
+  const [health, nutritionSnapshot, goals, weightPlan] = await Promise.all([
     scope.metrics.length ? readHealthRange(userId, range.from, range.to, scope.metrics) : Promise.resolve({measurements:[]}),
-    scope.includeNutrition ? listNutritionEntries(env.DB, userId, { from: range.from, to: range.to }) : Promise.resolve([]),
+    scope.includeNutrition ? readNutritionRangeSnapshot(env.DB, userId, { from: range.from, to: range.to }) : Promise.resolve({entries:[],statuses:[]}),
     scope.includeGoals ? readGoalSettings(env.DB,userId) : Promise.resolve(undefined),
     scope.includeGoals && scope.metrics.includes('weight') ? readWeightPlanSettings(env.DB,userId) : Promise.resolve(undefined),
   ]);
-  return buildHealthAssistantContext({ measurements: health.measurements, nutrition, days: period, scope, goals, weightPlan, now });
+  return buildHealthAssistantContext({ measurements: health.measurements, nutrition: nutritionSnapshot.entries,
+    nutritionStatuses: scope.includeNutrition ? nutritionSnapshot.statuses : undefined, days: period, scope, goals, weightPlan, now });
 }
 
 function failure(error: unknown, quota?: AIQuotaResult): Response {
