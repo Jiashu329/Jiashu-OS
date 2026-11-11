@@ -1,4 +1,5 @@
 import { APP_LOGO_SRC } from './branding.ts';
+import { renderHealthAssistantWidget } from './health-assistant-widget.ts';
 
 type AppPage = 'home' | 'health' | 'finance' | 'sync';
 
@@ -42,5 +43,5 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
     return `<a ${attributes} href="${href}">${icon}${label}</a>`;
   }).join('');
 
-  return `<aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">PERSONAL SPACE</div><nav class="nav">${items}</nav><div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside>`;
+  return `<aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">PERSONAL SPACE</div><nav class="nav">${items}</nav><div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside>${renderHealthAssistantWidget()}`;
 }

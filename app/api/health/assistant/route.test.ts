@@ -4,6 +4,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import * as rules from '../../../../lib/health-assistant-context.ts';
 import * as provider from '../../../../lib/ai-provider.ts';
+import * as chat from '../../../../lib/health-assistant-chat.ts';
+import { renderAssistantMarkdown } from '../../../../lib/assistant-markdown.ts';
 import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto.ts';
 import { AISettingsConflictError } from '../../../../db/ai-settings-store.ts';
 import type { HealthMeasurement } from '../../../../lib/health.ts';
@@ -25,7 +27,7 @@ function fixture() {
   const configReads: Array<{ db: unknown; user: string; master: unknown; expectedRevision?: number }> = [];
   const configurations: provider.AIConfiguration[] = [];
   const reads: Array<{ user: string; from: string; to: string; kind: string }> = [];
-  const outgoing: Array<{ question: string; context: rules.HealthAssistantContext }> = [];
+  const outgoing: Array<{ question: string; context: rules.HealthAssistantContext; history?: readonly chat.AssistantHistoryMessage[] }> = [];
   const quotaUsers: string[] = [];
   let allowed = true, empty = false, fail = false;
   let contextHook: (() => Promise<void>) | null = null, quotaHook: (() => Promise<void>) | null = null;
@@ -37,7 +39,7 @@ function fixture() {
     getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const handlers = load(new URL('./route.ts', import.meta.url), {
-    ...shared, env, ...rules, ...provider, AISettingsCryptoError, AISettingsConflictError,
+    ...shared, env, ...rules, ...provider, ...chat, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError,
     readAISettings: async (db: unknown, user: string) => { settingsReads.push({ db, user }); return { revision: revisions[user] ?? 0 }; },
     resolveUserAIConfiguration: async (db: unknown, user: string, master: unknown, expectedRevision?: number) => {
       configReads.push({ db, user, master, expectedRevision });
@@ -61,7 +63,7 @@ function fixture() {
       quotaUsers.push(user); const hook = quotaHook; quotaHook = null; await hook?.();
       return { allowed, retryAfter: 23, remainingToday: 10 };
     },
-    callHealthAssistant: async (config: provider.AIConfiguration, input: { question: string; context: rules.HealthAssistantContext }) => {
+    callHealthAssistant: async (config: provider.AIConfiguration, input: { question: string; context: rules.HealthAssistantContext; history?: readonly chat.AssistantHistoryMessage[] }) => {
       configurations.push(config);
       outgoing.push(input); return { answer: '合成测试回答 [H3]', provider: 'MiniMax', model: config.model };
     },
@@ -122,8 +124,8 @@ void test('explicit sharing, a supported range and a bounded question are requir
     assert.equal((await f.post(body)).status, 400);
   }
   assert.equal((await f.post('{', { raw: true })).status, 400);
-  assert.equal((await f.post('x'.repeat(8193), { raw: true })).status, 413);
-  assert.equal((await f.post(undefined, { length: '8193' })).status, 413);
+  assert.equal((await f.post('x'.repeat(49153), { raw: true })).status, 413);
+  assert.equal((await f.post(undefined, { length: '49153' })).status, 413);
   assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.settingsReads.length, 0);
 });
 
@@ -137,11 +139,59 @@ void test('missing configuration, empty records, and exhausted quota never send 
   assert.equal(f.outgoing.length, 0); assert.deepEqual(f.quotaUsers, ['alice']);
 });
 
+void test('history validation rejects malformed or excessive browser turns before database, quota or model access', async () => {
+  const f = fixture();
+  const pair = (question = 'x', answer = 'y') => [{ role: 'user', content: question }, { role: 'assistant', content: answer }];
+  for (const history of [null, {}, [pair()[0]], [...pair(), pair()[0]], [...pair(), ...pair(), ...pair(), ...pair(), ...pair()],
+    [{ role: 'system', content: 'PRIVATE' }, pair()[1]], [pair()[0], { role: 'tool', content: 'PRIVATE' }],
+    [pair()[1], pair()[0]], [pair()[0], { ...pair()[1], tools: [] }], pair('x'.repeat(1001)), pair('x', 'y'.repeat(10001)),
+    pair('x', 'PRIVATE\u0000'), pair('PRIVATE\u0085'), [...pair('x', '字'.repeat(6000)), ...pair('x', '字'.repeat(6000))]]) {
+    const response = await f.post({ question: '继续', days: 7, shareHealthData: true, history });
+    assert.equal(response.status, 400);
+    assert.equal((await response.text()).includes('PRIVATE'), false);
+  }
+  assert.equal(f.settingsReads.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.reads.length, 0);
+  assert.equal(f.quotaUsers.length, 0); assert.equal(f.outgoing.length, 0);
+});
+
+void test('multi-turn requests pass only validated history and newly built owner context without persisting or returning history', async () => {
+  const f = fixture();
+  const history = [{ role: 'user', content: '  PRIVATE先前问题  ' }, { role: 'assistant', content: 'PRIVATE先前回答 [H999]' }];
+  const response = await f.post({ question: '结合现在的记录呢？', days: 30, shareHealthData: true, history });
+  assert.equal(response.status, 200);
+  assert.deepEqual(f.outgoing[0].history, [{ role: 'user', content: 'PRIVATE先前问题' }, history[1]]);
+  assert.equal(f.outgoing[0].context.range.days, 30);
+  assert.ok(f.reads.every((entry) => entry.user === 'alice'));
+  assert.deepEqual(f.quotaUsers, ['alice']);
+  const result = await response.json() as { answer: string; answerHtml: string };
+  assert.equal(result.answerHtml, renderAssistantMarkdown(result.answer));
+  assert.equal(JSON.stringify(result).includes('PRIVATE'), false);
+  assert.equal(JSON.stringify(f.outgoing[0].context).includes('H999'), false);
+  // A subsequent request without browser history starts a fresh single turn.
+  assert.equal((await f.post()).status, 200);
+  assert.equal(Object.hasOwn(f.outgoing[1], 'history'), false);
+  assert.equal((await f.post({ question: '😀'.repeat(1000), days: 7, shareHealthData: true, history: [] })).status, 200);
+  assert.equal(Object.hasOwn(f.outgoing[2], 'history'), false);
+});
+
+void test('48 KiB request limits count actual bytes even when content-length is absent or misleading', async () => {
+  const f = fixture();
+  const body = JSON.stringify({ question: 'x', days: 7, shareHealthData: true });
+  const exact = body + ' '.repeat(chat.MAX_ASSISTANT_REQUEST_BYTES - new TextEncoder().encode(body).byteLength);
+  assert.equal((await f.post(exact, { raw: true, length: '1' })).status, 200);
+  const before = f.settingsReads.length;
+  assert.equal((await f.post(exact + ' ', { raw: true, length: '1' })).status, 413);
+  assert.equal((await f.post(body + '字'.repeat(17000), { raw: true })).status, 413);
+  assert.equal(f.settingsReads.length, before);
+  assert.equal(f.quotaUsers.length, 1);
+});
+
 void test('POST sends only the server-selected owner context and returns data references with a plain answer', async () => {
   const f = fixture();
   const response = await f.post({ question: '  总结这段时间  ', days: 7, shareHealthData: true }); assert.equal(response.status, 200);
-  const result = await response.json() as { answer: string; sources: unknown[]; generatedAt: string; range: { days: number } };
+  const result = await response.json() as { answer: string; answerHtml: string; sources: unknown[]; generatedAt: string; range: { days: number } };
   assert.equal(result.answer, '合成测试回答 [H3]'); assert.equal(result.range.days, 7);
+  assert.equal(result.answerHtml, renderAssistantMarkdown(result.answer));
   assert.ok(result.sources.length); assert.ok(Number.isFinite(Date.parse(result.generatedAt)));
   assert.equal(f.outgoing[0].question, '总结这段时间');
   const sent = JSON.stringify(f.outgoing[0]);

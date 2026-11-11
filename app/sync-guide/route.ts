@@ -1,3 +1,4 @@
+import { renderHealthAssistantWidget } from '../../lib/health-assistant-widget';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD, APP_LOGO_SRC } from '../../lib/branding';
 import { requireChatGPTUser } from '../chatgpt-auth';
@@ -33,5 +34,5 @@ const range=document.getElementById('sleep-days');
 if(['#sleep-files','#sleep-file-import'].includes(location.hash)){document.querySelector('.advanced-reference').open=true;document.querySelector(location.hash)?.scrollIntoView();}
 function updateSleepRange(){const days=Number(range.value);document.querySelectorAll('[data-sleep-days]').forEach((node)=>{node.textContent=String(days);});document.querySelectorAll('[data-sleep-query-days]').forEach((node)=>{node.textContent=String(days+1);});}
 range.addEventListener('change',updateSleepRange);updateSleepRange();
-</script></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
+</script>${renderHealthAssistantWidget()}</body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
 }
