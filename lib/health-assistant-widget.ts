@@ -62,8 +62,11 @@ export function renderHealthAssistantWidget(): string {
 #health-chat .hc-bubble{min-width:0;max-width:100%;padding:11px 13px;border:1px solid var(--line,#dfe5ee);border-radius:3px 13px 13px;background:var(--paper,#fff);overflow-wrap:anywhere;font-size:13px;line-height:1.85}
 #health-chat .is-user .hc-bubble{max-width:90%;border-color:#dbe5f6;border-radius:13px 3px 13px 13px;background:var(--soft,#e8effb);white-space:pre-wrap}
 #health-chat .hc-message-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;color:var(--muted,#606e84);font-size:10px;line-height:1.8}
-#health-chat .hc-copy{flex:none;min-height:25px;padding:2px 5px;border:0;border-radius:5px;background:none;color:var(--muted,#606e84);font-size:10px}
-#health-chat .hc-copy:hover{background:var(--hover,#f0f4fa);color:var(--primary-hover,#45639f)}
+#health-chat .hc-copy,#health-chat .hc-reveal{flex:none;min-height:25px;padding:2px 5px;border:0;border-radius:5px;background:none;color:var(--muted,#606e84);font-size:10px}
+#health-chat .hc-reveal{color:var(--primary-hover,#45639f)}
+#health-chat .hc-copy:hover,#health-chat .hc-reveal:hover{background:var(--hover,#f0f4fa);color:var(--primary-hover,#45639f)}
+#health-chat .hc-cursor{display:inline-block;width:2px;height:1em;margin-left:2px;background:var(--primary,#5574b5);vertical-align:-.12em;animation:health-chat-caret 1s steps(1) infinite}
+@keyframes health-chat-caret{0%,100%{opacity:1}50%{opacity:0}}
 #health-chat .hc-message-sources{width:100%;color:var(--muted,#606e84);font-size:10px}
 #health-chat .hc-message-sources summary{cursor:pointer}
 #health-chat .hc-markdown{white-space:normal}
@@ -92,8 +95,7 @@ export function renderHealthAssistantWidget(): string {
 #health-chat .hc-pending-dots i:nth-child(3){animation-delay:.3s}
 @keyframes health-chat-pulse{0%,70%,100%{opacity:.35}35%{opacity:1}}
 #health-chat .hc-compose{flex:none;padding:11px 14px 12px;border-top:1px solid var(--line,#dfe5ee);background:var(--paper,#fff)}
-#health-chat .hc-consent{display:flex;align-items:flex-start;gap:7px;margin:0 0 9px;cursor:pointer;font-size:10px;line-height:1.75;color:var(--muted,#606e84)}
-#health-chat .hc-consent input{flex:none;width:14px;height:14px;margin:2px 0 0}
+#health-chat .hc-sharing-note{margin:0 0 9px;font-size:10px;line-height:1.75;color:var(--muted,#606e84)}
 #health-chat .hc-input-wrap{display:flex;align-items:flex-end;gap:8px;padding:8px 8px 8px 11px;border:1px solid #c9d4e6;border-radius:11px;background:var(--paper,#fff)}
 #health-chat .hc-input-wrap:focus-within{border-color:var(--primary,#5574b5);box-shadow:0 0 0 2px rgb(85 116 181 / 9%)}
 #health-chat .hc-question{display:block;flex:1;min-width:0;min-height:40px;max-height:126px;resize:none;padding:3px 0;border:0;outline:0;background:transparent;font-size:13px;line-height:1.7;box-shadow:none}
@@ -108,7 +110,7 @@ export function renderHealthAssistantWidget(): string {
 #health-chat .hc-settings:hover{color:var(--primary-hover,#45639f);text-decoration:underline}
 #health-chat .hc-footnote{margin:7px 0 0;color:#7b879a;font-size:9px;line-height:1.6;text-align:center}
 @media(max-width:600px){#health-chat .hc-launcher{right:16px;bottom:max(16px,env(safe-area-inset-bottom));min-height:46px;padding:10px 15px;font-size:13px}#health-chat .hc-panel{right:10px;bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 20px);height:calc(100dvh - 20px - env(safe-area-inset-bottom));max-height:calc(100dvh - 20px - env(safe-area-inset-bottom));border-radius:15px}#health-chat .hc-head{padding:13px}#health-chat .hc-scroll{padding:13px}#health-chat .hc-question{font-size:16px;line-height:1.55}#health-chat .hc-compose{padding-bottom:max(12px,env(safe-area-inset-bottom))}}
-@media(prefers-reduced-motion:reduce){#health-chat .hc-pending-dots i{animation:none;opacity:.7}}
+@media(prefers-reduced-motion:reduce){#health-chat .hc-pending-dots i{animation:none;opacity:.7}#health-chat .hc-cursor{animation:none}}
 </style><div id="health-chat" data-health-chat-root>
 <button class="hc-launcher" id="health-chat-launcher" type="button" aria-haspopup="dialog" aria-controls="health-chat-panel" aria-expanded="false"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z"/><path d="M8 12h2l1.2-2.5 1.7 5 1.2-2.5H17"/></svg><span id="health-chat-launcher-label">健康助手</span></button>
 <section class="hc-panel" id="health-chat-panel" role="dialog" aria-modal="false" aria-labelledby="health-chat-title" tabindex="-1" hidden>
@@ -118,6 +120,6 @@ export function renderHealthAssistantWidget(): string {
 <details class="hc-context" id="health-chat-context" hidden><summary id="health-chat-context-summary">查看健康摘要与来源</summary><p id="health-chat-context-range"></p><dl class="hc-coverage" id="health-chat-coverage"></dl><ul class="hc-source-list" id="health-chat-sources"></ul><p id="health-chat-limitations"></p><p>仅发送日期、每日健康数值与饮食热量汇总；不发送身份、财务、饮食名称或备注。对话内容也会随追问发送给 MiniMax。</p></details>
 <div class="hc-welcome" id="health-chat-welcome"><h3>今天，想从哪里开始？</h3><p>一起看看睡眠、活动、体重和饮食的变化。<span class="hc-preset">先给出简要结论，再用记录说明，最后给你可执行的小建议。</span></p><div class="hc-suggestions"><button type="button" data-health-chat-question="请总结最近的健康趋势，并告诉我最值得关注的一件事。">总结最近的健康趋势 <span aria-hidden="true">↗</span></button><button type="button" data-health-chat-question="最近的睡眠有什么变化？请结合实际记录说明。">看看最近的睡眠变化 <span aria-hidden="true">↗</span></button><button type="button" data-health-chat-question="请根据我的健康和饮食记录，给出三个可执行的小建议。">给我三个可执行的小建议 <span aria-hidden="true">↗</span></button></div></div>
 <div class="hc-messages" id="health-chat-messages" role="log" aria-label="健康助手对话" aria-live="polite" aria-relevant="additions text"></div></div>
-<form class="hc-compose" id="health-chat-form" novalidate><label class="hc-consent"><input id="health-chat-consent" type="checkbox"><span>同意将本次问题、对话历史和所选健康摘要发送至 MiniMax。</span></label><p class="hc-form-error" id="health-chat-form-error" role="alert" hidden></p><div class="hc-input-wrap"><textarea class="hc-question" id="health-chat-question" rows="2" maxlength="2000" aria-label="发送给健康助手的问题" aria-describedby="health-chat-input-hint" placeholder="问问你的健康记录…"></textarea><button class="hc-send" id="health-chat-send" type="submit" aria-label="发送消息" title="发送消息" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/></svg></button></div><div class="hc-compose-foot"><span id="health-chat-input-hint">Enter 发送 · Shift+Enter 换行</span><span id="health-chat-count">0 / 1000</span><a class="hc-settings" href="/settings/ai">AI 设置</a></div><p class="hc-footnote">对话仅保留在本页，刷新后清空。健康建议不能替代专业诊疗。</p></form>
+<form class="hc-compose" id="health-chat-form" novalidate><p class="hc-sharing-note">发送后，本次问题、对话历史和所选健康摘要将由 MiniMax 处理。</p><p class="hc-form-error" id="health-chat-form-error" role="alert" hidden></p><div class="hc-input-wrap"><textarea class="hc-question" id="health-chat-question" rows="2" maxlength="2000" aria-label="发送给健康助手的问题" aria-describedby="health-chat-input-hint" placeholder="问问你的健康记录…"></textarea><button class="hc-send" id="health-chat-send" type="submit" aria-label="发送消息" title="发送消息" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/></svg></button></div><div class="hc-compose-foot"><span id="health-chat-input-hint">Enter 发送 · Shift+Enter 换行</span><span id="health-chat-count">0 / 1000</span><a class="hc-settings" href="/settings/ai">AI 设置</a></div><p class="hc-footnote">对话仅保留在本页，刷新后清空。健康建议不能替代专业诊疗。</p></form>
 </section></div>${renderHealthAssistantWidgetScript()}`;
 }

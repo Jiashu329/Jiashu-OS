@@ -21,8 +21,16 @@ async function settled(check: () => boolean) {
   assert.ok(check(), 'The synthetic DOM operation did not settle');
 }
 
-function fixture() {
+function fixture({ reducedMotion = true } = {}) {
   const { window, document } = parseHTML('<!doctype html><html><body><a id="original-entry" href="/health/assistant">健康助手</a>' + renderHealthAssistantWidget() + '</body></html>');
+  const epoch = Date.now();
+  let now = 0, timerId = 0;
+  const timers = new Map<number, { due: number; callback: () => void }>();
+  const setTimer = (callback: () => void, delay = 0) => {
+    const id = ++timerId; timers.set(id, { due: now + delay, callback }); return id;
+  };
+  class ClockDate extends Date { static now() { return epoch + now; } }
+  Object.assign(window, { matchMedia: () => ({ matches: reducedMotion, addEventListener() {}, removeEventListener() {} }) });
   const requests: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
   const location = { origin: 'https://synthetic-widget.example', pathname: '/health', search: '?metric=sleep' };
   let nextPost: (() => Promise<Response>) | undefined;
@@ -38,8 +46,9 @@ function fixture() {
   };
   const source = renderHealthAssistantWidgetScript().replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
   runInNewContext(source, { window, document, Element: window.Element, location, navigator: {}, fetch,
-    URL, URLSearchParams, TextEncoder, AbortController, Intl, Date, setTimeout, clearTimeout });
-  const el = (id: string) => document.getElementById('health-chat-' + id)! as unknown as HTMLElement & { value: string; checked: boolean; disabled: boolean };
+    URL, URLSearchParams, TextEncoder, AbortController, Intl, Date: ClockDate,
+    setTimeout: setTimer, clearTimeout: (id: number) => timers.delete(id) });
+  const el = (id: string) => document.getElementById('health-chat-' + id)! as unknown as HTMLElement & { value: string; disabled: boolean };
   const event = (name: string, details: Record<string, unknown> = {}) => {
     const value = new window.Event(name, { bubbles: true, cancelable: true });
     for (const [key, item] of Object.entries(details)) Object.defineProperty(value, key, { value: item });
@@ -47,12 +56,23 @@ function fixture() {
   };
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click', { button: 0 }));
   const question = (text: string) => { el('question').value = text; el('question').dispatchEvent(event('input')); };
-  const consent = () => { el('consent').checked = true; el('consent').dispatchEvent(event('change')); };
   const send = () => el('form').dispatchEvent(event('submit'));
-  return { window, document, requests, location, el, event, click, question, consent, send,
+  return { window, document, requests, location, el, event, click, question, send,
+    timerCount() { return timers.size; },
+    async advance(milliseconds: number) {
+      const target = now + milliseconds;
+      for (;;) {
+        const next = [...timers.entries()].filter(([, timer]) => timer.due <= target).sort((a, b) => a[1].due - b[1].due)[0];
+        if (!next) break;
+        const [id, timer] = next; timers.delete(id); now = timer.due; timer.callback();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      now = target;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    },
     postNext(handler: () => Promise<Response>) { nextPost = handler; },
     async open() { click('launcher'); await settled(() => !el('context').hidden); },
-    async sendText(text: string) { question(text); consent(); send(); await settled(() => !el('question').disabled); },
+    async sendText(text: string) { question(text); send(); await settled(() => !el('question').disabled); },
   };
 }
 
@@ -71,8 +91,10 @@ test('the original health-assistant entry opens lazily without navigation or a m
 test('consecutive messages carry successful history and show safe Markdown while user text stays inert', async () => {
   const f = fixture(); await f.open();
   f.question('总结 <img src=x onerror=alert(1)>');
-  assert.equal(f.el('send').disabled, true);
-  f.consent(); f.send(); await settled(() => !f.el('question').disabled);
+  assert.equal(f.document.getElementById('health-chat-consent'), null);
+  assert.equal(f.el('form').querySelector('input[type=checkbox]'), null);
+  assert.equal(f.el('send').disabled, false);
+  f.send(); await settled(() => !f.el('question').disabled);
   const first = f.requests.find((item) => item.method === 'POST')!;
   assert.deepEqual(first.body?.history, []); assert.equal(first.body?.shareHealthData, true);
   assert.equal(f.el('messages').querySelectorAll('img').length, 0);
@@ -102,27 +124,27 @@ test('failed messages preserve the draft and never become model history', async 
   assert.equal(JSON.stringify(latest.body?.history).includes('这次失败的问题'), false);
 });
 
-test('minimizing an in-flight reply preserves it, while range changes and leaving clear conversation and consent', async () => {
+test('minimizing an in-flight reply preserves it, while range changes and leaving clear conversation without requiring another consent step', async () => {
   const f = fixture(); await f.open();
   let resolvePost!: (response: Response) => void;
   f.postNext(() => new Promise<Response>((resolve) => { resolvePost = resolve; }));
-  f.question('等待回复'); f.consent(); f.send(); f.click('minimize');
+  f.question('等待回复'); f.send(); f.click('minimize');
   assert.equal(f.el('panel').hidden, true); assert.equal(f.el('question').disabled, true);
   resolvePost(Response.json(completion())); await settled(() => !f.el('question').disabled);
   f.click('launcher'); assert.equal(f.el('messages').querySelectorAll('article').length, 2);
   f.click(f.document.querySelector('[data-health-chat-days="30"]')!);
   await settled(() => !f.el('context').hidden);
-  assert.equal(f.el('messages').children.length, 0); assert.equal(f.el('consent').checked, false);
+  assert.equal(f.el('messages').children.length, 0); assert.equal(f.document.getElementById('health-chat-consent'), null);
   await f.sendText('总结三十天');
   const last = f.requests.filter((item) => item.method === 'POST').at(-1)!;
   assert.equal(last.body?.days, 30); assert.deepEqual(last.body?.history, []);
   f.window.dispatchEvent(f.event('pagehide'));
-  assert.equal(f.el('messages').children.length, 0); assert.equal(f.el('consent').checked, false);
+  assert.equal(f.el('messages').children.length, 0); assert.equal(f.document.getElementById('health-chat-consent'), null);
   assert.equal(f.el('context').hidden, true);
 });
 
-test('IME and Shift+Enter do not submit, and a new conversation resets authorization', async () => {
-  const f = fixture(); await f.open(); f.question('中文输入'); f.consent();
+test('IME and Shift+Enter do not submit, and a new conversation clears history without adding a consent step', async () => {
+  const f = fixture(); await f.open(); f.question('中文输入');
   f.el('question').dispatchEvent(f.event('keydown', { key: 'Enter', isComposing: true }));
   f.el('question').dispatchEvent(f.event('keydown', { key: 'Enter', shiftKey: true }));
   assert.equal(f.requests.filter((item) => item.method === 'POST').length, 0);
@@ -130,5 +152,111 @@ test('IME and Shift+Enter do not submit, and a new conversation resets authoriza
   await settled(() => !f.el('question').disabled);
   assert.equal(f.requests.filter((item) => item.method === 'POST').length, 1);
   f.click('new'); await settled(() => !f.el('context').hidden);
-  assert.equal(f.el('messages').children.length, 0); assert.equal(f.el('consent').checked, false);
+  assert.equal(f.el('messages').children.length, 0); assert.equal(f.document.getElementById('health-chat-consent'), null);
+  await f.sendText('新对话直接发送');
+  const latest = f.requests.filter((item) => item.method === 'POST').at(-1)!;
+  assert.deepEqual(latest.body?.history, []); assert.equal(latest.body?.shareHealthData, true);
+});
+
+test('new replies reveal progressively and immediately showing the rest preserves safe Markdown and full follow-up history', async () => {
+  const f = fixture({ reducedMotion: false }); await f.open();
+  f.question('看看我的记录'); f.send();
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  const bubble = f.el('messages').querySelector('.hc-markdown')!;
+  const article = bubble.closest('article')!;
+  const reveal = article.querySelector('.hc-reveal')! as HTMLElement;
+  assert.equal(article.getAttribute('aria-busy'), 'true');
+  assert.equal(reveal.hidden, false); assert.equal(reveal.textContent, '立即显示');
+  assert.equal(f.el('question').disabled, true); assert.equal(f.el('new').disabled, true);
+  await f.advance(24);
+  const partial = bubble.querySelector('h2')!.textContent ?? '';
+  assert.ok(partial.length > 0 && partial.length < '先看睡眠'.length, 'The heading must visibly grow before the rest of the answer');
+  f.click(reveal); await settled(() => !f.el('question').disabled);
+  assert.equal(article.getAttribute('aria-busy'), 'false');
+  assert.equal(bubble.classList.contains('is-typing'), false); assert.equal(reveal.hidden, true);
+  assert.equal(bubble.innerHTML, renderAssistantMarkdown(answer));
+  assert.equal(bubble.querySelectorAll('table').length, 1); assert.equal(bubble.querySelectorAll('strong').length, 1);
+  f.question('继续'); f.send();
+  await settled(() => f.requests.filter((item) => item.method === 'POST').length === 2);
+  assert.deepEqual(f.requests.filter((item) => item.method === 'POST')[1].body?.history,
+    [{ role: 'user', content: '看看我的记录' }, { role: 'assistant', content: answer }]);
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  f.click(f.el('messages').querySelectorAll('.hc-reveal')[1]);
+  await settled(() => !f.el('question').disabled);
+});
+
+test('plain-text fallback reveals complete graphemes and finishes naturally within the duration budget', async () => {
+  const f = fixture({ reducedMotion: false }); await f.open();
+  const text = '你👩‍⚕️e\u0301🇨🇳好，今天也要照顾自己。';
+  f.postNext(async () => Response.json({ ...completion(), answer: text, answerHtml: undefined }));
+  f.question('给我一句建议'); f.send();
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  const bubble = f.el('messages').querySelector('.hc-markdown')!;
+  const segments = [...new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(text)].map((item) => item.segment);
+  const prefixes = new Set(segments.map((_, index) => segments.slice(0, index + 1).join('')));
+  prefixes.add('');
+  for (let index = 0; index < 12; index++) {
+    const clone = bubble.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove());
+    assert.ok(prefixes.has(clone.textContent ?? ''), 'Every visible prefix must end at a grapheme boundary');
+    await f.advance(24);
+  }
+  await f.advance(12000);
+  assert.equal(bubble.textContent, text); assert.equal(bubble.classList.contains('is-typing'), false);
+  assert.equal(f.el('question').disabled, false); assert.equal(f.timerCount(), 0);
+});
+
+test('reduced motion renders a complete reply immediately with no reveal timer', async () => {
+  const f = fixture({ reducedMotion: true }); await f.open(); await f.sendText('总结睡眠');
+  const bubble = f.el('messages').querySelector('.hc-markdown')!;
+  assert.equal(bubble.innerHTML, renderAssistantMarkdown(answer));
+  assert.equal(bubble.classList.contains('is-typing'), false);
+  assert.equal((bubble.closest('article')!.querySelector('.hc-reveal') as HTMLElement | null)?.hidden ?? true, true);
+  assert.equal(f.timerCount(), 0);
+});
+
+test('a maximum-size reply completes without forcing a character-by-character multi-minute wait', async () => {
+  const f = fixture({ reducedMotion: false }); await f.open();
+  const text = '健康记录'.repeat(2500);
+  f.postNext(async () => Response.json({ ...completion(), answer: text, answerHtml: undefined }));
+  f.question('给我完整分析'); f.send();
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  await f.advance(12100);
+  assert.equal(f.el('messages').querySelector('.hc-markdown')!.textContent, text);
+  assert.equal(f.el('question').disabled, false); assert.equal(f.timerCount(), 0);
+});
+
+test('minimizing preserves reveal progress and leaving the page cancels every reveal callback', async () => {
+  const f = fixture({ reducedMotion: false }); await f.open();
+  f.question('继续看看'); f.send();
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  const bubble = f.el('messages').querySelector('.hc-markdown')!;
+  await f.advance(48);
+  const before = bubble.querySelector('h2')!.textContent ?? '';
+  f.click('minimize'); assert.equal(f.el('panel').hidden, true);
+  await f.advance(24);
+  f.click('launcher');
+  assert.equal(f.el('messages').querySelector('.hc-markdown'), bubble);
+  assert.ok((bubble.querySelector('h2')!.textContent ?? '').startsWith(before));
+  assert.equal(f.requests.filter((item) => item.method === 'POST').length, 1);
+  f.window.dispatchEvent(f.event('pagehide'));
+  assert.equal(f.el('messages').children.length, 0); assert.equal(f.document.getElementById('health-chat-consent'), null);
+  assert.equal(f.timerCount(), 0);
+  await f.advance(20000);
+  assert.equal(f.el('messages').children.length, 0); assert.equal(f.el('question').disabled, false);
+});
+
+test('revealing a reply does not pull a reader away from earlier messages', async () => {
+  const f = fixture({ reducedMotion: false }); await f.open();
+  const scroll = f.el('scroll');
+  Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 1400 }, clientHeight: { configurable: true, value: 400 } });
+  f.question('给我详细建议'); f.send();
+  await settled(() => !!f.el('messages').querySelector('.is-typing'));
+  scroll.scrollTop = 50;
+  scroll.dispatchEvent(f.event('scroll'));
+  await f.advance(120);
+  assert.equal(scroll.scrollTop, 50);
+  f.click(f.el('messages').querySelector('.hc-reveal')!);
+  await settled(() => !f.el('question').disabled);
+  assert.equal(scroll.scrollTop, 50);
 });
