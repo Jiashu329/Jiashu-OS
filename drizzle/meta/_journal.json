@@ -71,6 +71,13 @@
       "when": 1794270743880,
       "tag": "0009_whole_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794383181293,
+      "tag": "0010_concerned_harpoon",
+      "breakpoints": true
     }
   ]
 }

@@ -153,3 +153,12 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 }, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date)]);
+
+// Request counters only; questions, answers and health data are never stored here.
+export const aiUsageLimits = sqliteTable('ai_usage_limits', {
+  userId: text('user_id').primaryKey(),
+  day: text('day').notNull(),
+  dayCount: integer('day_count').notNull(),
+  minute: integer('minute').notNull(),
+  minuteCount: integer('minute_count').notNull(),
+});
