@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BACKUP_TABLE_NAMES } from './data-backup.ts';
+import { createDataBackupHandlers } from './data-backup-api.ts';
+import type { BackupDatabase } from '../db/data-backup-store.ts';
+
+function fixture(user:{userId:string}|null={userId:'synthetic-owner'}) { let calls=0;const db={prepare(){calls++;throw new Error('Storage intentionally unavailable');}} as unknown as BackupDatabase;const handler=createDataBackupHandlers({user:async()=>user,database:()=>db,json:(v,s=200,h={})=>Response.json(v,{status:s,headers:{'Cache-Control':'no-store',...h}}),unavailable:()=>Response.json({error:'备份暂时不可用',code:'BACKUP_STORAGE_UNAVAILABLE'},{status:503})});return{handler,calls:()=>calls}; }
+const request=(body:unknown,headers:Record<string,string>={})=>new Request('https://app.example/api/data/backup',{method:'POST',headers:{origin:'https://app.example','Content-Type':'application/json',...headers},body:JSON.stringify(body)});
+void test('unauthenticated export/restore stop before database reads',async()=>{const f=fixture(null);assert.equal((await f.handler.GET()).status,401);assert.equal((await f.handler.POST(request({}))).status,401);assert.equal(f.calls(),0);});
+void test('cross-origin, invalid action and missing preview are rejected before storage',async()=>{const f=fixture();assert.equal((await f.handler.POST(request({},{origin:'https://foreign.example'}))).status,403);assert.equal((await f.handler.POST(request({action:'delete-all'}))).status,400);assert.equal((await f.handler.POST(request({action:['restore']}))).status,400);assert.equal((await f.handler.POST(request({action:'restore',backup:{}}))).status,400);assert.equal(f.calls(),0);});
+void test('strict backup validation and byte ceiling precede database reads',async()=>{const f=fixture();assert.equal((await f.handler.POST(request({action:'preview',backup:{kind:'forged'}}))).status,400);assert.equal((await f.handler.POST(request({action:'preview'},{'content-length':String(9*1024*1024)}))).status,413);assert.equal(f.calls(),0);});
+void test('storage failures use backup-specific errors without exception details',async()=>{const f=fixture();const backup={kind:'jiashu-os-backup',version:1,exportedAt:'2026-11-10T04:00:00.000Z',tables:Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]]))};const response=await f.handler.POST(request({action:'preview',backup}));assert.equal(response.status,503);assert.equal((await response.json() as {code:string}).code,'BACKUP_STORAGE_UNAVAILABLE');assert.ok(f.calls()>0);});

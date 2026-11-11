@@ -44,7 +44,7 @@ function fixture(initialPath = '/health', rows: unknown[] = [], initialState: un
   };
   const source = [...document.querySelectorAll('script')].at(-1)!.textContent!;
   runInNewContext(source, { window, document, location, history, navigator: {}, fetch,
-    URL, URLSearchParams, TextEncoder, crypto: webcrypto, Intl, Date, Event: window.Event,
+    URL, URLSearchParams, TextEncoder, AbortController, crypto: webcrypto, Intl, Date, Event: window.Event,
     setTimeout, clearTimeout, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } });
   const el = (id: string) => document.getElementById(id)! as HTMLElement & { open: boolean; value: string };
   const click = (selector: string) => document.querySelector(selector)!.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));

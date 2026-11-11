@@ -29,10 +29,8 @@ interface TestStatement {
 }
 
 function migrate(sqlite: DatabaseSync) {
-  sqlite.exec(readFileSync(new URL('../drizzle/0002_reflective_human_robot.sql', import.meta.url), 'utf8'));
-  const idempotencyMigration = readdirSync(new URL('../drizzle/', import.meta.url)).find((name) => /^0003_.*\.sql$/.test(name));
-  assert.ok(idempotencyMigration, 'Finance idempotency migration must be generated before running store tests');
-  sqlite.exec(readFileSync(new URL('../drizzle/' + idempotencyMigration, import.meta.url), 'utf8'));
+  const directory = new URL('../drizzle/', import.meta.url);
+  for (const name of readdirSync(directory).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(name, directory), 'utf8'));
 }
 
 function databaseAdapter(sqlite: DatabaseSync, afterBatchStatement?: (index: number) => Promise<void>): FinanceDatabase {

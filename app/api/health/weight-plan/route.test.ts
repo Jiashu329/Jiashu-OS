@@ -6,6 +6,7 @@ import test, { type TestContext } from 'node:test';
 import * as health from '../../../../lib/health.ts';
 import * as composition from '../../../../lib/body-composition.ts';
 import * as recordStore from '../../../../db/health-records-store.ts';
+import * as importStore from '../../../../db/health-import-store.ts';
 import * as planRules from '../../../../lib/weight-plan.ts';
 import * as planStore from '../../../../db/weight-plan-store.ts';
 
@@ -62,7 +63,7 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
-  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore }, ['readHealth', 'importHealth']);
+  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore, ...importStore }, ['readHealth', 'importHealth']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, ...repository, ...planRules, ...planStore, env,
     parseWeightPlanInput: (input: unknown) => planRules.parseWeightPlanInput(input, NOW),
@@ -84,7 +85,10 @@ async function fixture(t: TestContext) {
       if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
       return route.PUT(new Request(ORIGIN + '/api/health/weight-plan', { method: 'PUT', headers, body: JSON.stringify(body) }));
     },
-    sync: repository.importHealth as (userId: string, payload: health.HealthSyncPayload) => Promise<unknown>,
+    async sync(userId: string, payload: health.HealthSyncPayload) {
+      const preview = await importStore.previewHealthImport(db, userId, payload);
+      return (repository.importHealth as (userId: string, payload: health.HealthSyncPayload, deviceId: null, options: importStore.HealthImportOptions) => Promise<unknown>)(userId, payload, null, { previewToken: preview.token, confirmSourceChanges: true });
+    },
   };
 }
 const input = (patch: Record<string, unknown> = {}) => ({ baselineWeight: 80, targetWeight: 70, startDate: shift(-10), deadline: shift(10), enabled: true, ...patch });

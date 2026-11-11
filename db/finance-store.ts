@@ -1,3 +1,4 @@
+import { EFFECTIVE_FINANCE_BALANCES } from './finance-effective-balances.ts';
 /** SQL persistence is independent of Worker globals so it can be exercised on SQLite. */
 export type FinanceDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 
@@ -5,9 +6,14 @@ export interface FinanceAccountRow {
   id: string; ledger: string; name: string; type: string; currency: string; note: string;
   createdAt: string; updatedAt: string; archivedAt: string | null;
   balanceMinor: string; asOfDate: string; balanceUpdatedAt: string;
+  balanceRevision: number;
 }
 export interface FinanceBalanceRow {
   id: string; accountId: string; amountMinor: string; asOfDate: string; note: string; createdAt: string;
+  sequence?: number;
+  revision?: number; status?: 'active' | 'corrected' | 'void';
+  originalAmountMinor?: string; originalAsOfDate?: string; originalNote?: string;
+  changeReason?: string | null; changedAt?: string | null;
 }
 export interface NewFinanceAccount {
   ledger: string; name: string; type: string; currency: string; note: string; amountMinor: string; asOfDate: string;
@@ -36,10 +42,11 @@ async function balanceOperation(db: FinanceDatabase, id: string) {
 }
 
 const accountSelect = `SELECT a.id, a.ledger, a.name, a.type, a.currency, a.note,
+  a.balance_revision AS balanceRevision,
   a.created_at AS createdAt, a.updated_at AS updatedAt, a.archived_at AS archivedAt,
   b.amount_minor AS balanceMinor, b.as_of_date AS asOfDate, b.created_at AS balanceUpdatedAt
-  FROM finance_accounts a JOIN finance_balance_entries b ON b.sequence = (
-    SELECT newest.sequence FROM finance_balance_entries newest
+  FROM finance_accounts a JOIN (${EFFECTIVE_FINANCE_BALANCES}) b ON b.sequence = (
+    SELECT newest.sequence FROM (${EFFECTIVE_FINANCE_BALANCES}) newest
     WHERE newest.account_id = a.id AND newest.user_id = a.user_id
     ORDER BY newest.as_of_date DESC, newest.sequence DESC LIMIT 1
   )`;
@@ -53,17 +60,27 @@ function accountListStatement(db: FinanceDatabase, userId: string, ledger: strin
 function balanceExportStatement(db: FinanceDatabase, userId: string, ledger: string) {
   return db.prepare(`SELECT b.id, b.account_id AS accountId, b.amount_minor AS amountMinor,
     b.as_of_date AS asOfDate, b.note, b.created_at AS createdAt
-    FROM finance_balance_entries b JOIN finance_accounts a ON a.id = b.account_id AND a.user_id = b.user_id
+    FROM (${EFFECTIVE_FINANCE_BALANCES}) b JOIN finance_accounts a ON a.id = b.account_id AND a.user_id = b.user_id
     WHERE b.user_id = ? AND a.ledger = ? ORDER BY b.account_id, b.as_of_date DESC, b.sequence DESC`)
     .bind(userId, ledger);
 }
 
 function balanceHistoryStatement(db: FinanceDatabase, userId: string, accountId: string) {
-  return db.prepare(`SELECT b.id, b.account_id AS accountId, b.amount_minor AS amountMinor,
-    b.as_of_date AS asOfDate, b.note, b.created_at AS createdAt
+  return db.prepare(`SELECT b.id, b.sequence, b.account_id AS accountId,
+    COALESCE(c.amount_minor, b.amount_minor) AS amountMinor,
+    COALESCE(c.as_of_date, b.as_of_date) AS asOfDate,
+    COALESCE(c.note, b.note) AS note, b.created_at AS createdAt,
+    b.amount_minor AS originalAmountMinor, b.as_of_date AS originalAsOfDate, b.note AS originalNote,
+    COALESCE(c.revision, 0) AS revision,
+    CASE WHEN c.action = 'void' THEN 'void' WHEN c.action = 'correct' THEN 'corrected' ELSE 'active' END AS status,
+    c.reason AS changeReason, c.created_at AS changedAt
     FROM finance_balance_entries b JOIN finance_accounts a ON a.id = b.account_id AND a.user_id = b.user_id
+    LEFT JOIN finance_balance_changes c ON c.sequence = (
+      SELECT latest.sequence FROM finance_balance_changes latest
+      WHERE latest.user_id = b.user_id AND latest.entry_id = b.id ORDER BY latest.revision DESC LIMIT 1
+    )
     WHERE b.user_id = ? AND b.account_id = ?
-    ORDER BY b.as_of_date DESC, b.sequence DESC`).bind(userId, accountId);
+    ORDER BY COALESCE(c.as_of_date, b.as_of_date) DESC, b.sequence DESC`).bind(userId, accountId);
 }
 
 export async function listFinanceAccounts(db: FinanceDatabase, userId: string, ledger: string, includeArchived = false): Promise<FinanceAccountRow[]> {
@@ -142,7 +159,7 @@ export async function appendFinanceBalance(db: FinanceDatabase, userId: string, 
         SELECT 1 FROM finance_accounts WHERE user_id = ? AND id = ? AND archived_at IS NULL
       ) AND NOT EXISTS (SELECT 1 FROM finance_accounts WHERE id = ?)
       ON CONFLICT(id) DO NOTHING`).bind(entryId, userId, accountId, input.amountMinor, input.asOfDate, input.note, now, userId, accountId, entryId),
-    db.prepare(`UPDATE finance_accounts SET updated_at = ? WHERE user_id = ? AND id = ?
+    db.prepare(`UPDATE finance_accounts SET updated_at = ?, balance_revision = balance_revision + 1 WHERE user_id = ? AND id = ?
       AND changes() = 1
       AND EXISTS (SELECT 1 FROM finance_balance_entries WHERE id = ? AND user_id = ? AND account_id = ?)`)
       .bind(now, userId, accountId, entryId, userId, accountId),

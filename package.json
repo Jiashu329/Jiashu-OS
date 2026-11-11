@@ -7,7 +7,12 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build && node --experimental-strip-types --test lib/health-production-client.test.ts",
+    "build": "node scripts/build-release.mjs",
+    "test": "node scripts/run-tests.mjs unit",
+    "test:production": "node scripts/run-tests.mjs production",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/release-check.mjs",
+    "release:check": "node scripts/release-check.mjs --release",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt",

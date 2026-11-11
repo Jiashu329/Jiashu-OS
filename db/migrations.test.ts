@@ -27,5 +27,8 @@ test('financial schema additions preserve existing health, connection and exact 
   assert.equal(db.prepare('SELECT revoked_at FROM sync_devices WHERE id=?').get('migration-connection')?.revoked_at, null);
   assert.equal(db.prepare('SELECT amount_minor FROM finance_balance_entries WHERE id=?').get('migration-balance')?.amount_minor, '9007199254740993');
   assert.equal(db.prepare('SELECT name FROM finance_accounts WHERE id=?').get('migration-account')?.name, 'synthetic account');
+  assert.equal(db.prepare('SELECT balance_revision FROM finance_accounts WHERE id=?').get('migration-account')?.balance_revision, 0);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM finance_balance_changes').get()?.count, 0);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM health_import_batches').get()?.count, 0);
   db.close();
 });

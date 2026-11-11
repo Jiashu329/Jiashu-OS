@@ -1,3 +1,4 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -74,7 +75,7 @@ async function fixture(t: TestContext) {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, ...finance, ...financeStore,
+    ...shared, ...balanceChanges, ...finance, ...financeStore,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);
   const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, env };
   const goalsShared = loadExports(new URL('./_shared.ts', import.meta.url), baseBindings, ['goalsDatabase', 'goalsError', 'goalNotFound', 'goalAccounts', 'presentGoal']);

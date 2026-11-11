@@ -16,7 +16,7 @@ const snapshot = () => ({
 async function fixture(data = snapshot()) {
   const { document, window } = parseHTML(renderHomeApp());
   const script = [...document.querySelectorAll('script[type="module"]')].find((node) => node.textContent?.includes('const metricLabels='))!.textContent!;
-  runInNewContext(script, { document, window, Event: window.Event, fetch: async () => Response.json(data), AbortController, URLSearchParams, Intl, Date });
+  runInNewContext(script, { document, window, Event: window.Event, fetch: async () => Response.json(data), AbortController, URLSearchParams, Intl, Date, setTimeout, clearTimeout });
   for (let index = 0; index < 25 && document.getElementById('refresh')!.hasAttribute('disabled'); index++) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }

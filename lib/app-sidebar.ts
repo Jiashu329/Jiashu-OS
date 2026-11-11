@@ -43,7 +43,7 @@ ${APP_PAGE_UX_CSS}
 const contextNavigation = {
   health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/nutrition', '饮食记录'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
   finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾']] },
-  sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
+  sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/data', '数据备份'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
 } as const;
 
 const navigation = [

@@ -1,5 +1,6 @@
 import type { LedgerKind } from '../lib/finance.ts';
 import type { ReviewAccountRow, ReviewBalanceRow } from '../lib/finance-review.ts';
+import { EFFECTIVE_FINANCE_BALANCES } from './finance-effective-balances.ts';
 
 export type FinanceReviewDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 
@@ -11,7 +12,7 @@ export async function readFinanceReviewSnapshot(db: FinanceReviewDatabase, userI
       ORDER BY id`).bind(userId, ledger),
     db.prepare(`SELECT b.account_id AS accountId, b.amount_minor AS amountMinor,
       b.as_of_date AS asOfDate, b.sequence
-      FROM finance_balance_entries b JOIN finance_accounts a ON a.id = b.account_id AND a.user_id = b.user_id
+      FROM (${EFFECTIVE_FINANCE_BALANCES}) b JOIN finance_accounts a ON a.id = b.account_id AND a.user_id = b.user_id
       WHERE a.user_id = ? AND a.ledger = ? AND a.archived_at IS NULL AND b.as_of_date <= ?
       ORDER BY b.account_id, b.as_of_date, b.sequence`).bind(userId, ledger, cutoffDay),
   ]);

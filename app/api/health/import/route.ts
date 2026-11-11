@@ -1,10 +1,18 @@
-import { findSyncDevice, importHealth, SyncDeviceInvalidError } from '../../../../db/health-repository';
+import { findSyncDevice, importHealth, readImportHistory, SyncDeviceInvalidError } from '../../../../db/health-repository';
+import { HealthImportConflictError } from '../../../../db/health-import-store';
 import { HealthValidationError, MAX_SYNC_BYTES, measurementDay } from '../../../../lib/health';
 import { parseMobileSyncPayload } from '../../../../lib/mobile-sync';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated, unavailable } from '../../_shared';
 import { hashSyncToken, isSyncToken } from '../../sync/devices/tokens';
 
 export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  const user = await apiUser();
+  if (!user) return unauthenticated();
+  try { return json({ batches: await readImportHistory(user.userId) }); }
+  catch { return unavailable(); }
+}
 
 async function limitedBody(request: Request) {
   if (!request.body) return '';
@@ -66,7 +74,10 @@ export async function POST(request: Request) {
     if (Date.parse(payload.exportedAt) > Date.now() + 5 * 60000) {
       return json({ error: '导出时间晚于当前时间，请检查 iPhone 的日期与时区。' }, 400);
     }
-    const result = await importHealth(user.userId, payload, deviceId);
+    const result = await importHealth(user.userId, payload, deviceId, {
+      previewToken: request.headers.get('x-import-preview'),
+      confirmSourceChanges: request.headers.get('x-confirm-source-changes') === 'true',
+    });
     if (requestedSleep && sleepDays === 0) {
       return json({ ...result, sleepStatus: 'no-asleep-data', sleepDays, message: '已接收记录，但本次日期范围没有可计入的入睡片段。卧床与清醒不会计作睡眠；缺失日期不补零，网站已有睡眠记录会保留。' });
     }
@@ -81,6 +92,7 @@ export async function POST(request: Request) {
         : '同步数据格式不正确，请检查数据类型、单位、日期和每日汇总设置。';
       return json({ error: message, code: error.code, issues: error.issues }, 400);
     }
+    if (error instanceof HealthImportConflictError) return json({ error: error.message, code: error.code }, error.code === 'HEALTH_IMPORT_NOT_FOUND' ? 404 : 409);
     return unavailable();
   }
 }
