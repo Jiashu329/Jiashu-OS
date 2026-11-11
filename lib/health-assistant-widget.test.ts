@@ -24,5 +24,7 @@ test('the emitted module script parses and widget controls have matching accessi
   assert.match(html, /aria-controls="health-chat-panel"/);
   assert.match(html, /id="health-chat-panel" role="dialog" aria-modal="false"/);
   assert.match(html, /id="health-chat-messages" role="log"/);
-  assert.match(html, /本次问题、对话历史和所选健康摘要发送至 MiniMax/);
+  assert.doesNotMatch(html, /id="health-chat-consent"|class="hc-consent"/);
+  assert.match(html, /本次问题、对话历史和所选健康摘要/);
+  assert.match(html, /MiniMax/);
 });

@@ -27,15 +27,15 @@ function formError(message){el('form-error').hidden=!message;el('form-error').te
 function status(message,error=false,login=false){el('status').hidden=!message;el('status').classList.toggle('is-error',error);el('status-text').textContent=message;el('retry').hidden=!error||login;el('login').hidden=!login;el('login').href='/signin-with-chatgpt?return_to='+encodeURIComponent(location.pathname+location.search);}
 function controls(){
   const busy=state.loading||state.sending,question=el('question').value.trim(),length=[...question].length;
-  el('send').disabled=busy||!state.data?.configuration?.ready||!state.data?.hasData||!el('consent').checked||!question||length>1000;
+  el('send').disabled=busy||!state.data?.configuration?.ready||!state.data?.hasData||!question||length>1000;
   el('send').setAttribute('aria-label',state.typing?'正在输出回复':state.sending?'正在等待回复':'发送消息');
-  el('question').disabled=state.sending;el('consent').disabled=busy||!state.data?.configuration?.ready||!state.data?.hasData;
+  el('question').disabled=state.sending;
   el('new').disabled=busy;el('retry').disabled=busy;
   root.querySelectorAll('[data-health-chat-days]').forEach((button)=>{button.disabled=busy;button.setAttribute('aria-pressed',String(Number(button.dataset.healthChatDays)===state.days));});
   root.querySelectorAll('[data-health-chat-question]').forEach((button)=>button.disabled=state.sending);
   el('count').textContent=[...el('question').value].length+' / 1000';
   el('launcher-label').textContent=state.sending?'健康助手 · 正在回复':'健康助手';
-  el('input-hint').textContent=state.loading?'正在读取所选健康摘要…':state.typing?'正在逐字显示，可点击“立即显示”查看全文':state.sending?'MiniMax 正在回复…':!state.data?'打开后读取健康摘要':!state.data.configuration.ready?'先在 AI 设置保存配置':!state.data.hasData?'所选范围暂无健康或饮食记录':!el('consent').checked?'勾选同意后可发送':'Enter 发送 · Shift+Enter 换行';
+  el('input-hint').textContent=state.loading?'正在读取所选健康摘要…':state.typing?'正在逐字显示，可点击“立即显示”查看全文':state.sending?'MiniMax 正在回复…':!state.data?'打开后读取健康摘要':!state.data.configuration.ready?'先在 AI 设置保存配置':!state.data.hasData?'所选范围暂无健康或饮食记录':'Enter 发送 · Shift+Enter 换行';
 }
 function resizeInput(){el('question').style.height='auto';el('question').style.height=Math.min(el('question').scrollHeight,126)+'px';}
 function sourceList(target,sources){
@@ -74,7 +74,7 @@ async function readResponse(response){
 async function load(){
   if(state.sending)return;
   const sequence=++state.sequence;state.loadController?.abort();const controller=new AbortController();state.loadController=controller;
-  state.loading=true;clearContext();el('consent').checked=false;formError('');status('正在读取近 '+state.days+' 天的健康摘要…');controls();
+  state.loading=true;clearContext();formError('');status('正在读取近 '+state.days+' 天的健康摘要…');controls();
   const days=state.days;
   try{const response=await fetch('/api/health/assistant?'+new URLSearchParams({days:String(days)}),{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json'},signal:controller.signal});const data=await readResponse(response);if(sequence!==state.sequence)return;if(!checkContext(data,days))throw new Error('健康摘要暂时无法核对，请重新读取。');state.data=data;status('');renderContext(data);}
   catch(error){if(sequence!==state.sequence||error?.name==='AbortError')return;state.data=null;const auth=error?.status===401||error?.code==='SIGN_IN_REQUIRED';if(auth)clearConversation();status(error?.message||'健康摘要暂时无法读取，请重试。',true,auth);}
@@ -82,7 +82,7 @@ async function load(){
 }
 function open(opener){state.opener=opener||el('launcher');state.open=true;el('panel').hidden=false;el('launcher').hidden=true;el('launcher').setAttribute('aria-expanded','true');if(!state.data&&!state.loading)load();controls();if(state.sending)el('panel').focus();else el('question').focus();scrollBottom();}
 function close(){state.open=false;el('panel').hidden=true;el('launcher').hidden=false;el('launcher').setAttribute('aria-expanded','false');const target=state.opener?.isConnected?state.opener:el('launcher');if(typeof target?.focus==='function')target.focus();}
-function clearConversation(){state.history=[];el('messages').replaceChildren();el('welcome').hidden=false;el('question').value='';el('consent').checked=false;formError('');resizeInput();controls();}
+function clearConversation(){state.history=[];el('messages').replaceChildren();el('welcome').hidden=false;el('question').value='';formError('');resizeInput();controls();}
 function appendUser(question){const article=add(el('messages'),'article',undefined,'hc-message is-user');add(article,'span','你','hc-message-label');add(article,'div',question,'hc-bubble');return article;}
 function pending(){const article=add(el('messages'),'article',undefined,'hc-message');add(article,'span','健康助手','hc-message-label');const bubble=add(article,'div',undefined,'hc-bubble hc-pending');const dots=add(bubble,'span',undefined,'hc-pending-dots');dots.setAttribute('aria-hidden','true');for(let index=0;index<3;index++)add(dots,'i');add(bubble,'span','正在查看记录…');return article;}
 function revealAnswer(bubble,article,skip,copy,signal){
@@ -139,7 +139,6 @@ async function submit(event){
   if(!question||[...question].length>1000){formError('请填写 1–1000 个字符的问题。');el('question').focus();return;}
   if(!state.data?.configuration?.ready){formError('请先在 AI 设置保存可用的 MiniMax 配置。');return;}
   if(!state.data.hasData){formError('所选范围暂无健康或饮食记录，请同步或补录后再提问。');return;}
-  if(!el('consent').checked){formError('请先同意将本次问题、对话历史和所选健康摘要发送至 MiniMax。');el('consent').focus();return;}
   const session=state.session,history=boundedHistory(state.history),questionBubble=appendUser(question),waiting=pending();
   el('welcome').hidden=true;state.sending=true;status('');controls();scrollBottom();
   const controller=new AbortController();state.sendController=controller;let timedOut=false;const timer=setTimeout(()=>{timedOut=true;controller.abort();},65000);
@@ -160,7 +159,6 @@ el('new').addEventListener('click',()=>{if(state.loading||state.sending)return;c
 el('form').addEventListener('submit',submit);
 el('question').addEventListener('input',()=>{formError('');resizeInput();controls();});
 el('question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&event.keyCode!==229){event.preventDefault();if(!el('send').disabled)submit();}});
-el('consent').addEventListener('change',()=>{formError('');controls();});
 el('retry').addEventListener('click',()=>{if(!state.loading&&!state.sending)load();});
 root.querySelectorAll('[data-health-chat-question]').forEach((button)=>button.addEventListener('click',()=>{if(state.sending)return;el('question').value=button.dataset.healthChatQuestion;formError('');resizeInput();controls();el('question').focus();}));
 root.querySelectorAll('[data-health-chat-days]').forEach((button)=>button.addEventListener('click',()=>{if(state.loading||state.sending)return;const days=Number(button.dataset.healthChatDays);if(![7,30].includes(days)||days===state.days)return;state.days=days;clearConversation();load();}));
