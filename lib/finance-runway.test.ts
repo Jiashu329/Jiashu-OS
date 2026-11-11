@@ -10,7 +10,7 @@ function input(patch: Record<string, unknown> = {}) {
 }
 function settings(patch: Partial<FinanceRunwaySettings> = {}): FinanceRunwaySettings {
   return { ...parseFinanceRunwayInput(input(), 'CNY'), userId: 'alice', ledger: 'personal', currency: 'CNY',
-    createdAt: '2026-11-09T00:00:00Z', updatedAt: '2026-11-09T00:00:00Z', ...patch };
+    createdAt: '2026-11-09T00:00:00Z', updatedAt: '2026-11-09T00:00:00Z', revision: 0, ...patch };
 }
 function account(id: string, balanceMinor: string, patch: Partial<FinanceRunwayAccount> = {}): FinanceRunwayAccount {
   return { id, name: '合成资产', ledger: 'personal', currency: 'CNY', type: 'bank', balanceMinor, asOfDate: '2026-11-09', archivedAt: null, ...patch };

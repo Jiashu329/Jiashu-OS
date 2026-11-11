@@ -13,7 +13,7 @@ export class NutritionConflictError extends Error {
   readonly code = 'NUTRITION_CONFLICT';
   constructor(message = '这条饮食记录已更新，请刷新后检查再保存。') { super(message); this.name = 'NutritionConflictError'; }
 }
-async function creationFingerprint(input: NutritionInput) {
+export async function creationFingerprint(input: NutritionInput) {
   // The parser normalizes whitespace and calorie tenths before persistence.
   const canonical = JSON.stringify([input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth]);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)));

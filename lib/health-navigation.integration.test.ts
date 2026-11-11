@@ -71,6 +71,16 @@ test('health metric and range deep links survive interactions, Back, Forward and
   assert.equal(f.requests.length, 1);
 });
 
+test('chart question entry shares the selected metric and range as a draft and computed body fat stays unsupported',async()=>{
+  const f=fixture('/health?metric=sleep&days=180');await f.ready();
+  const details:unknown[]=[];f.window.addEventListener('health-assistant-open',(event)=>details.push((event as unknown as CustomEvent).detail));
+  f.click('#ask-health-chart');
+  assert.equal(details.length,1);assert.equal((details[0] as {metric:string}).metric,'sleep');assert.equal((details[0] as {days:number}).days,180);
+  assert.match((details[0] as {question:string}).question,/180.*睡眠/);
+  assert.equal(f.requests.some((r)=>r.method==='POST'),false);
+  f.click('[data-metric="body_fat"]');f.click('#ask-health-chart');assert.equal(details.length,1);
+});
+
 test('health and sync navigation create reversible entries and goals links expand the calendar', async () => {
   const f = fixture('/health?metric=active_energy&days=90#goals'); await f.ready();
   assert.equal(f.el('health-goals-disclosure').open, true);

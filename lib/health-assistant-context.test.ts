@@ -27,11 +27,45 @@ function food(date = '2026-11-10', caloriesTenth: number | null = 1001, deleted 
   };
 }
 
+void test('scope filtering happens before validating or projecting unshared nutrition and goals', () => {
+  const scope = { metrics:['sleep' as const], includeNutrition:false, includeGoals:false };
+  const result = buildHealthAssistantContext({measurements:[daily('sleep'),daily('steps')],nutrition:[food('2026-11-10',NaN)],days:30,now:NOW,scope,
+    goals:{targets:{steps:12345,sleep:9,active_energy:null}},weightPlan:{enabled:true,baselineWeight:90,targetWeight:65,startDate:'2026-01-01',deadline:'2027-01-01'}});
+  assert.deepEqual(result.context.health.map((m)=>m.metric),['sleep']);
+  assert.deepEqual(result.context.nutrition,{recordedDays:0,days:[]});
+  assert.equal(result.context.goals,undefined);
+  assert.ok(result.sources.every((source)=>source.id.startsWith('H5-')));
+  assert.ok(!JSON.stringify(result.context).includes('12345'));
+});
+
+void test('360-day summaries cover the actual full range within provider budget with explicit group semantics', () => {
+  const measurements:HealthMeasurement[]=[];const nutrition:NutritionEntry[]=[];
+  for(let index=1;index<360;index++){const date=shift('2026-11-11',-index);measurements.push(daily('steps',date,1000+index),daily('sleep',date,7),daily('active_energy',date,200),mass('weight',date,70),mass('lean_body_mass',date,55));nutrition.push(food(date,1234));}
+  const result=buildHealthAssistantContext({measurements,nutrition,days:360,now:NOW});
+  assert.equal(result.context.range.days,360);assert.equal(result.context.health[0].recordedDays,359);
+  assert.ok(result.context.health.every((metric)=>metric.points.length<=26));
+  assert.ok(result.context.limitations.some((text)=>text.includes('14日分组')));
+  assert.ok(new TextEncoder().encode(JSON.stringify(result.context)).byteLength<=MAX_HEALTH_ASSISTANT_CONTEXT_BYTES);
+  for(const metric of result.context.health)for(const point of metric.points){const source=result.sources.find((s)=>s.id===point.sourceRef);assert.ok(source);assert.equal(source.to,point.to);assert.equal(source.recordedDays,point.recordedDays);}
+});
+
+void test('nutrition citations map each daily statement to that exact date and expired plans are not treated as active targets', () => {
+  const result=buildHealthAssistantContext({measurements:[mass('weight')],nutrition:[food('2026-11-09'),food('2026-11-10')],days:7,now:NOW,
+    scope:{metrics:['weight'],includeNutrition:true,includeGoals:true},goals:{targets:{steps:null,sleep:null,active_energy:null}},weightPlan:{enabled:true,baselineWeight:75,targetWeight:70,startDate:'2025-01-01',deadline:'2025-12-01'}});
+  for(const point of result.context.nutrition.days){const source=result.sources.find((s)=>s.id===point.sourceRef)!;assert.equal(source.url,'/health/nutrition?date='+point.date);}
+  assert.equal(result.context.goals?.weightPlan,null);assert.match(result.context.goals!.notes.join(''),/过期/);
+});
+
+void test('recovered target baselines are not misrepresented as an actual 1970 goal date',()=>{
+  const result=buildHealthAssistantContext({measurements:[daily('steps')],nutrition:[],days:7,now:NOW,scope:{metrics:['steps'],includeNutrition:false,includeGoals:true},goals:{targets:{steps:6000,sleep:null,active_energy:null},effectiveFrom:'1970-01-01'}});
+  assert.equal(result.context.goals?.targets[0].effectiveFrom,null);assert.match(result.context.goals!.notes.join(''),/实际设置日期未知/);
+});
+
 void test('ranges use Shanghai calendar dates, including UTC midnight, leap days and year boundaries', () => {
   assert.deepEqual(assistantRange(7, Date.parse('2026-11-10T16:30:00Z')), { days: 7, from: '2026-11-05', to: '2026-11-11', today: '2026-11-11' });
   assert.deepEqual(assistantRange(30, Date.parse('2024-03-01T12:00:00+08:00')), { days: 30, from: '2024-02-01', to: '2024-03-01', today: '2024-03-01' });
   assert.equal(assistantRange(7, Date.parse('2026-01-01T08:00:00+08:00')).from, '2025-12-26');
-  for (const [days, now] of [[90, NOW], [7, NaN], [30, Infinity], [7, 9e99], [7, Date.parse('2101-01-01T12:00:00Z')]]) {
+  for (const [days, now] of [[91, NOW], [7, NaN], [30, Infinity], [7, 9e99], [7, Date.parse('2101-01-01T12:00:00Z')]]) {
     assert.throws(() => assistantRange(days as 7 | 30, now), HealthAssistantContextError);
   }
 });
@@ -62,12 +96,12 @@ void test('provider projection excludes identifiers, sample timestamps and free 
   for (const secret of ['PRIVATE_', privateSource, 'userId', 'email', 'createdAt', 'updatedAt', 'startDate', 'endDate', 'portion', 'note', 'rawSamples']) {
     assert.ok(!providerJson.includes(secret), 'unexpected provider field/value: ' + secret);
   }
-  assert.deepEqual(result.sources.map((source) => source.id), ['H1', 'N1']);
+  assert.deepEqual(result.sources.map((source) => source.id), ['H1-20261110', 'N1-20261110']);
   assert.deepEqual(result.sources[0].sources, [privateSource]);
-  assert.equal(result.sources[0].url, '/health/records?metric=weight&from=2026-11-05&to=2026-11-11');
+  assert.equal(result.sources[0].url, '/health/records?metric=weight&from=2026-11-10&to=2026-11-10');
   assert.equal(result.sources[1].url, '/health/nutrition?date=2026-11-10');
-  assert.equal(result.context.health[0].points[0].sourceRef, 'H1');
-  assert.equal(result.context.nutrition.days[0].sourceRef, 'N1');
+  assert.equal(result.context.health[0].points[0].sourceRef, 'H1-20261110');
+  assert.equal(result.context.nutrition.days[0].sourceRef, 'N1-20261110');
 });
 
 void test('all five raw metrics retain fixed citations and daily totals replace rather than sum', () => {
@@ -78,7 +112,7 @@ void test('all five raw metrics retain fixed citations and daily totals replace 
   });
   assert.equal(result.hasData, true);
   assert.deepEqual(result.context.health.map((metric) => [metric.metric, metric.points[0].sourceRef, metric.recordedDays]), [
-    ['weight', 'H1', 1], ['lean_body_mass', 'H2', 1], ['steps', 'H3', 1], ['active_energy', 'H4', 1], ['sleep', 'H5', 1],
+    ['weight', 'H1-20261110', 1], ['lean_body_mass', 'H2-20261110', 1], ['steps', 'H3-20261110', 1], ['active_energy', 'H4-20261110', 1], ['sleep', 'H5-20261110', 1],
   ]);
   assert.equal(result.context.health.find((metric) => metric.metric === 'steps')!.points[0].value, 2000);
   assert.ok(!result.context.health.some((metric) => String(metric.metric) === 'body_fat'));
@@ -92,10 +126,10 @@ void test('health range and future-instant filters run before selecting the last
     daily('steps', '2026-11-05', 0), daily('steps', '2026-11-07', 5000), daily('steps', '2026-11-11', 2000),
     daily('sleep', '2026-11-05'),
   ], nutrition: [], days: 7, now: NOW });
-  assert.deepEqual(result.context.health[0].points, [{ date: '2026-11-11', value: 70, sourceRef: 'H1' }]);
+  assert.deepEqual(result.context.health[0].points, [{ date: '2026-11-11', value: 70, sourceRef: 'H1-20261111' }]);
   assert.deepEqual(result.context.health.find((metric) => metric.metric === 'steps')!.points.map((point) => [point.date, point.value]), [['2026-11-05', 0], ['2026-11-07', 5000]]);
   assert.deepEqual(result.context.health.find((metric) => metric.metric === 'sleep')!.points.map((point) => point.date), ['2026-11-05']);
-  assert.equal(result.sources.find((source) => source.id === 'H3')!.recordedDays, 2);
+  assert.equal(result.sources.filter((source) => source.id.startsWith('H3-')).length, 2);
 });
 
 void test('invalid health values and timestamps do not become usable context', () => {
@@ -130,9 +164,9 @@ void test('nutrition totals preserve true zero and unknown calories while exclud
   ], days: 7, now: NOW });
   assert.equal(result.hasData, true);
   assert.deepEqual(result.context.nutrition, { recordedDays: 3, days: [
-    { date: '2026-11-07', entryCount: 1, knownCalorieCount: 1, unknownCalorieCount: 0, recordedKnownKcal: '0.0', sourceRef: 'N1' },
-    { date: '2026-11-08', entryCount: 1, knownCalorieCount: 0, unknownCalorieCount: 1, recordedKnownKcal: null, sourceRef: 'N1' },
-    { date: '2026-11-09', entryCount: 3, knownCalorieCount: 2, unknownCalorieCount: 1, recordedKnownKcal: '300.3', sourceRef: 'N1' },
+    { date: '2026-11-07', entryCount: 1, knownCalorieCount: 1, unknownCalorieCount: 0, recordedKnownKcal: '0.0', sourceRef: 'N1-20261107' },
+    { date: '2026-11-08', entryCount: 1, knownCalorieCount: 0, unknownCalorieCount: 1, recordedKnownKcal: null, sourceRef: 'N1-20261108' },
+    { date: '2026-11-09', entryCount: 3, knownCalorieCount: 2, unknownCalorieCount: 1, recordedKnownKcal: '300.3', sourceRef: 'N1-20261109' },
   ] });
   const unknownOnly = buildHealthAssistantContext({ measurements: [], nutrition: [food('2026-11-10', null)], days: 7, now: NOW });
   assert.equal(unknownOnly.hasData, true);

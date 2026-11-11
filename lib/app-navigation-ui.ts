@@ -2,7 +2,7 @@
 export function renderAppNavigationScript(): string {
   return String.raw`<script type="module">(()=>{
 function initNavigation(){const sidebar=document.querySelector('[data-app-sidebar]');if(!sidebar||sidebar.dataset.navigationReady==='true')return;sidebar.dataset.navigationReady='true';
-function update(){const path=location.pathname;const group=path==='/finance'||path.startsWith('/finance/')?'finance':path==='/data'||path==='/sync'||path==='/sync-guide'||path.startsWith('/connect-')?'sync':path==='/health'||path.startsWith('/health/')||path==='/settings/ai'?'health':'home';
+function update(){const path=location.pathname;const group=path==='/finance'||path.startsWith('/finance/')?'finance':path==='/data'||path==='/sync'||path.startsWith('/sync/')||path==='/sync-guide'||path.startsWith('/connect-')?'sync':path==='/health'||path.startsWith('/health/')||path==='/settings/ai'?'health':'home';
 sidebar.querySelectorAll('[data-navigation-page]').forEach((link)=>{const active=link.dataset.navigationPage===group;link.classList.toggle('active',active);if(active)link.setAttribute('aria-current',path===({home:'/',health:'/health',finance:'/finance',sync:'/sync'})[group]?'page':'true');else link.removeAttribute('aria-current');});
 sidebar.querySelectorAll('[data-navigation-group]').forEach((section)=>section.hidden=section.dataset.navigationGroup!==group);
 const params=new URLSearchParams(location.search),ledger=params.get('ledger'),currency=params.get('currency');

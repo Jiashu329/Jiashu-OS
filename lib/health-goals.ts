@@ -4,12 +4,15 @@ import type { HealthSummary, ValidationIssue } from './health.ts';
 export const GOAL_METRICS = ['steps', 'sleep', 'active_energy'] as const;
 export type GoalMetric = typeof GOAL_METRICS[number];
 export type GoalTargets = Record<GoalMetric, number | null>;
-export interface GoalSettings { targets: GoalTargets; updatedAt: string | null }
+export interface GoalVersion { effectiveFrom: string; revision: number; targets: GoalTargets; createdAt: string }
+export interface GoalSettings { targets: GoalTargets; updatedAt: string | null; revision?: number; effectiveFrom?: string | null; history?: GoalVersion[] }
 export interface GoalDay {
   day: string;
   value: number | null;
   status: 'unset' | 'missing' | 'in-progress' | 'achieved' | 'missed';
   percent: number | null;
+  target?: number | null;
+  targetEffectiveFrom?: string | null;
 }
 export interface GoalMetricProgress {
   metric: GoalMetric;
@@ -38,7 +41,22 @@ export class GoalValidationError extends Error {
 }
 
 export function emptyGoalSettings(): GoalSettings {
-  return { targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null };
+  return { targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null, revision: 0, effectiveFrom: null, history: [] };
+}
+
+export function goalTargetsForDay(settings: GoalSettings, day: string) {
+  const version = [...(settings.history ?? [])].filter((item) => item.effectiveFrom <= day)
+    .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom) || b.revision - a.revision)[0];
+  return version ? { targets: version.targets, effectiveFrom: version.effectiveFrom } : { targets: settings.history?.length ? { steps:null,sleep:null,active_energy:null } : settings.targets, effectiveFrom: settings.history?.length ? null : settings.effectiveFrom ?? null };
+}
+
+export function parseGoalUpdateInput(input: unknown, now: Date | number = Date.now()) {
+  if (!plainObject(input) || Object.keys(input).some((key) => !['targets', 'expectedRevision', 'effectiveFrom'].includes(key))) throw new GoalValidationError([{ path: '$', message: '请提交完整的目标、版本和生效日期。' }]);
+  if (!Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0) throw new GoalValidationError([{ path: 'expectedRevision', message: '请重新读取最新目标，再保存。' }]);
+  const day = input.effectiveFrom;
+  const time = typeof day==='string'?Date.parse(day+'T12:00:00Z'):NaN;
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < '1970-01-02' || day > shanghaiDay(new Date(now).toISOString()) || !Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== day) throw new GoalValidationError([{ path: 'effectiveFrom', message: '生效日期需为有效且不晚于今天的日期。' }]);
+  return { targets: parseGoalSettingsInput({ targets: input.targets }), expectedRevision: Number(input.expectedRevision), effectiveFrom: day };
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -90,9 +108,10 @@ export function buildGoalProgress(settings: GoalSettings, summary: HealthSummary
       .map((point) => [point.day, point.value]));
     const calendar = days.map((day): GoalDay => {
       const value = points.get(day) ?? null;
-      const status = target === null ? 'unset' : value === null ? 'missing'
-        : value >= target ? 'achieved' : day === today ? 'in-progress' : 'missed';
-      return { day, value, status, percent: target === null || value === null ? null : Math.min(100, value / target * 100) };
+      const version = goalTargetsForDay(settings, day); const dayTarget = version.targets[metric];
+      const status = dayTarget === null ? 'unset' : value === null ? 'missing'
+        : value >= dayTarget ? 'achieved' : day === today ? 'in-progress' : 'missed';
+      return { day, value, target: dayTarget, targetEffectiveFrom: version.effectiveFrom, status, percent: dayTarget === null || value === null ? null : Math.min(100, value / dayTarget * 100) };
     });
     return {
       metric, label: labels[metric], unit: units[metric], target,
@@ -101,5 +120,5 @@ export function buildGoalProgress(settings: GoalSettings, summary: HealthSummary
       recordedDays: calendar.filter((day) => day.value !== null).length,
     };
   });
-  return { today, timezone: HEALTH_TIMEZONE, targets: { ...settings.targets }, updatedAt: settings.updatedAt, metrics };
+  return { ...settings, today, timezone: HEALTH_TIMEZONE, targets: { ...settings.targets }, updatedAt: settings.updatedAt, metrics };
 }

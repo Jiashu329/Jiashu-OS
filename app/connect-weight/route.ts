@@ -2,6 +2,7 @@ import { APP_SIDEBAR_CSS, renderAppSidebar } from '../../lib/app-sidebar';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
 import { requireChatGPTUser } from '../chatgpt-auth';
+import { renderShortcutInstallCard } from '../../lib/shortcut-templates';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ ${APP_SIDEBAR_CSS}
 </style></head><body><div class="app">${renderAppSidebar('sync')}<main class="sync-guide-main" id="sync-guide-page">
 <nav class="guide-breadcrumb" aria-label="页面路径"><a href="/sync">数据同步</a><span aria-hidden="true">/</span><span aria-current="page">体重与去脂体重配置</span></nav>
 <header class="hero"><h1>同步体重与去脂体重</h1><p>用一个快捷指令同步两类记录，保留原始测量日期。同来源、同一测量时间的数据用于计算估算体脂率。</p><p class="muted">可扩展已有体重快捷指令。首次建议读取 7 或 30 天，核对后再补充历史记录。</p></header>
+${renderShortcutInstallCard('weight')}
 
 <details class="card"><summary><strong>排查：去脂体重查询无结果</strong></summary><p>“查找健康样本”如果收到上一步的输入，可能只筛选那些已有样本。体重列表里没有去脂体重，第二次查询就可能返回空。<strong>在第二次查询前添加一个独立的“无”（Nothing）动作</strong>，让它重新读取健康数据。</p><ol><li>找到<strong>设定变量「体重样本」</strong>，在它后面添加<strong>无</strong>。<button class="copy-mini" type="button" data-copy="无">复制动作名称：无</button> <button class="copy-mini" type="button" data-copy="Nothing">英文搜索：Nothing</button></li><li>紧接着放<strong>查找健康样本：去脂体重</strong>。顺序应为：<strong>保存体重样本 → 无 → 查找去脂体重 → 保存去脂体重样本</strong>。</li><li>把<strong>快速查看</strong>直接接到去脂体重查询的输出，先运行到这里核对。确认查询有结果后，再继续后面的数值、日期编码。</li></ol><p class="note">“无”阻断的是自动传入的内容，已保存的“体重样本”变量仍可在后面使用。若加入后仍无项目，可另建一个临时快捷指令，只放<strong>查找去脂体重 → 快速查看</strong>，让查询成为第一个动作；确认读取结果前先保留原始数据，不填 0。</p><p class="muted">这是 Apple 官方建议的连续查找配置。它能解释一种查询为空的情况，仍需要在你的 iPhone 上运行验证。<a href="https://support.apple.com/en-gb/guide/shortcuts/apdbdab3433f/ios" target="_blank" rel="noopener noreferrer">查看 Apple 的查找操作说明 ↗</a></p></details>
 

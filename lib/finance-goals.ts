@@ -55,6 +55,13 @@ export interface FinanceGoalView {
   monthlyMinor: string | null;
   missingCount: number;
   matchedAccountCount: number;
+  missingAccountCount: number;
+  archivedAccountCount: number;
+  unavailableAccountCount: number;
+  staleAccountCount: number;
+  oldestBalanceDate: string | null;
+  latestBalanceDate: string | null;
+  balanceFreshnessDays: number;
   status: 'active' | 'achieved' | 'overdue';
 }
 
@@ -135,6 +142,7 @@ export function parseFinanceGoalPatch(input: unknown, currency: CurrencyCode): F
 /** Linked balances are a view of savings, never a reservation or a transfer. */
 export function buildFinanceGoalView(plan: FinanceGoalPlan, accounts: readonly FinanceGoalAccount[], today = todayShanghai()): FinanceGoalView {
   const linked = new Set(plan.accountIds);
+  const available = new Map(accounts.filter((account) => linked.has(account.id)).map((account) => [account.id, account]));
   const matched = new Map(accounts.filter((account) => linked.has(account.id)
     && account.ledger === plan.ledger && account.currency === plan.currency && account.archivedAt === null
     && Object.hasOwn(ACCOUNT_TYPES, account.type) && ACCOUNT_TYPES[account.type as AccountType].side === 'asset')
@@ -149,6 +157,11 @@ export function buildFinanceGoalView(plan: FinanceGoalPlan, accounts: readonly F
   const days = Math.round((Date.parse(plan.deadline + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
   const percent = current >= target ? 100 : Number(current * BigInt(10000) / target) / 100;
   const monthly = gap === BigInt(0) ? '0' : expired ? null : ((gap + BigInt(months) - BigInt(1)) / BigInt(months)).toString();
+  const balanceFreshnessDays = 30;
+  const cutoff = new Date(Date.parse(today + 'T12:00:00Z') - balanceFreshnessDays * 86400000).toISOString().slice(0, 10);
+  const dates = [...matched.values()].map((account) => account.asOfDate).sort();
+  const archivedAccountCount = [...available.values()].filter((account) => account.archivedAt !== null).length;
+  const missingAccountCount = linked.size - available.size;
   return {
     id: plan.id, ledger: plan.ledger, currency: plan.currency, name: plan.name,
     targetMinor: plan.targetMinor, targetAmount: decimalFromMinor(plan.targetMinor, plan.currency),
@@ -157,6 +170,10 @@ export function buildFinanceGoalView(plan: FinanceGoalPlan, accounts: readonly F
     currentMinor: current.toString(), gapMinor: gap.toString(), percent,
     daysRemaining: Math.max(0, days), monthsRemaining: months, monthlyMinor: monthly,
     missingCount: linked.size - matched.size, matchedAccountCount: matched.size,
+    missingAccountCount, archivedAccountCount,
+    unavailableAccountCount: available.size - matched.size - archivedAccountCount,
+    staleAccountCount: [...matched.values()].filter((account) => account.asOfDate < cutoff).length,
+    oldestBalanceDate: dates[0] ?? null, latestBalanceDate: dates.at(-1) ?? null, balanceFreshnessDays,
     status: gap === BigInt(0) ? 'achieved' : expired ? 'overdue' : 'active',
   };
 }

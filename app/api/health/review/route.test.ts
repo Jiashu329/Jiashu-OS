@@ -37,9 +37,11 @@ function fixture(t: TestContext) {
         bind(...parameters: unknown[]) { values = parameters as SQLInputValue[]; return bound; },
         async first<T>() { return (statement.get(...values) as T | undefined) ?? null; },
         async all<T>() { return { results: statement.all(...values) as T[] }; },
+        execute(){const before=Number(sqlite.prepare('SELECT total_changes() n').get()?.n);const results=statement.columns().length?statement.all(...values):(statement.run(...values),[]);return{results,meta:{changes:Number(sqlite.prepare('SELECT total_changes() n').get()?.n)-before}};},
       };
       return bound;
     },
+    async batch(commands:Array<{execute():unknown}>){sqlite.exec('BEGIN');try{const result=commands.map((c)=>c.execute());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}},
   } as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db };
   let userId: string | null = 'alice';
@@ -60,7 +62,7 @@ function fixture(t: TestContext) {
   return {
     env, queries, record,
     signIn(owner: string | null) { userId = owner; },
-    setGoals(owner: string, targets: GoalTargets) { return writeGoalSettings(db, owner, targets, NOW.toISOString()); },
+    setGoals(owner: string, targets: GoalTargets) { return readGoalSettings(db,owner).then((settings)=>writeGoalSettings(db,owner,targets,settings.revision??0,'1970-01-02',NOW.toISOString())); },
     get(query = '') { return route.GET(new Request(ORIGIN + '/api/health/review?' + query)); },
   };
 }

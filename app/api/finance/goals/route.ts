@@ -1,6 +1,7 @@
 import { createFinanceGoalPlan, readFinanceGoalPlans } from '../../../../db/finance-goals-store';
 import { buildFinanceGoalView, parseFinanceGoalCreate } from '../../../../lib/finance-goals';
-import { CURRENCIES, parseCurrency, parseLedger, todayShanghai } from '../../../../lib/finance';
+import { ACCOUNT_TYPES, CURRENCIES, parseCurrency, parseLedger, todayShanghai } from '../../../../lib/finance';
+import type { AccountType } from '../../../../lib/finance';
 import { apiUser, financeBody, financeIdempotencyKey, financeUnauthenticated, guardFinanceWrite, invalidFinanceIdempotencyKey, json } from '../_shared';
 import { goalAccounts, goalsDatabase, goalsError, presentGoal } from './_shared';
 
@@ -20,7 +21,8 @@ export async function GET(request: Request) {
     ]);
     const today = todayShanghai();
     return json({ ledger, currency, today, goals: plans.map((plan) => buildFinanceGoalView(plan, accounts, today)),
-      accounts: accounts.map(({ id, name, type, currency, ledger, balanceMinor, asOfDate }) => ({ id, name, type, currency, ledger, balanceMinor, asOfDate })),
+      accounts: accounts.filter((account) => account.archivedAt === null && Object.hasOwn(ACCOUNT_TYPES, account.type) && ACCOUNT_TYPES[account.type as AccountType].side === 'asset')
+        .map(({ id, name, type, currency, ledger, balanceMinor, asOfDate }) => ({ id, name, type, currency, ledger, balanceMinor, asOfDate })),
       meta: { currencies: CURRENCIES } });
   } catch (error) { return goalsError(error); }
 }

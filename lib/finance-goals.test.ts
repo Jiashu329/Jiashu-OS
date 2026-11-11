@@ -104,3 +104,32 @@ void test('only linked active asset balances of the same ledger and currency con
   assert.equal(Object.hasOwn(view, 'userId'), false);
   assert.equal(Object.hasOwn(view, 'creationHash'), false);
 });
+
+void test('achieved goals retain exact amounts but expose stale balance evidence and the 30-day boundary', () => {
+  const old = buildFinanceGoalView(plan({ targetMinor: '100', accountIds: [A, B] }), [
+    account(A, '9007199254740993', { asOfDate: '2026-10-09' }),
+    account(B, '1', { asOfDate: '2026-10-10' }),
+  ], TODAY);
+  assert.equal(old.status, 'achieved');
+  assert.equal(old.currentMinor, '9007199254740994');
+  assert.equal(old.staleAccountCount, 1);
+  assert.equal(old.oldestBalanceDate, '2026-10-09');
+  assert.equal(old.latestBalanceDate, '2026-10-10');
+  assert.equal(old.balanceFreshnessDays, 30);
+});
+
+void test('archived, missing and reclassified links are counted separately from stale active balances', () => {
+  const C = crypto.randomUUID(), D = crypto.randomUUID();
+  const view = buildFinanceGoalView(plan({ accountIds: [A, B, C, D] }), [
+    account(A, '40', { asOfDate: '2026-09-01' }),
+    account(B, '100', { archivedAt: '2026-11-08T00:00:00Z' }),
+    account(C, '200', { type: 'loan' }),
+  ], TODAY);
+  assert.equal(view.currentMinor, '40');
+  assert.equal(view.matchedAccountCount, 1);
+  assert.equal(view.missingCount, 3);
+  assert.equal(view.archivedAccountCount, 1);
+  assert.equal(view.missingAccountCount, 1);
+  assert.equal(view.unavailableAccountCount, 1);
+  assert.equal(view.staleAccountCount, 1);
+});

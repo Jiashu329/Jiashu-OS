@@ -18,6 +18,17 @@ interface UsageRow {
 const DAILY_LIMIT = 20;
 const MINUTE_LIMIT = 3;
 
+/** Read application request counters without reserving a provider call. */
+export async function readAIQuota(db: AIUsageDatabase, userId: string, now: number): Promise<AIQuotaResult> {
+  const day = shanghaiDay(new Date(now).toISOString()), minute = Math.floor(now / 60000);
+  const current = await db.prepare('SELECT day, day_count AS dayCount, minute, minute_count AS minuteCount FROM ai_usage_limits WHERE user_id = ?').bind(userId).first<UsageRow>();
+  const dayCount = current?.day === day ? current.dayCount : current && current.day > day ? DAILY_LIMIT : 0;
+  const minuteCount = current?.minute === minute ? current.minuteCount : current && current.minute > minute ? MINUTE_LIMIT : 0;
+  const allowed = dayCount < DAILY_LIMIT && minuteCount < MINUTE_LIMIT;
+  const reset = dayCount >= DAILY_LIMIT ? Date.parse(day + 'T00:00:00+08:00') + 86400000 : (minute + 1) * 60000;
+  return { allowed, remainingToday: Math.max(0, DAILY_LIMIT - dayCount), retryAfter: allowed ? 0 : Math.max(1, Math.ceil((reset-now)/1000)) };
+}
+
 /** Reserve one request atomically across workers. Only counters are persisted. */
 export async function consumeAIQuota(db: AIUsageDatabase, userId: string, now: number): Promise<AIQuotaResult> {
   const day = shanghaiDay(new Date(now).toISOString());

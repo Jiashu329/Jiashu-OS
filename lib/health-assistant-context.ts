@@ -2,17 +2,19 @@ import { buildHealthSummary, HEALTH_TIMEZONE, METRIC_INFO, measurementDay, norma
 import type { HealthMeasurement, HealthMetric, HealthUnit, SleepStages } from './health.ts';
 import { summarizeNutrition } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
+import { ASSISTANT_METRICS, parseAssistantScope } from './health-assistant-scope.ts';
+import type { AssistantDays, AssistantScope } from './health-assistant-scope.ts';
 
 export const MAX_HEALTH_ASSISTANT_CONTEXT_BYTES = 50 * 1024;
 
-export interface HealthAssistantRange { days: 7 | 30; from: string; to: string; today: string }
-export interface HealthAssistantPoint { date: string; value: number; sourceRef: string; sleepStages?: SleepStages }
+export interface HealthAssistantRange { days: AssistantDays; from: string; to: string; today: string }
+export interface HealthAssistantPoint { date: string; value: number; sourceRef: string; sleepStages?: SleepStages; from?: string; to?: string; recordedDays?: number; aggregation?: 'last-recorded-day' | 'available-days-mean' }
 export interface HealthAssistantMetric {
   metric: HealthMetric; label: string; unit: HealthUnit; recordedDays: number; points: HealthAssistantPoint[];
 }
 export interface HealthAssistantNutritionDay {
   date: string; entryCount: number; knownCalorieCount: number; unknownCalorieCount: number;
-  recordedKnownKcal: string | null; sourceRef: 'N1';
+  recordedKnownKcal: string | null; sourceRef: string; from?: string; to?: string; recordedDays?: number; aggregation?: 'available-days-total';
 }
 /** This is the only object intended for the model provider. */
 export interface HealthAssistantContext {
@@ -21,11 +23,13 @@ export interface HealthAssistantContext {
   range: HealthAssistantRange;
   health: HealthAssistantMetric[];
   nutrition: { recordedDays: number; days: HealthAssistantNutritionDay[] };
+  scope: AssistantScope;
+  goals?: { label: string; targets: Array<{ metric: string; value: number; effectiveFrom: string | null }>; weightPlan: { baselineWeight: number; targetWeight: number; startDate: string; deadline: string } | null; notes: string[] };
   limitations: string[];
 }
 /** Local citations may contain source labels; never include this table in a model request. */
 export interface HealthAssistantSource {
-  id: string; label: string; url: string; from: string; to: string; recordedDays: number; sources: string[];
+  id: string; label: string; url: string; from: string; to: string; recordedDays: number; sources: string[]; dates?: string[];
 }
 export interface HealthAssistantContextResult {
   context: HealthAssistantContext;
@@ -35,8 +39,11 @@ export interface HealthAssistantContextResult {
 export interface HealthAssistantContextInput {
   measurements: readonly HealthMeasurement[];
   nutrition: readonly NutritionEntry[];
-  days: 7 | 30;
+  days: AssistantDays;
   now: number;
+  scope?: AssistantScope;
+  goals?: { targets: { steps: number | null; sleep: number | null; active_energy: number | null }; effectiveFrom?: string | null };
+  weightPlan?: { enabled: boolean; baselineWeight: number; targetWeight: number; startDate: string; deadline: string } | null;
 }
 export class HealthAssistantContextError extends Error {
   readonly code: 'INVALID_HEALTH_ASSISTANT_CONTEXT' | 'HEALTH_ASSISTANT_CONTEXT_TOO_LARGE';
@@ -47,14 +54,14 @@ export class HealthAssistantContextError extends Error {
   }
 }
 
-const metrics: readonly HealthMetric[] = ['weight', 'lean_body_mass', 'steps', 'active_energy', 'sleep'];
+const metrics = ASSISTANT_METRICS;
 const sourceIds: Record<HealthMetric, string> = { weight: 'H1', lean_body_mass: 'H2', steps: 'H3', active_energy: 'H4', sleep: 'H5' };
 const stageKeys = ['unspecified', 'core', 'deep', 'rem', 'awake', 'inBed'] as const;
 const tolerance = 1e-8;
 
-export function assistantRange(days: 7 | 30, now: number): HealthAssistantRange {
-  if ((days !== 7 && days !== 30) || !Number.isFinite(now)) {
-    throw new HealthAssistantContextError('健康助手仅支持最近7天或30天，请使用有效的当前时间。');
+export function assistantRange(days: AssistantDays, now: number): HealthAssistantRange {
+  if (![7, 30, 90, 180, 360].includes(days) || !Number.isFinite(now)) {
+    throw new HealthAssistantContextError('健康助手支持最近7、30、90、180或360天，请使用有效的当前时间。');
   }
   let today: string;
   try { today = shanghaiDay(new Date(now).toISOString()); }
@@ -110,52 +117,58 @@ function eligibleMeasurement(row: HealthMeasurement, range: HealthAssistantRange
  */
 export function buildHealthAssistantContext(input: HealthAssistantContextInput): HealthAssistantContextResult {
   const range = assistantRange(input.days, input.now);
-  const eligible = input.measurements.map((row) => eligibleMeasurement(row, range, input.now))
+  const scope = parseAssistantScope(input.scope);
+  const eligible = input.measurements.filter((row) => scope.metrics.includes(row.metric)).map((row) => eligibleMeasurement(row, range, input.now))
     .filter((row): row is HealthMeasurement => row !== null);
   const summary = buildHealthSummary(eligible);
   const sources: HealthAssistantSource[] = [];
-  const health = metrics.map((metric): HealthAssistantMetric => {
+  const width = input.days > 180 ? 14 : input.days > 30 ? 7 : 1;
+  const groupKey = (date: string) => Math.floor((Date.parse(date + 'T12:00:00Z') - Date.parse(range.from + 'T12:00:00Z')) / (width * 86400000));
+  const health = metrics.filter((metric) => scope.metrics.includes(metric)).map((metric): HealthAssistantMetric => {
     const definition = METRIC_INFO[metric];
     const points = summary.metrics[metric].points;
-    const sourceRef = sourceIds[metric];
-    if (points.length) {
-      sources.push({
-        id: sourceRef, label: definition.label + '记录',
-        url: '/health/records?' + new URLSearchParams({ metric, from: range.from, to: range.to }),
-        from: range.from, to: range.to, recordedDays: points.length,
-        sources: [...new Set(points.map((point) => point.source).filter((source): source is string => typeof source === 'string' && source.length > 0))].sort(),
-      });
-    }
-    return {
-      metric, label: definition.label, unit: definition.unit, recordedDays: points.length,
-      points: points.map((point) => ({ date: point.day, value: point.value, sourceRef,
-        ...(metric === 'sleep' && point.sleepStages ? { sleepStages: point.sleepStages } : {}),
-      })),
-    };
+    const groups = new Map<number, typeof points>();
+    for (const point of points) { const key = groupKey(point.day); groups.set(key, [...(groups.get(key) ?? []), point]); }
+    return { metric, label: definition.label, unit: definition.unit, recordedDays: points.length,
+      points: [...groups.values()].map((rows) => {
+        const first = rows[0].day, last = rows.at(-1)!.day;
+        const sourceRef = sourceIds[metric] + '-' + first.replaceAll('-', '');
+        const sample = metric === 'weight' || metric === 'lean_body_mass';
+        sources.push({ id: sourceRef, label: definition.label + (width === 1 ? ' · ' + first : '分组记录'),
+          url: '/health/records?' + new URLSearchParams({ metric, from: first, to: last }), from: first, to: last, recordedDays: rows.length,
+          dates: rows.map((r) => r.day), sources: [...new Set(rows.map((r) => r.source).filter((r): r is string => typeof r === 'string' && !!r))].sort() });
+        return { date: last, value: width === 1 || sample ? rows.at(-1)!.value : Number((rows.reduce((sum,r) => sum + r.value,0) / rows.length).toFixed(4)), sourceRef,
+          ...(width > 1 ? { from:first, to:last, recordedDays:rows.length, aggregation:sample ? 'last-recorded-day' as const : 'available-days-mean' as const } : {}),
+          ...(width === 1 && metric === 'sleep' && rows[0].sleepStages ? { sleepStages:rows[0].sleepStages } : {}) };
+      }) };
   });
-
-  const nutrition = input.nutrition.filter((entry) => entry && entry.deletedAt === null
+  const nutrition = (scope.includeNutrition ? input.nutrition : []).filter((entry) => entry && entry.deletedAt === null
     && typeof entry.date === 'string' && entry.date >= range.from && entry.date <= range.to
     && entry.date.length === 10 && normalizeTimestamp(entry.date + 'T12:00:00+08:00'));
   if (nutrition.some((entry) => entry.caloriesTenth !== null && (!Number.isSafeInteger(entry.caloriesTenth) || entry.caloriesTenth < 0 || entry.caloriesTenth > 200000))) {
     throw new HealthAssistantContextError('部分饮食热量记录无效，请先核对饮食记录后重试。');
   }
   const nutritionDates = [...new Set(nutrition.map((entry) => entry.date))].sort();
-  const nutritionDays = nutritionDates.map((date): HealthAssistantNutritionDay => {
-    const day = summarizeNutrition(nutrition.filter((entry) => entry.date === date));
-    return { date, entryCount: day.entryCount, knownCalorieCount: day.knownCount, unknownCalorieCount: day.unknownCount,
-      recordedKnownKcal: day.knownCalories, sourceRef: 'N1' };
+  const nutritionGroups = new Map<number,string[]>();
+  for (const date of nutritionDates) { const key = groupKey(date); nutritionGroups.set(key,[...(nutritionGroups.get(key) ?? []),date]); }
+  const nutritionDays = [...nutritionGroups.values()].map((dates): HealthAssistantNutritionDay => {
+    const day = summarizeNutrition(nutrition.filter((entry) => dates.includes(entry.date)));
+    const first=dates[0],last=dates.at(-1)!,sourceRef='N1-'+first.replaceAll('-','');
+    sources.push({id:sourceRef,label:'饮食记录 · '+first+(last!==first?' — '+last:''),url:'/health/nutrition?'+new URLSearchParams({date:first}),from:first,to:last,recordedDays:dates.length,dates,sources:['手工饮食记录']});
+    return { date:last,entryCount:day.entryCount,knownCalorieCount:day.knownCount,unknownCalorieCount:day.unknownCount,recordedKnownKcal:day.knownCalories,sourceRef,
+      ...(width > 1 ? {from:first,to:last,recordedDays:dates.length,aggregation:'available-days-total' as const} : {}) };
   });
-  if (nutritionDays.length) sources.push({
-    id: 'N1', label: '饮食记录', url: '/health/nutrition?' + new URLSearchParams({ date: nutritionDates.at(-1)! }),
-    from: range.from, to: range.to, recordedDays: nutritionDays.length, sources: ['手工饮食记录'],
-  });
-
+  const targets = scope.includeGoals && input.goals ? Object.entries(input.goals.targets).filter(([metric,value]) => scope.metrics.includes(metric as HealthMetric) && typeof value === 'number' && Number.isFinite(value) && value > 0)
+    .map(([metric,value]) => ({metric,value:value as number,effectiveFrom:input.goals?.effectiveFrom === '1970-01-01' ? null : input.goals?.effectiveFrom ?? null})) : [];
+  const plan = scope.includeGoals && scope.metrics.includes('weight') ? input.weightPlan : null;
+  const activePlan = plan?.enabled && plan.startDate <= range.today && plan.deadline >= range.today ? {baselineWeight:plan.baselineWeight,targetWeight:plan.targetWeight,startDate:plan.startDate,deadline:plan.deadline} : null;
   const context: HealthAssistantContext = {
-    version: 1, timezone: HEALTH_TIMEZONE, range, health,
-    nutrition: { recordedDays: nutritionDays.length, days: nutritionDays },
+    version: 1, timezone: HEALTH_TIMEZONE, range, health, scope,
+    ...(scope.includeGoals ? {goals:{label:'用户自定目标（非医学建议）',targets,weightPlan:activePlan,notes:[...(!targets.length ? ['未设置所选指标目标。'] : []),...(input.goals?.effectiveFrom === '1970-01-01' ? ['目标使用历史／恢复基线，实际设置日期未知；不能解释为1970年设置。'] : []),...(plan && !activePlan ? ['体重计划尚未生效、已过期或已停用，本次不提供计划数值。'] : [])]}} : {}),
+    nutrition: { recordedDays: nutritionDates.length, days: nutritionDays },
     limitations: [
       '数据为选定日期范围内的有效日汇总；缺失日期不补0，也不以前值填充。',
+      ...(width > 1 ? ['本次长期范围按连续'+width+'日分组：步数、活动能量、睡眠为有记录日期的均值，体重与去脂体重为组内最后记录；饮食为组内已记录合计。分组不是完整周，不能推测组内单日数值。长期范围不提供分期细节。'] : []),
       '体重与去脂体重分别采用各日最后一次记录，未作为同次测量配对，不据此计算体脂率。',
       '睡眠归属于窗口结束的上海日期；清醒、卧床单列，不加入睡眠时长。缺失或与总时长矛盾的分期不提供。',
       '今日尚未结束，当日步数、活动能量、睡眠及饮食记录可能不完整，不能当作完整一天评价。',
@@ -164,7 +177,7 @@ export function buildHealthAssistantContext(input: HealthAssistantContextInput):
     ],
   };
   if (new TextEncoder().encode(JSON.stringify(context)).byteLength > MAX_HEALTH_ASSISTANT_CONTEXT_BYTES) {
-    throw new HealthAssistantContextError('健康助手上下文超过50KB，请切换最近7天后重试。', 'HEALTH_ASSISTANT_CONTEXT_TOO_LARGE');
+    throw new HealthAssistantContextError('健康助手上下文超过50KB，请减少共享指标或缩短日期范围后重试。', 'HEALTH_ASSISTANT_CONTEXT_TOO_LARGE');
   }
   return { context, sources, hasData: health.some((metric) => metric.recordedDays > 0) || nutritionDays.length > 0 };
 }

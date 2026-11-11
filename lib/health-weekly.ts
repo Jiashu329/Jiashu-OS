@@ -1,6 +1,7 @@
 import { buildHealthSummary, shanghaiDay } from './health.ts';
 import type { HealthMeasurement } from './health.ts';
 import type { GoalSettings } from './health-goals.ts';
+import { goalTargetsForDay } from './health-goals.ts';
 
 export const WEEKLY_METRICS = ['steps', 'sleep', 'active_energy', 'weight'] as const;
 export type WeeklyMetric = typeof WEEKLY_METRICS[number];
@@ -16,7 +17,7 @@ export interface HealthWeekSelection {
   isCurrent: boolean;
   partial: boolean;
 }
-export interface WeeklyPoint { day: string; value: number | null }
+export interface WeeklyPoint { day: string; value: number | null; target?: number | null; targetEffectiveFrom?: string | null }
 export interface WeeklyMetricReview {
   metric: WeeklyMetric;
   label: string;
@@ -31,6 +32,8 @@ export interface WeeklyMetricReview {
   target: number | null;
   currentAchievedDays: number | null;
   previousAchievedDays: number | null;
+  targetBasis?: 'daily';
+  targetsInPeriod?: Array<{ day: string; target: number | null; effectiveFrom: string | null }>;
 }
 export interface HealthWeeklyReview extends HealthWeekSelection {
   targetsUpdatedAt: string | null;
@@ -96,7 +99,8 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
     const values = new Map(summary.metrics[metric].points.map((point) => [point.day, point.value]));
     const points = (start: string): WeeklyPoint[] => Array.from({ length: selection.comparisonDays }, (_, index) => {
       const day = shiftDay(start, index);
-      return { day, value: values.get(day) ?? null };
+      const goal = goalTargetsForDay(settings,day);
+      return { day, value: values.get(day) ?? null, ...(metric==='weight'?{}:{target:goal.targets[metric],targetEffectiveFrom:goal.effectiveFrom}) };
     });
     const currentPoints = points(selection.weekStart);
     const previousPoints = points(selection.previousStart);
@@ -111,8 +115,9 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
       metric, label: labels[metric], unit: units[metric], currentAverage, previousAverage,
       delta: currentAverage === null || previousAverage === null ? null : currentAverage - previousAverage,
       currentRecordedDays: current.length, previousRecordedDays: previous.length, currentPoints, previousPoints, target,
-      currentAchievedDays: target === null ? null : current.filter((point) => point.value >= target).length,
-      previousAchievedDays: target === null ? null : previous.filter((point) => point.value >= target).length,
+      currentAchievedDays: metric==='weight'||currentPoints.every((point)=>point.target===null) ? null : current.filter((point) => point.target!==null&&point.target!==undefined&&point.value >= point.target).length,
+      previousAchievedDays: metric==='weight'||previousPoints.every((point)=>point.target===null) ? null : previous.filter((point) => point.target!==null&&point.target!==undefined&&point.value >= point.target).length,
+      ...(metric==='weight'?{}:{targetBasis:'daily',targetsInPeriod:currentPoints.map((point)=>({day:point.day,target:point.target??null,effectiveFrom:point.targetEffectiveFrom??null}))}),
     };
   });
   return { ...selection, targetsUpdatedAt: settings.updatedAt, metrics };

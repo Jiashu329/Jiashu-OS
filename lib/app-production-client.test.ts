@@ -77,6 +77,7 @@ async function fixture(marker: string, path: string, width = 1280) {
     if (path === '/api/overview') return Response.json(overview);
     if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
     if (path === '/api/ai/settings') return Response.json({ settings: { configured: false, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
+    if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     if (path.startsWith('/api/health/assistant?')) return Response.json({ configuration: { ready: false, provider: 'MiniMax', model: 'MiniMax-M3', message: '请先设置连接' }, hasData: false,
       context: { version: 1, timezone: 'Asia/Shanghai', range: { from: today, to: today, today, days: 7 }, health: [], nutrition: { recordedDays: 0, days: [] }, limitations: ['暂无合成测试记录'] }, sources: [] });
     throw new Error('Unexpected production client request: ' + method + ' ' + path);
@@ -141,7 +142,7 @@ test('390px production backup page initializes every inline script and gates res
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:700px\)/);
   assert.equal(f.document.querySelectorAll('.nav-link').length, 4);
-  assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择 Jiashu OS 完整备份 v1');
+  assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择 Jiashu OS 完整备份（v1 或 v2）');
   const file = f.document.getElementById('backup-file')! as HTMLInputElement;
   const preview = f.document.getElementById('backup-preview')! as HTMLButtonElement;
   const restore = f.document.getElementById('backup-restore')! as HTMLButtonElement;
@@ -169,4 +170,19 @@ test('390px production backup page initializes every inline script and gates res
   assert.equal(restore.disabled, true);
   assert.equal(f.requests.length, 0);
   assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'), 'true');
+});
+
+test('production shortcut installation page waits for user action before taking a server-clock baseline', async () => {
+  const f = await fixture('id="template-check"', '/sync/templates', 390);
+  assert.equal(f.document.querySelectorAll('.template-grid .template-card').length, 4);
+  assert.equal(f.document.querySelector('[data-context-path="/sync/templates"]')?.getAttribute('aria-current'), 'page');
+  assert.match(f.document.getElementById('template-install')?.getAttribute('href') ?? '', /^https:\/\/www\.icloud\.com\/shortcuts\/[a-f0-9]{32}$/);
+  assert.equal((f.document.getElementById('template-check-now') as HTMLButtonElement).disabled, true);
+  assert.equal((f.document.getElementById('template-confirm') as HTMLInputElement).disabled, true);
+  assert.equal(f.requests.length, 0);
+  f.document.getElementById('template-start')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => (f.document.getElementById('template-check-now') as HTMLButtonElement).disabled === false);
+  assert.equal((f.document.getElementById('template-check-now') as HTMLButtonElement).disabled, false);
+  assert.equal((f.document.getElementById('template-confirm') as HTMLInputElement).disabled, true);
+  assert.deepEqual(f.requests, [{ path: '/api/health/import', method: 'GET' }]);
 });

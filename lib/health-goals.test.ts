@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildHealthSummary } from './health.ts';
 import type { HealthMeasurement, HealthSummary } from './health.ts';
-import { buildGoalProgress, emptyGoalSettings, GoalValidationError, parseGoalSettingsInput } from './health-goals.ts';
+import { buildGoalProgress, emptyGoalSettings, GoalValidationError, parseGoalUpdateInput, parseGoalSettingsInput } from './health-goals.ts';
 import type { GoalMetric, GoalSettings, GoalTargets } from './health-goals.ts';
 
 const NOW = '2026-11-09T08:00:00.000Z';
@@ -21,7 +21,7 @@ function summary(records: HealthMeasurement[] = []): HealthSummary { return buil
 
 void test('new users have no invented targets and every metric has an unset 30-day calendar', () => {
   const defaults = emptyGoalSettings();
-  assert.deepEqual(defaults, { targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null });
+  assert.deepEqual(defaults, { targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null, revision:0,effectiveFrom:null,history:[] });
   const independent = emptyGoalSettings();
   independent.targets.steps = 1000;
   assert.equal(emptyGoalSettings().targets.steps, null, 'defaults must not share mutable targets');
@@ -46,9 +46,9 @@ void test('zero readings remain observations while missing days never become mis
     daily('sleep', '2026-11-08', 8),
   ]), NOW);
   const steps = progress.metrics[0];
-  assert.deepEqual(steps.days.find((day) => day.day === '2026-11-07'), { day: '2026-11-07', value: 0, status: 'missed', percent: 0 });
-  assert.deepEqual(steps.days.find((day) => day.day === '2026-11-08'), { day: '2026-11-08', value: null, status: 'missing', percent: null });
-  assert.deepEqual(steps.current, { day: '2026-11-09', value: 0, status: 'in-progress', percent: 0 });
+  assert.deepEqual(steps.days.find((day) => day.day === '2026-11-07'), { day: '2026-11-07', value: 0, status: 'missed', percent: 0,target:8000,targetEffectiveFrom:null });
+  assert.deepEqual(steps.days.find((day) => day.day === '2026-11-08'), { day: '2026-11-08', value: null, status: 'missing', percent: null,target:8000,targetEffectiveFrom:null });
+  assert.deepEqual(steps.current, { day: '2026-11-09', value: 0, status: 'in-progress', percent: 0,target:8000,targetEffectiveFrom:null });
   assert.equal(steps.recordedDays, 2);
   assert.equal(steps.achievedDays, 0);
   assert.equal(progress.metrics[1].achievedDays, 1);
@@ -133,3 +133,11 @@ void test('invalid, partial, coercible and unknown target inputs are rejected', 
     { targets: { ...targets, sleep: 24.01 } }, { targets: { ...targets, active_energy: 20000.1 } });
   for (const input of invalid) assert.throws(() => parseGoalSettingsInput(input), GoalValidationError);
 });
+
+void test('daily goal history preserves yesterday when today increases and exposes the date-specific target',()=>{
+  const data=settings({steps:8000});data.revision=1;data.effectiveFrom='2026-11-09';data.history=[{revision:0,effectiveFrom:'1970-01-01',targets:{steps:6000,sleep:null,active_energy:null},createdAt:NOW},{revision:1,effectiveFrom:'2026-11-09',targets:data.targets,createdAt:NOW}];
+  const result=buildGoalProgress(data,summary([daily('steps','2026-11-08',7000),daily('steps','2026-11-09',7000)]),NOW).metrics[0];
+  assert.equal(result.days.find((day)=>day.day==='2026-11-08')?.status,'achieved');assert.equal(result.days.find((day)=>day.day==='2026-11-08')?.target,6000);assert.equal(result.current.status,'in-progress');assert.equal(result.current.target,8000);assert.equal(result.current.targetEffectiveFrom,'2026-11-09');
+});
+
+void test('goal updates require an explicit revision and valid nonfuture effective date',()=>{const command={targets,expectedRevision:0,effectiveFrom:'2026-11-09'};assert.equal(parseGoalUpdateInput(command,Date.parse(NOW)).expectedRevision,0);for(const patch of [{expectedRevision:-1},{expectedRevision:'0'},{effectiveFrom:'2026-02-30'},{effectiveFrom:'2026-11-10'},{effectiveFrom:'1970-01-01'},{expectedRevision:undefined}])assert.throws(()=>parseGoalUpdateInput({...command,...patch},Date.parse(NOW)),GoalValidationError);});

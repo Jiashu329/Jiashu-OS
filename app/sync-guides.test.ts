@@ -8,6 +8,7 @@ import { APP_THEME_CSS } from '../lib/app-theme.ts';
 import { APP_BRAND_HEAD } from '../lib/branding.ts';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from '../lib/app-sidebar.ts';
 import { multiDayStepsGuide } from '../lib/steps-guide.ts';
+import { renderShortcutInstallCard, withShortcutInstallCard } from '../lib/shortcut-templates.ts';
 
 const ORIGIN = 'https://synthetic-sync-guide.example';
 const pages = ['sync-guide', 'connect-steps', 'connect-sleep', 'connect-weight'] as const;
@@ -16,7 +17,7 @@ async function render(name: typeof pages[number], query = '') {
   const source = stripTypeScriptTypes(readFileSync(new URL('./' + name + '/route.ts', import.meta.url), 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   const authorized: string[] = [];
-  const bindings = { APP_THEME_CSS, APP_BRAND_HEAD, APP_SIDEBAR_CSS, renderAppSidebar, multiDayStepsGuide,
+  const bindings = { APP_THEME_CSS, APP_BRAND_HEAD, APP_SIDEBAR_CSS, renderAppSidebar, multiDayStepsGuide, renderShortcutInstallCard, withShortcutInstallCard,
     requireChatGPTUser: async (path: string) => { authorized.push(path); } };
   const handler = new Function(...Object.keys(bindings), source + '\nreturn GET;')(...Object.values(bindings)) as (request: Request) => Promise<Response>;
   const response = await handler(new Request(ORIGIN + '/' + name + query));

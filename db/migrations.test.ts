@@ -32,3 +32,27 @@ test('financial schema additions preserve existing health, connection and exact 
   assert.equal(db.prepare('SELECT count(*) AS count FROM health_import_batches').get()?.count, 0);
   db.close();
 });
+
+test('second-batch schema preserves existing plans and starts their concurrency versions without inventing history', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const directory = new URL('../drizzle/', import.meta.url);
+    const migrations = readdirSync(directory).filter((name) => /^\d+.*\.sql$/.test(name)).sort();
+    const run = (name: string) => db.exec(readFileSync(new URL(name, directory), 'utf8'));
+    for (const name of migrations.filter((name) => name < '0013')) run(name);
+    const now = '2026-11-10T04:00:00.000Z';
+    db.prepare('INSERT INTO health_goal_settings VALUES (?,?,?,?,?)').run('legacy-plans',6000,7,400,now);
+    db.prepare('INSERT INTO health_weight_plan_settings VALUES (?,?,?,?,?,?,?,?)').run('legacy-plans',75,70,'2026-11-01','2026-12-01',1,now,now);
+    db.prepare('INSERT INTO finance_runway_settings VALUES (?,?,?,?,?,?,?,?)').run('legacy-plans','personal','CNY','10000',6,'[]',now,now);
+    for (const name of migrations.filter((name) => name >= '0013')) run(name);
+    assert.deepEqual({ ...db.prepare('SELECT steps_target,sleep_target,active_energy_target,revision FROM health_goal_settings').get() },
+      { steps_target:6000,sleep_target:7,active_energy_target:400,revision:0 });
+    assert.deepEqual({ ...db.prepare('SELECT target_weight,enabled,revision FROM health_weight_plan_settings').get() },
+      { target_weight:70,enabled:1,revision:0 });
+    assert.deepEqual({ ...db.prepare('SELECT monthly_expense_minor,target_months,revision FROM finance_runway_settings').get() },
+      { monthly_expense_minor:'10000',target_months:6,revision:0 });
+    for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations']) {
+      assert.equal(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()?.count,0);
+    }
+  } finally { db.close(); }
+});

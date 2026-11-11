@@ -1,4 +1,5 @@
 import { measurementDay, measurementKey, METRIC_INFO, type HealthMeasurement, type HealthMetric, type HealthSyncPayload } from '../lib/health.ts';
+import { countSyncOutcome, syncPayloadSummary, type SyncAttemptSummary } from '../lib/sync-diagnostics.ts';
 
 export type HealthImportDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export interface ImportBase { recordKey: string; metric: HealthMetric; day: string; measurementJson: string; exportedAt: string; receivedAt: string }
@@ -40,6 +41,7 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     total: payload.measurements.length, added: 0, updated: 0, skipped: 0, sourceChanges: 0, manualOverrides: 0,
     from: days[0] ?? null, to: days.at(-1) ?? null, metrics: [...new Set(payload.measurements.map((row) => METRIC_INFO[row.metric].label))], examples: [] };
   const changes: Array<{ before: ImportBase | null; after: Omit<ImportBase, 'receivedAt'> }> = [];
+  const attemptSummary = syncPayloadSummary(payload);
   for (const measurement of payload.measurements) {
     const key = measurementKey(measurement), old = byKey.get(key)!;
     const prior = old.base ? JSON.parse(old.base.measurementJson) as HealthMeasurement : null;
@@ -52,6 +54,7 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     const sourceChange = newer && !!prior && (prior.source ?? null) !== (measurement.source ?? null);
     if (sourceChange) preview.sourceChanges++;
     const manual = old.overrideJson !== null || old.deleted === 1;
+    countSyncOutcome(attemptSummary, measurement, !old.base ? 'added' : !newer ? (payload.exportedAt === old.base.exportedAt && same ? 'unchanged' : 'older') : same ? 'unchanged' : 'updated', manual);
     if (manual && newer) preview.manualOverrides++;
     if (newer) changes.push({ before: old.base, after: { recordKey: key, metric: measurement.metric, day: measurementDay(measurement), measurementJson: JSON.stringify(measurement), exportedAt: payload.exportedAt } });
     // Prefer source changes, then regular examples; keep the response bounded.
@@ -61,7 +64,10 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     if (sourceChange) preview.examples.unshift(example); else preview.examples.push(example);
   }
   preview.examples = preview.examples.slice(0, 12);
-  return { preview, state, changes, hash };
+  return { preview, state, changes, hash, attemptSummary };
+}
+function replaySummary(summary: SyncAttemptSummary, reverted: boolean): SyncAttemptSummary {
+  return { ...summary, metrics: summary.metrics.map((metric) => ({ ...metric, added: 0, updated: 0, older: 0, unchanged: reverted ? 0 : metric.received })) };
 }
 export async function previewHealthImport(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload) {
   return (await plan(db, userId, payload)).preview;
@@ -82,7 +88,8 @@ async function batchRow(db: HealthImportDatabase, userId: string, id: string) {
 export async function writeHealthImport(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload, deviceId: string | null, options: HealthImportOptions = {}, now = new Date().toISOString()) {
   const prepared = await plan(db, userId, payload);
   const prior = await batchRow(db, userId, prepared.hash);
-  if (prior) return { ...JSON.parse(prior.receiptJson), replayed: true, reverted: prior.revertedAt !== null };
+  if (prior) return { ...JSON.parse(prior.receiptJson), replayed: true, reverted: prior.revertedAt !== null,
+    attemptSummary: replaySummary(prepared.attemptSummary, prior.revertedAt !== null) };
   if (!deviceId && options.previewToken !== prepared.preview.token) throw new HealthImportConflictError(options.previewToken ? 'HEALTH_IMPORT_STALE' : 'HEALTH_IMPORT_PREVIEW_REQUIRED', '请先查看本次变更预览，再确认导入。');
   if (options.previewToken && options.previewToken !== prepared.preview.token) throw new HealthImportConflictError();
   if (prepared.preview.sourceChanges && (!options.previewToken || options.confirmSourceChanges !== true)) {
@@ -119,7 +126,8 @@ export async function writeHealthImport(db: HealthImportDatabase, userId: string
     if (deviceId && !await db.prepare('SELECT id FROM sync_devices WHERE id=? AND user_id=? AND revoked_at IS NULL').bind(deviceId, userId).first()) throw new HealthImportConflictError('SYNC_DEVICE_INVALID', '同步连接已撤销。');
     throw new HealthImportConflictError();
   }
-  return { ...JSON.parse(saved.receiptJson), replayed: saved.operationId !== operation, reverted: saved.revertedAt !== null };
+  return { ...JSON.parse(saved.receiptJson), replayed: saved.operationId !== operation, reverted: saved.revertedAt !== null,
+    attemptSummary: saved.operationId === operation ? prepared.attemptSummary : replaySummary(prepared.attemptSummary, saved.revertedAt !== null) };
 }
 export async function listHealthImports(db: HealthImportDatabase, userId: string) {
   const rows = await db.prepare('SELECT ' + columns + ' FROM health_import_batches WHERE user_id=? ORDER BY created_at DESC, batch_id DESC LIMIT 20').bind(userId).all<BatchRow>();

@@ -1,10 +1,11 @@
-import { measurementDay, measurementKey, normalizeTimestamp, parseSyncPayload } from './health.ts';
+import { measurementDay, measurementKey, normalizeTimestamp, parseSyncPayload, shanghaiDay } from './health.ts';
 import { parseGoalSettingsInput } from './health-goals.ts';
 import { parseWeightPlanInput } from './weight-plan.ts';
 import { parseNutritionCreate } from './nutrition.ts';
 import { decimalFromMinor, parseAccountPatch, parseAsOfDate, parseCurrency, parseLedger } from './finance.ts';
 import { parseFinanceGoalCreate } from './finance-goals.ts';
 import { parseFinanceRunwayInput } from './finance-runway.ts';
+import { parseSyncAttemptSummary, SYNC_ATTEMPT_STATUSES, SYNC_FAILURES } from './sync-diagnostics.ts';
 
 export const BACKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const BACKUP_MAX_ROWS = 20000;
@@ -16,20 +17,26 @@ export const BACKUP_TABLES = {
   health_measurements: { label: '健康原始记录', columns: ['record_key','metric','day','measurement_json','exported_at','received_at'], keys: ['record_key'] },
   health_syncs: { label: '同步回执', columns: ['payload_hash','exported_at','received_at','measurement_count'], keys: ['payload_hash'] },
   health_import_batches: { label: '导入与回退历史', columns: ['batch_id','payload_hash','operation_id','before_json','after_json','receipt_json','created_at','reverted_at','revert_reason','revert_id'], keys: ['batch_id'] },
-  health_goal_settings: { label: '健康目标', columns: ['steps_target','sleep_target','active_energy_target','updated_at'], keys: [] },
-  health_weight_plan_settings: { label: '体重计划', columns: ['baseline_weight','target_weight','start_date','deadline','enabled','created_at','updated_at'], keys: [] },
+  health_sync_attempts: { label: '同步诊断回执', columns: ['attempt_id','created_at','channel','device_label','status','batch_id','error_code','summary_json'], keys: ['attempt_id'] },
+  health_goal_settings: { label: '健康目标', columns: ['steps_target','sleep_target','active_energy_target','updated_at','revision'], keys: [] },
+  health_goal_versions: { label: '健康目标历史', columns: ['revision','effective_from','steps_target','sleep_target','active_energy_target','created_at'], keys: ['revision'] },
+  health_weight_plan_settings: { label: '体重计划', columns: ['baseline_weight','target_weight','start_date','deadline','enabled','created_at','updated_at','revision'], keys: [] },
   health_record_changes: { label: '健康修改历史', columns: ['change_id','record_key','request_hash','action','target_revision','before_state_json','after_state_json','reason','created_at'], keys: ['change_id'] },
   health_record_overrides: { label: '健康更正与屏蔽', columns: ['record_key','metric','day','override_json','deleted','revision','last_change_id','created_at','updated_at'], keys: ['record_key'] },
   nutrition_entries: { label: '饮食记录（含已删除）', columns: ['id','date','meal','name','portion','note','calories_tenth','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
+  nutrition_favorites: { label: '常用食物（含已移除）', columns: ['id','name','portion','note','calories_tenth','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
+  nutrition_copy_operations: { label: '餐次复制回执', columns: ['id','request_hash','entry_ids_json','created_at'], keys: ['id'], globalId: true },
   finance_accounts: { label: '财务账户（含归档）', columns: ['id','ledger','name','type','currency','creation_hash','note','balance_revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
   finance_balance_entries: { label: '余额原始历史', columns: ['sequence','id','account_id','amount_minor','as_of_date','note','created_at'], keys: ['id'], sequence: true, globalId: true },
   finance_balance_changes: { label: '余额更正与作废历史', columns: ['sequence','id','account_id','entry_id','revision','action','amount_minor','as_of_date','note','reason','request_hash','created_at'], keys: ['id'], sequence: true, globalId: true },
   finance_goal_plans: { label: '资金目标（含归档）', columns: ['id','ledger','currency','name','target_minor','deadline','account_ids_json','creation_hash','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
-  finance_runway_settings: { label: '应急储备设置', columns: ['ledger','currency','monthly_expense_minor','target_months','account_ids_json','created_at','updated_at'], keys: ['ledger','currency'] },
+  finance_runway_settings: { label: '应急储备设置', columns: ['ledger','currency','monthly_expense_minor','target_months','account_ids_json','created_at','updated_at','revision'], keys: ['ledger','currency'] },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
-export interface DataBackup { kind: 'jiashu-os-backup'; version: 1; exportedAt: string; tables: Record<BackupTable, BackupRow[]> }
+export const BACKUP_V1_TABLE_NAMES = ['health_measurements','health_syncs','health_import_batches','health_goal_settings','health_weight_plan_settings','health_record_changes','health_record_overrides','nutrition_entries','finance_accounts','finance_balance_entries','finance_balance_changes','finance_goal_plans','finance_runway_settings'] as const;
+const REVISION_SETTINGS: readonly BackupTable[] = ['health_goal_settings','health_weight_plan_settings','finance_runway_settings'];
+export interface DataBackup { kind: 'jiashu-os-backup'; version: 2; exportedAt: string; tables: Record<BackupTable, BackupRow[]> }
 export class BackupValidationError extends Error { readonly code = 'INVALID_DATA_BACKUP'; readonly status = 400; constructor(message: string) { super(message); this.name = 'BackupValidationError'; } }
 export class BackupCapacityError extends RangeError { constructor(message: string) { super(message); this.name = 'BackupCapacityError'; } }
 export function backupFail(message: string): never { throw new BackupValidationError(message); }
@@ -84,11 +91,18 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
   for (const [key, value] of Object.entries(r)) {
     if (value !== null && !['string','number'].includes(typeof value)) backupFail('备份数据库字段类型无效。');
     if (typeof value === 'number' && !Number.isFinite(value)) backupFail('备份中含无效数字。');
-    if (key.endsWith('_at')) timestamp(value, ['archived_at','deleted_at','reverted_at'].includes(key));
+    if (key.endsWith('_at')) { timestamp(value, ['archived_at','deleted_at','reverted_at'].includes(key)); if (value !== null && Date.parse(value as string) > now + 5*60000) backupFail('备份记录时间不能晚于当前时间。'); }
     if (['note','reason','revert_reason'].includes(key) && value !== null) text(value);
   }
   if (table === 'health_measurements') rawHealth({ recordKey:r.record_key, metric:r.metric, day:r.day, measurementJson:r.measurement_json, exportedAt:r.exported_at, receivedAt:r.received_at },now);
   if (table === 'health_syncs') { hash(r.payload_hash); integer(r.measurement_count, 0, 1000); }
+  if (table === 'health_sync_attempts') {
+    id(r.attempt_id); if (!['manual','device'].includes(String(r.channel)) || !SYNC_ATTEMPT_STATUSES.includes(r.status as typeof SYNC_ATTEMPT_STATUSES[number])) backupFail('同步诊断状态无效。');
+    if (r.device_label !== null) text(r.device_label,40,false);
+    if (r.batch_id !== null) hash(r.batch_id);
+    if ((r.status === 'failed' && (typeof r.error_code !== 'string' || !Object.hasOwn(SYNC_FAILURES,r.error_code))) || (r.status !== 'failed' && r.error_code !== null)) backupFail('同步诊断错误码无效。');
+    parseSyncAttemptSummary(parsedJson(r.summary_json));
+  }
   if (table === 'health_import_batches') {
     hash(r.batch_id); id(r.operation_id); hash(r.payload_hash); if (r.batch_id !== r.payload_hash) backupFail('导入批次摘要不一致。');
     if (r.revert_id !== null) id(r.revert_id);
@@ -113,8 +127,11 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     integer(summary.sourceChanges,0,1000); integer(summary.manualOverrides,0,1000);
     if (!Array.isArray(summary.metrics) || summary.metrics.length > 5 || summary.metrics.some((v) => !['体重','去脂体重','步数','活动能量','睡眠'].includes(String(v)))) backupFail('导入回执指标无效。');
   }
-  if (table === 'health_goal_settings') parseGoalSettingsInput({ targets: { steps:r.steps_target, sleep:r.sleep_target, active_energy:r.active_energy_target } });
-  if (table === 'health_weight_plan_settings') { integer(r.enabled, 0, 1); parseWeightPlanInput({ baselineWeight:r.baseline_weight, targetWeight:r.target_weight, startDate:r.start_date, deadline:r.deadline, enabled:r.enabled === 1 }, now); }
+  if (table === 'health_goal_settings' || table === 'health_goal_versions') {
+    integer(r.revision); parseGoalSettingsInput({ targets: { steps:r.steps_target, sleep:r.sleep_target, active_energy:r.active_energy_target } });
+    if (table === 'health_goal_versions') { day(r.effective_from); if (String(r.effective_from) > shanghaiDay(new Date(now).toISOString())) backupFail('健康目标历史不能在未来生效。'); }
+  }
+  if (table === 'health_weight_plan_settings') { integer(r.revision); integer(r.enabled, 0, 1); parseWeightPlanInput({ baselineWeight:r.baseline_weight, targetWeight:r.target_weight, startDate:r.start_date, deadline:r.deadline, enabled:r.enabled === 1 }, now); }
   if (table === 'health_record_changes') {
     id(r.change_id); hash(r.request_hash); text(r.record_key, 200, false); integer(r.target_revision, 1);
     if (!['create','correct','hide','restore','reset'].includes(String(r.action))) backupFail('健康修改操作无效。');
@@ -132,6 +149,15 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     id(r.id); hash(r.creation_hash); integer(r.revision, 1); if (r.calories_tenth !== null) integer(r.calories_tenth, 0, 200000);
     parseNutritionCreate({ date:r.date, meal:r.meal, name:r.name, portion:r.portion, note:r.note, calories:r.calories_tenth === null ? null : (Number(r.calories_tenth) / 10).toFixed(1) }, now);
   }
+  if (table === 'nutrition_favorites') {
+    id(r.id); hash(r.creation_hash); integer(r.revision,1); if (r.calories_tenth !== null) integer(r.calories_tenth,0,200000);
+    parseNutritionCreate({ date:'2000-01-01',meal:'breakfast',name:r.name,portion:r.portion,note:r.note,calories:r.calories_tenth === null ? null : (Number(r.calories_tenth)/10).toFixed(1) },now);
+  }
+  if (table === 'nutrition_copy_operations') {
+    id(r.id); hash(r.request_hash); const ids = parsedJson(r.entry_ids_json);
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 30 || new Set(ids).size !== ids.length) backupFail('餐次复制回执行数无效。');
+    for (const entryId of ids) id(entryId);
+  }
   if (table === 'finance_accounts') { id(r.id); parseLedger(r.ledger); parseCurrency(r.currency); parseAccountPatch({ name:r.name, type:r.type, note:r.note }); hash(r.creation_hash, true); integer(r.balance_revision); }
   if (table === 'finance_balance_entries') { integer(r.sequence, 1); id(r.id, true); id(r.account_id); minor(r.amount_minor); parseAsOfDate(r.as_of_date); }
   if (table === 'finance_balance_changes') {
@@ -141,20 +167,30 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     else backupFail('余额修改操作无效。');
   }
   if (table === 'finance_goal_plans') { id(r.id); hash(r.creation_hash); minor(r.target_minor, true); parseFinanceGoalCreate({ ledger:r.ledger, currency:r.currency, name:r.name, targetAmount:decimalFromMinor(r.target_minor as string, r.currency as string), deadline:r.deadline, accountIds:parsedJson(r.account_ids_json) }); }
-  if (table === 'finance_runway_settings') { parseLedger(r.ledger); parseCurrency(r.currency); minor(r.monthly_expense_minor, true); parseFinanceRunwayInput({ monthlyExpenseAmount:decimalFromMinor(r.monthly_expense_minor as string, r.currency as string), targetMonths:r.target_months, accountIds:parsedJson(r.account_ids_json) }, r.currency as Parameters<typeof parseFinanceRunwayInput>[1]); }
+  if (table === 'finance_runway_settings') { integer(r.revision); parseLedger(r.ledger); parseCurrency(r.currency); minor(r.monthly_expense_minor, true); parseFinanceRunwayInput({ monthlyExpenseAmount:decimalFromMinor(r.monthly_expense_minor as string, r.currency as string), targetMonths:r.target_months, accountIds:parsedJson(r.account_ids_json) }, r.currency as Parameters<typeof parseFinanceRunwayInput>[1]); }
 }
 export function backupRowKey(table: BackupTable, row: BackupRow): string { return JSON.stringify((BACKUP_TABLES[table].keys as readonly string[]).map((k) => row[k])); }
-export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && k === 'balance_revision')).map((k) => [k,row[k]]))); }
+export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && k === 'balance_revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision')).map((k) => [k,row[k]]))); }
 
 export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
   try {
     const encoded = typeof input === 'string' ? input : JSON.stringify(input);
     if (typeof encoded !== 'string' || new TextEncoder().encode(encoded).byteLength > BACKUP_MAX_BYTES) backupFail('完整备份最多 8 MiB；当前版本不支持分卷恢复。');
     const raw = exact(typeof input === 'string' ? JSON.parse(input) : input, ['kind','version','exportedAt','tables']);
-    if (raw.kind !== 'jiashu-os-backup' || raw.version !== 1) backupFail('请选择 Jiashu OS 完整备份 v1 文件。');
+    if (raw.kind !== 'jiashu-os-backup' || (raw.version !== 1 && raw.version !== 2)) backupFail('请选择 Jiashu OS 完整备份 v1 或 v2 文件。');
     timestamp(raw.exportedAt);
     if (Date.parse(raw.exportedAt as string) > now + 5*60000) backupFail('备份导出时间不能晚于当前时间。');
-    const tables = exact(raw.tables, BACKUP_TABLE_NAMES); let count = 0;
+    const sourceTables = exact(raw.tables, raw.version === 1 ? BACKUP_V1_TABLE_NAMES : BACKUP_TABLE_NAMES);
+    const tables = raw.version === 2 ? sourceTables : Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => {
+      if (!BACKUP_V1_TABLE_NAMES.includes(table as typeof BACKUP_V1_TABLE_NAMES[number])) return [table,[]];
+      const rows = sourceTables[table]; if (!Array.isArray(rows)) return backupFail('备份数据表应为数组。');
+      return [table,rows.map((value) => {
+        const columns = BACKUP_TABLES[table].columns.filter((key) => !(REVISION_SETTINGS.includes(table) && key === 'revision'));
+        const row = exact(value,columns);
+        return REVISION_SETTINGS.includes(table) ? { ...row,revision:0 } : { ...row };
+      })];
+    }));
+    let count = 0;
     for (const table of BACKUP_TABLE_NAMES) {
       const rows = tables[table]; const spec = BACKUP_TABLES[table] as TableSpec;
       if (!Array.isArray(rows)) backupFail('备份数据表应为数组。');
@@ -169,11 +205,24 @@ export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
       if (spec.keys.length === 0 && rows.length > 1) backupFail('备份单项设置重复。');
       rows.sort((a: BackupRow,b: BackupRow) => spec.sequence ? Number(a.sequence) - Number(b.sequence) : backupRowKey(table,a).localeCompare(backupRowKey(table,b)));
     }
-    const result = raw as unknown as DataBackup; validateBackupRelations(result); return result;
+    const result = { kind:'jiashu-os-backup',version:2,exportedAt:raw.exportedAt,tables } as unknown as DataBackup; validateBackupRelations(result); return result;
   } catch (error) { if (error instanceof BackupValidationError) throw error; return backupFail('备份内容未通过完整性与业务规则检查。'); }
 }
 function validateBackupRelations(backup: DataBackup) {
   const t = backup.tables; const accounts = new Map(t.finance_accounts.map((r) => [r.id,r]));
+  const goals = t.health_goal_settings[0]; const versions = [...t.health_goal_versions].sort((a,b) => Number(a.revision)-Number(b.revision));
+  if (!goals && versions.length) backupFail('健康目标历史缺少当前目标。');
+  if (goals && Number(goals.revision) > 0 && !versions.length) backupFail('健康目标缺少版本历史。');
+  if (versions.length) {
+    if (versions[0].revision !== 0 || versions[0].effective_from !== '1970-01-01') backupFail('健康目标缺少历史基线。');
+    for (let index=0;index<versions.length;index++) if (versions[index].revision !== index || (index>0 && String(versions[index].effective_from)<String(versions[index-1].effective_from))) backupFail('健康目标版本不连续或生效日期倒退。');
+    const latest=versions.at(-1)!;
+    if (latest.revision !== goals.revision || latest.created_at !== goals.updated_at || ['steps_target','sleep_target','active_energy_target'].some((key)=>latest[key]!==goals[key])) backupFail('健康目标与最新历史版本不一致。');
+  }
+  const nutritionIds = new Set(t.nutrition_entries.map((row)=>row.id));
+  for (const operation of t.nutrition_copy_operations) for (const entryId of parsedJson(operation.entry_ids_json) as string[]) if (!nutritionIds.has(entryId)) backupFail('餐次复制回执缺少所属用户的饮食记录。');
+  if (t.nutrition_favorites.filter((row)=>row.deleted_at===null).length>100) backupFail('常用食物最多保留100项未移除记录。');
+  if (t.health_sync_attempts.length>100) backupFail('同步诊断最多保留最近100次记录。');
   const entries = new Map(t.finance_balance_entries.map((r) => [r.id,r]));
   for (const r of t.finance_balance_entries) { if (!accounts.has(r.account_id)) backupFail('余额缺少关联账户。'); if (String(r.id).startsWith('initial:') && r.id !== 'initial:'+r.account_id) backupFail('初始余额与账户标识不一致。'); }
   const revisions = new Map<string, number>();

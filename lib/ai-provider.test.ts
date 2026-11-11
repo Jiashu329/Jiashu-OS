@@ -79,8 +79,8 @@ test('M3 requests only the official endpoint with two messages, bounded output, 
     assert.deepEqual(body.thinking, { type: 'disabled' });
     assert.equal(body.tools, undefined);
     assert.deepEqual(body.messages.map((message: { role: string }) => message.role), ['system', 'user']);
-    assert.match(body.messages[0].content, /\[H1\]/);
-    assert.match(body.messages[0].content, /\[N1\]/);
+    assert.match(body.messages[0].content, /\[H\d+-\d{8}\]/);
+    assert.match(body.messages[0].content, /\[N\d+-\d{8}\]/);
     assert.match(body.messages[0].content, /实际日期/);
     assert.match(body.messages[0].content, /不能把缺失记录当作零/);
     assert.match(body.messages[0].content, /不作医疗诊断/);

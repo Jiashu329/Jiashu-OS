@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { consumeAIQuota, type AIUsageDatabase } from './ai-usage-store.ts';
+import { consumeAIQuota, readAIQuota, type AIUsageDatabase } from './ai-usage-store.ts';
 
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
@@ -32,6 +32,16 @@ function fixture(t: TestContext) {
 }
 
 const NOW = Date.parse('2026-11-11T02:20:30.250Z');
+
+void test('reading remaining application quota never consumes requests and reflects minute reset',async(t)=>{
+  const {db,sqlite}=fixture(t);
+  assert.deepEqual(await readAIQuota(db,'alice',NOW),{allowed:true,retryAfter:0,remainingToday:20});
+  assert.equal(sqlite.prepare('SELECT count(*) count FROM ai_usage_limits').get()?.count,0);
+  for(let i=0;i<3;i++)await consumeAIQuota(db,'alice',NOW);
+  assert.deepEqual(await readAIQuota(db,'alice',NOW),{allowed:false,retryAfter:30,remainingToday:17});
+  assert.deepEqual(await readAIQuota(db,'alice',NOW+60000),{allowed:true,retryAfter:0,remainingToday:17});
+  assert.equal(sqlite.prepare('SELECT day_count FROM ai_usage_limits WHERE user_id=?').get('alice')?.day_count,3);
+});
 
 void test('each user has an independent minute and Shanghai-day allowance', async (t) => {
   const { db, sqlite } = fixture(t);

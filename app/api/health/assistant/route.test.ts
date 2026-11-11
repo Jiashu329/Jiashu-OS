@@ -5,6 +5,7 @@ import test from 'node:test';
 import * as rules from '../../../../lib/health-assistant-context.ts';
 import * as provider from '../../../../lib/ai-provider.ts';
 import * as chat from '../../../../lib/health-assistant-chat.ts';
+import * as scopeRules from '../../../../lib/health-assistant-scope.ts';
 import { renderAssistantMarkdown } from '../../../../lib/assistant-markdown.ts';
 import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto.ts';
 import { AISettingsConflictError } from '../../../../db/ai-settings-store.ts';
@@ -26,7 +27,7 @@ function fixture() {
   const settingsReads: Array<{ db: unknown; user: string }> = [];
   const configReads: Array<{ db: unknown; user: string; master: unknown; expectedRevision?: number }> = [];
   const configurations: provider.AIConfiguration[] = [];
-  const reads: Array<{ user: string; from: string; to: string; kind: string }> = [];
+  const reads: Array<{ user: string; from: string; to: string; kind: string; metrics?: readonly string[] }> = [];
   const outgoing: Array<{ question: string; context: rules.HealthAssistantContext; history?: readonly chat.AssistantHistoryMessage[] }> = [];
   const quotaUsers: string[] = [];
   let allowed = true, empty = false, fail = false;
@@ -39,7 +40,7 @@ function fixture() {
     getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const handlers = load(new URL('./route.ts', import.meta.url), {
-    ...shared, env, ...rules, ...provider, ...chat, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError,
+    ...shared, env, ...rules, ...provider, ...chat, ...scopeRules, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError,
     readAISettings: async (db: unknown, user: string) => { settingsReads.push({ db, user }); return { revision: revisions[user] ?? 0 }; },
     resolveUserAIConfiguration: async (db: unknown, user: string, master: unknown, expectedRevision?: number) => {
       configReads.push({ db, user, master, expectedRevision });
@@ -47,8 +48,8 @@ function fixture() {
       return provider.readAIConfiguration({ AI_PROVIDER: 'minimax', MINIMAX_API_KEY: keys[user],
         MINIMAX_MODEL: user === 'bob' ? 'MiniMax-M2.7' : 'MiniMax-M3', MINIMAX_REGION: user === 'bob' ? 'global' : 'cn' });
     },
-    readHealthRange: async (user: string, from: string, to: string) => {
-      reads.push({ user, from, to, kind: 'health' });
+    readHealthRange: async (user: string, from: string, to: string, metrics?: readonly string[]) => {
+      reads.push({ user, from, to, kind: 'health', metrics });
       const hook = contextHook; contextHook = null; await hook?.();
       if (fail) throw new Error('synthetic-private-storage-exception');
       return { measurements: empty ? [] : [{ id: 'private-record-id', metric: 'steps', value: user === 'alice' ? 100 : 200,
@@ -59,6 +60,9 @@ function fixture() {
     listNutritionEntries: async (_db: unknown, user: string, selection: { from: string; to: string }) => {
       reads.push({ user, ...selection, kind: 'nutrition' }); return [];
     },
+    readAIQuota: async () => ({allowed:true,retryAfter:0,remainingToday:20}),
+    readGoalSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'goals'});return {targets:{steps:8000,sleep:8,active_energy:null},effectiveFrom:today}; },
+    readWeightPlanSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'plan'});return {enabled:true,baselineWeight:75,targetWeight:70,startDate:today,deadline:'2027-01-01'}; },
     consumeAIQuota: async (_db: unknown, user: string) => {
       quotaUsers.push(user); const hook = quotaHook; quotaHook = null; await hook?.();
       return { allowed, retryAfter: 23, remainingToday: 10 };
@@ -95,6 +99,33 @@ void test('health assistant requires login and same-origin JSON before reading h
   assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.settingsReads.length, 0);
 });
 
+void test('selected scope controls database reads and provider projection, including explicit opt-in targets',async()=>{
+  const f=fixture();const scope={metrics:['steps'],includeNutrition:false,includeGoals:false};
+  const response=await f.post({question:'只看步数',days:90,scope,historyScope:scopeRules.assistantScopeKey(90,scopeRules.parseAssistantScope(scope)),shareHealthData:true});
+  assert.equal(response.status,200);assert.deepEqual(f.reads.map((r)=>r.kind),['health']);assert.deepEqual(f.reads[0].metrics,['steps']);
+  assert.deepEqual(f.outgoing[0].context.health.map((m)=>m.metric),['steps']);assert.equal(f.outgoing[0].context.goals,undefined);assert.equal(f.outgoing[0].context.nutrition.recordedDays,0);
+  const answer=await response.json() as {usage:{remainingToday:number}};assert.equal(answer.usage.remainingToday,10);
+  const g=fixture();assert.equal((await g.post({question:'对照我的目标',days:7,scope:{...scope,includeGoals:true},shareHealthData:true})).status,200);
+  assert.deepEqual(g.reads.map((r)=>r.kind).sort(),['goals','health']);
+  assert.equal(g.outgoing[0].context.goals?.targets[0].value,8000);
+});
+
+void test('invalid scopes and changed history scopes fail before database or quota and GET supports exact long ranges',async()=>{
+  for(const scope of [{metrics:[],includeNutrition:false,includeGoals:false},{metrics:['sleep','sleep'],includeNutrition:false,includeGoals:false},{metrics:['private'],includeNutrition:false,includeGoals:false},{metrics:['steps'],includeNutrition:'false',includeGoals:false}]){
+    const f=fixture();assert.equal((await f.post({question:'x',days:7,scope,shareHealthData:true})).status,400);assert.equal(f.settingsReads.length,0);assert.equal(f.reads.length,0);assert.equal(f.quotaUsers.length,0);
+  }
+  const f=fixture();assert.equal((await f.post({question:'x',days:30,shareHealthData:true,historyScope:'old-7-days',history:[{role:'user',content:'old'},{role:'assistant',content:'old'}]})).status,400);assert.equal(f.settingsReads.length,0);
+  const response=await f.get('?days=360&metrics=steps&nutrition=0&goals=0');assert.equal(response.status,200);
+  const data=await response.json() as {context:{range:{days:number};scope:{metrics:string[]}};usage:{remainingToday:number}};
+  assert.equal(data.context.range.days,360);assert.deepEqual(data.context.scope.metrics,['steps']);assert.equal(data.usage.remainingToday,20);assert.equal(f.quotaUsers.length,0);
+});
+
+void test('rate-limit response provides usable application remaining and retry countdown without provider calls',async()=>{
+  const f=fixture();f.setAllowed(false);const response=await f.post();assert.equal(response.status,429);
+  const data=await response.json() as {usage:{remainingToday:number;retryAfter:number}};
+  assert.deepEqual(data.usage,{remainingToday:10,retryAfter:23});assert.equal(response.headers.get('Retry-After'),'23');assert.equal(f.outgoing.length,0);
+});
+
 void test('GET is a local preview only, uses the authenticated owner, and never exposes credentials', async () => {
   const f = fixture();
   const response = await f.get('?days=30'); assert.equal(response.status, 200);
@@ -106,7 +137,7 @@ void test('GET is a local preview only, uses the authenticated owner, and never 
   assert.deepEqual(f.configReads, [{ db: f.env.DB, user: 'alice', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined }]);
   assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0);
   assert.ok(f.reads.every((entry) => entry.user === 'alice'));
-  for (const query of ['?days=90', '?days=7&days=30', '?userId=bob', '?days=7e0']) assert.equal((await f.get(query)).status, 400);
+  for (const query of ['?days=91', '?days=7&days=30', '?userId=bob', '?days=7e0']) assert.equal((await f.get(query)).status, 400);
   f.signIn('bob'); const other = await f.get(); assert.equal(other.status, 200);
   assert.equal(f.reads.at(-1)?.user, 'bob');
   const otherData = await other.json() as { configuration: { model: string } };
@@ -120,7 +151,7 @@ void test('explicit sharing, a supported range and a bounded question are requir
     { question: 'x', days: 30, shareHealthData: true, userId: 'bob' },
     { question: 'x', days: 7, shareHealthData: true, context: {} },
     { question: ' ', days: 7, shareHealthData: true }, { question: 'x'.repeat(1001), days: 7, shareHealthData: true },
-    { question: 'x\u0000', days: 7, shareHealthData: true }, { question: 'x', days: 90, shareHealthData: true }]) {
+    { question: 'x\u0000', days: 7, shareHealthData: true }, { question: 'x', days: 91, shareHealthData: true }]) {
     assert.equal((await f.post(body)).status, 400);
   }
   assert.equal((await f.post('{', { raw: true })).status, 400);

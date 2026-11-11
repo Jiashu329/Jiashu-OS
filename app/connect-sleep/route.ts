@@ -2,6 +2,7 @@ import { APP_SIDEBAR_CSS, renderAppSidebar } from '../../lib/app-sidebar';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
 import { requireChatGPTUser } from '../chatgpt-auth';
+import { renderShortcutInstallCard } from '../../lib/shortcut-templates';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ ${APP_SIDEBAR_CSS}
 </style></head><body><div class="app">${renderAppSidebar('sync')}<main class="sync-guide-main" id="sync-guide-page">
 <nav class="guide-breadcrumb" aria-label="页面路径"><a href="/sync">数据同步</a><span aria-hidden="true">/</span><span aria-current="page">睡眠配置</span></nav>
 <header class="hero"><h1>同步睡眠</h1><p>同步今天或最近多天的睡眠。网站按每天的睡眠窗口分别计算，清醒和卧床不计入睡眠时长。</p></header>
+${renderShortcutInstallCard('sleep')}
 
 <section class="card prepare" aria-labelledby="prepare-title"><h2 id="prepare-title">选择来源和同步范围</h2><p>在 iPhone Safari 登录本站，再打开系统自带的快捷指令，新建 <strong>同步睡眠</strong>。</p><label for="source">睡眠记录来自哪里？</label><select class="field" id="source"><option value="" selected disabled>请选择已有记录的来源</option><option value="Apple Watch">Apple Watch</option><option value="iPhone">iPhone</option><option value="custom">其他 App 或设备</option></select><div id="custom-source-wrap" hidden><label for="custom-source">填写实际来源名称</label><input class="field" id="custom-source" maxlength="120" placeholder="使用健康 App 中显示的来源名称" autocomplete="off"></div><p class="muted">可以在健康 App 的睡眠页面查看数据来源。后面查询时固定同一个来源。</p><label for="sleep-days">同步范围</label><select class="field" id="sleep-days"><option value="1">今天</option><option value="7" selected>最近 7 天（含今天）</option><option value="30">最近 30 天（含今天）</option></select><p class="muted">每个北京时间中午 12:00 到次日中午 12:00 的窗口归属结束日；今天截止到导出时刻与今天中午中的较早者。没有入睡记录的日期不补 0，今天无记录但范围内其他日期有记录也可同步。</p><p class="note" id="range-advice">先在快捷指令查询最近 8 天，完整覆盖这 7 天的第一晚；三列都使用这一次查询。</p><p class="muted">每批最多 3000 段 / 512 KB，快捷网址最多 32 KB。30 天通常请用 <a href="/sync-guide?sleep=1#sleep-file-import">JSON 文件导入</a>，或按完整日期窗口分批。不要拆开同一天的片段，后一次同步会覆盖该天结果。</p><a class="btn" href="shortcuts://">打开 iPhone 快捷指令 ↗</a></section>
 

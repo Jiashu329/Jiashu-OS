@@ -2,6 +2,7 @@ import { APP_LOGO_SRC } from './branding.ts';
 import { renderHealthAssistantWidget } from './health-assistant-widget.ts';
 import { APP_PAGE_UX_CSS } from './app-page-ux.ts';
 import { renderAppNavigationScript } from './app-navigation-ui.ts';
+import { DRAFT_GUARD_SCRIPT } from './draft-guard.ts';
 
 type AppPage = 'home' | 'health' | 'finance' | 'sync';
 
@@ -43,7 +44,7 @@ ${APP_PAGE_UX_CSS}
 const contextNavigation = {
   health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/nutrition', '饮食记录'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
   finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾']] },
-  sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/data', '数据备份'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
+  sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/sync/templates', '快捷指令模板'], ['/data', '数据备份'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
 } as const;
 
 const navigation = [
@@ -65,5 +66,5 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
   }).join('');
 
   const sections = Object.entries(contextNavigation).map(([group, section]) => `<section class="sidebar-context" data-navigation-group="${group}"${activePage !== group ? ' hidden' : ''}><p class="sidebar-context-title">${section.label}</p><nav class="context-nav" aria-label="${section.label}">${section.links.map(([href, label]) => `<a class="context-link" href="${href}" data-context-path="${href}">${label}</a>`).join('')}</nav></section>`).join('');
-  return `<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside>${renderHealthAssistantWidget()}${renderAppNavigationScript()}`;
+  return `<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside><script>${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}`;
 }

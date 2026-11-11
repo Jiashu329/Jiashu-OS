@@ -42,6 +42,22 @@ export const healthImportBatches = sqliteTable('health_import_batches', {
   index('health_import_batches_owner_created_idx').on(table.userId, table.createdAt),
 ]);
 
+// Bounded diagnostic receipts only. No invalid payload, measurement values or credentials.
+export const healthSyncAttempts = sqliteTable('health_sync_attempts', {
+  userId: text('user_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  channel: text('channel').notNull(),
+  deviceLabel: text('device_label'),
+  status: text('status').notNull(),
+  batchId: text('batch_id'),
+  errorCode: text('error_code'),
+  summaryJson: text('summary_json').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.attemptId] }),
+  index('health_sync_attempts_owner_created_idx').on(table.userId, table.createdAt),
+]);
+
 export const syncDevices = sqliteTable('sync_devices', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
@@ -59,8 +75,19 @@ export const healthGoalSettings = sqliteTable('health_goal_settings', {
   stepsTarget: integer('steps_target'),
   sleepTarget: real('sleep_target'),
   activeEnergyTarget: real('active_energy_target'),
+  revision: integer('revision').notNull().default(0),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const healthGoalVersions = sqliteTable('health_goal_versions', {
+  userId: text('user_id').notNull(),
+  revision: integer('revision').notNull(),
+  effectiveFrom: text('effective_from').notNull(),
+  stepsTarget: integer('steps_target'),
+  sleepTarget: real('sleep_target'),
+  activeEnergyTarget: real('active_energy_target'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.revision] }), index('health_goal_versions_owner_date_idx').on(table.userId, table.effectiveFrom, table.revision)]);
 
 export const financeAccounts = sqliteTable('finance_accounts', {
   id: text('id').primaryKey(),
@@ -132,6 +159,7 @@ export const financeRunwaySettings = sqliteTable('finance_runway_settings', {
   accountIdsJson: text('account_ids_json').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  revision: integer('revision').notNull().default(0),
 }, (table) => [primaryKey({ columns: [table.userId, table.ledger, table.currency] })]);
 
 export const weightPlanSettings = sqliteTable('health_weight_plan_settings', {
@@ -141,6 +169,7 @@ export const weightPlanSettings = sqliteTable('health_weight_plan_settings', {
   startDate: text('start_date').notNull(),
   deadline: text('deadline').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+  revision: integer('revision').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -192,6 +221,18 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 }, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date)]);
+
+export const nutritionFavorites = sqliteTable('nutrition_favorites', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), name: text('name').notNull(),
+  portion: text('portion').notNull(), note: text('note').notNull(), caloriesTenth: integer('calories_tenth'),
+  creationHash: text('creation_hash').notNull(), revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), deletedAt: text('deleted_at'),
+}, (table) => [index('nutrition_favorites_owner_deleted_idx').on(table.userId, table.deletedAt)]);
+
+export const nutritionCopyOperations = sqliteTable('nutrition_copy_operations', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), requestHash: text('request_hash').notNull(),
+  entryIdsJson: text('entry_ids_json').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [index('nutrition_copy_operations_owner_created_idx').on(table.userId, table.createdAt)]);
 
 // Request counters only; questions, answers and health data are never stored here.
 export const aiUsageLimits = sqliteTable('ai_usage_limits', {

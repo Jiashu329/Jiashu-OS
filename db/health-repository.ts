@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { HealthImportConflictError, writeHealthImport, previewHealthImport, listHealthImports, revertHealthImport, type HealthImportOptions } from './health-import-store';
 import { buildBodyComposition } from '../lib/body-composition';
 import { readEffectiveHealthMeasurements } from './health-records-store';
+import { listSyncAttempts, readSyncMetricStatus, recordSyncAttempt, type SyncAttemptInput } from './sync-attempts-store';
 import {
   createSyncConnection,
   findSyncConnection,
@@ -12,12 +13,20 @@ import {
 import {
   buildHealthSummary,
   shanghaiDay,
+  type HealthMetric,
   type HealthSyncPayload,
 } from '../lib/health';
 
 function database(): D1Database {
   if (!env.DB) throw new Error('Health database is not configured');
   return env.DB;
+}
+
+export async function readSyncDiagnostics(userId: string) {
+  return { attempts: await listSyncAttempts(database(), userId), metricStatus: await readSyncMetricStatus(database(), userId) };
+}
+export async function saveSyncAttempt(userId: string, input: SyncAttemptInput) {
+  return recordSyncAttempt(database(), userId, input);
 }
 
 function fromDay(days: number): string {
@@ -40,10 +49,10 @@ export async function readHealth(userId: string, days: number) {
 }
 
 /** Inclusive Shanghai calendar-day range for selected historical health reviews. */
-export async function readHealthRange(userId: string, from: string, to: string) {
+export async function readHealthRange(userId: string, from: string, to: string, metrics?: readonly HealthMetric[]) {
   const db = database();
   const [measurements, last] = await Promise.all([
-    readEffectiveHealthMeasurements(db, userId, from, to),
+    readEffectiveHealthMeasurements(db, userId, from, to, metrics),
     db.prepare('SELECT MAX(received_at) AS received_at FROM health_syncs WHERE user_id = ?')
       .bind(userId).first<{ received_at: string | null }>(),
   ]);

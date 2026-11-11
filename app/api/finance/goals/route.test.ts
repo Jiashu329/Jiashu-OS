@@ -169,7 +169,7 @@ test('editing preserves fixed ledger/currency and archive/restore keeps associat
   assert.equal((await readList(await f.get('ledger=personal&currency=all&includeArchived=1'))).goals.length, 1);
   assert.equal((await readGoal(await f.patch(goal.id, { archived: false }))).goal.archived, false);
   await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { archived: true });
-  const updated = (await readGoal(await f.patch(goal.id, { name: 'Retained links' }))).goal; assert.equal(updated.name, 'Retained links'); assert.equal(updated.missingCount, 1); assert.equal(updated.currentMinor, '0');
+  const updated = (await readGoal(await f.patch(goal.id, { name: 'Retained links' }))).goal; assert.equal(updated.name, 'Retained links'); assert.equal(updated.missingCount, 1); assert.equal(updated.archivedAccountCount, 1); assert.equal(updated.missingAccountCount, 0); assert.equal(updated.currentMinor, '0');
   assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM finance_balance_entries').get()?.total, 8, 'Goals must never create balance records or transfer funds');
 });
 

@@ -3,6 +3,7 @@ import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
 import { requireChatGPTUser } from '../chatgpt-auth';
 import { multiDayStepsGuide } from '../../lib/steps-guide';
+import { withShortcutInstallCard } from '../../lib/shortcut-templates';
 
 export const dynamic = 'force-dynamic';
 
@@ -81,7 +82,7 @@ $('copy-address').addEventListener('click',async()=>{if(!deviceToken)return;cons
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这段文字。';}));
 updateSource();showStep(0,false);
 </script></body></html>`;
-  return new Response(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), { headers: {
+  return new Response(withShortcutInstallCard(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), isEnergy ? 'active_energy' : 'steps'), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

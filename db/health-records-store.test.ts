@@ -52,6 +52,15 @@ function fixture(t: TestContext) {
 }
 const weight = (id = 'scale', value = 70, startDate = '2026-11-08T08:00:00.000Z'): HealthMeasurement => ({ id, metric: 'weight', value, unit: 'kg', source: 'synthetic-scale', aggregation: 'sample', startDate });
 const steps = (value = 1000): HealthMeasurement => ({ id: 'manual:steps', metric: 'steps', value, unit: 'count', source: 'manual', aggregation: 'daily', startDate: '2026-11-08T00:00:00+08:00', endDate: '2026-11-08T22:00:00+08:00' });
+
+void test('metric-scoped effective reads exclude unselected records at the SQL result boundary',async(t)=>{
+  const f=fixture(t);f.raw('alice',weight());f.raw('alice',steps(1234));f.raw('bob',steps(9999));
+  // An unselected malformed source row must not even be decoded for this scope.
+  f.sqlite.prepare('UPDATE health_measurements SET measurement_json=? WHERE user_id=? AND metric=?').run('{invalid-unselected','alice','weight');
+  const result=await readEffectiveHealthMeasurements(f.db,'alice','2026-11-01','2026-11-09',['steps']);
+  assert.deepEqual(result.map((row)=>[row.metric,row.value]),[['steps',1234]]);
+  assert.deepEqual(await readEffectiveHealthMeasurements(f.db,'alice','2026-11-01','2026-11-09',[]),[]);
+});
 function mutation(record: HealthRecordView, action: 'correct' | 'hide' | 'restore' | 'reset', value = 71): HealthRecordCommand {
   return { action, recordKey: record.recordKey, expectedRevision: record.revision, expectedBaseExportedAt: record.base?.exportedAt ?? null, reason: 'synthetic correction', ...(action === 'correct' ? { value } : {}) } as HealthRecordCommand;
 }

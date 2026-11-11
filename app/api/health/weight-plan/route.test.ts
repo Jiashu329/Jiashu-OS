@@ -83,7 +83,7 @@ async function fixture(t: TestContext) {
     put(body: unknown, options: { origin?: string | null; contentType?: string } = {}) {
       const headers = new Headers({ 'Content-Type': options.contentType ?? 'application/json' });
       if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
-      return route.PUT(new Request(ORIGIN + '/api/health/weight-plan', { method: 'PUT', headers, body: JSON.stringify(body) }));
+      return route.PUT(new Request(ORIGIN + '/api/health/weight-plan', { method: 'PUT', headers, body: JSON.stringify(body&&typeof body==='object'&&!Array.isArray(body)?{expectedRevision:Number(sqlite.prepare('SELECT revision FROM health_weight_plan_settings WHERE user_id=?').get(owner)?.revision??0),...body}:body) }));
     },
     async sync(userId: string, payload: health.HealthSyncPayload) {
       const preview = await importStore.previewHealthImport(db, userId, payload);
@@ -158,3 +158,5 @@ test('weight settings and observed measurements remain isolated to their signed-
   f.signIn('alice'); const alice = await readPlan(await f.get()); assert.ok(alice.settings); assert.equal(alice.settings.baselineWeight, 80); assert.equal(alice.observations.latestWeight, 75);
   delete f.env.DB; const failure = await f.get(); assert.equal(failure.status, 503); assert.equal((await readError(failure)).code, 'HEALTH_STORAGE_UNAVAILABLE');
 });
+
+test('two tabs cannot overwrite a newer weight plan with an old revision',async(t)=>{const f=await fixture(t);assert.equal((await f.put(input({expectedRevision:0}))).status,200);assert.equal((await f.put(input({targetWeight:68,expectedRevision:1}))).status,200);const stale=await f.put(input({targetWeight:60,expectedRevision:1}));assert.equal(stale.status,409);assert.equal((await readError(stale)).code,'WEIGHT_PLAN_CONFLICT');assert.equal((await readPlan(await f.get())).settings?.targetWeight,68);});

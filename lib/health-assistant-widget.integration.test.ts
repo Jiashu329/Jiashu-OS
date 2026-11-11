@@ -88,6 +88,51 @@ test('the original health-assistant entry opens lazily without navigation or a m
   f.document.dispatchEvent(f.event('keydown', { key: 'Escape' })); assert.equal(f.el('panel').hidden, true);
 });
 
+test('asking a chart carries its exact long range and only that metric without calling a model',async()=>{
+  const f=fixture();
+  f.window.dispatchEvent(f.event('health-assistant-open',{detail:{metric:'sleep',days:180,question:'解释这张睡眠图'}}));
+  await settled(()=>!f.el('context').hidden);
+  assert.equal(f.requests.length,1);assert.equal(f.requests[0].method,'GET');
+  const query=new URL(f.requests[0].url,f.location.origin).searchParams;
+  assert.equal(query.get('days'),'180');assert.equal(query.get('metrics'),'sleep');assert.equal(query.get('nutrition'),'0');assert.equal(query.get('goals'),'0');
+  assert.equal(f.el('question').value,'解释这张睡眠图');
+  f.send();await settled(()=>!f.el('question').disabled);
+  const body=f.requests.find((r)=>r.method==='POST')!.body!;
+  assert.deepEqual(JSON.parse(JSON.stringify(body.scope)),{metrics:['sleep'],includeNutrition:false,includeGoals:false});assert.equal(body.days,180);
+});
+
+test('scope changes clear history and reread only the explicitly selected sources',async()=>{
+  const f=fixture();await f.open();await f.sendText('上一轮问题');
+  const nutrition=f.el('include-nutrition') as unknown as HTMLInputElement;nutrition.checked=false;nutrition.dispatchEvent(f.event('change'));
+  await settled(()=>!f.el('context').hidden);
+  assert.equal(f.el('messages').children.length,0);
+  await f.sendText('新范围问题');
+  const body=f.requests.filter((r)=>r.method==='POST').at(-1)!.body!;
+  assert.deepEqual(body.history,[]);assert.equal((body.scope as {includeNutrition:boolean}).includeNutrition,false);
+  assert.ok(typeof body.historyScope==='string');
+});
+
+test('waiting remains observable while minimized and a 429 preserves the question until an active retry',async()=>{
+  const f=fixture();await f.open();let finish!:(r:Response)=>void;
+  f.postNext(()=>new Promise((resolve)=>{finish=resolve;}));f.question('需要保留的问题');f.send();
+  await settled(()=>f.requests.some((r)=>r.method==='POST'));f.click('minimize');await f.advance(2500);
+  assert.match(f.el('messages').textContent||'',/已等待 2 秒/);assert.equal(f.el('panel').hidden,true);
+  finish(Response.json({error:'应用限流',code:'AI_RATE_LIMITED',usage:{remainingToday:17,retryAfter:2}},{status:429,headers:{'Retry-After':'2'}}));
+  await settled(()=>!f.el('question').disabled);assert.equal(f.el('question').value,'需要保留的问题');assert.equal(f.el('send').disabled,true);
+  assert.match(f.el('usage').textContent||'',/17 \/ 20/);assert.match(f.el('usage').textContent||'',/Token Plan/);
+  await f.advance(2200);assert.equal(f.el('send').disabled,false);assert.equal(f.requests.filter((r)=>r.method==='POST').length,1);
+  f.click('launcher');f.send();await settled(()=>!f.el('question').disabled);assert.equal(f.requests.filter((r)=>r.method==='POST').length,2);
+});
+
+test('a late rate-limit response after page departure cannot restart countdown timers or restore private conversation',async()=>{
+  const f=fixture();await f.open();let finish!:(r:Response)=>void;f.postNext(()=>new Promise((resolve)=>{finish=resolve;}));
+  f.question('离页前的问题');f.send();await settled(()=>f.requests.some((r)=>r.method==='POST'));
+  f.window.dispatchEvent(f.event('pagehide'));
+  finish(Response.json({error:'限流',code:'AI_RATE_LIMITED',usage:{remainingToday:0,retryAfter:60}},{status:429,headers:{'Retry-After':'60'}}));
+  await new Promise<void>((resolve)=>setImmediate(resolve));await new Promise<void>((resolve)=>setImmediate(resolve));
+  assert.equal(f.timerCount(),0);assert.equal(f.el('messages').children.length,0);assert.equal(f.el('question').value,'');
+});
+
 test('consecutive messages carry successful history and show safe Markdown while user text stays inert', async () => {
   const f = fixture(); await f.open();
   f.question('总结 <img src=x onerror=alert(1)>');

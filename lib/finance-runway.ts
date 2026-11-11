@@ -14,6 +14,7 @@ export interface FinanceRunwaySettings extends FinanceRunwayInput {
   currency: CurrencyCode;
   createdAt: string;
   updatedAt: string;
+  revision: number;
 }
 export interface FinanceRunwayProgress {
   currentMinor: string;
@@ -30,7 +31,7 @@ export interface FinanceRunwayProgress {
   status: 'covered' | 'short';
 }
 export interface FinanceRunwayView {
-  settings: (FinanceRunwayInput & { monthlyExpenseAmount: string; createdAt: string; updatedAt: string }) | null;
+  settings: (FinanceRunwayInput & { monthlyExpenseAmount: string; createdAt: string; updatedAt: string; revision: number }) | null;
   progress: FinanceRunwayProgress | null;
 }
 export class FinanceRunwayValidationError extends Error {
@@ -69,6 +70,13 @@ export function parseFinanceRunwayInput(input: unknown, currency: CurrencyCode):
   return { monthlyExpenseMinor, targetMonths: raw.targetMonths, accountIds: [...ids].sort() };
 }
 
+export function parseFinanceRunwayCommand(input: unknown, currency: CurrencyCode): { input: FinanceRunwayInput; expectedRevision: number } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('$', '请提交完整的应急设置和读取版本。');
+  const { expectedRevision, ...value } = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) return fail('expectedRevision', '请先读取当前应急设置，再保存修改。');
+  return { input: parseFinanceRunwayInput(value, currency), expectedRevision: Number(expectedRevision) };
+}
+
 /** Decimal display is truncated; whole-month quotient and remainder retain the exact ratio. */
 export function buildFinanceRunwayView(settings: FinanceRunwaySettings | null, accounts: readonly FinanceRunwayAccount[]): FinanceRunwayView {
   if (!settings) return { settings: null, progress: null };
@@ -87,7 +95,7 @@ export function buildFinanceRunwayView(settings: FinanceRunwaySettings | null, a
   return {
     settings: {
       monthlyExpenseMinor: settings.monthlyExpenseMinor, monthlyExpenseAmount: decimalFromMinor(settings.monthlyExpenseMinor, settings.currency),
-      targetMonths: settings.targetMonths, accountIds: [...settings.accountIds], createdAt: settings.createdAt, updatedAt: settings.updatedAt,
+      targetMonths: settings.targetMonths, accountIds: [...settings.accountIds], createdAt: settings.createdAt, updatedAt: settings.updatedAt, revision: settings.revision,
     },
     progress: {
       currentMinor: current.toString(), runwayMonths: scaled.slice(0, -2) + '.' + scaled.slice(-2),

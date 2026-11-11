@@ -8,7 +8,7 @@ export interface WeightPlanInput {
   deadline: string;
   enabled: boolean;
 }
-export interface WeightPlanSettings extends WeightPlanInput { createdAt: string; updatedAt: string }
+export interface WeightPlanSettings extends WeightPlanInput { createdAt: string; updatedAt: string; revision?: number }
 export interface WeightPlanPoint { day: string; value: number }
 export interface WeightObservations {
   latestWeight: number | null;

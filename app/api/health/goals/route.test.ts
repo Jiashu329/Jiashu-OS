@@ -3,8 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { readGoalSettings, writeGoalSettings, type HealthGoalsDatabase } from '../../../../db/health-goals-store.ts';
-import { buildGoalProgress, GoalValidationError, parseGoalSettingsInput, type GoalSettings, type GoalProgress } from '../../../../lib/health-goals.ts';
+import { HealthGoalConflictError, readGoalSettings, writeGoalSettings, type HealthGoalsDatabase } from '../../../../db/health-goals-store.ts';
+import { buildGoalProgress, GoalValidationError, parseGoalUpdateInput, parseGoalSettingsInput, type GoalSettings, type GoalProgress } from '../../../../lib/health-goals.ts';
 import { buildHealthSummary, type HealthMeasurement } from '../../../../lib/health.ts';
 
 type Handler = (...args: Request[]) => Promise<Response>;
@@ -34,28 +34,17 @@ function loadHandlers(path: URL, bindings: Record<string, unknown>, exports: str
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   const migrations = new URL('../../../../drizzle/', import.meta.url);
-  const migration = readdirSync(migrations).find((name) => /^0004_.*\.sql$/.test(name));
-  assert.ok(migration, 'The goal settings migration must exist');
-  sqlite.exec(readFileSync(new URL(migration, migrations), 'utf8'));
-  t.after(() => sqlite.close());
-  const db = {
-    prepare(sql: string) {
-      const statement = sqlite.prepare(sql);
-      let values: SQLInputValue[] = [];
-      const bound = {
-        bind(...parameters: unknown[]) { values = parameters as SQLInputValue[]; return bound; },
-        async first<T>() { return (statement.get(...values) as T | undefined) ?? null; },
-      };
-      return bound;
-    },
-  } as unknown as HealthGoalsDatabase;
+  for(const migration of readdirSync(migrations).filter((name)=>/^\d+.*\.sql$/.test(name)).sort())sqlite.exec(readFileSync(new URL(migration,migrations),'utf8'));
+  t.after(()=>sqlite.close());
+  interface Statement {bind(...parameters:unknown[]):Statement;execute():{results:unknown[];meta:{changes:number}}}
+  const db={prepare(sql:string){const prepared=sqlite.prepare(sql);let values:SQLInputValue[]=[];const bound:Statement={bind(...p){values=p as SQLInputValue[];return bound;},execute(){const before=Number(sqlite.prepare('SELECT total_changes() n').get()?.n);const results=prepared.columns().length?prepared.all(...values):(prepared.run(...values),[]);return{results,meta:{changes:Number(sqlite.prepare('SELECT total_changes() n').get()?.n)-before}};}};return bound;},async batch(commands:Statement[]){sqlite.exec('BEGIN');try{const result=commands.map((c)=>c.execute());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}}as unknown as HealthGoalsDatabase;
   let userId: string | null = 'alice';
   const env: { DB?: HealthGoalsDatabase } = { DB: db };
   const shared = loadHandlers(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => userId ? { userId } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
   const route = loadHandlers(new URL('./route.ts', import.meta.url), {
-    ...shared, env, readGoalSettings, writeGoalSettings, GoalValidationError, parseGoalSettingsInput,
+    ...shared, env, readGoalSettings, writeGoalSettings, HealthGoalConflictError, GoalValidationError, parseGoalUpdateInput, parseGoalSettingsInput,
   }, ['GET', 'PUT']);
   const reads: { userId: string; days: number }[] = [];
   const measurements = new Map<string, HealthMeasurement[]>();
@@ -74,7 +63,7 @@ function request(body: unknown = { targets }, options: { origin?: string | null;
   if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
   if (options.length) headers.set('Content-Length', options.length);
   return new Request(ORIGIN + '/api/health/goals', {
-    method: 'PUT', headers, body: options.raw ? String(body) : JSON.stringify(body),
+    method: 'PUT', headers, body: options.raw ? String(body) : JSON.stringify(body&&typeof body==='object'&&!Array.isArray(body)?{expectedRevision:0,effectiveFrom:'2026-01-01',...body}:body),
   });
 }
 
@@ -101,7 +90,7 @@ test('a saved goal survives a new read while another signed-in owner remains iso
   assert.deepEqual(await readSettings(await f.route.GET()), settings);
   f.signIn('bob');
   assert.deepEqual(await readSettings(await f.route.GET()), {
-    targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null,
+    targets: { steps: null, sleep: null, active_energy: null }, updatedAt: null,revision:0,effectiveFrom:null,history:[],
   });
   await f.route.PUT(request({ targets: { steps: 5000, sleep: null, active_energy: null } }));
   f.signIn('alice');
@@ -164,7 +153,7 @@ test('clearing all goals is persisted as an intentional cancellation', async (t)
   const f = fixture(t);
   await f.route.PUT(request());
   const cleared = { steps: null, sleep: null, active_energy: null };
-  const response = await f.route.PUT(request({ targets: cleared }));
+  const response = await f.route.PUT(request({ targets: cleared,expectedRevision:1 }));
   assert.equal(response.status, 200);
   assert.deepEqual((await readSettings(response)).targets, cleared);
   assert.deepEqual((await readSettings(await f.route.GET())).targets, cleared);
@@ -207,3 +196,5 @@ test('unavailable goal storage returns failure instead of inventing empty settin
     assert.equal((await readError(response)).code, 'HEALTH_STORAGE_UNAVAILABLE');
   }
 });
+
+test('stale goal revisions return 409 without replacing the new goals or appending history',async(t)=>{const f=fixture(t);assert.equal((await f.route.PUT(request())).status,200);const response=await f.route.PUT(request({targets:{...targets,steps:10000},expectedRevision:0}));assert.equal(response.status,409);assert.equal((await readError(response)).code,'HEALTH_GOAL_CONFLICT');assert.deepEqual((await readSettings(await f.route.GET())).targets,targets);assert.equal(f.sqlite.prepare('SELECT count(*) n FROM health_goal_versions').get()?.n,2);});
