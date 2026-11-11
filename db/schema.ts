@@ -1,4 +1,4 @@
-import { uniqueIndex, index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const healthMeasurements = sqliteTable('health_measurements', {
   userId: text('user_id').notNull(),
@@ -22,6 +22,24 @@ export const healthSyncs = sqliteTable('health_syncs', {
 }, (table) => [
   primaryKey({ columns: [table.userId, table.payloadHash] }),
   index('health_syncs_user_received_idx').on(table.userId, table.receivedAt),
+]);
+
+// Raw import versions are retained so a mistaken source switch can be undone.
+export const healthImportBatches = sqliteTable('health_import_batches', {
+  userId: text('user_id').notNull(),
+  batchId: text('batch_id').notNull(),
+  payloadHash: text('payload_hash').notNull(),
+  operationId: text('operation_id').notNull(),
+  beforeJson: text('before_json').notNull(),
+  afterJson: text('after_json').notNull(),
+  receiptJson: text('receipt_json').notNull(),
+  createdAt: text('created_at').notNull(),
+  revertedAt: text('reverted_at'),
+  revertReason: text('revert_reason'),
+  revertId: text('revert_id'),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.batchId] }),
+  index('health_import_batches_owner_created_idx').on(table.userId, table.createdAt),
 ]);
 
 export const syncDevices = sqliteTable('sync_devices', {
@@ -52,6 +70,7 @@ export const financeAccounts = sqliteTable('finance_accounts', {
   type: text('type').notNull(),
   currency: text('currency').notNull(),
   creationHash: text('creation_hash'),
+  balanceRevision: integer('balance_revision').notNull().default(0),
   note: text('note').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -68,6 +87,26 @@ export const financeBalanceEntries = sqliteTable('finance_balance_entries', {
   note: text('note').notNull(),
   createdAt: text('created_at').notNull(),
 }, (table) => [index('finance_balances_owner_account_date_idx').on(table.userId, table.accountId, table.asOfDate, table.sequence)]);
+
+// Originals remain immutable. Each correction/void is a new, user-owned revision.
+export const financeBalanceChanges = sqliteTable('finance_balance_changes', {
+  sequence: integer('sequence').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull().unique(),
+  userId: text('user_id').notNull(),
+  accountId: text('account_id').notNull(),
+  entryId: text('entry_id').notNull(),
+  revision: integer('revision').notNull(),
+  action: text('action').notNull(),
+  amountMinor: text('amount_minor'),
+  asOfDate: text('as_of_date'),
+  note: text('note'),
+  reason: text('reason').notNull(),
+  requestHash: text('request_hash').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('finance_balance_changes_owner_entry_revision_idx').on(table.userId, table.entryId, table.revision),
+  index('finance_balance_changes_owner_account_idx').on(table.userId, table.accountId, table.sequence),
+]);
 
 export const financeGoalPlans = sqliteTable('finance_goal_plans', {
   id: text('id').primaryKey(),

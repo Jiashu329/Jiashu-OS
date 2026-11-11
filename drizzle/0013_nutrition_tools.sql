@@ -26,7 +26,8 @@ CREATE TABLE `nutrition_favorites` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `nutrition_favorites_owner_hash_idx` ON `nutrition_favorites` (`user_id`,`template_hash`);--> statement-breakpoint
-ALTER TABLE `nutrition_entries` ADD `food_json` text;--> statement-breakpoint
+ALTER TABLE `nutrition_entries` ADD `food_json` text;
+--> statement-breakpoint
 CREATE TRIGGER nutrition_entry_insert_status AFTER INSERT ON nutrition_entries
 BEGIN
   INSERT INTO nutrition_day_status (user_id,date,complete,meals_json,revision,updated_at)

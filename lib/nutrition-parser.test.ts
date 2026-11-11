@@ -58,12 +58,15 @@ test('an exact unique cooked-food match is calculated locally, and relative date
 test('unknown food, missing amounts and unsupported bowls remain editable with unknown calories', () => {
   const unknown = fixture().buildNutritionDrafts(answer(item()), base).drafts[0];
   assert.equal(unknown.food, null); assert.equal(unknown.calories, null); assert.match(unknown.warnings.join(' '), /暂未找到/);
+  assert.equal(unknown.amount, 150); assert.equal(unknown.unit, '克');
   const f = fixture([cooked]);
   const bowlRequest = { ...base, text: '昨天午饭吃了一碗熟米饭' };
   const bowl = f.buildNutritionDrafts(answer(item({ amount: 1, unit: '碗', sourceText: '一碗熟米饭' })), bowlRequest).drafts[0];
   assert.equal(bowl.food, null); assert.equal(bowl.calories, null); assert.match(bowl.warnings.join(' '), /改填克重/);
+  assert.equal(bowl.amount, 1); assert.equal(bowl.unit, '碗');
   const noAmount = f.buildNutritionDrafts(answer(item({ amount: null, unit: null, meal: null, dateText: null, sourceText: '熟米饭' })), base).drafts[0];
   assert.equal(noAmount.food, null); assert.equal(noAmount.meal, null); assert.equal(noAmount.date, base.date);
+  assert.equal(noAmount.amount, null); assert.equal(noAmount.unit, null);
   assert.match(noAmount.warnings.join(' '), /餐次/); assert.match(noAmount.warnings.join(' '), /份量/);
 });
 

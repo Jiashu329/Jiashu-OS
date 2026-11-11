@@ -1,3 +1,4 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -39,7 +40,7 @@ interface AccountInput {
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   const migrations = new URL('../../../../drizzle/', import.meta.url);
-  for (const name of readdirSync(migrations).filter((name) => /^000[23]_.*\.sql$/.test(name)).sort()) {
+  for (const name of readdirSync(migrations).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) {
     sqlite.exec(readFileSync(new URL(name, migrations), 'utf8'));
   }
   t.after(() => sqlite.close());
@@ -76,7 +77,7 @@ function fixture(t: TestContext) {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError,
+    ...shared, ...balanceChanges, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview,

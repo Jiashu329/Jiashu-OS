@@ -14,6 +14,8 @@ export interface NutritionDraft {
   date: string;
   meal: NutritionDraftMeal | null;
   name: string;
+  amount: number | null;
+  unit: string | null;
   portion: string;
   calories: string | null;
   note: string;
@@ -127,7 +129,7 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
         warnings.push('这个单位没有可核对的重量换算，请改填克重；热量暂未计算。');
       }
     }
-    return { date, meal, name: food ? exact[0].name : name, portion, calories, note: '', food, candidates, warnings };
+    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, note: '', food, candidates, warnings };
   });
   return { drafts, warnings: drafts.length ? ['以下是识别草稿，检查食物、生熟状态与份量后可批量保存。'] : ['未识别到明确吃过的食物，请描述实际吃了什么及份量。'] };
 }

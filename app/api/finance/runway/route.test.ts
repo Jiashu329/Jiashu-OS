@@ -1,3 +1,4 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -63,7 +64,7 @@ async function fixture(t: TestContext) {
   const env: { DB?: D1Database } = { DB: db };
   let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null }, ['apiUser', 'json', 'isSameOrigin']);
-  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...finance, ...financeStore }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
+  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...balanceChanges, ...finance, ...financeStore }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...financeShared, ...finance, ...financeStore, ...runwayRules, ...runwayStore, env }, ['GET', 'PUT']) as { GET(request: Request): Promise<Response>; PUT(request: Request): Promise<Response> };
   for (const [key, currency, type, userId, ledger, amountMinor] of [
     ['cny', 'CNY', 'bank', 'alice', 'personal', '9007199254740993'], ['zero', 'CNY', 'bank', 'alice', 'personal', '0'],

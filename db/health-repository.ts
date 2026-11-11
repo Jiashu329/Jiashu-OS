@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { HealthImportConflictError, writeHealthImport, previewHealthImport, listHealthImports, revertHealthImport, type HealthImportOptions } from './health-import-store';
 import { buildBodyComposition } from '../lib/body-composition';
 import { readEffectiveHealthMeasurements } from './health-records-store';
 import {
@@ -10,8 +11,6 @@ import {
 } from './sync-connections';
 import {
   buildHealthSummary,
-  measurementDay,
-  measurementKey,
   shanghaiDay,
   type HealthSyncPayload,
 } from '../lib/health';
@@ -63,53 +62,18 @@ export class SyncDeviceInvalidError extends Error {
   }
 }
 
-export async function importHealth(userId: string, payload: HealthSyncPayload, deviceId: string | null = null) {
-  const db = database();
-  const receivedAt = new Date().toISOString();
-  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(payload))))]
-    .map((part) => part.toString(16).padStart(2, '0')).join('');
-  const records = payload.measurements.map((measurement) => ({
-    key: measurementKey(measurement),
-    metric: measurement.metric,
-    day: measurementDay(measurement),
-    measurement: JSON.stringify(measurement),
-  }));
-  // One JSON-backed INSERT keeps a 1,000-record import within D1's statement
-  // and bound-parameter limits. D1 batch applies this and the sync receipt atomically.
-  const commands = [db.prepare(`
-    INSERT INTO health_measurements
-      (user_id, record_key, metric, day, measurement_json, exported_at, received_at)
-    SELECT ?, json_extract(value, '$.key'), json_extract(value, '$.metric'),
-      json_extract(value, '$.day'), json_extract(value, '$.measurement'), ?, ?
-    FROM json_each(?) WHERE
-      (? IS NULL OR EXISTS (
-        SELECT 1 FROM sync_devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL
-      ))
-    ON CONFLICT(user_id, record_key) DO UPDATE SET
-      metric = excluded.metric,
-      day = excluded.day,
-      measurement_json = excluded.measurement_json,
-      exported_at = excluded.exported_at,
-      received_at = excluded.received_at
-    WHERE excluded.exported_at > health_measurements.exported_at
-  `).bind(userId, payload.exportedAt, receivedAt, JSON.stringify(records), deviceId, deviceId, userId)];
-  commands.push(db.prepare(`
-    INSERT INTO health_syncs (user_id, payload_hash, exported_at, received_at, measurement_count)
-    SELECT ?, ?, ?, ?, ? WHERE
-      (? IS NULL OR EXISTS (
-        SELECT 1 FROM sync_devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL
-      ))
-    ON CONFLICT(user_id, payload_hash) DO UPDATE SET received_at = excluded.received_at
-  `).bind(userId, hash, payload.exportedAt, receivedAt, payload.measurements.length, deviceId, deviceId, userId));
-  if (deviceId) {
-    commands.push(db.prepare('UPDATE sync_devices SET last_used_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL')
-      .bind(receivedAt, deviceId, userId));
+export async function importHealth(userId: string, payload: HealthSyncPayload, deviceId: string | null = null, options: HealthImportOptions = {}) {
+  try { return await writeHealthImport(database(), userId, payload, deviceId, options); }
+  catch (error) {
+    if (error instanceof HealthImportConflictError && error.code === 'SYNC_DEVICE_INVALID') throw new SyncDeviceInvalidError();
+    throw error;
   }
-  const result = await db.batch(commands);
-  if (deviceId && result[2].meta.changes !== 1) throw new SyncDeviceInvalidError();
-  const imported = result[0].meta.changes ?? 0;
-  return { ok: true, imported, skipped: payload.measurements.length - imported, lastSync: receivedAt };
 }
+export async function previewImport(userId: string, payload: HealthSyncPayload) {
+  return previewHealthImport(database(), userId, payload);
+}
+export async function readImportHistory(userId: string) { return listHealthImports(database(), userId); }
+export async function revertImport(userId: string, id: string, reason: string) { return revertHealthImport(database(), userId, id, reason); }
 
 export type { SyncDeviceMetadata } from './sync-connections';
 
