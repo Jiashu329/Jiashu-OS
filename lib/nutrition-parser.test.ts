@@ -64,10 +64,53 @@ test('unknown food, missing amounts and unsupported bowls remain editable with u
   const bowl = f.buildNutritionDrafts(answer(item({ amount: 1, unit: '碗', sourceText: '一碗熟米饭' })), bowlRequest).drafts[0];
   assert.equal(bowl.food, null); assert.equal(bowl.calories, null); assert.match(bowl.warnings.join(' '), /改填克重/);
   assert.equal(bowl.amount, 1); assert.equal(bowl.unit, '碗');
-  const noAmount = f.buildNutritionDrafts(answer(item({ amount: null, unit: null, meal: null, dateText: null, sourceText: '熟米饭' })), base).drafts[0];
+  const noAmount = f.buildNutritionDrafts(answer(item({ amount: null, unit: null, meal: null, dateText: null, sourceText: '熟米饭' })), { ...base, text: '吃了熟米饭' }).drafts[0];
   assert.equal(noAmount.food, null); assert.equal(noAmount.meal, null); assert.equal(noAmount.date, base.date);
   assert.equal(noAmount.amount, null); assert.equal(noAmount.unit, null);
   assert.match(noAmount.warnings.join(' '), /餐次/); assert.match(noAmount.warnings.join(' '), /份量/);
+});
+
+test('natural date phrases accept grounded time-of-day suffixes and preserve Shanghai-relative dates', () => {
+  const f = fixture([cooked]);
+  const cases = [
+    ['今天早上', '2026-11-12', 'breakfast'], ['今日上午', '2026-11-12', 'breakfast'],
+    ['今儿的早晨', '2026-11-12', 'breakfast'], ['今晚', '2026-11-12', 'dinner'],
+    ['昨天中午', '2026-11-11', 'lunch'], ['昨日下午', '2026-11-11', null],
+    ['前天晚上', '2026-11-10', 'dinner'], ['大前天的早餐', '2026-11-09', 'breakfast'],
+    ['2026年11月11日早上', '2026-11-11', 'breakfast'], ['2026/11/11中午', '2026-11-11', 'lunch'],
+    ['2026-11-11晚上', '2026-11-11', 'dinner'], ['11月11日上午', '2026-11-11', 'breakfast'],
+    ['11-11的晚餐', '2026-11-11', 'dinner'], ['2024年2月29日晚上', '2024-02-29', 'dinner'],
+    ['早上', base.date, 'breakfast'],
+  ] as const;
+  for (const [dateText, date, meal] of cases) {
+    const draft = f.buildNutritionDrafts(answer(item({ dateText, meal: null })), { ...base, text: dateText + '吃了150克熟米饭' }).drafts[0];
+    assert.equal(draft.date, date, dateText); assert.equal(draft.meal, meal, dateText);
+    assert.equal(draft.amount, 150); assert.equal(draft.calories, '150.0');
+  }
+  const beforeMidnight = f.parseNutritionParserRequest({ text: '今天早上吃了150克熟米饭', date: '2026-11-10' }, Date.parse('2026-11-11T15:59:00Z'));
+  assert.equal(f.buildNutritionDrafts(answer(item({ dateText: '今天早上', meal: null })), beforeMidnight).drafts[0].date, '2026-11-11');
+});
+
+test('date normalization still rejects ambiguous, ungrounded, invalid-calendar and future dates', () => {
+  const f = fixture();
+  for (const dateText of ['昨天或今天早上', '今天以后', '2026年2月30日早上', '2026-13-01晚餐', '明天早上', '后天的午餐', '2026-11-13下午']) {
+    assert.throws(() => f.buildNutritionDrafts(answer(item({ dateText })), { ...base, text: dateText + '吃了150克熟米饭' }), dateText);
+  }
+  assert.throws(() => f.buildNutritionDrafts(answer(item({ dateText: '2026-11-12' })), { ...base, text: '今天早上吃了150克熟米饭' }));
+  assert.throws(() => f.buildNutritionDrafts(answer(item({ dateText: '昨天早上' })), { ...base, text: '今天早上吃了150克熟米饭' }));
+});
+
+test('meal inference uses item evidence and leaves a multiple-meal sentence ambiguous without it', () => {
+  const f = fixture([cooked]);
+  const text = '今天早上吃了150克熟米饭，中午吃了一个苹果';
+  const ambiguous = f.buildNutritionDrafts(answer(item({ dateText: '今天', meal: null })), { ...base, text }).drafts[0];
+  assert.equal(ambiguous.meal, null);
+  const mixed = f.buildNutritionDrafts(answer(item({ dateText: '今天', meal: null })), { ...base, text: '今天早餐吃了150克熟米饭，中午吃了一个苹果' }).drafts[0];
+  assert.equal(mixed.meal, null);
+  const local = f.buildNutritionDrafts(answer(item({ dateText: '今天早上', meal: null, sourceText: '今天早上吃了150克熟米饭' })), { ...base, text }).drafts[0];
+  assert.equal(local.meal, 'breakfast');
+  const selected = f.buildNutritionDrafts(answer(item({ dateText: null, meal: null })), { ...base, text: '吃了150克熟米饭', meal: 'snack' }).drafts[0];
+  assert.equal(selected.date, base.date); assert.equal(selected.meal, 'snack');
 });
 
 test('ambiguous aliases or discarded cooking methods never silently select a food', () => {
