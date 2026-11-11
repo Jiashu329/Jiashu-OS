@@ -79,6 +79,9 @@ test('consecutive messages carry successful history and show safe Markdown while
   assert.match(f.el('messages').textContent ?? '', /<img src=x/);
   assert.equal(f.el('messages').querySelectorAll('.hc-markdown h2').length, 1);
   assert.equal(f.el('messages').querySelectorAll('.hc-markdown table').length, 1);
+  const sourceLink = f.el('messages').querySelector('.hc-source-list a')!;
+  assert.equal(sourceLink.getAttribute('target'), '_blank');
+  assert.equal(sourceLink.getAttribute('rel'), 'noopener noreferrer');
   f.click('close'); assert.equal(f.el('panel').hidden, true);
   f.click('launcher'); assert.equal(f.el('messages').querySelectorAll('article').length, 2);
   await f.sendText('那我明天应该怎么做？');

@@ -43,7 +43,7 @@ function sourceList(target,sources){
     if(!source||typeof source.label!=='string')continue;
     const li=document.createElement('li'),href=safeSourceHref(source.url);
     const text=(typeof source.id==='string'&&/^(?:H[1-5]|N1)$/.test(source.id)?'['+source.id+'] ':'')+source.label;
-    const label=add(li,href?'a':'span',text);if(href)label.href=href;
+    const label=add(li,href?'a':'span',text);if(href){label.href=href;label.target='_blank';label.rel='noopener noreferrer';label.setAttribute('aria-label',text+'（在新标签页查看，保留当前对话）');}
     const bits=[];if(validDay(source.from)&&validDay(source.to))bits.push(source.from+' — '+source.to);
     if(Number.isInteger(source.recordedDays)&&source.recordedDays>=0)bits.push('有记录 '+source.recordedDays+' 天');
     if(bits.length)add(li,'small',bits.join(' · '));target.append(li);
