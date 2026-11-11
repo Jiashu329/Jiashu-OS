@@ -100,6 +100,27 @@ test('a successful parse returns editable drafts with local calories and no pers
   assert.equal(f.configReads.at(-1)?.user, 'bob'); assert.equal(f.quotaUsers.at(-1), 'bob');
 });
 
+test('the reported breakfast sentence accepts a date with a time of day and preserves all three food quantities', async () => {
+  const f = fixture();
+  const text = '今天早上吃了2个肉包子、1碗豆浆、2个茶叶蛋';
+  f.setAnswer(JSON.stringify({ items: [
+    { name: '肉包子', amount: 2, unit: '个', meal: null, dateText: '今天早上', sourceText: '2个肉包子' },
+    { name: '豆浆', amount: 1, unit: '碗', meal: 'breakfast', dateText: '今天', sourceText: '1碗豆浆' },
+    { name: '茶叶蛋', amount: 2, unit: '个', meal: null, dateText: '今天早上', sourceText: '2个茶叶蛋' },
+  ] }));
+  const response = await f.post({ text, date: f.today });
+  assert.equal(response.status, 200);
+  const result = await response.json() as { drafts: parser.NutritionDraft[] };
+  assert.deepEqual(result.drafts.map(({ name, date, meal, amount, unit }) => ({ name, date, meal, amount, unit })), [
+    { name: '肉包子', date: f.today, meal: 'breakfast', amount: 2, unit: '个' },
+    { name: '豆浆', date: f.today, meal: 'breakfast', amount: 1, unit: '碗' },
+    { name: '茶叶蛋', date: f.today, meal: 'breakfast', amount: 2, unit: '个' },
+  ]);
+  assert.equal(f.outgoing.length, 1);
+  assert.equal(f.outgoing[0].input.text, text);
+  assert.equal(JSON.stringify(result).includes('PRIVATE-'), false);
+});
+
 test('missing configuration, quota exhaustion and concurrent key changes stop before extraction', async () => {
   const f = fixture(); f.setConfigured(false);
   assert.equal((await f.post()).status, 503); assert.equal(f.quotaUsers.length, 0);

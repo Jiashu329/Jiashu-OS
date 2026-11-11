@@ -60,18 +60,42 @@ export function parseNutritionParserRequest(raw: unknown, now: number | Date = D
 
 function dateFromText(raw: unknown, request: NutritionParserRequest): string {
   if (raw === null) return request.date;
-  if (typeof raw !== 'string' || raw.length > 20 || !raw.trim() || !request.text.includes(raw)) throw new NutritionParserError();
-  const shifts: Record<string, number> = { 今天: 0, 今日: 0, 今早: 0, 今晨: 0, 今晚: 0,
-    昨天: -1, 昨日: -1, 昨晚: -1, 昨夜: -1, 昨早: -1, 前天: -2, 明天: 1, 后天: 2 };
-  let date = raw;
-  if (Object.hasOwn(shifts, raw)) date = new Date(Date.parse(request.today + 'T12:00:00Z') + shifts[raw] * 86400000).toISOString().slice(0, 10);
+  if (typeof raw !== 'string' || raw.length > 40 || !raw.trim() || !request.text.includes(raw)) throw new NutritionParserError();
+  // Keep the original-text evidence, then remove only a bounded time-of-day
+  // suffix. Matching a day anywhere in a phrase could hide ambiguous dates.
+  const dayText = raw.normalize('NFKC').trim().replace(/(?:的)?(?:凌晨|清晨|早晨|早上|上午|中午|午后|下午|傍晚|晚上|夜里|夜间|半夜|早餐|早饭|午餐|午饭|晚餐|晚饭|夜宵|宵夜|加餐)$/, '');
+  if (!dayText) return request.date; // A time of day alone keeps the selected date.
+  const shifts: Record<string, number> = { 今天: 0, 今日: 0, 今儿: 0, 今儿个: 0, 今早: 0, 今晨: 0, 今晚: 0, 今夜: 0,
+    昨天: -1, 昨日: -1, 昨晚: -1, 昨夜: -1, 昨早: -1, 昨晨: -1, 前天: -2, 大前天: -3,
+    明天: 1, 明日: 1, 后天: 2, 後天: 2, 大后天: 3 };
+  let date = dayText;
+  if (Object.hasOwn(shifts, dayText)) date = new Date(Date.parse(request.today + 'T12:00:00Z') + shifts[dayText] * 86400000).toISOString().slice(0, 10);
   else {
-    const partial = /^(\d{1,2})月(\d{1,2})日$/.exec(raw) ?? /^(\d{2})-(\d{2})$/.exec(raw);
-    if (partial) date = request.today.slice(0, 4) + '-' + partial[1].padStart(2, '0') + '-' + partial[2].padStart(2, '0');
+    const full = /^(\d{4})年(\d{1,2})月(\d{1,2})(?:日|号)$/.exec(dayText)
+      ?? /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(dayText) ?? /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(dayText);
+    const partial = /^(\d{1,2})月(\d{1,2})(?:日|号)$/.exec(dayText) ?? /^(\d{1,2})-(\d{1,2})$/.exec(dayText);
+    if (full) date = full[1] + '-' + full[2].padStart(2, '0') + '-' + full[3].padStart(2, '0');
+    else if (partial) date = request.today.slice(0, 4) + '-' + partial[1].padStart(2, '0') + '-' + partial[2].padStart(2, '0');
   }
   if (!validDay(date)) throw new NutritionParserError('识别出的日期无效，请在描述中使用明确的年月日。');
   if (date > request.today) throw new NutritionParserError('饮食记录日期不能晚于今天，请检查描述中的日期。', 400);
   return date;
+}
+
+function mealFromText(...texts: Array<string | null>): NutritionDraftMeal | null {
+  const named: Array<[NutritionDraftMeal, RegExp]> = [['breakfast', /早餐|早饭/], ['lunch', /午餐|午饭/],
+    ['dinner', /晚餐|晚饭/], ['snack', /加餐|夜宵|宵夜|下午茶|零食/]];
+  const periods: Array<[NutritionDraftMeal, RegExp]> = [['breakfast', /早上|早晨|清晨|上午|今早|今晨|昨早|昨晨/],
+    ['lunch', /中午/], ['dinner', /傍晚|晚上|今晚|昨晚/]];
+  // Prefer evidence beside this item. Fall back to the whole sentence only
+  // when it describes one unambiguous meal, never by the server clock.
+  for (const text of texts) {
+    if (!text) continue;
+    const matches = new Set([...named, ...periods].filter(([, pattern]) => pattern.test(text)).map(([meal]) => meal));
+    if (matches.size > 1) return null;
+    if (matches.size === 1) return [...matches][0];
+  }
+  return null;
 }
 const normalized = (value: string) => value.normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/[\s·・，,、()（）]/g, '');
 function compatiblePreparation(source: string, food: FoodItem): boolean {
@@ -106,7 +130,8 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
       || !(value.unit === null || boundedText(value.unit, 20))
       || !(value.meal === null || validMeal(value.meal))) throw new NutritionParserError();
     const name = value.name.trim(), amount = value.amount as number | null, unit = typeof value.unit === 'string' ? value.unit.trim() : null;
-    const date = dateFromText(value.dateText, request), meal = validMeal(value.meal) ? value.meal : request.meal;
+    const date = dateFromText(value.dateText, request), meal = validMeal(value.meal) ? value.meal
+      : mealFromText(value.sourceText as string, value.dateText as string | null, request.text) ?? request.meal;
     const candidates = searchFoods(name, 6);
     const exact = candidates.filter((food) => [food.name, ...food.aliases].some((alias) => normalized(alias) === normalized(name))
       && compatiblePreparation(value.sourceText as string, food));
