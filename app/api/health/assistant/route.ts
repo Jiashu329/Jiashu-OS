@@ -2,15 +2,17 @@ import { env } from 'cloudflare:workers';
 import { readHealthRange } from '../../../../db/health-repository';
 import { listNutritionEntries } from '../../../../db/nutrition-store';
 import { consumeAIQuota } from '../../../../db/ai-usage-store';
-import { AIProviderError, callHealthAssistant, readAIConfiguration } from '../../../../lib/ai-provider';
+import { AIProviderError, callHealthAssistant } from '../../../../lib/ai-provider';
+import { AISettingsConflictError, readAISettings, resolveUserAIConfiguration } from '../../../../db/ai-settings-store';
+import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto';
 import { assistantRange, buildHealthAssistantContext, HealthAssistantContextError } from '../../../../lib/health-assistant-context';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated } from '../../_shared';
 
 export const dynamic = 'force-dynamic';
 
-function configuration() {
-  return readAIConfiguration({ AI_PROVIDER: env.AI_PROVIDER, MINIMAX_API_KEY: env.MINIMAX_API_KEY,
-    MINIMAX_MODEL: env.MINIMAX_MODEL, MINIMAX_REGION: env.MINIMAX_REGION });
+async function configuration(userId: string, expectedRevision?: number) {
+  if (!env.DB) throw new Error('AI settings storage unavailable');
+  return resolveUserAIConfiguration(env.DB, userId, env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision);
 }
 
 class AssistantRequestError extends Error {}
@@ -31,6 +33,8 @@ async function contextFor(userId: string, period: 7 | 30, now: number) {
 }
 
 function failure(error: unknown): Response {
+  if (error instanceof AISettingsConflictError) return json({ error: 'AI 设置已更新，请重新读取配置后再提问。', code: 'AI_SETTINGS_CONFLICT' }, 409);
+  if (error instanceof AISettingsCryptoError) return json({ error: '无法读取已保存的密钥，请到 AI 设置重新填写并保存。', code: 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE' }, 503);
   if (error instanceof AIProviderError) return json({ error: error.message, code: error.code }, error.status);
   if (error instanceof HealthAssistantContextError) return json({ error: error.message, code: error.code }, 400);
   if (error instanceof AssistantRequestError || error instanceof SyntaxError) return json({
@@ -50,7 +54,7 @@ export async function GET(request: Request) {
     const value = query.get('days') ?? '7';
     const period = days(value === '7' ? 7 : value === '30' ? 30 : null);
     const selected = await contextFor(user.userId, period, Date.now());
-    const config = configuration();
+    const config = await configuration(user.userId);
     return json({ configuration: { ready: config.ready, provider: config.providerLabel, model: config.model, message: config.message }, ...selected });
   } catch (error) { return failure(error); }
 }
@@ -93,7 +97,9 @@ export async function POST(request: Request) {
       || [...input.question].some((character) => { const code = character.charCodeAt(0); return (code < 32 && ![9, 10, 13].includes(code)) || code === 127; })) {
       throw new AssistantRequestError('请填写 1–1000 个字符的问题。');
     }
-    const config = configuration();
+    if (!env.DB) throw new Error('AI settings storage unavailable');
+    const savedSettings = await readAISettings(env.DB, user.userId);
+    const config = await configuration(user.userId, savedSettings.revision);
     if (!config.ready) return json({ error: config.message, code: 'AI_NOT_CONFIGURED' }, 503);
     const now = Date.now();
     const selected = await contextFor(user.userId, period, now);
@@ -101,7 +107,9 @@ export async function POST(request: Request) {
     const quota = await consumeAIQuota(env.DB, user.userId, now);
     if (!quota.allowed) return json({ error: '已达到健康助手的请求上限，请稍后再试。每分钟最多 3 次，每天最多 20 次。', code: 'AI_RATE_LIMITED' }, 429,
       { 'Retry-After': String(quota.retryAfter) });
-    const result = await callHealthAssistant(config, { question: input.question.trim(), context: selected.context });
+    // Recheck the saved version after data/limit reads so a concurrent clear cannot reuse a captured key.
+    const activeConfig = await configuration(user.userId, savedSettings.revision);
+    const result = await callHealthAssistant(activeConfig, { question: input.question.trim(), context: selected.context });
     return json({ ...result, generatedAt: new Date().toISOString(), range: selected.context.range, sources: selected.sources });
   } catch (error) { return failure(error); }
 }

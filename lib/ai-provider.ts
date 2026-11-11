@@ -53,8 +53,8 @@ export function readAIConfiguration(raw: AIEnvironment): AIConfiguration {
   if (provider && provider !== 'minimax') message = '当前仅支持 MiniMax，请将 AI_PROVIDER 设置为 minimax。';
   else if (regionValue && !['cn', 'global'].includes(regionValue)) message = 'MINIMAX_REGION 仅支持 cn 或 global。';
   else if (!validModel || modelIsCredential) message = 'MINIMAX_MODEL 格式无效，请填写不超过 100 个字符的模型名称。';
-  else if (!apiKey) message = '尚未配置 MiniMax API 密钥，请在站点运行设置中添加 MINIMAX_API_KEY。';
-  else if (!/^[\x21-\x7e]{1,4096}$/.test(apiKey)) message = 'MiniMax API 密钥格式无效，请检查站点运行设置。';
+  else if (!apiKey) message = '尚未保存 MiniMax API 密钥，请前往网站的 AI 设置。';
+  else if (!/^[\x21-\x7e]{1,4096}$/.test(apiKey)) message = 'MiniMax API 密钥格式无效，请在 AI 设置中重新填写。';
   const ready = message === 'MiniMax 已配置，可以使用健康数据助手。';
   const configuration: AIConfiguration = Object.freeze({ ready, provider: 'minimax', providerLabel: 'MiniMax', model, region, message });
   if (ready) privateConfigurations.set(configuration, {
@@ -164,7 +164,7 @@ export async function callHealthAssistant(
 ): Promise<HealthAssistantResult> {
   const privateConfiguration = privateConfigurations.get(configuration);
   if (!configuration.ready || !privateConfiguration) {
-    throw new AIProviderError('健康助手尚未配置可用的 MiniMax 服务，请检查站点运行设置。', 'AI_NOT_CONFIGURED', 503);
+    throw new AIProviderError('健康助手尚未配置可用的 MiniMax 服务，请先在 AI 设置中保存密钥。', 'AI_NOT_CONFIGURED', 503);
   }
   let context: string | undefined;
   try { context = JSON.stringify(input.context); } catch { /* Report only a safe, local validation error below. */ }
@@ -205,7 +205,7 @@ export async function callHealthAssistant(
     if (!response.ok || response.redirected) {
       cancelBody(response);
       if (response.status === 401 || response.status === 403) {
-        throw new AIProviderError('MiniMax 身份验证未通过，请检查站点运行设置中的密钥与区域。', 'AI_AUTH_FAILED', 503);
+        throw new AIProviderError('MiniMax 身份验证未通过，请在 AI 设置中检查密钥与区域。', 'AI_AUTH_FAILED', 503);
       }
       if (response.status === 429) throw new AIProviderError('MiniMax 请求较多，请稍后再试。', 'AI_RATE_LIMITED', 429);
       throw new AIProviderError('MiniMax 暂时无法处理请求，请稍后重试。');

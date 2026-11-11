@@ -5,5 +5,6 @@ declare namespace Cloudflare {
     MINIMAX_API_KEY?: string;
     MINIMAX_MODEL?: string;
     MINIMAX_REGION?: string;
+    AI_SETTINGS_ENCRYPTION_KEY?: string;
   }
 }

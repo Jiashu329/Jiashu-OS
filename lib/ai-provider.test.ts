@@ -27,7 +27,7 @@ test('configuration defaults to MiniMax M3 in China and keeps credentials out of
   assert.equal(missing.providerLabel, 'MiniMax');
   assert.equal(missing.model, 'MiniMax-M3');
   assert.equal(missing.region, 'cn');
-  assert.match(missing.message, /MINIMAX_API_KEY/);
+  assert.match(missing.message, /AI 设置/);
   const ready = configured();
   assert.equal(ready.ready, true);
   assert.equal(Object.isFrozen(ready), true);

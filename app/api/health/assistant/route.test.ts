@@ -4,6 +4,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import * as rules from '../../../../lib/health-assistant-context.ts';
 import * as provider from '../../../../lib/ai-provider.ts';
+import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto.ts';
+import { AISettingsConflictError } from '../../../../db/ai-settings-store.ts';
 import type { HealthMeasurement } from '../../../../lib/health.ts';
 import { shanghaiDay } from '../../../../lib/health.ts';
 
@@ -16,31 +18,52 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
 }
 function fixture() {
   let userId: string | null = 'alice';
-  const env = { DB: {} as D1Database, MINIMAX_API_KEY: 'synthetic-test-only-key' };
+  const env = { DB: {} as D1Database, AI_SETTINGS_ENCRYPTION_KEY: 'synthetic-test-only-encryption-master' };
+  const keys: Record<string, string> = { alice: 'synthetic-alice-test-only-key', bob: 'synthetic-bob-test-only-key' };
+  const revisions: Record<string, number> = { alice: 1, bob: 2 };
+  const settingsReads: Array<{ db: unknown; user: string }> = [];
+  const configReads: Array<{ db: unknown; user: string; master: unknown; expectedRevision?: number }> = [];
+  const configurations: provider.AIConfiguration[] = [];
   const reads: Array<{ user: string; from: string; to: string; kind: string }> = [];
   const outgoing: Array<{ question: string; context: rules.HealthAssistantContext }> = [];
   const quotaUsers: string[] = [];
   let allowed = true, empty = false, fail = false;
-  const today = shanghaiDay(new Date().toISOString());
+  let contextHook: (() => Promise<void>) | null = null, quotaHook: (() => Promise<void>) | null = null;
+  // Keep fixture observations before the request's captured `now`, including
+  // when hooks delay context collection across a millisecond boundary.
+  const measuredAt = new Date(Date.now() - 1000).toISOString();
+  const today = shanghaiDay(measuredAt);
   const shared = load(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const handlers = load(new URL('./route.ts', import.meta.url), {
-    ...shared, env, ...rules, ...provider,
+    ...shared, env, ...rules, ...provider, AISettingsCryptoError, AISettingsConflictError,
+    readAISettings: async (db: unknown, user: string) => { settingsReads.push({ db, user }); return { revision: revisions[user] ?? 0 }; },
+    resolveUserAIConfiguration: async (db: unknown, user: string, master: unknown, expectedRevision?: number) => {
+      configReads.push({ db, user, master, expectedRevision });
+      if (expectedRevision !== undefined && expectedRevision !== (revisions[user] ?? 0)) throw new AISettingsConflictError();
+      return provider.readAIConfiguration({ AI_PROVIDER: 'minimax', MINIMAX_API_KEY: keys[user],
+        MINIMAX_MODEL: user === 'bob' ? 'MiniMax-M2.7' : 'MiniMax-M3', MINIMAX_REGION: user === 'bob' ? 'global' : 'cn' });
+    },
     readHealthRange: async (user: string, from: string, to: string) => {
       reads.push({ user, from, to, kind: 'health' });
+      const hook = contextHook; contextHook = null; await hook?.();
       if (fail) throw new Error('synthetic-private-storage-exception');
       return { measurements: empty ? [] : [{ id: 'private-record-id', metric: 'steps', value: user === 'alice' ? 100 : 200,
         unit: 'count', aggregation: 'daily', source: 'private-source-label',
-        startDate: today + 'T00:00:00+08:00', endDate: new Date().toISOString(),
+        startDate: today + 'T00:00:00+08:00', endDate: measuredAt,
       } satisfies HealthMeasurement] };
     },
     listNutritionEntries: async (_db: unknown, user: string, selection: { from: string; to: string }) => {
       reads.push({ user, ...selection, kind: 'nutrition' }); return [];
     },
-    consumeAIQuota: async (_db: unknown, user: string) => { quotaUsers.push(user); return { allowed, retryAfter: 23, remainingToday: 10 }; },
-    callHealthAssistant: async (_config: unknown, input: { question: string; context: rules.HealthAssistantContext }) => {
-      outgoing.push(input); return { answer: '合成测试回答 [H3]', provider: 'MiniMax', model: 'MiniMax-M3' };
+    consumeAIQuota: async (_db: unknown, user: string) => {
+      quotaUsers.push(user); const hook = quotaHook; quotaHook = null; await hook?.();
+      return { allowed, retryAfter: 23, remainingToday: 10 };
+    },
+    callHealthAssistant: async (config: provider.AIConfiguration, input: { question: string; context: rules.HealthAssistantContext }) => {
+      configurations.push(config);
+      outgoing.push(input); return { answer: '合成测试回答 [H3]', provider: 'MiniMax', model: config.model };
     },
   }, ['GET', 'POST']);
   const request = (body: unknown = { question: '总结这段时间', days: 7, shareHealthData: true }, options: { origin?: string | null; type?: string; raw?: boolean; length?: string } = {}) => {
@@ -49,9 +72,12 @@ function fixture() {
     if (options.length) headers.set('Content-Length', options.length);
     return new Request(ORIGIN + '/api/health/assistant', { method: 'POST', headers, body: options.raw ? String(body) : JSON.stringify(body) });
   };
-  return { env, reads, outgoing, quotaUsers, handlers, request,
+  return { env, keys, revisions, settingsReads, configReads, configurations, reads, outgoing, quotaUsers, handlers, request,
     signIn(value: string | null) { userId = value; }, setAllowed(value: boolean) { allowed = value; },
     setEmpty(value: boolean) { empty = value; }, setFailure(value: boolean) { fail = value; },
+    setConfigured(value: boolean, user = userId ?? 'alice') { keys[user] = value ? 'synthetic-' + user + '-test-only-key' : ''; revisions[user] = (revisions[user] ?? 0) + 1; },
+    changeKey(key: string, user = userId ?? 'alice') { keys[user] = key; revisions[user] = (revisions[user] ?? 0) + 1; },
+    beforeContext(action: () => Promise<void>) { contextHook = action; }, beforeQuota(action: () => Promise<void>) { quotaHook = action; },
     get(query = '') { return handlers.GET(new Request(ORIGIN + '/api/health/assistant' + query)); },
     post(body?: unknown, options?: Parameters<typeof request>[1]) { return handlers.POST(request(body, options)); },
   };
@@ -64,21 +90,26 @@ void test('health assistant requires login and same-origin JSON before reading h
   assert.equal((await f.post(undefined, { origin: 'https://foreign.example' })).status, 403);
   assert.equal((await f.post(undefined, { origin: null })).status, 403);
   assert.equal((await f.post(undefined, { type: 'text/plain' })).status, 415);
-  assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0);
+  assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.settingsReads.length, 0);
 });
 
 void test('GET is a local preview only, uses the authenticated owner, and never exposes credentials', async () => {
   const f = fixture();
   const response = await f.get('?days=30'); assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  const data = await response.json() as { configuration: { ready: boolean }; context: { range: { days: number } } };
+  const data = await response.json() as { configuration: { ready: boolean; model: string }; context: { range: { days: number } } };
   assert.equal(data.configuration.ready, true); assert.equal(data.context.range.days, 30);
-  const encoded = JSON.stringify(data); assert.ok(!encoded.includes(f.env.MINIMAX_API_KEY));
+  assert.equal(data.configuration.model, 'MiniMax-M3');
+  const encoded = JSON.stringify(data); for (const secret of [...Object.values(f.keys), f.env.AI_SETTINGS_ENCRYPTION_KEY]) assert.ok(!encoded.includes(secret));
+  assert.deepEqual(f.configReads, [{ db: f.env.DB, user: 'alice', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined }]);
   assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0);
   assert.ok(f.reads.every((entry) => entry.user === 'alice'));
   for (const query of ['?days=90', '?days=7&days=30', '?userId=bob', '?days=7e0']) assert.equal((await f.get(query)).status, 400);
   f.signIn('bob'); const other = await f.get(); assert.equal(other.status, 200);
   assert.equal(f.reads.at(-1)?.user, 'bob');
+  const otherData = await other.json() as { configuration: { model: string } };
+  assert.equal(otherData.configuration.model, 'MiniMax-M2.7');
+  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'bob', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined });
 });
 
 void test('explicit sharing, a supported range and a bounded question are required before any provider request', async () => {
@@ -93,13 +124,13 @@ void test('explicit sharing, a supported range and a bounded question are requir
   assert.equal((await f.post('{', { raw: true })).status, 400);
   assert.equal((await f.post('x'.repeat(8193), { raw: true })).status, 413);
   assert.equal((await f.post(undefined, { length: '8193' })).status, 413);
-  assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0);
+  assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.settingsReads.length, 0);
 });
 
 void test('missing configuration, empty records, and exhausted quota never send health data to a model', async () => {
-  const f = fixture(); f.env.MINIMAX_API_KEY = '';
+  const f = fixture(); f.setConfigured(false);
   assert.equal((await f.post()).status, 503); assert.equal(f.reads.length, 0);
-  f.env.MINIMAX_API_KEY = 'synthetic-test-only-key'; f.setEmpty(true);
+  f.setConfigured(true); f.setEmpty(true);
   assert.equal((await f.post()).status, 400); assert.equal(f.quotaUsers.length, 0);
   f.setEmpty(false); f.setAllowed(false);
   const limited = await f.post(); assert.equal(limited.status, 429); assert.equal(limited.headers.get('Retry-After'), '23');
@@ -114,8 +145,15 @@ void test('POST sends only the server-selected owner context and returns data re
   assert.ok(result.sources.length); assert.ok(Number.isFinite(Date.parse(result.generatedAt)));
   assert.equal(f.outgoing[0].question, '总结这段时间');
   const sent = JSON.stringify(f.outgoing[0]);
-  for (const value of ['alice', 'bob', 'synthetic-private@example.test', 'private-record-id', 'private-source-label', f.env.MINIMAX_API_KEY]) assert.ok(!sent.includes(value));
+  for (const value of ['alice', 'bob', 'synthetic-private@example.test', 'private-record-id', 'private-source-label', ...Object.values(f.keys), f.env.AI_SETTINGS_ENCRYPTION_KEY]) assert.ok(!sent.includes(value));
   assert.ok(f.reads.every((entry) => entry.user === 'alice')); assert.deepEqual(f.quotaUsers, ['alice']);
+  assert.deepEqual(f.settingsReads, [{ db: f.env.DB, user: 'alice' }]);
+  assert.deepEqual(f.configReads, Array.from({ length: 2 }, () => ({ db: f.env.DB, user: 'alice', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 1 })));
+  assert.equal(f.configurations[0].model, 'MiniMax-M3'); assert.equal(f.configurations[0].region, 'cn');
+  f.signIn('bob'); assert.equal((await f.post()).status, 200);
+  assert.equal(f.configurations[1].model, 'MiniMax-M2.7'); assert.equal(f.configurations[1].region, 'global');
+  assert.deepEqual(f.settingsReads.at(-1), { db: f.env.DB, user: 'bob' });
+  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'bob', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 2 });
 });
 
 void test('storage failures fail closed without exposing private exceptions or sending a request', async () => {
@@ -123,4 +161,36 @@ void test('storage failures fail closed without exposing private exceptions or s
   const response = await f.post(); assert.equal(response.status, 503);
   assert.ok(!(await response.text()).includes('synthetic-private-storage-exception'));
   assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0);
+});
+
+function barrier() {
+  let enter!: () => void, release!: () => void;
+  const reached = new Promise<void>((resolve) => { enter = resolve; });
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  return { reached, release, async pause() { enter(); await waiting; } };
+}
+
+void test('clearing the key while health context is loading prevents the captured configuration from sending data', async () => {
+  const f = fixture(); const waiting = barrier(); f.beforeContext(waiting.pause);
+  const pending = f.post(); await waiting.reached;
+  assert.equal(f.configReads[0].expectedRevision, 1);
+  f.setConfigured(false); waiting.release();
+  const response = await pending; assert.equal(response.status, 409);
+  assert.equal((await response.json() as { code: string }).code, 'AI_SETTINGS_CONFLICT');
+  assert.equal(f.revisions.alice, 2); assert.equal(f.keys.alice, '');
+  assert.equal(f.configReads.at(-1)?.expectedRevision, 1);
+  assert.equal(f.configurations.length, 0); assert.equal(f.outgoing.length, 0);
+});
+
+void test('saving a replacement key while quota is pending requires a fresh question before any provider call', async () => {
+  const f = fixture(); const waiting = barrier(); f.beforeQuota(waiting.pause);
+  const pending = f.post(); await waiting.reached;
+  assert.equal(f.configReads[0].expectedRevision, 1); assert.deepEqual(f.quotaUsers, ['alice']);
+  f.changeKey('synthetic-replacement-user-key'); waiting.release();
+  const response = await pending; assert.equal(response.status, 409);
+  assert.equal((await response.json() as { code: string }).code, 'AI_SETTINGS_CONFLICT');
+  assert.equal(f.revisions.alice, 2); assert.equal(f.configReads.at(-1)?.expectedRevision, 1);
+  assert.equal(f.configurations.length, 0); assert.equal(f.outgoing.length, 0);
+  assert.equal((await f.post()).status, 200); assert.equal(f.outgoing.length, 1);
+  assert.equal(f.configReads.at(-1)?.expectedRevision, 2);
 });

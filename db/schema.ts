@@ -162,3 +162,17 @@ export const aiUsageLimits = sqliteTable('ai_usage_limits', {
   minute: integer('minute').notNull(),
   minuteCount: integer('minute_count').notNull(),
 });
+
+// Each visitor owns one settings record. Only authenticated ciphertext is stored.
+export const aiUserSettings = sqliteTable('ai_user_settings', {
+  userId: text('user_id').primaryKey(),
+  keyCiphertext: text('key_ciphertext'),
+  keyIv: text('key_iv'),
+  model: text('model').notNull(),
+  region: text('region').notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastTestStatus: text('last_test_status'),
+  lastTestAt: text('last_test_at'),
+});
