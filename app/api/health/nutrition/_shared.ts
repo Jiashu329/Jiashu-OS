@@ -11,13 +11,13 @@ export function nutritionError(error: unknown) {
   if (error instanceof NutritionValidationError) return json({ error: error.message, code: error.code, issues: error.issues }, 400);
   if (error instanceof NutritionConflictError) return json({ error: error.message, code: error.code }, 409);
   if (error instanceof SyntaxError) return json({ error: '饮食记录格式不正确。', code: 'INVALID_NUTRITION_ENTRY' }, 400);
-  if (error instanceof RangeError) return json({ error: '单次填写内容不能超过 16 KB。', code: 'NUTRITION_REQUEST_TOO_LARGE' }, 413);
+  if (error instanceof RangeError) return json({ error: '单次填写内容过大，请减少食物条数后分批保存。', code: 'NUTRITION_REQUEST_TOO_LARGE' }, 413);
   return unavailable();
 }
 export function nutritionNotFound() { return json({ error: '找不到这条饮食记录。', code: 'NUTRITION_ENTRY_NOT_FOUND' }, 404); }
-export function nutritionGuard(request: Request) {
+export function nutritionGuard(request: Request, jsonBody = true) {
   if (!isSameOrigin(request)) return invalidOrigin();
-  if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return json({ error: '请通过网站提交 JSON 格式的饮食记录。' }, 415);
+  if (jsonBody && !request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return json({ error: '请通过网站提交 JSON 格式的饮食记录。' }, 415);
   return null;
 }
 export function nutritionRequestId(request: Request) {
@@ -27,8 +27,7 @@ export function nutritionRequestId(request: Request) {
 export function invalidNutritionRequestId() {
   return json({ error: '这次提交缺少有效标识，请重新打开表单后保存。', code: 'NUTRITION_REQUEST_ID_REQUIRED' }, 400);
 }
-export async function nutritionBody(request: Request): Promise<unknown> {
-  const maximumBytes = 16 * 1024;
+export async function nutritionBody(request: Request, maximumBytes = 16 * 1024): Promise<unknown> {
   const length = Number(request.headers.get('content-length'));
   if (Number.isFinite(length) && length > maximumBytes) throw new RangeError('Nutrition request too large');
   if (!request.body) throw new SyntaxError('Missing body');

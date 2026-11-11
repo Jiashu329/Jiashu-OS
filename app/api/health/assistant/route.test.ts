@@ -10,6 +10,7 @@ import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto.ts';
 import { AISettingsConflictError } from '../../../../db/ai-settings-store.ts';
 import type { HealthMeasurement } from '../../../../lib/health.ts';
 import { shanghaiDay } from '../../../../lib/health.ts';
+import type { NutritionDayStatus } from '../../../../lib/nutrition.ts';
 
 const ORIGIN = 'https://synthetic-assistant.example';
 type Handler = (request: Request) => Promise<Response>;
@@ -29,6 +30,7 @@ function fixture() {
   const reads: Array<{ user: string; from: string; to: string; kind: string }> = [];
   const outgoing: Array<{ question: string; context: rules.HealthAssistantContext; history?: readonly chat.AssistantHistoryMessage[] }> = [];
   const quotaUsers: string[] = [];
+  const statusRows: Record<string, NutritionDayStatus[]> = {};
   let allowed = true, empty = false, fail = false;
   let contextHook: (() => Promise<void>) | null = null, quotaHook: (() => Promise<void>) | null = null;
   // Keep fixture observations before the request's captured `now`, including
@@ -56,8 +58,10 @@ function fixture() {
         startDate: today + 'T00:00:00+08:00', endDate: measuredAt,
       } satisfies HealthMeasurement] };
     },
-    listNutritionEntries: async (_db: unknown, user: string, selection: { from: string; to: string }) => {
-      reads.push({ user, ...selection, kind: 'nutrition' }); return [];
+    readNutritionRangeSnapshot: async (_db: unknown, user: string, selection: { from: string; to: string }) => {
+      reads.push({ user, ...selection, kind: 'nutrition-snapshot' });
+      if (fail) throw new Error('synthetic-private-status-storage-exception');
+      return { entries: [], statuses: statusRows[user] ?? [] };
     },
     consumeAIQuota: async (_db: unknown, user: string) => {
       quotaUsers.push(user); const hook = quotaHook; quotaHook = null; await hook?.();
@@ -74,7 +78,8 @@ function fixture() {
     if (options.length) headers.set('Content-Length', options.length);
     return new Request(ORIGIN + '/api/health/assistant', { method: 'POST', headers, body: options.raw ? String(body) : JSON.stringify(body) });
   };
-  return { env, keys, revisions, settingsReads, configReads, configurations, reads, outgoing, quotaUsers, handlers, request,
+  return { env, keys, revisions, settingsReads, configReads, configurations, reads, outgoing, quotaUsers, handlers, request, today,
+    setNutritionStatus(user: string, statuses: NutritionDayStatus[]) { statusRows[user] = statuses; },
     signIn(value: string | null) { userId = value; }, setAllowed(value: boolean) { allowed = value; },
     setEmpty(value: boolean) { empty = value; }, setFailure(value: boolean) { fail = value; },
     setConfigured(value: boolean, user = userId ?? 'alice') { keys[user] = value ? 'synthetic-' + user + '-test-only-key' : ''; revisions[user] = (revisions[user] ?? 0) + 1; },
@@ -243,4 +248,24 @@ void test('saving a replacement key while quota is pending requires a fresh ques
   assert.equal(f.configurations.length, 0); assert.equal(f.outgoing.length, 0);
   assert.equal((await f.post()).status, 200); assert.equal(f.outgoing.length, 1);
   assert.equal(f.configReads.at(-1)?.expectedRevision, 2);
+});
+
+void test('completion status is read for the authenticated owner and reaches preview and model context', async () => {
+  const f = fixture();
+  f.setNutritionStatus('alice', [{ date: f.today, complete: true, revision: 2,
+    meals: { breakfast: 'skipped', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' } }]);
+  const preview = await (await f.get()).json() as { context: rules.HealthAssistantContext };
+  assert.equal(preview.context.nutrition.completeDays, 1);
+  assert.equal(preview.context.nutrition.recordedDays, 0);
+  assert.equal(preview.context.nutrition.days[0].recordedKnownKcal, null);
+  assert.equal(preview.context.nutrition.days[0].meals?.lunch, 'skipped');
+  assert.equal((await f.post()).status, 200);
+  assert.deepEqual(f.outgoing[0].context.nutrition, preview.context.nutrition);
+  const snapshots = f.reads.filter((read) => read.kind === 'nutrition-snapshot');
+  assert.equal(snapshots.length, 2);
+  assert.ok(snapshots.every((read) => read.user === 'alice'));
+  f.signIn('bob');
+  const other = await (await f.get()).json() as { context: rules.HealthAssistantContext };
+  assert.equal(other.context.nutrition.completeDays, 0);
+  assert.equal(other.context.nutrition.days.length, 0);
 });

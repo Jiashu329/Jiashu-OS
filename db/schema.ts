@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { uniqueIndex, index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const healthMeasurements = sqliteTable('health_measurements', {
   userId: text('user_id').notNull(),
@@ -147,6 +147,7 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   portion: text('portion').notNull(),
   note: text('note').notNull(),
   caloriesTenth: integer('calories_tenth'),
+  foodJson: text('food_json'),
   creationHash: text('creation_hash').notNull(),
   revision: integer('revision').notNull(),
   createdAt: text('created_at').notNull(),
@@ -176,3 +177,28 @@ export const aiUserSettings = sqliteTable('ai_user_settings', {
   lastTestStatus: text('last_test_status'),
   lastTestAt: text('last_test_at'),
 });
+
+export const nutritionBatches = sqliteTable('nutrition_batches', {
+  userId: text('user_id').notNull(),
+  id: text('id').notNull(),
+  requestHash: text('request_hash').notNull(),
+  entryIdsJson: text('entry_ids_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.id] })]);
+
+export const nutritionFavorites = sqliteTable('nutrition_favorites', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  templateHash: text('template_hash').notNull(),
+  templateJson: text('template_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [uniqueIndex('nutrition_favorites_owner_hash_idx').on(table.userId, table.templateHash)]);
+
+export const nutritionDayStatus = sqliteTable('nutrition_day_status', {
+  userId: text('user_id').notNull(),
+  date: text('date').notNull(),
+  complete: integer('complete').notNull(),
+  mealsJson: text('meals_json').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.date] })]);

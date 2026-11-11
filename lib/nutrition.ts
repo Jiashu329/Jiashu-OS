@@ -1,9 +1,13 @@
 import { normalizeTimestamp, shanghaiDay } from './health.ts';
+import { calculateFoodSelection, type FoodSnapshot } from './food-catalog.ts';
 
 export const NUTRITION_MEALS = {
   breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '加餐',
 } as const;
 export type NutritionMeal = keyof typeof NUTRITION_MEALS;
+export type NutritionMealStatus = 'unrecorded' | 'recorded' | 'skipped';
+export interface NutritionDayStatus { date: string; complete: boolean; meals: Record<NutritionMeal, NutritionMealStatus>; revision: number }
+export interface NutritionDayStatusInput extends Omit<NutritionDayStatus, 'revision'> { expectedRevision: number }
 export interface NutritionInput {
   date: string;
   meal: NutritionMeal;
@@ -11,6 +15,7 @@ export interface NutritionInput {
   portion: string;
   note: string;
   caloriesTenth: number | null;
+  food?: FoodSnapshot;
 }
 export interface NutritionEntry extends NutritionInput {
   id: string;
@@ -110,16 +115,26 @@ export function validNutritionId(input: unknown): input is string {
   return typeof input === 'string' && input.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input);
 }
 export function parseNutritionCreate(input: unknown, now: Date | number = Date.now()): NutritionInput {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'food']);
   if (typeof raw.meal !== 'string' || !Object.hasOwn(NUTRITION_MEALS, raw.meal)) return fail('meal', '请选择早餐、午餐、晚餐或加餐。');
+  let food: FoodSnapshot | undefined;
+  if (raw.food !== undefined && raw.food !== null) {
+    const selection = fields(raw.food, ['id', 'amount', 'unit']);
+    if (typeof selection.id !== 'string' || typeof selection.amount !== 'number' || typeof selection.unit !== 'string') return fail('food', '请选择食物库中的食物并填写有效份量。');
+    try { food = calculateFoodSelection({ id: selection.id, amount: selection.amount, unit: selection.unit }); }
+    catch (error) { return fail('food', error instanceof Error ? error.message : '食物库记录已变化，请重新选择食物。'); }
+    if (!Number.isSafeInteger(food.caloriesTenth) || food.caloriesTenth < 0 || food.caloriesTenth > 200000) return fail('food', '这份食物热量超出支持范围，请调整份量。');
+  }
   return {
     date: date(raw.date, shanghaiDay(new Date(now).toISOString())), meal: raw.meal as NutritionMeal,
-    name: text(raw.name, 'name', 100), portion: text(raw.portion, 'portion', 100, true),
-    note: text(raw.note, 'note', 500, true), caloriesTenth: calories(raw.calories),
+    name: food ? text(food.foodName, 'name', 100) : text(raw.name, 'name', 100),
+    portion: food ? text(String(food.amount) + food.unit, 'portion', 100) : text(raw.portion, 'portion', 100, true),
+    note: text(raw.note, 'note', 500, true), caloriesTenth: food ? food.caloriesTenth : calories(raw.calories),
+    ...(food ? { food } : {}),
   };
 }
 export function parseNutritionPatch(input: unknown, now: Date | number = Date.now()): NutritionPatch {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'deleted', 'expectedRevision']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'food', 'deleted', 'expectedRevision']);
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1) return fail('expectedRevision', '请先读取最新版本的饮食记录。');
   if (Object.hasOwn(raw, 'deleted')) {
     if (typeof raw.deleted !== 'boolean' || Object.keys(raw).some((key) => !['deleted', 'expectedRevision'].includes(key))) return fail('deleted', '删除或恢复操作仅提交状态和当前版本，不同时编辑食物。');
@@ -163,4 +178,19 @@ export function buildNutritionReview(entries: readonly NutritionEntry[], selecti
       return { date, summary: summarizeNutrition(entries.filter((entry) => entry.date === date)) };
     }),
   };
+}
+
+export function parseNutritionBatch(input: unknown, now: Date | number = Date.now()): NutritionInput[] {
+  const raw = fields(input, ['entries']);
+  if (!Array.isArray(raw.entries) || raw.entries.length < 1 || raw.entries.length > 30) return fail('entries', '一次请保存 1 至 30 条食物记录。');
+  return raw.entries.map((item) => parseNutritionCreate(item, now));
+}
+export function parseNutritionStatus(input: unknown, now: Date | number = Date.now()): NutritionDayStatusInput {
+  const raw = fields(input, ['date', 'complete', 'meals', 'expectedRevision']);
+  if (typeof raw.complete !== 'boolean') return fail('complete', '请明确选择当天记录是否完整。');
+  if (!Number.isSafeInteger(raw.expectedRevision) || (raw.expectedRevision as number) < 0) return fail('expectedRevision', '请重新读取当天记录状态。');
+  const meals = fields(raw.meals, Object.keys(NUTRITION_MEALS));
+  for (const meal of Object.keys(NUTRITION_MEALS)) if (!['unrecorded', 'recorded', 'skipped'].includes(meals[meal] as string)) return fail('meals.' + meal, '请选择已记录、未进食或尚未记录。');
+  if (raw.complete && ['breakfast', 'lunch', 'dinner'].some((meal) => meals[meal] === 'unrecorded')) return fail('complete', '请先为早餐、午餐和晚餐补充记录或标记未进食。');
+  return { date: date(raw.date, shanghaiDay(new Date(now).toISOString())), complete: raw.complete, meals: meals as Record<NutritionMeal, NutritionMealStatus>, expectedRevision: raw.expectedRevision as number };
 }

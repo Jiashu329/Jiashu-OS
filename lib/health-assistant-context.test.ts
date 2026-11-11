@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { HealthMeasurement, SleepStages } from './health.ts';
-import type { NutritionEntry } from './nutrition.ts';
+import type { NutritionDayStatus, NutritionEntry } from './nutrition.ts';
 import { assistantRange, buildHealthAssistantContext, HealthAssistantContextError, MAX_HEALTH_ASSISTANT_CONTEXT_BYTES } from './health-assistant-context.ts';
 
 const NOW = Date.parse('2026-11-11T10:00:00+08:00');
@@ -163,4 +163,36 @@ void test('a complete 30-day context stays bounded without truncating records an
   assert.equal(MAX_HEALTH_ASSISTANT_CONTEXT_BYTES, 50 * 1024);
   const limitations = result.context.limitations.join('；');
   for (const rule of ['缺失日期不补0', '今日尚未结束', '并非全天真实总摄入', '不是全天总能量消耗', '未知热量不按0计算']) assert.ok(limitations.includes(rule));
+});
+
+void test('nutrition completion is a whitelisted user label and excludes incomplete or unknown days from comparison counts', () => {
+  const status = (date: string): NutritionDayStatus => ({ date, complete: true, revision: 4,
+    meals: { breakfast: 'skipped', lunch: 'recorded', dinner: 'skipped', snack: 'unrecorded' } });
+  const marked = Object.assign(status('2026-11-08'), { note: 'PRIVATE_STATUS_NOTE', userId: 'PRIVATE_OWNER' });
+  const result = buildHealthAssistantContext({ measurements: [], nutrition: [food('2026-11-08', 0), food('2026-11-09', null), food('2026-11-10', 1000)],
+    nutritionStatuses: [marked, status('2026-11-09')], days: 7, now: NOW });
+  assert.equal(result.context.nutrition.recordedDays, 3);
+  assert.equal(result.context.nutrition.completeDays, 2);
+  assert.equal(result.context.nutrition.comparableDays, 1);
+  assert.deepEqual(result.context.nutrition.days.map((day) => [day.date, day.complete]), [
+    ['2026-11-08', true], ['2026-11-09', true], ['2026-11-10', false],
+  ]);
+  assert.deepEqual(result.context.nutrition.days[0].meals, { breakfast: 'skipped', lunch: 'recorded', dinner: 'skipped', snack: 'unrecorded' });
+  assert.ok(!JSON.stringify(result.context).includes('PRIVATE_'));
+  assert.match(result.context.limitations.join(' '), /用户标记的记录状态/);
+});
+
+void test('explicit skipped-meal status can be discussed without inventing food or zero calories', () => {
+  const status: NutritionDayStatus = { date: '2026-11-10', complete: true, revision: 3,
+    meals: { breakfast: 'skipped', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' } };
+  const result = buildHealthAssistantContext({ measurements: [], nutrition: [], nutritionStatuses: [status], days: 7, now: NOW });
+  assert.equal(result.hasData, true);
+  assert.equal(result.context.nutrition.recordedDays, 0);
+  assert.equal(result.context.nutrition.completeDays, 1);
+  assert.equal(result.context.nutrition.comparableDays, 0);
+  assert.equal(result.context.nutrition.days[0].recordedKnownKcal, null);
+  assert.equal(result.context.nutrition.days[0].entryCount, 0);
+  assert.equal(result.sources[0].recordedDays, 0);
+  status.complete = false; status.meals = { breakfast: 'unrecorded', lunch: 'unrecorded', dinner: 'unrecorded', snack: 'unrecorded' };
+  assert.equal(buildHealthAssistantContext({ measurements: [], nutrition: [], nutritionStatuses: [status], days: 7, now: NOW }).hasData, false);
 });

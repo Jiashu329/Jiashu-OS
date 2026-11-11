@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { readHealthRange } from '../../../../db/health-repository';
-import { listNutritionEntries } from '../../../../db/nutrition-store';
+import { readNutritionRangeSnapshot } from '../../../../db/nutrition-store';
 import { consumeAIQuota } from '../../../../db/ai-usage-store';
 import { AIProviderError, callHealthAssistant } from '../../../../lib/ai-provider';
 import { AISettingsConflictError, readAISettings, resolveUserAIConfiguration } from '../../../../db/ai-settings-store';
@@ -27,11 +27,12 @@ function days(value: unknown): 7 | 30 {
 async function contextFor(userId: string, period: 7 | 30, now: number) {
   if (!env.DB) throw new Error('Health storage unavailable');
   const range = assistantRange(period, now);
-  const [health, nutrition] = await Promise.all([
+  const [health, nutritionSnapshot] = await Promise.all([
     readHealthRange(userId, range.from, range.to),
-    listNutritionEntries(env.DB, userId, { from: range.from, to: range.to }),
+    readNutritionRangeSnapshot(env.DB, userId, { from: range.from, to: range.to }),
   ]);
-  return buildHealthAssistantContext({ measurements: health.measurements, nutrition, days: period, now });
+  return buildHealthAssistantContext({ measurements: health.measurements, nutrition: nutritionSnapshot.entries,
+    nutritionStatuses: nutritionSnapshot.statuses, days: period, now });
 }
 
 function failure(error: unknown): Response {

@@ -7,6 +7,7 @@ import test, { type TestContext } from 'node:test';
 import { shanghaiDay } from '../../../../lib/health.ts';
 import * as nutritionRules from '../../../../lib/nutrition.ts';
 import * as nutritionStore from '../../../../db/nutrition-store.ts';
+import { searchFoods, calculateFoodSelection } from '../../../../lib/food-catalog.ts';
 
 const ORIGIN = 'https://synthetic-nutrition.example';
 const TODAY = shanghaiDay(new Date().toISOString());
@@ -65,6 +66,9 @@ async function fixture(t: TestContext) {
     GET(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response>;
     PATCH(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response>;
   };
+  const batchRoute = loadExports(new URL('./batch/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { POST(request: Request): Promise<Response> };
+  const statusRoute = loadExports(new URL('./status/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(request: Request): Promise<Response>; PATCH(request: Request): Promise<Response> };
+  const favoritesRoute = loadExports(new URL('./favorites/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(): Promise<Response>; POST(request: Request): Promise<Response>; DELETE(request: Request): Promise<Response> };
   function request(method: string, path: string, body?: unknown, options: { key?: string | null; origin?: string | null; contentType?: string; raw?: boolean } = {}) {
     const headers = new Headers({ 'Content-Type': options.contentType ?? 'application/json' });
     if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
@@ -79,6 +83,12 @@ async function fixture(t: TestContext) {
     get(id: string) { return itemRoute.GET(request('GET', '/api/health/nutrition/' + id), { params: Promise.resolve({ id }) }); },
     create(body: unknown, options: Parameters<typeof request>[3] = {}) { return route.POST(request('POST', '/api/health/nutrition', body, options)); },
     patch(id: string, body: unknown, options: Parameters<typeof request>[3] = {}) { return itemRoute.PATCH(request('PATCH', '/api/health/nutrition/' + id, body, options), { params: Promise.resolve({ id }) }); },
+    batch(body: unknown, options: Parameters<typeof request>[3] = {}) { return batchRoute.POST(request('POST', '/api/health/nutrition/batch', body, options)); },
+    status(date = TODAY) { return statusRoute.GET(request('GET', '/api/health/nutrition/status?date=' + date)); },
+    mark(body: unknown, options: Parameters<typeof request>[3] = {}) { return statusRoute.PATCH(request('PATCH', '/api/health/nutrition/status', body, options)); },
+    favorites() { return favoritesRoute.GET(); },
+    favorite(entryId: string, options: Parameters<typeof request>[3] = {}) { return favoritesRoute.POST(request('POST', '/api/health/nutrition/favorites', { entryId }, options)); },
+    unfavorite(id: string, options: Parameters<typeof request>[3] = {}) { return favoritesRoute.DELETE(request('DELETE', '/api/health/nutrition/favorites?id=' + id, undefined, options)); },
     count() { return Number(sqlite.prepare('SELECT count(*) AS total FROM nutrition_entries').get()?.total); },
   };
 }
@@ -192,4 +202,56 @@ void test('a rejected database insert leaves no half-created entry and the same 
   f.sqlite.exec('DROP TRIGGER reject_synthetic_nutrition');
   const retry = await f.create(input(), { key }); assert.equal(retry.status, 201); const created = await readMutation(retry); assert.equal(created.replayed, false); assert.equal(f.count(), 1);
   assert.equal((await readMutation(await f.create(input(), { key }))).replayed, true); assert.equal(f.count(), 1);
+});
+
+void test('batch endpoints validate the whole draft, require a request key and keep replays atomic', async (t) => {
+  const f = await fixture(t); const key = crypto.randomUUID();
+  assert.equal((await f.batch({ entries: [input()] }, { origin: null })).status, 403);
+  assert.equal((await f.batch({ entries: [input()] }, { key: null })).status, 400);
+  assert.equal((await f.batch({ entries: [input(), input({ date: shift(1) })] })).status, 400);
+  assert.equal(f.count(), 0);
+  const first = await f.batch({ entries: [input(), input({ meal: 'lunch', calories: null })] }, { key });
+  assert.equal(first.status, 201); const saved = await first.json() as { entries: EntryView[]; replayed: boolean };
+  assert.equal(saved.entries.length, 2); assert.equal(saved.replayed, false);
+  const replay = await f.batch({ entries: [input(), input({ meal: 'lunch', calories: null })] }, { key });
+  assert.equal((await replay.json() as { replayed: boolean }).replayed, true); assert.equal(f.count(), 2);
+  assert.equal((await f.batch({ entries: [input()] }, { key })).status, 409); assert.equal(f.count(), 2);
+  f.signIn(null); assert.equal((await f.batch({ entries: [input()] })).status, 401);
+});
+
+void test('favorite API snapshots belong to one user and all mutations enforce same-origin', async (t) => {
+  const f = await fixture(t); const item = (await readMutation(await f.create(input()))).entry;
+  assert.equal((await f.favorite(item.id, { origin: null })).status, 403);
+  const first = await f.favorite(item.id); assert.equal(first.status, 200);
+  const saved = (await first.json() as { favorite: { id: string } }).favorite;
+  await f.favorite(item.id); assert.equal((await f.favorites().then((response) => response.json()) as { favorites: unknown[] }).favorites.length, 1);
+  f.signIn('bob'); assert.equal((await f.favorite(item.id)).status, 404); assert.equal((await f.unfavorite(saved.id)).status, 404);
+  assert.equal((await f.favorites().then((response) => response.json()) as { favorites: unknown[] }).favorites.length, 0);
+  f.signIn('alice'); assert.equal((await f.unfavorite(saved.id, { origin: null })).status, 403); assert.equal((await f.unfavorite(saved.id)).status, 200);
+});
+
+void test('day completion uses revisions and reopens automatically when food records change', async (t) => {
+  const f = await fixture(t); await f.create(input());
+  const initial = (await f.status().then((response) => response.json()) as { dayStatus: nutritionRules.NutritionDayStatus }).dayStatus;
+  const body = { date: TODAY, complete: true, expectedRevision: initial.revision, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' } };
+  assert.equal((await f.mark(body, { origin: null })).status, 403);
+  assert.equal((await f.mark(body)).status, 200); assert.equal((await f.mark(body)).status, 409);
+  const list = await readList(await f.list()) as ListResponse & { dayStatus: nutritionRules.NutritionDayStatus; recentFoods: EntryView[] };
+  assert.equal(list.dayStatus.complete, true); assert.equal(list.recentFoods.length, 1);
+  await f.create(input({ meal: 'lunch' }));
+  const changed = (await f.status().then((response) => response.json()) as { dayStatus: nutritionRules.NutritionDayStatus }).dayStatus;
+  assert.equal(changed.complete, false); assert.equal(changed.meals.lunch, 'recorded');
+  f.signIn('bob'); assert.equal((await f.status().then((response) => response.json()) as { dayStatus: nutritionRules.NutritionDayStatus }).dayStatus.revision, 0);
+});
+
+void test('catalog source snapshots survive saving and forged client calories never override the food library', async (t) => {
+  const f = await fixture(t); const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0];
+  const selection = { id: food.id, amount: 125.5, unit: 'g' };
+  const expected = calculateFoodSelection(selection);
+  const response = await f.create(input({ name: 'forged', portion: 'forged', calories: '0', food: selection }));
+  assert.equal(response.status, 201); const saved = (await readMutation(response)).entry;
+  assert.deepEqual(saved.food, expected); assert.equal(saved.caloriesTenth, expected.caloriesTenth); assert.equal(saved.name, food.name);
+  assert.deepEqual((await readMutation(await f.get(saved.id))).entry.food, expected);
+  assert.equal((await f.create(input({ food: { ...selection, id: 'unknown' } }))).status, 400);
+  assert.equal(f.count(), 1);
 });

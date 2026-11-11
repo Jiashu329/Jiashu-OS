@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { NutritionInput } from '../lib/nutrition.ts';
 import { createNutritionEntry, listNutritionEntries, NutritionConflictError, readNutritionEntry,
-  replaceNutritionEntry, setNutritionEntryDeleted } from './nutrition-store.ts';
+  replaceNutritionEntry, setNutritionEntryDeleted, createNutritionBatch, readNutritionDayStatus, writeNutritionDayStatus, listNutritionDayStatuses, addNutritionFavorite, listNutritionFavorites, removeNutritionFavorite, recentNutritionFoods, readNutritionRangeSnapshot } from './nutrition-store.ts';
 
 const NOW = '2026-11-10T04:00:00.000Z';
 const LATER = '2026-11-10T05:00:00.000Z';
@@ -16,11 +18,15 @@ interface Statement {
   all<T>(): Promise<{ results: T[] }>;
   execute(): { results: unknown[]; meta: { changes: number } };
 }
-function fixture(t: TestContext) {
-  const sqlite = new DatabaseSync(':memory:');
+function fixture(t: TestContext, options: { file?: boolean } = {}) {
+  const directoryPath = options.file ? mkdtempSync(join(tmpdir(), 'nutrition-snapshot-')) : null;
+  const filename = directoryPath ? join(directoryPath, 'test.sqlite') : ':memory:';
+  const sqlite = new DatabaseSync(filename);
+  if (options.file) sqlite.exec('PRAGMA journal_mode=WAL');
   const directory = new URL('../drizzle/', import.meta.url);
   for (const file of readdirSync(directory).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(file, directory), 'utf8'));
-  t.after(() => sqlite.close());
+  t.after(() => { sqlite.close(); if (directoryPath) rmSync(directoryPath, { recursive: true, force: true }); });
+  let readHook: (() => void) | null = null;
   let hook: (() => void) | null = null;
   const db = {
     prepare(sql: string) {
@@ -35,11 +41,12 @@ function fixture(t: TestContext) {
     },
     async batch(commands: Statement[]) {
       sqlite.exec('BEGIN');
-      try { const results = commands.map((command) => command.execute()); sqlite.exec('COMMIT'); return results; }
+      try { const results = commands.map((command, index) => { const result = command.execute(); if (index === 0) { const action = readHook; readHook = null; action?.(); } return result; }); sqlite.exec('COMMIT'); return results; }
       catch (error) { sqlite.exec('ROLLBACK'); throw error; }
     },
   } as unknown as D1Database;
-  return { db, sqlite,
+  return { db, sqlite, filename,
+    afterFirstBatchRead(action: () => void) { readHook = action; },
     beforeWrite(action: () => void) { hook = action; },
     count() { return Number(sqlite.prepare('SELECT count(*) AS total FROM nutrition_entries').get()?.total); },
   };
@@ -119,4 +126,94 @@ void test('owner and date ranges isolate every read and mutation without a hidde
   assert.equal((await listNutritionEntries(f.db, 'alice', { from: '2026-11-09', to: '2026-11-09' })).length, 125);
   assert.equal((await listNutritionEntries(f.db, 'alice', { from: '2026-11-04', to: '2026-11-10' })).length, 126);
   assert.equal((await listNutritionEntries(f.db, 'bob', { from: '2026-11-04', to: '2026-11-10' })).length, 1);
+});
+
+void test('batches commit all entries once, reject changed content, and preserve edited entries on replay', async (t) => {
+  const f = fixture(t); const items = [input(), input({ meal: 'lunch', caloriesTenth: null })];
+  const first = await createNutritionBatch(f.db, 'alice', items, ID, NOW);
+  assert.equal(first.replayed, false); assert.equal(first.entries.length, 2); assert.equal(f.count(), 2);
+  const changed = await replaceNutritionEntry(f.db, 'alice', first.entries[0].id, input({ name: 'edited' }), 1, LATER);
+  const replay = await createNutritionBatch(f.db, 'alice', items, ID, LATER);
+  assert.equal(replay.replayed, true); assert.deepEqual(replay.entries[0], changed); assert.equal(f.count(), 2);
+  await assert.rejects(createNutritionBatch(f.db, 'alice', [input({ name: 'different' })], ID, NOW), NutritionConflictError);
+  assert.equal(f.count(), 2);
+  const other = await createNutritionBatch(f.db, 'bob', items, ID, NOW); assert.equal(other.entries.length, 2);
+  assert.notEqual(other.entries[0].id, first.entries[0].id);
+});
+
+void test('a batch rolls back every food, batch key and day-state write when one entry fails', async (t) => {
+  const f = fixture(t);
+  f.sqlite.exec("CREATE TRIGGER reject_second_food BEFORE INSERT ON nutrition_entries WHEN NEW.name='reject-me' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END");
+  const items = [input(), input({ name: 'reject-me' })];
+  await assert.rejects(createNutritionBatch(f.db, 'alice', items, ID, NOW));
+  assert.equal(f.count(), 0);
+  assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM nutrition_batches').get()?.total, 0);
+  assert.equal((await readNutritionDayStatus(f.db, 'alice', '2026-11-10')).revision, 0);
+  f.sqlite.exec('DROP TRIGGER reject_second_food');
+  assert.equal((await createNutritionBatch(f.db, 'alice', items, ID, NOW)).replayed, false);
+  assert.equal(f.count(), 2);
+});
+
+void test('meal status is scoped, validates existing foods, and automatically reopens completed dates on changes', async (t) => {
+  const f = fixture(t); const selected = '2026-11-10';
+  const initial = await readNutritionDayStatus(f.db, 'alice', selected);
+  assert.equal(initial.complete, false); assert.equal(initial.revision, 0); assert.equal(initial.meals.breakfast, 'unrecorded');
+  await createNutritionEntry(f.db, 'alice', input(), ID, NOW);
+  const current = await readNutritionDayStatus(f.db, 'alice', selected);
+  assert.equal(current.meals.breakfast, 'recorded'); assert.ok(current.revision > 0);
+  const done = await writeNutritionDayStatus(f.db, 'alice', { date: selected, complete: true, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' }, expectedRevision: current.revision }, NOW);
+  assert.equal(done.complete, true);
+  await assert.rejects(writeNutritionDayStatus(f.db, 'alice', { ...done, expectedRevision: current.revision }, NOW), NutritionConflictError);
+  await createNutritionEntry(f.db, 'alice', input({ meal: 'lunch' }), SECOND, LATER);
+  const changed = await readNutritionDayStatus(f.db, 'alice', selected);
+  assert.equal(changed.complete, false); assert.equal(changed.meals.lunch, 'recorded'); assert.ok(changed.revision > done.revision);
+  assert.equal((await readNutritionDayStatus(f.db, 'bob', selected)).revision, 0);
+  assert.equal((await listNutritionDayStatuses(f.db, 'bob', { from: selected, to: selected })).length, 0);
+  await assert.rejects(writeNutritionDayStatus(f.db, 'alice', { ...changed, meals: { ...changed.meals, breakfast: 'skipped' }, expectedRevision: changed.revision }, NOW));
+  await replaceNutritionEntry(f.db, 'alice', ID, input({ date: '2026-11-09', meal: 'dinner' }), 1, LATER);
+  assert.equal((await readNutritionDayStatus(f.db, 'alice', selected)).meals.breakfast, 'unrecorded');
+  assert.equal((await readNutritionDayStatus(f.db, 'alice', '2026-11-09')).meals.dinner, 'recorded');
+});
+
+void test('a concurrent food mutation prevents a stale completion mark from succeeding', async (t) => {
+  const f = fixture(t); await createNutritionEntry(f.db, 'alice', input(), ID, NOW);
+  const current = await readNutritionDayStatus(f.db, 'alice', '2026-11-10');
+  f.beforeWrite(() => f.sqlite.prepare('UPDATE nutrition_entries SET note=? WHERE id=?').run('concurrent edit', ID));
+  await assert.rejects(writeNutritionDayStatus(f.db, 'alice', { date: current.date, complete: true, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' }, expectedRevision: current.revision }, NOW), NutritionConflictError);
+  assert.equal((await readNutritionDayStatus(f.db, 'alice', current.date)).complete, false);
+});
+
+void test('favorites are deduplicated snapshots scoped to their owner and recent foods exclude deleted records', async (t) => {
+  const f = fixture(t); await createNutritionEntry(f.db, 'alice', input(), ID, NOW);
+  const saved = await addNutritionFavorite(f.db, 'alice', ID, NOW); assert.ok(saved); assert.equal(saved.calories, '123.4');
+  assert.deepEqual(await addNutritionFavorite(f.db, 'alice', ID, LATER), saved);
+  assert.equal((await listNutritionFavorites(f.db, 'alice')).length, 1); assert.equal((await listNutritionFavorites(f.db, 'bob')).length, 0);
+  assert.equal(await addNutritionFavorite(f.db, 'bob', ID, NOW), null);
+  assert.equal(await removeNutritionFavorite(f.db, 'bob', saved.id), false);
+  await replaceNutritionEntry(f.db, 'alice', ID, input({ name: 'changed', caloriesTenth: null }), 1, LATER);
+  assert.equal((await listNutritionFavorites(f.db, 'alice'))[0].name, 'synthetic oats');
+  assert.equal((await recentNutritionFoods(f.db, 'alice', '2026-11-10'))[0].name, 'changed');
+  await setNutritionEntryDeleted(f.db, 'alice', ID, true, 2, LATER);
+  assert.equal((await recentNutritionFoods(f.db, 'alice', '2026-11-10')).length, 0);
+  assert.equal((await listNutritionFavorites(f.db, 'alice')).length, 1);
+  assert.equal(await removeNutritionFavorite(f.db, 'alice', saved.id), true);
+});
+
+void test('range snapshots cannot combine new food calories with a stale complete-day flag during a concurrent write', async (t) => {
+  const f = fixture(t, { file: true });
+  await createNutritionEntry(f.db, 'alice', input(), ID, NOW);
+  const current = await readNutritionDayStatus(f.db, 'alice', '2026-11-10');
+  await writeNutritionDayStatus(f.db, 'alice', { date: current.date, complete: true, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' }, expectedRevision: current.revision }, NOW);
+  const writer = new DatabaseSync(f.filename);
+  try {
+    // WAL permits another real connection to commit after the reader's first SELECT.
+    f.afterFirstBatchRead(() => writer.prepare('UPDATE nutrition_entries SET calories_tenth=?,note=? WHERE id=?').run(9999, 'concurrent write', ID));
+    const snapshot = await readNutritionRangeSnapshot(f.db, 'alice', { from: current.date, to: current.date });
+    assert.equal(snapshot.entries[0].caloriesTenth, 1234);
+    assert.equal(snapshot.statuses[0].complete, true);
+    const latest = await readNutritionRangeSnapshot(f.db, 'alice', { from: current.date, to: current.date });
+    assert.equal(latest.entries[0].caloriesTenth, 9999);
+    assert.equal(latest.statuses[0].complete, false);
+    assert.ok(latest.statuses[0].revision > snapshot.statuses[0].revision);
+  } finally { writer.close(); }
 });

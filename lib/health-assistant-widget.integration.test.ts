@@ -88,6 +88,17 @@ test('the original health-assistant entry opens lazily without navigation or a m
   f.document.dispatchEvent(f.event('keydown', { key: 'Escape' })); assert.equal(f.el('panel').hidden, true);
 });
 
+test('nutrition review links prepare a question without automatically calling the model', async () => {
+  const f = fixture();
+  const entry = f.document.getElementById('original-entry')!;
+  entry.setAttribute('data-health-chat-prompt', '请总结近7天饮食记录，并说明记录缺口。');
+  entry.dispatchEvent(f.event('click', { button: 0 }));
+  await settled(() => !f.el('context').hidden);
+  assert.equal(f.el('question').value, '请总结近7天饮食记录，并说明记录缺口。');
+  assert.equal(f.el('panel').hidden, false);
+  assert.equal(f.requests.filter((item) => item.method === 'POST').length, 0);
+});
+
 test('consecutive messages carry successful history and show safe Markdown while user text stays inert', async () => {
   const f = fixture(); await f.open();
   f.question('总结 <img src=x onerror=alert(1)>');

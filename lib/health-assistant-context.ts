@@ -1,7 +1,8 @@
 import { buildHealthSummary, HEALTH_TIMEZONE, METRIC_INFO, measurementDay, normalizeTimestamp, shanghaiDay } from './health.ts';
 import type { HealthMeasurement, HealthMetric, HealthUnit, SleepStages } from './health.ts';
 import { summarizeNutrition } from './nutrition.ts';
-import type { NutritionEntry } from './nutrition.ts';
+import type { NutritionDayStatus, NutritionEntry, NutritionMeal, NutritionMealStatus } from './nutrition.ts';
+import { nutritionDayCompleteness } from './nutrition-review.ts';
 
 export const MAX_HEALTH_ASSISTANT_CONTEXT_BYTES = 50 * 1024;
 
@@ -13,6 +14,8 @@ export interface HealthAssistantMetric {
 export interface HealthAssistantNutritionDay {
   date: string; entryCount: number; knownCalorieCount: number; unknownCalorieCount: number;
   recordedKnownKcal: string | null; sourceRef: 'N1';
+  complete?: boolean;
+  meals?: Record<NutritionMeal, NutritionMealStatus>;
 }
 /** This is the only object intended for the model provider. */
 export interface HealthAssistantContext {
@@ -20,7 +23,7 @@ export interface HealthAssistantContext {
   timezone: typeof HEALTH_TIMEZONE;
   range: HealthAssistantRange;
   health: HealthAssistantMetric[];
-  nutrition: { recordedDays: number; days: HealthAssistantNutritionDay[] };
+  nutrition: { recordedDays: number; days: HealthAssistantNutritionDay[]; completeDays?: number; comparableDays?: number };
   limitations: string[];
 }
 /** Local citations may contain source labels; never include this table in a model request. */
@@ -35,6 +38,7 @@ export interface HealthAssistantContextResult {
 export interface HealthAssistantContextInput {
   measurements: readonly HealthMeasurement[];
   nutrition: readonly NutritionEntry[];
+  nutritionStatuses?: readonly NutritionDayStatus[];
   days: 7 | 30;
   now: number;
 }
@@ -140,26 +144,37 @@ export function buildHealthAssistantContext(input: HealthAssistantContextInput):
   if (nutrition.some((entry) => entry.caloriesTenth !== null && (!Number.isSafeInteger(entry.caloriesTenth) || entry.caloriesTenth < 0 || entry.caloriesTenth > 200000))) {
     throw new HealthAssistantContextError('部分饮食热量记录无效，请先核对饮食记录后重试。');
   }
-  const nutritionDates = [...new Set(nutrition.map((entry) => entry.date))].sort();
+  const nutritionStatuses = input.nutritionStatuses?.filter((status) => status && typeof status.date === 'string'
+    && status.date >= range.from && status.date <= range.to && status.date.length === 10
+    && normalizeTimestamp(status.date + 'T12:00:00+08:00'));
+  const statusByDate = new Map(nutritionStatuses?.map((status) => [status.date, status]) ?? []);
+  const recordedNutritionDates = [...new Set(nutrition.map((entry) => entry.date))];
+  const nutritionDates = [...new Set([...recordedNutritionDates, ...(nutritionStatuses ?? [])
+    .filter((status) => status.complete === true || Object.values(status.meals ?? {}).includes('skipped')).map((status) => status.date)])].sort();
   const nutritionDays = nutritionDates.map((date): HealthAssistantNutritionDay => {
-    const day = summarizeNutrition(nutrition.filter((entry) => entry.date === date));
+    const rows = nutrition.filter((entry) => entry.date === date);
+    const day = summarizeNutrition(rows);
     return { date, entryCount: day.entryCount, knownCalorieCount: day.knownCount, unknownCalorieCount: day.unknownCount,
-      recordedKnownKcal: day.knownCalories, sourceRef: 'N1' };
+      recordedKnownKcal: day.knownCalories, sourceRef: 'N1',
+      ...(nutritionStatuses ? nutritionDayCompleteness(rows, statusByDate.get(date)) : {}) };
   });
   if (nutritionDays.length) sources.push({
     id: 'N1', label: '饮食记录', url: '/health/nutrition?' + new URLSearchParams({ date: nutritionDates.at(-1)! }),
-    from: range.from, to: range.to, recordedDays: nutritionDays.length, sources: ['手工饮食记录'],
+    from: range.from, to: range.to, recordedDays: recordedNutritionDates.length, sources: ['饮食记录'],
   });
 
   const context: HealthAssistantContext = {
     version: 1, timezone: HEALTH_TIMEZONE, range, health,
-    nutrition: { recordedDays: nutritionDays.length, days: nutritionDays },
+    nutrition: { recordedDays: recordedNutritionDates.length, days: nutritionDays,
+      ...(nutritionStatuses ? { completeDays: nutritionDays.filter((day) => day.complete).length,
+        comparableDays: nutritionDays.filter((day) => day.complete && day.entryCount > 0 && day.unknownCalorieCount === 0).length } : {}) },
     limitations: [
       '数据为选定日期范围内的有效日汇总；缺失日期不补0，也不以前值填充。',
       '体重与去脂体重分别采用各日最后一次记录，未作为同次测量配对，不据此计算体脂率。',
       '睡眠归属于窗口结束的上海日期；清醒、卧床单列，不加入睡眠时长。缺失或与总时长矛盾的分期不提供。',
       '今日尚未结束，当日步数、活动能量、睡眠及饮食记录可能不完整，不能当作完整一天评价。',
       '饮食热量只汇总已记录且已填写热量的食物，并非全天真实总摄入；未知热量不按0计算，未记录不能解释为未进食。',
+      '当天记完和未进食是用户标记的记录状态，不保证实际份量、热量或全天摄入准确；比较日均值时仅使用已记完且食物热量无缺失的日期，并说明天数。',
       '活动能量仅表示活动消耗，不是全天总能量消耗，不能直接与已记录摄入相减计算热量缺口。',
     ],
   };

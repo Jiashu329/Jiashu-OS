@@ -548,3 +548,42 @@ test('invalid questions or non-serializable contexts fail locally without contac
   }
   assert.equal(requests, 0);
 });
+
+test('nutrition extraction uses the same safe transport with a dedicated bounded JSON-only prompt', async () => {
+  const { callNutritionParser, NUTRITION_PARSER_SYSTEM_PROMPT } = await import('./ai-provider.ts');
+  const text = '今天午餐吃了150克鸡胸肉和两个鸡蛋';
+  let calls = 0;
+  const result = await callNutritionParser(configured(), { text, date: '2026-11-10', today: '2026-11-11', meal: 'lunch' }, {
+    fetch: async (url, init) => {
+      calls++;
+      assert.equal(url, 'https://api.minimax.cn/v1/chat/completions');
+      assert.equal(init?.redirect, 'manual');
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.messages.length, 2);
+      assert.deepEqual(body.messages[0], { role: 'system', content: NUTRITION_PARSER_SYSTEM_PROMPT });
+      assert.match(body.messages[0].content, /不生成热量/);
+      assert.match(body.messages[0].content, /最多20项/);
+      assert.deepEqual(JSON.parse(body.messages[1].content), { text, selectedDate: '2026-11-10', today: '2026-11-11', timezone: 'Asia/Shanghai', selectedMeal: 'lunch' });
+      assert.equal(body.stream, false); assert.equal(body.max_completion_tokens, 4096);
+      assert.equal(body.tools, undefined);
+      assert.equal(JSON.stringify(body).includes('只读健康与饮食资料'), false);
+      return jsonResponse(completion({ content: '{"items":[]}', reasoning_content: 'PRIVATE-REASONING' }));
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.answer, '{"items":[]}');
+  assert.equal(result.provider, 'MiniMax');
+  assert.equal(JSON.stringify(result).includes('PRIVATE-REASONING'), false);
+});
+
+test('nutrition extraction rejects invalid input or forged configuration before any provider request', async () => {
+  const { callNutritionParser } = await import('./ai-provider.ts');
+  let requests = 0;
+  const fetch: typeof globalThis.fetch = async () => { requests++; return jsonResponse(completion()); };
+  const input = { text: '午饭吃了鸡蛋', date: '2026-11-11', today: '2026-11-11' };
+  for (const patch of [{ text: '' }, { text: '字'.repeat(2001) }, { text: 'x\u0000' }, { date: 'today' }, { today: 'yesterday' }, { meal: 'brunch' }]) {
+    await assert.rejects(callNutritionParser(configured(), { ...input, ...patch }, { fetch }), expectError('AI_INPUT_INVALID', 400));
+  }
+  await assert.rejects(callNutritionParser({ ...configured() }, input, { fetch }), expectError('AI_NOT_CONFIGURED', 503));
+  assert.equal(requests, 0);
+});

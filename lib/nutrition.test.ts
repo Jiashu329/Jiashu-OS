@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId } from './nutrition.ts';
+import { buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId, parseNutritionBatch, parseNutritionStatus } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
+import { searchFoods, calculateFoodSelection } from './food-catalog.ts';
 
 const NOW = new Date('2026-11-10T08:00:00Z');
 function input(patch: Record<string, unknown> = {}) {
@@ -143,4 +144,26 @@ void test('the first supported days clamp both the recent range and visible card
     assert.equal(review.recent7days.at(-1)!.date, selected);
     for (const point of review.recent7days) assert.equal(parseNutritionQuery(new URLSearchParams({ date: point.date }), NOW).date, point.date);
   }
+});
+
+void test('batch validation bounds the entire submission and rejects any invalid item before persistence', () => {
+  assert.equal(parseNutritionBatch({ entries: [input(), input({ calories: null })] }, NOW).length, 2);
+  for (const body of [{ entries: [] }, { entries: Array.from({ length: 31 }, () => input()) }, { entries: [input(), input({ date: '2026-02-30' })] }, { entries: [input()], userId: 'foreign' }]) assert.throws(() => parseNutritionBatch(body, NOW), NutritionValidationError);
+});
+void test('completion requires explicit meal states and never treats an unrecorded main meal as skipped', () => {
+  const status = { date: '2026-11-10', complete: true, expectedRevision: 0, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'recorded', snack: 'unrecorded' } };
+  assert.equal(parseNutritionStatus(status, NOW).complete, true);
+  for (const body of [{ ...status, expectedRevision: -1 }, { ...status, complete: 'true' }, { ...status, meals: { ...status.meals, dinner: 'unrecorded' } }, { ...status, date: '2026-11-11' }, { ...status, meals: { ...status.meals, water: 'recorded' } }]) assert.throws(() => parseNutritionStatus(body, NOW), NutritionValidationError);
+});
+
+void test('catalog-backed input always recalculates food identity, portion and calories from the source record', () => {
+  const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0]; assert.ok(food);
+  const selection = { id: food.id, amount: 150, unit: 'g' };
+  const expected = calculateFoodSelection(selection);
+  const parsed = parseNutritionCreate(input({ name: 'forged name', portion: 'forged portion', calories: '0', food: selection }), NOW);
+  assert.equal(parsed.name, food.name); assert.equal(parsed.portion, '150g'); assert.equal(parsed.caloriesTenth, expected.caloriesTenth);
+  assert.deepEqual(parsed.food, expected);
+  assert.throws(() => parseNutritionCreate(input({ food: { ...selection, caloriesTenth: 0 } }), NOW), NutritionValidationError);
+  assert.throws(() => parseNutritionCreate(input({ food: { ...selection, id: 'missing-source-record' } }), NOW), NutritionValidationError);
+  assert.equal(Object.hasOwn(parseNutritionCreate(input({ food: null }), NOW), 'food'), false);
 });
