@@ -27,15 +27,36 @@ interface PrivateConfiguration {
 
 const privateConfigurations = new WeakMap<AIConfiguration, PrivateConfiguration>();
 
+/** Only these bounded, non-content fields may leave the provider error boundary. */
+export interface AIProviderDiagnostics {
+  readonly upstreamStatus?: number;
+  readonly upstreamCode?: number;
+  readonly traceId?: string;
+}
+
+function safeDiagnostics(value?: AIProviderDiagnostics): AIProviderDiagnostics | undefined {
+  if (!value) return undefined;
+  const upstreamStatus = typeof value.upstreamStatus === 'number' && Number.isInteger(value.upstreamStatus) && value.upstreamStatus >= 100 && value.upstreamStatus <= 599
+    ? value.upstreamStatus : undefined;
+  const upstreamCode = typeof value.upstreamCode === 'number' && Number.isSafeInteger(value.upstreamCode)
+    && value.upstreamCode > 0 && value.upstreamCode <= 9999999999 ? value.upstreamCode : undefined;
+  const traceId = typeof value.traceId === 'string' && /^[0-9a-f]{16,64}$/i.test(value.traceId) ? value.traceId : undefined;
+  if (upstreamStatus === undefined && upstreamCode === undefined && traceId === undefined) return undefined;
+  return Object.freeze({ ...(upstreamStatus !== undefined ? { upstreamStatus } : {}),
+    ...(upstreamCode !== undefined ? { upstreamCode } : {}), ...(traceId !== undefined ? { traceId } : {}) });
+}
+
 export class AIProviderError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly diagnostics?: AIProviderDiagnostics;
 
-  constructor(message: string, code = 'AI_PROVIDER_UNAVAILABLE', status = 502) {
+  constructor(message: string, code = 'AI_PROVIDER_UNAVAILABLE', status = 502, diagnostics?: AIProviderDiagnostics) {
     super(message);
     this.name = 'AIProviderError';
     this.code = code;
     this.status = status;
+    this.diagnostics = safeDiagnostics(diagnostics);
   }
 }
 
@@ -81,6 +102,51 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function upstreamCode(value: unknown): number | undefined {
+  const parsed = typeof value === 'string' && /^\d{1,10}$/.test(value) ? Number(value) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 9999999999 ? parsed : undefined;
+}
+
+function responseDiagnostics(response: Response, raw: unknown, apiKey: string): AIProviderDiagnostics | undefined {
+  const body = object(raw) ? raw : undefined;
+  const code = upstreamCode(object(body?.base_resp) ? body.base_resp.status_code : undefined)
+    ?? upstreamCode(object(body?.error) ? body.error.code : undefined);
+  // Never inspect free-text messages. Even a syntactically valid trace must not
+  // contain a credential reflected by the upstream service.
+  const candidates = [response.headers.get('trace_id'), response.headers.get('trace-id'), response.headers.get('x-trace-id'),
+    body?.trace_id, body?.traceId];
+  const traceId = candidates.find((candidate): candidate is string => typeof candidate === 'string'
+    && /^[0-9a-f]{16,64}$/i.test(candidate) && !candidate.toLowerCase().includes(apiKey.toLowerCase()));
+  return safeDiagnostics({ upstreamStatus: response.status, upstreamCode: code, traceId });
+}
+
+function providerFailure(diagnostics?: AIProviderDiagnostics, fallback = 'MiniMax 暂时无法处理请求，请稍后重试。'): AIProviderError {
+  if (diagnostics?.upstreamStatus === 401 || diagnostics?.upstreamStatus === 403) {
+    return new AIProviderError('MiniMax 身份验证未通过，请在 AI 设置中检查密钥与区域。', 'AI_AUTH_FAILED', 503, diagnostics);
+  }
+  if (diagnostics?.upstreamStatus === 429) {
+    return new AIProviderError('MiniMax 请求较多，请稍后再试。', 'AI_RATE_LIMITED', 429, diagnostics);
+  }
+  switch (diagnostics?.upstreamCode) {
+    case 1004: case 2049:
+      return new AIProviderError('MiniMax 身份验证未通过，请在 AI 设置中检查密钥与区域。', 'AI_AUTH_FAILED', 503, diagnostics);
+    case 1008:
+      return new AIProviderError('MiniMax 账号余额不足，请检查账号余额与套餐。', 'AI_BALANCE_INSUFFICIENT', 502, diagnostics);
+    case 2022: case 2061: case 2068:
+      return new AIProviderError('当前 MiniMax 密钥或套餐没有所选模型的访问权限，请核对模型与套餐。', 'AI_MODEL_ACCESS_DENIED', 502, diagnostics);
+    case 2056: case 2062:
+      return new AIProviderError('MiniMax 请求已达到账号或套餐限额，请稍后重试或检查套餐限制。', 'AI_RATE_LIMITED', 429, diagnostics);
+    case 2067:
+      return new AIProviderError('MiniMax 套餐额度已用尽，请检查额度及恢复时间。', 'AI_QUOTA_EXHAUSTED', 502, diagnostics);
+    case 2069:
+      return new AIProviderError('所选 MiniMax 模型已下线，请在 AI 设置中更换可用模型。', 'AI_MODEL_RETIRED', 502, diagnostics);
+    case 2013:
+      return new AIProviderError('MiniMax 不接受当前请求参数，请核对模型配置或联系网站维护者。', 'AI_INVALID_PARAMETERS', 502, diagnostics);
+    default:
+      return new AIProviderError(fallback, 'AI_PROVIDER_UNAVAILABLE', 502, diagnostics);
+  }
+}
+
 function invalidResponse(): AIProviderError {
   return new AIProviderError('MiniMax 返回的回答格式不完整，请稍后重试。', 'AI_RESPONSE_INVALID');
 }
@@ -121,14 +187,14 @@ async function readResponse(response: Response): Promise<unknown> {
   }
 }
 
-function finalAnswer(raw: unknown, apiKey: string): { answer: string; usage?: HealthAssistantResult['usage'] } {
+function finalAnswer(raw: unknown, apiKey: string, diagnostics?: AIProviderDiagnostics): { answer: string; usage?: HealthAssistantResult['usage'] } {
   if (!object(raw)) throw invalidResponse();
   if (raw.error !== undefined && raw.error !== null) {
-    throw new AIProviderError('MiniMax 暂时无法生成回答，请稍后重试。');
+    throw providerFailure(diagnostics, 'MiniMax 暂时无法生成回答，请稍后重试。');
   }
   if (raw.base_resp !== undefined) {
     if (!object(raw.base_resp) || raw.base_resp.status_code !== 0) {
-      throw new AIProviderError('MiniMax 请求未成功，请检查模型配置或稍后重试。');
+      throw providerFailure(diagnostics, 'MiniMax 请求未成功，请检查模型配置或稍后重试。');
     }
   }
   if (!Array.isArray(raw.choices) || !object(raw.choices[0])) throw invalidResponse();
@@ -175,6 +241,7 @@ export async function callHealthAssistant(
   const controller = new AbortController();
   let timedOut = false;
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let diagnostics: AIProviderDiagnostics | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
       timedOut = true;
@@ -202,25 +269,31 @@ export async function callHealthAssistant(
         ...(configuration.model.toLowerCase() === 'minimax-m3.1-flash' ? { reasoning_effort: 'low' } : {}),
       }),
     });
+    diagnostics = responseDiagnostics(response, undefined, apiKey);
     if (!response.ok || response.redirected) {
-      cancelBody(response);
-      if (response.status === 401 || response.status === 403) {
-        throw new AIProviderError('MiniMax 身份验证未通过，请在 AI 设置中检查密钥与区域。', 'AI_AUTH_FAILED', 503);
-      }
-      if (response.status === 429) throw new AIProviderError('MiniMax 请求较多，请稍后再试。', 'AI_RATE_LIMITED', 429);
-      throw new AIProviderError('MiniMax 暂时无法处理请求，请稍后重试。');
+      let raw: unknown;
+      try { raw = await readResponse(response); } catch { /* Keep the HTTP status when an error body is invalid or oversized. */ }
+      diagnostics = responseDiagnostics(response, raw, apiKey);
+      throw providerFailure(diagnostics);
     }
-    const result = finalAnswer(await readResponse(response), apiKey);
+    const raw = await readResponse(response);
+    diagnostics = responseDiagnostics(response, raw, apiKey);
+    const result = finalAnswer(raw, apiKey, diagnostics);
     return { ...result, model: configuration.model, provider: 'MiniMax' };
   };
   try {
     return await Promise.race([execute(), deadline]);
   } catch (error) {
+    let failure: AIProviderError;
     if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
-      throw new AIProviderError('MiniMax 回答超时，请稍后重试或缩小问题范围。', 'AI_TIMEOUT', 504);
+      failure = new AIProviderError('MiniMax 回答超时，请稍后重试或缩小问题范围。', 'AI_TIMEOUT', 504, diagnostics);
+    } else if (error instanceof AIProviderError) {
+      failure = new AIProviderError(error.message, error.code, error.status, { ...diagnostics, ...error.diagnostics });
+    } else {
+      failure = new AIProviderError('暂时无法连接 MiniMax，请稍后重试。', 'AI_NETWORK_ERROR', 502, diagnostics);
     }
-    if (error instanceof AIProviderError) throw error;
-    throw new AIProviderError('暂时无法连接 MiniMax，请稍后重试。', 'AI_NETWORK_ERROR');
+    console.warn('minimax_request_failed', { code: failure.code, status: failure.status, ...failure.diagnostics });
+    throw failure;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     controller.abort();

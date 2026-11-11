@@ -72,6 +72,8 @@ async function fixture(t: TestContext) {
   };
   let owner: string | null = 'alice';
   let providerStatus = 200;
+  let providerPayload: unknown;
+  let providerHeaders: HeadersInit | undefined;
   let providerError: Error | null = null;
   let providerHook: (() => Promise<void>) | null = null;
   let quotaHook: (() => Promise<void>) | null = null;
@@ -85,9 +87,9 @@ async function fixture(t: TestContext) {
     if (providerError) throw providerError;
     return provider.callHealthAssistant(configuration, input, { fetch: async (url, options) => {
       outgoing.push({ url: String(url), authorization: new Headers(options?.headers).get('Authorization'), body: JSON.parse(String(options?.body)) as Record<string, unknown> });
-      return Response.json(providerStatus === 200
+      return Response.json(providerPayload ?? (providerStatus === 200
         ? { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: PROVIDER_TEXT } }] }
-        : { error: { message: KEY_A + ':' + PROVIDER_TEXT } }, { status: providerStatus });
+        : { error: { message: KEY_A + ':' + PROVIDER_TEXT } }), { status: providerStatus, headers: providerHeaders });
     } });
   };
   const consumeAIQuota = async (database: D1Database, userId: string, now: number) => {
@@ -118,7 +120,7 @@ async function fixture(t: TestContext) {
     clear(body: unknown, options: Parameters<typeof request>[2] = {}) { return route.DELETE(request('DELETE', body, options)); },
     testConnection(body: unknown, options: Parameters<typeof request>[2] = {}) { return testRoute.POST(request('POST', body, options)); },
     failProvider(error: Error | null) { providerError = error; },
-    providerResponse(status: number) { providerStatus = status; },
+    providerResponse(status: number, payload?: unknown, headers?: HeadersInit) { providerStatus = status; providerPayload = payload; providerHeaders = headers; },
     beforeProvider(action: () => Promise<void>) { providerHook = action; },
     afterQuota(action: () => Promise<void>) { quotaHook = action; },
     failStorage(error: Error | null) { storageError = error; },
@@ -300,4 +302,19 @@ void test('unknown provider and storage failures never reflect input, credential
     assert.equal(response.status, 503); const body = await failure(response); assert.equal(body.code, 'AI_SETTINGS_UNAVAILABLE');
     for (const secret of [KEY_A, KEY_B, PROVIDER_TEXT]) assert.equal(JSON.stringify(body).includes(secret), false);
   }
+});
+
+void test('connection failures expose only safe provider diagnostics and keep saved configuration intact', async (t) => {
+  const f = await fixture(t); await f.save(input());
+  const traceId = 'abcdef0123456789abcdef0123456789';
+  f.providerResponse(200, { base_resp: { status_code: 2061, status_msg: KEY_A + ':' + PROVIDER_TEXT } }, { trace_id: traceId });
+  const response = await f.testConnection(consent(1));
+  const result = await response.json() as { code: string; diagnostics: unknown };
+  assert.equal(result.code, 'AI_MODEL_ACCESS_DENIED');
+  assert.deepEqual(result.diagnostics, { upstreamStatus: 200, upstreamCode: 2061, traceId });
+  assert.equal(JSON.stringify(result).includes(KEY_A), false);
+  assert.equal(JSON.stringify(result).includes(PROVIDER_TEXT), false);
+  const settings = (await data(await f.read())).settings;
+  assert.equal(settings.revision, 1); assert.equal(settings.model, 'MiniMax-M3'); assert.equal(settings.region, 'cn');
+  assert.equal(settings.configured, true); assert.equal(settings.lastTestStatus, 'failed');
 });

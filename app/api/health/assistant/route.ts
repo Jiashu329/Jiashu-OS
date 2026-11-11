@@ -35,7 +35,7 @@ async function contextFor(userId: string, period: 7 | 30, now: number) {
 function failure(error: unknown): Response {
   if (error instanceof AISettingsConflictError) return json({ error: 'AI 设置已更新，请重新读取配置后再提问。', code: 'AI_SETTINGS_CONFLICT' }, 409);
   if (error instanceof AISettingsCryptoError) return json({ error: '无法读取已保存的密钥，请到 AI 设置重新填写并保存。', code: 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE' }, 503);
-  if (error instanceof AIProviderError) return json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof AIProviderError) return json({ error: error.message, code: error.code, diagnostics: error.diagnostics }, error.status);
   if (error instanceof HealthAssistantContextError) return json({ error: error.message, code: error.code }, 400);
   if (error instanceof AssistantRequestError || error instanceof SyntaxError) return json({
     error: error instanceof AssistantRequestError ? error.message : '问题格式不正确，请重新提交。', code: 'INVALID_HEALTH_ASSISTANT_REQUEST',

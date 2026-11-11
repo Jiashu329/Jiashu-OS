@@ -39,7 +39,7 @@ export function settingsFailure(error: unknown): Response {
   if (error instanceof AISettingsValidationError) return json({ error: error.message, code: error.code }, 400);
   if (error instanceof AISettingsConflictError) return json({ error: error.message, code: error.code }, 409);
   if (error instanceof AISettingsCryptoError) return json({ error: '无法读取已保存的密钥，请重新填写密钥并保存。', code: 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE' }, 503);
-  if (error instanceof AIProviderError) return json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof AIProviderError) return json({ error: error.message, code: error.code, diagnostics: error.diagnostics }, error.status);
   // Neither raw credential bodies nor underlying provider/storage errors are logged or returned.
   return json({ error: 'AI 设置暂时不可用，请稍后重试。', code: 'AI_SETTINGS_UNAVAILABLE' }, 503);
 }

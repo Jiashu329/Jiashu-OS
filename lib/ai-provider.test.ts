@@ -11,6 +11,7 @@ const completion = (message: Record<string, unknown> = {}, extra: Record<string,
 });
 const jsonResponse = (value: unknown, init?: ResponseInit) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' }, ...init });
 const mockResponse = (response: () => Response): typeof fetch => async () => response();
+test.beforeEach((context) => { if ('mock' in context) context.mock.method(console, 'warn', () => {}); });
 const expectError = (code: string, status?: number) => (error: unknown) => {
   assert.ok(error instanceof AIProviderError);
   assert.equal(error.code, code);
@@ -131,8 +132,10 @@ test('HTTP failures never echo provider error bodies or credentials', async () =
 });
 
 test('HTTP 200 provider errors are still failures and do not echo error metadata', async () => {
-  for (const raw of [
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse(
     completion({}, { base_resp: { status_code: 1004, status_msg: API_KEY } }),
+  )) }), expectError('AI_AUTH_FAILED', 503));
+  for (const raw of [
     completion({}, { base_resp: { status_code: '0', status_msg: API_KEY } }),
     completion({}, { base_resp: null }),
     completion({}, { error: { message: API_KEY } }),
@@ -141,6 +144,163 @@ test('HTTP 200 provider errors are still failures and do not echo error metadata
   }
   const result = await callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse(completion({}, { base_resp: { status_code: 0 } }))) });
   assert.match(result.answer, /7.5/);
+});
+
+test('provider business errors preserve bounded diagnostics and fixed classifications for HTTP 200 and non-2xx', async () => {
+  const traceId = '12ab34cd56ef7890';
+  const mappings = [
+    [1004, 'AI_AUTH_FAILED', 503, /身份验证/], [2049, 'AI_AUTH_FAILED', 503, /身份验证/],
+    [1008, 'AI_BALANCE_INSUFFICIENT', 502, /余额不足/],
+    [2022, 'AI_MODEL_ACCESS_DENIED', 502, /访问权限/], [2061, 'AI_MODEL_ACCESS_DENIED', 502, /访问权限/],
+    [2068, 'AI_MODEL_ACCESS_DENIED', 502, /访问权限/],
+    [2056, 'AI_RATE_LIMITED', 429, /限额/], [2062, 'AI_RATE_LIMITED', 429, /限额/],
+    [2067, 'AI_QUOTA_EXHAUSTED', 502, /额度已用尽/], [2069, 'AI_MODEL_RETIRED', 502, /已下线/],
+    [2013, 'AI_INVALID_PARAMETERS', 502, /请求参数/], [9876, 'AI_PROVIDER_UNAVAILABLE', 502, /稍后重试/],
+  ] as const;
+  for (const [upstreamCode, localCode, status, message] of mappings) {
+    for (const upstreamStatus of [200, 400]) {
+      const raw = upstreamStatus === 200
+        ? { base_resp: { status_code: upstreamCode, status_msg: API_KEY }, trace_id: traceId }
+        : { error: { code: String(upstreamCode), message: API_KEY }, trace_id: traceId };
+      await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse(raw, { status: upstreamStatus })) }), (error) => {
+        expectError(localCode, status)(error);
+        assert.ok(error instanceof AIProviderError);
+        assert.match(error.message, message);
+        assert.deepEqual(error.diagnostics, { upstreamStatus, upstreamCode, traceId });
+        assert.equal(Object.isFrozen(error.diagnostics), true);
+        return true;
+      });
+    }
+  }
+});
+
+test('HTTP authentication and rate-limit classifications take precedence while retaining upstream business codes', async () => {
+  for (const [upstreamStatus, localCode, status] of [[401, 'AI_AUTH_FAILED', 503], [403, 'AI_AUTH_FAILED', 503], [429, 'AI_RATE_LIMITED', 429]] as const) {
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+      error: { code: '1008', message: API_KEY },
+    }, { status: upstreamStatus })) }), (error) => {
+      expectError(localCode, status)(error);
+      assert.ok(error instanceof AIProviderError);
+      assert.deepEqual(error.diagnostics, { upstreamStatus, upstreamCode: 1008 });
+      return true;
+    });
+  }
+});
+
+test('diagnostics never include raw messages, request data or credentials in errors or production logs', async (context) => {
+  const warn = context.mock.method(console, 'warn', () => {});
+  const privateQuestion = 'PRIVATE HEALTH QUESTION';
+  const privateHealth = 'PRIVATE HEALTH RECORD';
+  const privateUpstream = 'PRIVATE UPSTREAM DETAIL';
+  const traceId = 'abcdef0123456789';
+  await assert.rejects(callHealthAssistant(configured(), { question: privateQuestion, context: { health: privateHealth } }, {
+    fetch: mockResponse(() => jsonResponse({
+      base_resp: { status_code: 2067, status_msg: `${API_KEY} ${privateQuestion} ${privateHealth} ${privateUpstream}` },
+      error: { message: privateUpstream }, trace_id: traceId,
+      request: { apiKey: API_KEY, health: privateHealth },
+    }, { status: 400 })),
+  }), (error) => {
+    expectError('AI_QUOTA_EXHAUSTED', 502)(error);
+    assert.ok(error instanceof AIProviderError);
+    const exposed = JSON.stringify(error) + error.message;
+    for (const secret of [API_KEY, privateQuestion, privateHealth, privateUpstream]) assert.equal(exposed.includes(secret), false);
+    return true;
+  });
+  assert.equal(warn.mock.callCount(), 1);
+  assert.deepEqual(warn.mock.calls[0].arguments, ['minimax_request_failed', {
+    code: 'AI_QUOTA_EXHAUSTED', status: 502, upstreamStatus: 400, upstreamCode: 2067, traceId,
+  }]);
+  const logged = JSON.stringify(warn.mock.calls[0].arguments);
+  for (const secret of [API_KEY, privateQuestion, privateHealth, privateUpstream]) assert.equal(logged.includes(secret), false);
+  await callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse(completion())) });
+  assert.equal(warn.mock.callCount(), 1, 'successful calls do not emit failure logs');
+});
+
+test('trace diagnostics accept only bounded hex identifiers and exclude a reflected credential', async () => {
+  const headerTrace = 'ABCDEF0123456789';
+  const bodyTrace = 'fedcba9876543210';
+  for (const header of ['trace_id', 'trace-id', 'x-trace-id']) {
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+      error: { code: '2013' }, trace_id: bodyTrace,
+    }, { status: 400, headers: { [header]: headerTrace } })) }), (error) => {
+      assert.ok(error instanceof AIProviderError);
+      assert.equal(error.diagnostics?.traceId, headerTrace);
+      return true;
+    });
+  }
+  for (const trace of [API_KEY, '<script>1234567890123456</script>', 'a'.repeat(15), 'a'.repeat(65), 'a'.repeat(15) + 'g']) {
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+      error: { code: '2013' }, trace_id: trace,
+    }, { status: 400, headers: { trace_id: trace } })) }), (error) => {
+      assert.ok(error instanceof AIProviderError);
+      assert.equal(error.diagnostics?.traceId, undefined);
+      return true;
+    });
+  }
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+    error: { code: '2013' }, trace_id: ' abcdef0123456789 ',
+  }, { status: 400 })) }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.equal(error.diagnostics?.traceId, undefined);
+    return true;
+  });
+  const hexKey = '0123456789abcdef';
+  await assert.rejects(callHealthAssistant(configured({ MINIMAX_API_KEY: hexKey }), input, { fetch: mockResponse(() => jsonResponse({
+    error: { code: '2013' }, trace_id: 'aa' + hexKey.toUpperCase() + 'bb',
+  }, { status: 400, headers: { trace_id: hexKey } })) }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.equal(error.diagnostics?.traceId, undefined);
+    assert.equal(JSON.stringify(error).toLowerCase().includes(hexKey), false);
+    return true;
+  });
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+    error: { code: '2013' }, traceId: bodyTrace,
+  }, { status: 400 })) }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.equal(error.diagnostics?.traceId, bodyTrace);
+    return true;
+  });
+});
+
+test('untrusted error codes must be bounded positive integers or plain decimal strings', async () => {
+  for (const code of [API_KEY, 0, -1, 1.5, 10000000000, {}, [], null, '0', '-1004', '1.5', '1e3', ' 1004 ', '12345678901']) {
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({
+      error: { code, message: API_KEY },
+    }, { status: 400 })) }), (error) => {
+      expectError('AI_PROVIDER_UNAVAILABLE', 502)(error);
+      assert.ok(error instanceof AIProviderError);
+      assert.deepEqual(error.diagnostics, { upstreamStatus: 400 });
+      return true;
+    });
+  }
+});
+
+test('invalid or oversized HTTP error bodies retain the upstream status and remain bounded', async () => {
+  const traceId = 'abcdef0123456789';
+  for (const body of ['not json ' + API_KEY, new Uint8Array([0xff]), '']) {
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => new Response(body, {
+      status: 403, headers: { trace_id: traceId },
+    })) }), (error) => {
+      expectError('AI_AUTH_FAILED', 503)(error);
+      assert.ok(error instanceof AIProviderError);
+      assert.deepEqual(error.diagnostics, { upstreamStatus: 403, traceId });
+      return true;
+    });
+  }
+  let chunks = 0;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) { chunks++; controller.enqueue(new Uint8Array(65536)); },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => new Response(body, { status: 500 })) }), (error) => {
+    expectError('AI_PROVIDER_UNAVAILABLE', 502)(error);
+    assert.ok(error instanceof AIProviderError);
+    assert.deepEqual(error.diagnostics, { upstreamStatus: 500 });
+    return true;
+  });
+  assert.equal(cancelled, true);
+  assert.ok(chunks <= 4);
 });
 
 test('truncated and tool-call completions are rejected rather than presented as final answers', async () => {
