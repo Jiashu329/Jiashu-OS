@@ -16,3 +16,10 @@ test('untrusted error strings, credentials and malformed diagnostics are never d
     assert.equal(format(input), '');
   }
 });
+
+
+test('network diagnostics use only fixed labels and errno values', () => {
+  assert.equal(format({ networkReason: 'DNS_FAILURE', networkCode: 'ENOTFOUND', networkType: 'TypeError' }),
+    '（连接阶段：域名解析失败；网络代码：ENOTFOUND；异常类型：TypeError）');
+  assert.equal(format({ networkReason: 'private-health-data', networkCode: 'private-key', networkType: '<img src=x>' }), '');
+});

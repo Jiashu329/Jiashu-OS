@@ -66,7 +66,7 @@ test('M3 requests only the official endpoint with two messages, bounded output, 
     requests++;
     assert.equal(url, 'https://api.minimax.cn/v1/chat/completions');
     assert.equal(init?.method, 'POST');
-    assert.equal(init?.redirect, 'error');
+    assert.equal(init?.redirect, 'manual');
     assert.ok(init?.signal instanceof AbortSignal);
     assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer ' + API_KEY);
     const body = JSON.parse(init?.body as string);
@@ -129,6 +129,30 @@ test('HTTP failures never echo provider error bodies or credentials', async () =
   for (const [status, code, publicStatus] of [[401, 'AI_AUTH_FAILED', 503], [403, 'AI_AUTH_FAILED', 503], [429, 'AI_RATE_LIMITED', 429], [500, 'AI_PROVIDER_UNAVAILABLE', 502], [302, 'AI_PROVIDER_UNAVAILABLE', 502]] as const) {
     await assert.rejects(callHealthAssistant(configured(), input, { fetch: mockResponse(() => jsonResponse({ error: API_KEY }, { status })) }), expectError(code, publicStatus));
   }
+});
+
+test('manual redirect handling rejects every 3xx without following the location or retrying', async (context) => {
+  const warn = context.mock.method(console, 'warn', () => {});
+  const privateLocation = 'https://elsewhere.test/' + API_KEY + '/PRIVATE-HEALTH';
+  for (const upstreamStatus of [300, 301, 302, 303, 304, 305, 307, 308, 399]) {
+    let requests = 0;
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: async (url, init) => {
+      requests++;
+      assert.equal(url, 'https://api.minimax.cn/v1/chat/completions');
+      assert.equal(init?.redirect, 'manual');
+      return new Response(null, { status: upstreamStatus, headers: { Location: privateLocation } });
+    } }), (error) => {
+      expectError('AI_PROVIDER_UNAVAILABLE', 502)(error);
+      assert.ok(error instanceof AIProviderError);
+      assert.deepEqual(error.diagnostics, { upstreamStatus, networkReason: 'REDIRECT_BLOCKED' });
+      assert.equal(JSON.stringify(error).includes(privateLocation), false);
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
+  const logged = JSON.stringify(warn.mock.calls.map((call) => call.arguments));
+  assert.equal(logged.includes(API_KEY), false);
+  assert.equal(logged.includes('PRIVATE-HEALTH'), false);
 });
 
 test('HTTP 200 provider errors are still failures and do not echo error metadata', async () => {
@@ -356,6 +380,83 @@ test('unknown or invalid token usage is omitted rather than reflected', async ()
 test('network errors and aborted requests are reported without their raw error messages', async () => {
   await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { throw new Error(API_KEY); } }), expectError('AI_NETWORK_ERROR'));
   await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { const error = new Error(API_KEY); error.name = 'AbortError'; throw error; } }), expectError('AI_TIMEOUT', 504));
+});
+
+test('fetch rejection diagnostics distinguish DNS, TLS, connection, policy and local request failures', async () => {
+  const cases = [
+    { error: new TypeError('fetch failed', { cause: Object.assign(new Error(API_KEY), { code: 'ENOTFOUND' }) }),
+      reason: 'DNS_FAILURE', code: 'ENOTFOUND', type: 'TypeError' },
+    { error: Object.assign(new Error('getaddrinfo EAI_AGAIN PRIVATE-HEALTH'), { code: 'EAI_AGAIN' }),
+      reason: 'DNS_FAILURE', code: 'EAI_AGAIN', type: 'Error' },
+    { error: new TypeError('fetch failed', { cause: Object.assign(new Error(API_KEY), { code: 'CERT_HAS_EXPIRED' }) }),
+      reason: 'TLS_FAILURE', code: 'CERT_HAS_EXPIRED', type: 'TypeError' },
+    { error: new Error('TLS handshake failed for ' + API_KEY), reason: 'TLS_FAILURE', type: 'Error' },
+    { error: Object.assign(new Error(API_KEY), { code: 'ECONNRESET' }), reason: 'CONNECTION_LOST', code: 'ECONNRESET', type: 'Error' },
+    { error: new Error('Network connection lost. ' + API_KEY), reason: 'CONNECTION_LOST', type: 'Error' },
+    { error: Object.assign(new Error(API_KEY), { code: 'ECONNREFUSED' }), reason: 'CONNECTION_REFUSED', code: 'ECONNREFUSED', type: 'Error' },
+    { error: new TypeError('Header value is invalid: ' + API_KEY), reason: 'INVALID_HEADER', type: 'TypeError' },
+    { error: Object.assign(new TypeError(API_KEY), { code: 'ERR_HTTP_INVALID_HEADER_VALUE' }), reason: 'INVALID_HEADER', code: 'ERR_HTTP_INVALID_HEADER_VALUE', type: 'TypeError' },
+    { error: Object.assign(new TypeError('request ' + API_KEY), { code: 'ERR_INVALID_URL' }), reason: 'INVALID_FETCH_OPTIONS', code: 'ERR_INVALID_URL', type: 'TypeError' },
+    { error: new TypeError('Invalid RequestInit option PRIVATE-HEALTH'), reason: 'INVALID_FETCH_OPTIONS', type: 'TypeError' },
+    { error: new Error('Outbound request blocked by policy ' + API_KEY), reason: 'EGRESS_DENIED', type: 'Error' },
+    { error: new Error('Egress denied PRIVATE-HEALTH'), reason: 'EGRESS_DENIED', type: 'Error' },
+    { error: new TypeError('unexpected redirect ' + API_KEY), reason: 'REDIRECT_BLOCKED', type: 'TypeError' },
+    { error: new TypeError('Failed to fetch ' + API_KEY), reason: 'FETCH_FAILED', type: 'TypeError' },
+    { error: Object.assign(new Error(API_KEY), { code: 'ETIMEDOUT' }), reason: 'FETCH_FAILED', code: 'ETIMEDOUT', type: 'Error' },
+    { error: new Error(API_KEY), reason: 'UNKNOWN', type: 'Error' },
+    { error: { message: API_KEY, code: 'PRIVATE-HEALTH', name: 'PRIVATE-TYPE' }, reason: 'UNKNOWN' },
+    { error: API_KEY, reason: 'UNKNOWN' },
+    { error: new DOMException('Network connection lost. ' + API_KEY, 'NetworkError'), reason: 'CONNECTION_LOST', type: 'DOMException' },
+  ];
+  for (const { error: thrown, reason, code, type } of cases) {
+    let requests = 0;
+    await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { requests++; throw thrown; } }), (error) => {
+      expectError('AI_NETWORK_ERROR', 502)(error);
+      assert.ok(error instanceof AIProviderError);
+      assert.deepEqual(error.diagnostics, { networkReason: reason, ...(code ? { networkCode: code } : {}), ...(type ? { networkType: type } : {}) });
+      assert.equal(Object.isFrozen(error.diagnostics), true);
+      assert.equal(error.diagnostics?.upstreamStatus, undefined);
+      assert.equal((JSON.stringify(error) + error.message).includes('PRIVATE-HEALTH'), false);
+      return true;
+    });
+    assert.equal(requests, 1, 'failed fetch is never retried');
+  }
+});
+
+test('network exception inspection is bounded, does not execute getters and logs only safe enum fields', async (context) => {
+  const warn = context.mock.method(console, 'warn', () => {});
+  const privateDetail = `${API_KEY} PRIVATE-HEALTH https://private.test/request`;
+  const cause = Object.assign(new Error('Network connection lost. ' + privateDetail), { code: 'ECONNRESET' });
+  const outer = new TypeError(privateDetail, { cause });
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { throw outer; } }), expectError('AI_NETWORK_ERROR', 502));
+  assert.deepEqual(warn.mock.calls[0].arguments, ['minimax_request_failed', {
+    code: 'AI_NETWORK_ERROR', status: 502, networkReason: 'CONNECTION_LOST', networkCode: 'ECONNRESET', networkType: 'TypeError',
+  }]);
+  const logged = JSON.stringify(warn.mock.calls[0].arguments);
+  assert.equal(logged.includes(privateDetail), false);
+  assert.equal(logged.includes(API_KEY), false);
+  let getters = 0;
+  const unusual = Object.create(null);
+  for (const key of ['message', 'cause', 'code']) Object.defineProperty(unusual, key, { get() { getters++; throw new Error(privateDetail); } });
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { throw unusual; } }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.deepEqual(error.diagnostics, { networkReason: 'UNKNOWN' });
+    return true;
+  });
+  assert.equal(getters, 0);
+  const cycle: { message: string; cause?: unknown } = { message: privateDetail };
+  cycle.cause = cycle;
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { throw cycle; } }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.deepEqual(error.diagnostics, { networkReason: 'UNKNOWN' });
+    return true;
+  });
+  const oversizedMessage = new Error('x'.repeat(2048) + ' DNS resolution failed');
+  await assert.rejects(callHealthAssistant(configured(), input, { fetch: async () => { throw oversizedMessage; } }), (error) => {
+    assert.ok(error instanceof AIProviderError);
+    assert.equal(error.diagnostics?.networkReason, 'UNKNOWN');
+    return true;
+  });
 });
 
 test('the total request deadline aborts even a fetch implementation that ignores its signal', async (context) => {

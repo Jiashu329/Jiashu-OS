@@ -27,11 +27,24 @@ interface PrivateConfiguration {
 
 const privateConfigurations = new WeakMap<AIConfiguration, PrivateConfiguration>();
 
+const NETWORK_REASONS = ['DNS_FAILURE', 'TLS_FAILURE', 'CONNECTION_LOST', 'CONNECTION_REFUSED', 'REDIRECT_BLOCKED',
+  'INVALID_HEADER', 'INVALID_FETCH_OPTIONS', 'EGRESS_DENIED', 'FETCH_FAILED', 'UNKNOWN'] as const;
+const NETWORK_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT',
+  'ENETUNREACH', 'EHOSTUNREACH', 'EACCES', 'EPERM', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT',
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_HTTP_INVALID_HEADER_VALUE', 'ERR_INVALID_HTTP_TOKEN', 'ERR_INVALID_CHAR', 'ERR_INVALID_URL',
+  'ERR_INVALID_ARG_TYPE', 'ERR_INVALID_ARG_VALUE'] as const;
+const NETWORK_TYPES = ['Error', 'TypeError', 'DOMException'] as const;
+
 /** Only these bounded, non-content fields may leave the provider error boundary. */
 export interface AIProviderDiagnostics {
   readonly upstreamStatus?: number;
   readonly upstreamCode?: number;
   readonly traceId?: string;
+  readonly networkReason?: typeof NETWORK_REASONS[number];
+  readonly networkCode?: typeof NETWORK_CODES[number];
+  readonly networkType?: typeof NETWORK_TYPES[number];
 }
 
 function safeDiagnostics(value?: AIProviderDiagnostics): AIProviderDiagnostics | undefined {
@@ -41,9 +54,15 @@ function safeDiagnostics(value?: AIProviderDiagnostics): AIProviderDiagnostics |
   const upstreamCode = typeof value.upstreamCode === 'number' && Number.isSafeInteger(value.upstreamCode)
     && value.upstreamCode > 0 && value.upstreamCode <= 9999999999 ? value.upstreamCode : undefined;
   const traceId = typeof value.traceId === 'string' && /^[0-9a-f]{16,64}$/i.test(value.traceId) ? value.traceId : undefined;
-  if (upstreamStatus === undefined && upstreamCode === undefined && traceId === undefined) return undefined;
+  const networkReason = value.networkReason !== undefined && NETWORK_REASONS.includes(value.networkReason) ? value.networkReason : undefined;
+  const networkCode = value.networkCode !== undefined && NETWORK_CODES.includes(value.networkCode) ? value.networkCode : undefined;
+  const networkType = value.networkType !== undefined && NETWORK_TYPES.includes(value.networkType) ? value.networkType : undefined;
+  if (upstreamStatus === undefined && upstreamCode === undefined && traceId === undefined
+    && networkReason === undefined && networkCode === undefined && networkType === undefined) return undefined;
   return Object.freeze({ ...(upstreamStatus !== undefined ? { upstreamStatus } : {}),
-    ...(upstreamCode !== undefined ? { upstreamCode } : {}), ...(traceId !== undefined ? { traceId } : {}) });
+    ...(upstreamCode !== undefined ? { upstreamCode } : {}), ...(traceId !== undefined ? { traceId } : {}),
+    ...(networkReason !== undefined ? { networkReason } : {}), ...(networkCode !== undefined ? { networkCode } : {}),
+    ...(networkType !== undefined ? { networkType } : {}) });
 }
 
 export class AIProviderError extends Error {
@@ -100,6 +119,61 @@ const HEALTH_SYSTEM_MESSAGE = `你是 Jiashu OS 的健康数据助手。使用�
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function networkDiagnostics(error: unknown): AIProviderDiagnostics {
+  const networkType = typeof DOMException !== 'undefined' && error instanceof DOMException ? 'DOMException'
+    : error instanceof TypeError ? 'TypeError' : error instanceof Error ? 'Error' : undefined;
+  // Exceptions may contain URLs, authorization values, or request contents.
+  // Read only bounded data properties for classification; never copy their text.
+  const messages: string[] = [];
+  const codes: Array<typeof NETWORK_CODES[number]> = [];
+  const visited = new Set<object>();
+  let current = error;
+  for (let depth = 0; depth < 4 && current !== null && typeof current === 'object' && !visited.has(current); depth++) {
+    visited.add(current);
+    const data = (key: string): unknown => {
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+      } catch { return undefined; }
+    };
+    let message = data('message');
+    if (message === undefined && typeof DOMException !== 'undefined' && current instanceof DOMException) {
+      try { message = Object.getOwnPropertyDescriptor(DOMException.prototype, 'message')?.get?.call(current); } catch { /* No exception text leaves this boundary. */ }
+    }
+    const code = data('code');
+    if (typeof message === 'string') messages.push(message.slice(0, 2048));
+    if (typeof code === 'string' && NETWORK_CODES.includes(code as typeof NETWORK_CODES[number])) codes.push(code as typeof NETWORK_CODES[number]);
+    current = data('cause');
+  }
+  const text = messages.join('\n');
+  const hasCode = (...values: Array<typeof NETWORK_CODES[number]>) => codes.some((code) => values.includes(code));
+  let networkReason: NonNullable<AIProviderDiagnostics['networkReason']> = 'UNKNOWN';
+  if (hasCode('ENOTFOUND', 'EAI_AGAIN') || /(?:getaddrinfo|dns (?:lookup|resolution).*(?:fail|error)|could not resolve|name or service not known)/i.test(text)) {
+    networkReason = 'DNS_FAILURE';
+  } else if (hasCode('CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER')
+    || /(?:(?:tls|ssl).*(?:fail|error|handshake)|certificate.*(?:expired|invalid|verify|verification|self.signed))/i.test(text)) {
+    networkReason = 'TLS_FAILURE';
+  } else if (hasCode('ECONNREFUSED') || /connection refused/i.test(text)) {
+    networkReason = 'CONNECTION_REFUSED';
+  } else if (hasCode('ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET') || /(?:network connection lost|connection (?:lost|reset|closed)|socket (?:hang up|closed)|broken pipe)/i.test(text)) {
+    networkReason = 'CONNECTION_LOST';
+  } else if (/(?:egress.*(?:denied|blocked)|outbound.*(?:denied|blocked)|network access.*denied|destination.*(?:not allowed|denied)|blocked by.*policy)/i.test(text)) {
+    networkReason = 'EGRESS_DENIED';
+  } else if (hasCode('ERR_HTTP_INVALID_HEADER_VALUE', 'ERR_INVALID_HTTP_TOKEN')
+    || /(?:invalid.*header|header.*(?:invalid|not valid|must be|cannot contain)|headers?\.(?:append|set).*error)/i.test(text)) {
+    networkReason = 'INVALID_HEADER';
+  } else if (hasCode('ERR_INVALID_URL', 'ERR_INVALID_ARG_TYPE', 'ERR_INVALID_ARG_VALUE')
+    || /(?:invalid (?:url|request|requestinit|fetch|redirect|method)|failed to parse url|requestinit.*(?:invalid|not supported)|unsupported.*(?:request|fetch|redirect|method))/i.test(text)) {
+    networkReason = 'INVALID_FETCH_OPTIONS';
+  } else if (/(?:redirect.*(?:not allowed|disallowed|blocked|mode.*error)|unexpected redirect)/i.test(text)) {
+    networkReason = 'REDIRECT_BLOCKED';
+  } else if (codes.length || /(?:fetch failed|failed to fetch|fetch api.*failed)/i.test(text)) {
+    networkReason = 'FETCH_FAILED';
+  }
+  return safeDiagnostics({ networkReason, ...(codes[0] ? { networkCode: codes[0] } : {}), ...(networkType ? { networkType } : {}) })!;
 }
 
 function upstreamCode(value: unknown): number | undefined {
@@ -254,7 +328,7 @@ export async function callHealthAssistant(
     const response = await (options.fetch ?? fetch)(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
-      redirect: 'error',
+      redirect: 'manual',
       signal: controller.signal,
       body: JSON.stringify({
         model: configuration.model,
@@ -270,7 +344,12 @@ export async function callHealthAssistant(
       }),
     });
     diagnostics = responseDiagnostics(response, undefined, apiKey);
-    if (!response.ok || response.redirected) {
+    if ((response.status >= 300 && response.status < 400) || response.redirected) {
+      cancelBody(response);
+      throw new AIProviderError('MiniMax 返回了重定向响应，连接已停止，请检查服务入口。', 'AI_PROVIDER_UNAVAILABLE', 502,
+        { ...diagnostics, networkReason: 'REDIRECT_BLOCKED' });
+    }
+    if (!response.ok) {
       let raw: unknown;
       try { raw = await readResponse(response); } catch { /* Keep the HTTP status when an error body is invalid or oversized. */ }
       diagnostics = responseDiagnostics(response, raw, apiKey);
@@ -290,7 +369,7 @@ export async function callHealthAssistant(
     } else if (error instanceof AIProviderError) {
       failure = new AIProviderError(error.message, error.code, error.status, { ...diagnostics, ...error.diagnostics });
     } else {
-      failure = new AIProviderError('暂时无法连接 MiniMax，请稍后重试。', 'AI_NETWORK_ERROR', 502, diagnostics);
+      failure = new AIProviderError('暂时无法连接 MiniMax，请稍后重试。', 'AI_NETWORK_ERROR', 502, { ...diagnostics, ...networkDiagnostics(error) });
     }
     console.warn('minimax_request_failed', { code: failure.code, status: failure.status, ...failure.diagnostics });
     throw failure;
