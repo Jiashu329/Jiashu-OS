@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { BACKUP_TABLE_NAMES, BackupValidationError, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BackupCapacityError, BackupValidationError, backupDigest, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from './data-backup-store.ts';
 import { previewHealthImport, writeHealthImport } from './health-import-store.ts';
 import { parseSyncPayload } from '../lib/health.ts';
@@ -179,4 +179,43 @@ void test('source completion flags never overwrite different target flags and co
   empty.db.prepare=((sql:string)=>{const statement=prepare(sql);if(sql.includes('user_id <>')&&!armed){armed=true;empty.mutateNextBatch(()=>empty.sqlite.prepare('INSERT INTO nutrition_day_status VALUES (?,?,?,?,?,?)').run('restored-owner','2026-11-09',0,'{}',1,NOW));}return statement;}) as typeof empty.db.prepare;
   await assert.rejects(restoreDataBackup(empty.db,'restored-owner',backup,valid.previewHash),BackupConflictError);
   assert.equal(empty.sqlite.prepare('SELECT count(*) n FROM nutrition_entries').get()?.n,0);assert.equal((await readNutritionDayStatus(empty.db,'restored-owner','2026-11-09')).complete,false);
+});
+
+void test('merging individually valid favorite sets beyond 100 refuses preview and restore without writes',async(t)=>{
+  const target=fixture(t),tables=Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]])) as unknown as DataBackup['tables'];
+  for(let index=0;index<100;index++) {
+    const template={name:'incoming favorite '+index,portion:'',calories:null,note:''};
+    tables.nutrition_favorites.push({id:crypto.randomUUID(),template_hash:await backupDigest(template),template_json:JSON.stringify(template),created_at:NOW});
+  }
+  const current={name:'existing target favorite',portion:'',calories:null,note:''};
+  target.sqlite.prepare('INSERT INTO nutrition_favorites (id,user_id,template_hash,template_json,created_at) VALUES (?,?,?,?,?)').run(A,'alice',await backupDigest(current),JSON.stringify(current),NOW);
+  const backup:DataBackup={kind:'jiashu-os-backup',version:1,exportedAt:NOW,tables};
+  const exceedsFavorites=(error:unknown)=>error instanceof BackupCapacityError && /100/.test(error.message);
+  await assert.rejects(previewDataRestore(target.db,'alice',backup),exceedsFavorites);
+  await assert.rejects(restoreDataBackup(target.db,'alice',backup,HASH),exceedsFavorites);
+  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_favorites').get()?.n,1);
+  assert.equal(target.sqlite.prepare('SELECT template_json FROM nutrition_favorites WHERE id=?').get(A)?.template_json,JSON.stringify(current));
+});
+
+void test('old v1 nutrition inserts include trigger-created dates in final row capacity before any restore writes',async(t)=>{
+  const source=fixture(t);await createNutritionEntry(source.db,'source',parseNutritionCreate({date:'2026-11-09',meal:'breakfast',name:'legacy meal',calories:null},Date.parse(NOW)),A,NOW);
+  const backup=await exportDataBackup(source.db,'source',NOW);
+  const legacy=structuredClone(backup) as unknown as {kind:string;version:number;exportedAt:string;tables:Record<string,Array<Record<string,unknown>>>};
+  delete legacy.tables.nutrition_favorites;delete legacy.tables.nutrition_day_status;delete legacy.tables.nutrition_entries[0].food_json;
+  const target=fixture(t);
+  const rows=Array.from({length:BACKUP_MAX_ROWS-1},(_,index)=>{
+    const id='c'+index.toString(36),measurement={id,metric:'weight',value:70,unit:'kg',startDate:OLD,source:'s',aggregation:'sample'};
+    return {record_key:'weight:'+id,metric:'weight',day:'2024-01-01',measurement_json:JSON.stringify(measurement),exported_at:NOW,received_at:NOW};
+  });
+  target.sqlite.prepare(`INSERT INTO health_measurements (user_id,record_key,metric,day,measurement_json,exported_at,received_at)
+    SELECT ?,json_extract(value,'$.record_key'),json_extract(value,'$.metric'),json_extract(value,'$.day'),json_extract(value,'$.measurement_json'),json_extract(value,'$.exported_at'),json_extract(value,'$.received_at') FROM json_each(?)`).run('alice',JSON.stringify(rows));
+  const explicit={...parseDataBackup(legacy).tables,health_measurements:rows};
+  assert.equal(Object.values(explicit).reduce((sum,list)=>sum+list.length,0),BACKUP_MAX_ROWS);
+  assert.ok(new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:1,exportedAt:NOW,tables:explicit})).byteLength<BACKUP_MAX_BYTES,'Explicit rows alone fit the byte ceiling');
+  const exceedsCapacity=(error:unknown)=>error instanceof BackupCapacityError && /恢复后的数据/.test(error.message);
+  await assert.rejects(previewDataRestore(target.db,'alice',legacy),exceedsCapacity);
+  await assert.rejects(restoreDataBackup(target.db,'alice',legacy,HASH),exceedsCapacity);
+  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_entries').get()?.n,0);
+  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_day_status').get()?.n,0);
+  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,BACKUP_MAX_ROWS-1);
 });

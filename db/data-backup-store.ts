@@ -15,6 +15,22 @@ function queryBudget(current: Record<BackupTable,BackupRow[]>, additions: Record
   const foreignReads = BACKUP_TABLE_NAMES.filter((table) => 'globalId' in BACKUP_TABLES[table] && additions[table].length > 0).length;
   return BACKUP_TABLE_NAMES.length + foreignReads + 1 + (existingFinanceAffected(current,additions).length ? 1 : 0) + BACKUP_TABLE_NAMES.reduce((sum,table) => sum + chunks(current[table]).length + chunks(additions[table]).length,0);
 }
+function restoredNutritionStatuses(current: BackupRow[], addedEntries: BackupRow[], addedStatuses: BackupRow[]): BackupRow[] {
+  const statuses = new Map(current.map((row) => [String(row.date), { ...row }]));
+  // Nutrition INSERT triggers run in the same ordered groups as the restore.
+  // Count their new dates and model invalidation/revision changes as well as
+  // rows explicitly present in the file when checking the final capacity.
+  for (const entry of addedEntries) {
+    const date = String(entry.date), prior = statuses.get(date);
+    statuses.set(date, prior
+      ? { ...prior, complete:0, revision:Number(prior.revision)+1, updated_at:entry.updated_at }
+      : { date, complete:0, meals_json:'{}', revision:1, updated_at:entry.updated_at });
+  }
+  // These rows were absent from the target when planning. Later status upserts
+  // restore their source values over only this transaction's generated rows.
+  for (const row of addedStatuses) statuses.set(String(row.date), { ...row });
+  return [...statuses.values()].sort((a,b) => String(a.date).localeCompare(String(b.date)));
+}
 function order(table: BackupTable) { const spec = BACKUP_TABLES[table]; return 'sequence' in spec ? 'sequence' : spec.keys.length ? spec.keys.join(',') : 'user_id'; }
 async function readTables(db: BackupDatabase, userId: string): Promise<Record<BackupTable, BackupRow[]>> {
   const queries = BACKUP_TABLE_NAMES.map((table) => db.prepare(`SELECT ${BACKUP_TABLES[table].columns.join(',')} FROM ${table} WHERE user_id = ? ORDER BY ${order(table)} LIMIT ?`).bind(userId, BACKUP_MAX_ROWS + 1));
@@ -72,6 +88,8 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
   }
   const total = summaries.reduce((value,r) => ({ incoming:value.incoming+r.incoming,added:value.added+r.added,skipped:value.skipped+r.skipped,conflicts:value.conflicts+r.conflicts }),{ incoming:0,added:0,skipped:0,conflicts:0 });
   const merged = Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => [table,[...current[table],...additions[table]]])) as Record<BackupTable,BackupRow[]>;
+  merged.nutrition_day_status = restoredNutritionStatuses(current.nutrition_day_status, additions.nutrition_entries, additions.nutrition_day_status);
+  if (merged.nutrition_favorites.length > 100) throw new BackupCapacityError('恢复后的常用食物将超过 100 项，未写入数据。请先整理常用食物后重新预览。');
   if (Object.values(merged).reduce((sum,list) => sum+list.length,0) > BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:1,exportedAt:backup.exportedAt,tables:merged})).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('恢复后的数据将超过完整备份容量，未写入数据。');
   if (total.added && queryBudget(current,additions) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('当前数据与备份合并超过安全恢复的查询预算；未写入数据。请联系维护者扩容。');
   const backupHash = await backupDigest(backup);
