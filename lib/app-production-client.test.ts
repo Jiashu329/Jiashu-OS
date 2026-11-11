@@ -153,8 +153,11 @@ test('390px production backup page initializes every inline script and gates res
   assert.equal(f.document.getElementById('backup-summary')?.hidden, true);
   assert.equal(f.document.getElementById('backup-status')?.getAttribute('role'), 'status');
   assert.equal(f.document.getElementById('backup-status')?.getAttribute('aria-live'), 'polite');
-  const download = f.document.querySelector('a[href="/api/data/backup"]')!;
-  assert.ok(download.hasAttribute('download'));
+  const download = f.document.getElementById('backup-export') as HTMLButtonElement;
+  assert.ok(download, 'bounded backup export control is present');
+  assert.equal(download.tagName, 'BUTTON');
+  assert.equal(download.disabled, false);
+  assert.equal(download.textContent, '下载完整备份 JSON');
   assert.equal(f.document.querySelector('.backup-table-wrap th[scope="col"]')?.textContent, '数据范围');
   assert.equal(f.document.querySelectorAll('.backup-table-wrap th[scope="col"]').length, 5);
   // No data is read or restored just by opening the page. Even synthetic click
