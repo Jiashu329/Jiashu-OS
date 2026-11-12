@@ -127,6 +127,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   (window as unknown as Record<string,unknown>).JiashuDrafts=undefined;
   if(options.durable){const saved=options.durable;Object.assign(window,{JiashuDrafts:{setOwner(){},storage(){return sessionStorage;},save(id:string,label:string,data:unknown,meta:Record<string,unknown>={}){if(options.durableFails)return false;saved.set(id,{id,label,data:structuredClone(data),updatedAt:NOW,...meta});return true;},get(id:string){return saved.get(id)??null;},list(){return [...saved.values()];},remove(id:string){return saved.delete(id);},clearConfirmed(id:string){return saved.delete(id);}}});}
   let focused: Element | null = null;
+  Object.defineProperty(window.HTMLElement.prototype,'focus',{configurable:true,value(){focused=this;}});
   for (const node of document.querySelectorAll('input,button,textarea,select')) Object.defineProperty(node, 'focus', { configurable: true, value() { focused = node; } });
   const originalCreate=document.createElement.bind(document);
   const jpeg=Uint8Array.from([255,216,255,192,0,17,8,2,88,3,32,3,1,17,0,2,17,0,3,17,0,255,217]);
@@ -320,7 +321,7 @@ test('packaging provenance is editable and submitted independently of notes with
   assert.deepEqual(post.body.provenance.protein,{source:'label',basis:'包装标注当前份量8.5g蛋白质'});
   assert.equal(post.body.note,'');
   const parsed=parseNutritionCreate(post.body,new Date(NOW));assert.equal(parsed.provenance?.protein?.source,'label');
-  assert.match(f.el('list').textContent??'',/包装标签.*当前份量8.5g/);
+  f.click(f.el('list').querySelector('[data-nutrition-action="view"]')!);assert.match(f.el('food-detail-body').textContent??'',/包装标签.*当前份量8.5g/);
 });
 
 test('structured AI provenance survives manual correction and keeps the original estimate without note inference', async () => {
@@ -407,14 +408,17 @@ test('daily nutrient totals add exact tenths, retain a real zero and disclose in
   assert.equal(new Set(ids).size, ids.length, 'Summary IDs must not shadow editable nutrition fields');
 });
 
-test('saved food rows keep a visible estimate badge and tuck destructive actions and source notes behind details', async () => {
+test('saved food cards keep compact AI status and expose sources in a read-only detail before editing', async () => {
   const f = fixture({ entries: [entry({ calories: '420.0', note: 'AI 估算：按中等份量估算。' })] });
   await f.ready();
   const row = f.el('list').querySelector('[data-nutrition-entry]')!;
-  assert.equal(row.querySelector('.nt-estimate-badge')?.textContent, '含 AI 估算');
+  assert.match(row.querySelector('.nt-ring-state')?.textContent??'', /AI 估算/);
   assert.equal(row.querySelector('.nt-row-menu')?.hasAttribute('open'), false);
-  assert.equal(row.querySelector('.nt-food-detail')?.hasAttribute('open'), false);
-  f.click(row.querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(row.querySelector('.nt-food-detail'), null);
+  f.click(row.querySelector('[data-nutrition-action="view"]')!);
+  assert.equal(f.el('food-detail-dialog').open,true);assert.equal(f.el('dialog').open,false);
+  assert.equal(f.el('food-detail-body').querySelector('.nt-estimate-badge')?.textContent,'含 AI 估算');
+  f.click('food-detail-edit');assert.equal(f.el('food-detail-dialog').open,false);
   assert.equal(f.el('dialog').open, true);
 });
 
@@ -535,7 +539,7 @@ test('manual nutrient grams preserve zero and blanks through draft restore, savi
   const created = f.requests.find((request) => request.method === 'POST')!.body;
   assert.equal(created.carbs, '0.0'); assert.equal(created.protein, '12.3'); assert.equal(created.fat, null);
   assert.equal(f.el('carbs').value, ''); assert.equal(f.el('protein').value, ''); assert.equal(f.el('fat').value, '');
-  assert.match(f.el('list').textContent ?? '', /碳水化合物 0.0g.*蛋白质 12.3g.*脂肪 未填/);
+  assert.match(f.el('list').querySelector('.nt-food-open')!.getAttribute('aria-label')??'',/碳水化合物 0g.*蛋白质 12.3g.*脂肪 未填写/);
   f.click('dialog-close');
 
   const older = fixture({ entries: [entry()] }); await older.ready();
@@ -1005,4 +1009,52 @@ test('restoring a historical official serving record retains null weight and the
   assert.match(f.el('food-source').textContent??'',/每份 201.1 kcal（中杯）/);assert.equal(f.el('fat').value,'');
   const stored=f.entries[0].food;assert.equal(stored.grams,null);assert.equal(stored.kcalPer100g,null);
   assert.deepEqual(stored.serving,snapshot.serving);
+});
+
+
+test('food rings use the three macro energy factors while preserving the independently recorded calorie',async()=>{
+  const f=fixture({entries:[entry({name:'环比例测试',calories:'321.0',carbs:'10.0',protein:'10.0',fat:'10.0',portion:'完整份量',note:'详情里的备注'})]});
+  await f.ready();const row=f.el('list').querySelector('[data-nutrition-entry]')!,open=row.querySelector('.nt-food-open')!;
+  assert.equal(open.getAttribute('data-nutrition-action'),'view');assert.equal(open.getAttribute('aria-haspopup'),'dialog');
+  assert.match(open.getAttribute('aria-label')??'',/23.5%、23.5%、52.9%/);
+  assert.equal(row.querySelectorAll('.nt-nutrition-ring circle').length,4);
+  const shares=['carbs','protein','fat'].map(key=>Number(row.querySelector('.nt-ring-'+key)!.getAttribute('stroke-dasharray')!.split(' ')[0]));
+  assert.ok(Math.abs(shares[0]-23.529)<0.01);assert.ok(Math.abs(shares[1]-23.529)<0.01);assert.ok(Math.abs(shares[2]-52.941)<0.01);
+  assert.match(row.querySelector('.nt-food-calories')?.textContent??'',/321.0/);
+  assert.ok(!row.textContent?.includes('完整份量'));assert.ok(!row.textContent?.includes('详情里的备注'));
+  const writes=f.requests.filter(request=>request.method!=='GET').length,stored=[...f.storage.entries()];
+  f.click(open);await settled(()=>f.el('food-detail-dialog').open);
+  assert.match(f.el('food-detail-body').textContent??'',/完整份量[\s\S]*321.0[\s\S]*10.0[\s\S]*详情里的备注/);
+  assert.match(f.el('food-detail-body').textContent??'',/不等于标示总热量/);
+  assert.equal(f.requests.filter(request=>request.method!=='GET').length,writes);assert.deepEqual([...f.storage.entries()],stored);
+  assert.equal(f.el('dialog').open,false);assert.equal(f.el('food-detail-body').querySelector('input,select,textarea'),null);
+});
+
+test('unknown, real zero and AI nutrition states never fabricate a complete ring or a calorie value',async()=>{
+  const f=fixture({entries:[
+    entry({name:'有缺值',carbs:'10.0',protein:null,fat:'0.0',calories:null}),
+    entry({id:ID+'zero',name:'全零',carbs:'0.0',protein:'0',fat:'0.0',calories:'0.0'}),
+    entry({id:ID+'ai',name:'估算',carbs:'10.0',protein:'10.0',fat:'10.0',note:'AI 估算：测试依据'}),
+    entry({id:ID+'invalid',name:'无效值',carbs:10,protein:'NaN',fat:'-1',calories:'Infinity'}),
+  ]});await f.ready();const rows=[...f.el('list').querySelectorAll('[data-nutrition-entry]')];
+  assert.ok(rows[0].querySelector('.nt-ring-missing'));assert.match(rows[0].querySelector('button')!.getAttribute('aria-label')??'',/蛋白质 未填写/);
+  assert.equal(rows[0].querySelector('.nt-food-calories')?.textContent?.trim(),'— kcal');
+  assert.ok([...rows[0].querySelectorAll('.nt-nutrition-ring circle:not(.nt-ring-track)')].every(circle=>circle.getAttribute('style')?.includes('display:none')));
+  assert.ok(rows[1].querySelector('.nt-ring-zero'));assert.match(rows[1].querySelector('.nt-ring-state')?.textContent??'',/三项为0/);assert.match(rows[1].querySelector('.nt-food-calories')?.textContent??'',/0.0/);
+  assert.ok(rows[2].querySelector('.nt-ring-estimated'));assert.match(rows[2].querySelector('.nt-ring-state')?.textContent??'',/AI 估算/);
+  assert.ok(rows[3].querySelector('.nt-ring-missing'));assert.ok(!rows[3].innerHTML.includes('NaN'));assert.equal(rows[3].querySelector('.nt-food-calories')?.textContent?.trim(),'— kcal');
+});
+
+test('read-only food detail closes back to its card and its edit action or menu remain separate operations',async()=>{
+  const f=fixture({entries:[entry({name:'交互测试',carbs:'1',protein:'2',fat:'3'})]});await f.ready();
+  const row=f.el('list').querySelector('[data-nutrition-entry]')!,open=row.querySelector('.nt-food-open')!;
+  f.click(open);await settled(()=>f.el('food-detail-dialog').open);f.click(f.el('food-detail-dialog').querySelector('[data-food-detail-close]')!);
+  assert.equal(f.el('food-detail-dialog').open,false);assert.ok(f.focused===open,'focus returns to the original food card');
+  f.click(open);f.el('food-detail-dialog').dispatchEvent(f.event('cancel'));assert.equal(f.el('food-detail-dialog').open,false);assert.ok(f.focused===open,'focus returns to the original food card');
+  f.click(open);f.el('food-detail-dialog').dispatchEvent(f.event('click',{clientX:-1,clientY:-1}));assert.equal(f.el('food-detail-dialog').open,false);assert.ok(f.focused===open,'focus returns to the original food card');
+  f.click(open);f.click('food-detail-edit');assert.equal(f.el('food-detail-dialog').open,false);assert.equal(f.el('dialog').open,true);
+  f.click('dialog-close');assert.ok(f.focused===open,'focus returns to the original food card');
+  f.click(row.querySelector('[data-nutrition-action="edit"]')!);assert.equal(f.el('dialog').open,true);assert.equal(f.el('food-detail-dialog').open,false);
+  f.click('dialog-close');f.click(row.querySelector('[data-nutrition-action="favorite"]')!);await settled(()=>f.favorites.length===1);
+  assert.equal(f.el('food-detail-dialog').open,false);assert.equal(f.requests.filter(request=>request.method==='PATCH').length,0);
 });
