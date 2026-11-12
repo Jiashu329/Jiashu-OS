@@ -18,6 +18,7 @@ export interface NutritionDraft {
   unit: string | null;
   portion: string;
   calories: string | null;
+  calorieSource: 'catalog' | 'ai' | null;
   note: string;
   food: { id: string; amount: number; unit: string } | null;
   candidates: FoodItem[];
@@ -114,7 +115,18 @@ function boundedText(raw: unknown, maximum: number): raw is string {
     && !/[\u0000-\u001f\u007f-\u009f]/.test(raw);
 }
 
-/** Untrusted model output is validated before food IDs or calories are assigned. */
+function calorieEstimate(raw: unknown): { calories: string; portion: string; basis: string } | null {
+  // Older model responses remain usable; estimates never supply catalog IDs.
+  if (raw === undefined || raw === null) return null;
+  if (!object(raw) || Object.keys(raw).length !== 3
+    || Object.keys(raw).some((key) => !['calories', 'portion', 'basis'].includes(key))
+    || typeof raw.calories !== 'number' || !Number.isFinite(raw.calories)
+    || raw.calories < 0 || raw.calories > 20000
+    || !boundedText(raw.portion, 100) || !boundedText(raw.basis, 200)) throw new NutritionParserError();
+  return { calories: raw.calories.toFixed(1), portion: raw.portion.trim(), basis: raw.basis.trim() };
+}
+
+/** Prefer catalog calculations; validated model estimates remain labeled, editable drafts. */
 export function buildNutritionDrafts(answer: string, request: NutritionParserRequest): { drafts: NutritionDraft[]; warnings: string[] } {
   if (typeof answer !== 'string' || answer.length > 10000) throw new NutritionParserError();
   let raw: unknown;
@@ -122,8 +134,9 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
   if (!object(raw) || Object.keys(raw).length !== 1 || !Array.isArray(raw.items) || raw.items.length > 20) throw new NutritionParserError();
   if (!Object.hasOwn(raw, 'items')) throw new NutritionParserError();
   const drafts = raw.items.map((value): NutritionDraft => {
-    if (!object(value) || Object.keys(value).length !== 6
-      || Object.keys(value).some((key) => !['name', 'amount', 'unit', 'meal', 'dateText', 'sourceText'].includes(key))
+    if (!object(value) || ![6, 7].includes(Object.keys(value).length)
+      || !['name', 'amount', 'unit', 'meal', 'dateText', 'sourceText'].every((key) => Object.hasOwn(value, key))
+      || Object.keys(value).some((key) => !['name', 'amount', 'unit', 'meal', 'dateText', 'sourceText', 'estimate'].includes(key))
       || !boundedText(value.name, 100) || !validAssistantText(value.sourceText, 500)
       || !request.text.includes(value.sourceText)
       || !(value.amount === null || (typeof value.amount === 'number' && Number.isFinite(value.amount) && value.amount > 0 && value.amount <= 100000))
@@ -136,9 +149,11 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     const exact = candidates.filter((food) => [food.name, ...food.aliases].some((alias) => normalized(alias) === normalized(name))
       && compatiblePreparation(value.sourceText as string, food));
     const warnings: string[] = [];
+    const estimate = calorieEstimate(value.estimate);
     let food: NutritionDraft['food'] = null, calories: string | null = null, portion = amount === null ? '份量待补充' : String(amount) + (unit ?? '（单位待补充）');
+    let calorieSource: NutritionDraft['calorieSource'] = null, note = '';
     if (!meal) warnings.push('请选择这项食物的餐次。');
-    if (!candidates.length) warnings.push('食物库暂未找到匹配项，可搜索其他名称或手工填写，热量保持未知。');
+    if (!candidates.length) warnings.push('食物库暂未找到匹配项，可搜索其他名称或核对下方估算。');
     else if (exact.length !== 1) warnings.push('食物或生熟、烹饪方式尚需核对，请从候选中选择。');
     if (amount === null || unit === null) warnings.push('份量或单位不明确，请补充实际重量或数量。');
     else if (exact.length === 1) {
@@ -148,13 +163,22 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
         if (!Number.isSafeInteger(calculated.caloriesTenth) || calculated.caloriesTenth < 0 || calculated.caloriesTenth > 200000) throw new Error('Invalid calorie amount');
         food = selection;
         calories = (calculated.caloriesTenth / 10).toFixed(1);
+        calorieSource = 'catalog';
         portion = String(amount) + unit + (unit === 'g' || unit === '克' || unit === '公克' ? '' : '（' + calculated.grams + 'g）');
         if (calculated.estimated) warnings.push('份量换算使用食物库参考重量，请核对实际份量。');
       } catch {
-        warnings.push('这个单位没有可核对的重量换算，请改填克重；热量暂未计算。');
+        warnings.push('这个单位没有食物库重量换算；请改填克重，或核对下方估算。');
       }
     }
-    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, note: '', food, candidates, warnings };
+    if (calories === null && estimate) {
+      calories = estimate.calories;
+      calorieSource = 'ai';
+      // Keep original quantities as evidence; inferred serving sizes are display-only.
+      portion = estimate.portion;
+      note = 'AI 估算：' + estimate.portion + '；' + estimate.basis + '。';
+      warnings.push('热量为 AI 估算，受份量、配料和用油影响，请核对后保存。');
+    } else if (calories === null) warnings.push('暂时无法估算热量，请补充食物、份量或包装信息后重新识别，也可手动填写。');
+    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, calorieSource, note, food, candidates, warnings };
   });
   return { drafts, warnings: drafts.length ? ['以下是识别草稿，检查食物、生熟状态与份量后可批量保存。'] : ['未识别到明确吃过的食物，请描述实际吃了什么及份量。'] };
 }

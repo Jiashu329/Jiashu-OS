@@ -70,6 +70,49 @@ test('unknown food, missing amounts and unsupported bowls remain editable with u
   assert.match(noAmount.warnings.join(' '), /餐次/); assert.match(noAmount.warnings.join(' '), /份量/);
 });
 
+test('unknown foods and unsupported portions get editable AI estimates with persistent assumptions', () => {
+  const estimate = { calories: 420, portion: '2个中等肉包子（按每个约80g估算）', basis: '按常见猪肉包子的面皮、肉馅和用油估算' };
+  const request = { ...base, text: '今天早上吃了2个肉包子' };
+  const draft = fixture().buildNutritionDrafts(answer(item({ name: '肉包子', amount: 2, unit: '个',
+    meal: 'breakfast', dateText: '今天早上', sourceText: '2个肉包子', estimate })), request).drafts[0];
+  assert.equal(draft.calories, '420.0'); assert.equal(draft.calorieSource, 'ai'); assert.equal(draft.food, null);
+  assert.equal(draft.portion, estimate.portion); assert.equal(draft.amount, 2); assert.equal(draft.unit, '个');
+  assert.match(draft.note, /^AI 估算：/); assert.ok(draft.note.includes(estimate.basis));
+  assert.match(draft.warnings.join(' '), /核对后保存/);
+  const bowl = fixture([cooked]).buildNutritionDrafts(answer(item({ amount: 1, unit: '碗', sourceText: '一碗熟米饭',
+    estimate: { calories: 180, portion: '1碗（按熟米饭180g估算）', basis: '按普通饭碗估算' } })),
+  { ...base, text: '昨天午饭吃了一碗熟米饭' }).drafts[0];
+  assert.equal(bowl.calories, '180.0'); assert.equal(bowl.calorieSource, 'ai'); assert.equal(bowl.food, null);
+});
+
+test('catalog calculations take precedence and inferred portions never become measured quantities', () => {
+  const f = fixture([cooked]);
+  const exact = f.buildNutritionDrafts(answer(item({ estimate: { calories: 999, portion: '150克', basis: '模型参考估算' } })), base).drafts[0];
+  assert.equal(exact.calories, '150.0'); assert.equal(exact.calorieSource, 'catalog'); assert.equal(exact.note, '');
+  const inferred = f.buildNutritionDrafts(answer(item({ amount: null, unit: null, dateText: null, sourceText: '熟米饭',
+    estimate: { calories: 180, portion: '按1碗熟米饭180g估算', basis: '未提供份量，按普通饭碗估算' } })),
+  { ...base, text: '吃了熟米饭' }).drafts[0];
+  assert.equal(inferred.amount, null); assert.equal(inferred.unit, null); assert.equal(inferred.food, null);
+  assert.equal(inferred.calories, '180.0'); assert.match(inferred.note, /未提供份量/);
+});
+
+test('estimate boundaries preserve real zero and unknown while rejecting malformed or unsafe values', () => {
+  const f = fixture();
+  const estimate = { calories: 0, portion: '1杯白水', basis: '无热量饮水' };
+  assert.equal(f.buildNutritionDrafts(answer(item({ estimate })), base).drafts[0].calories, '0.0');
+  assert.equal(f.buildNutritionDrafts(answer(item({ estimate: { ...estimate, calories: 20000 } })), base).drafts[0].calories, '20000.0');
+  const unknown = f.buildNutritionDrafts(answer(item({ estimate: null })), base).drafts[0];
+  assert.equal(unknown.calories, null); assert.equal(unknown.calorieSource, null);
+  assert.match(unknown.warnings.join(' '), /重新识别/);
+  for (const value of [-1, 20000.1, '120', null, {}, true]) {
+    assert.throws(() => f.buildNutritionDrafts(answer(item({ estimate: { ...estimate, calories: value } })), base));
+  }
+  for (const value of [[], {}, { ...estimate, portion: '' }, { ...estimate, basis: 'x'.repeat(201) },
+    { ...estimate, portion: '1\u0000份' }, { ...estimate, foodId: 'forged' }]) {
+    assert.throws(() => f.buildNutritionDrafts(answer(item({ estimate: value })), base));
+  }
+});
+
 test('natural date phrases accept grounded time-of-day suffixes and preserve Shanghai-relative dates', () => {
   const f = fixture([cooked]);
   const cases = [

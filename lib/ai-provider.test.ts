@@ -561,7 +561,9 @@ test('nutrition extraction uses the same safe transport with a dedicated bounded
       const body = JSON.parse(String(init?.body));
       assert.equal(body.messages.length, 2);
       assert.deepEqual(body.messages[0], { role: 'system', content: NUTRITION_PARSER_SYSTEM_PROMPT });
-      assert.match(body.messages[0].content, /不生成热量/);
+      assert.match(body.messages[0].content, /合计热量/);
+      assert.match(body.messages[0].content, /"estimate"/);
+      assert.match(body.messages[0].content, /不能把假设填入 amount/);
       assert.match(body.messages[0].content, /最多20项/);
       assert.deepEqual(JSON.parse(body.messages[1].content), { text, selectedDate: '2026-11-10', today: '2026-11-11', timezone: 'Asia/Shanghai', selectedMeal: 'lunch' });
       assert.equal(body.stream, false); assert.equal(body.max_completion_tokens, 4096);

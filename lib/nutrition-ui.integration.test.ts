@@ -161,6 +161,52 @@ test('AI runs only after clicking identify, generates editable drafts, and waits
   assert.equal(post.body.entries[0].calories, null);
 });
 
+test('AI estimated calories are visible, editable and saved with their serving assumptions', async () => {
+  const note = 'AI 估算：2个中等肉包子（每个约80g）；按常见肉馅和用油估算。';
+  const f = fixture({ drafts: [draft({ name: '肉包子', portion: '2个中等肉包子（每个约80g）',
+    calories: '420.0', calorieSource: 'ai', note })] });
+  await f.ready(); await f.parse();
+  assert.match(f.el('batch-rows').querySelector('[data-draft-preview]')?.textContent ?? '', /AI 估算.*420.0 kcal/);
+  const field = f.el('batch-rows').querySelector('[data-draft-field="calories"]') as HTMLInputElement;
+  assert.equal(field.hasAttribute('readonly'), false); assert.equal(field.value, '420.0');
+  assert.equal(f.requests.filter((request) => request.url.endsWith('/batch')).length, 0);
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  const saved = f.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(saved.calories, '420.0'); assert.equal(saved.note, note); assert.equal(saved.food, undefined);
+  assert.match(f.el('list').textContent ?? '', /AI 估算/);
+});
+
+test('changing estimated servings clears stale calories; catalog replacements calculate from the selected food', async () => {
+  const estimate = draft({ name: '肉包子', portion: '2个中等肉包子', calories: '420.0', calorieSource: 'ai',
+    amount: 2, unit: '个', note: 'AI 估算：2个中等肉包子；按常见份量估算。', candidates: [food] });
+  const f = fixture({ drafts: [estimate] }); await f.ready(); await f.parse();
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="portion"]')!, '1个小肉包子');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="calories"]') as HTMLInputElement).value, '');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="note"]') as HTMLInputElement).value, '');
+  assert.match(f.el('batch-rows').querySelector('[data-draft-preview]')?.textContent ?? '', /重新填写/);
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="calories"]')!, '160');
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  assert.equal(f.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0].calories, '160.0');
+
+  const catalog = fixture({ drafts: [estimate] }); await catalog.ready(); await catalog.parse();
+  catalog.input(catalog.el('batch-rows').querySelector('[data-draft-field="candidate"]')!, food.id, 'change');
+  catalog.input(catalog.el('batch-rows').querySelector('[data-draft-field="amount"]')!, '150');
+  catalog.submit('batch-form'); await settled(() => !catalog.el('batch-dialog').open);
+  const saved = catalog.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(saved.calories, '180.0'); assert.equal(saved.note, ''); assert.equal(saved.food.id, food.id);
+});
+
+test('manually correcting an AI calorie clears its automatic attribution without discarding other notes', async () => {
+  const f = fixture({ drafts: [draft({ calories: '420.0', calorieSource: 'ai', note: 'AI 估算：按常见份量估算。' })] });
+  await f.ready(); await f.parse();
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="note"]')!, 'AI 估算：按常见份量估算。\n包装已核对');
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="calories"]')!, '380');
+  assert.match(f.el('batch-rows').querySelector('[data-draft-preview]')?.textContent ?? '', /手动填写/);
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  const saved = f.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(saved.calories, '380.0'); assert.equal(saved.note, '包装已核对');
+});
+
 test('an uncertain batch freezes edits and repeats the same key and body after a bad JSON confirmation', async () => {
   const f = fixture(); await f.ready(); await f.parse();
   f.nextBatch(async () => new Response('not JSON', { status: 200, headers: { 'Content-Type': 'text/plain' } }));
