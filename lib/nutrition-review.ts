@@ -1,5 +1,6 @@
 import { NUTRITION_MEALS, NutritionValidationError, parseNutritionQuery, summarizeNutrition } from './nutrition.ts';
 import type { NutritionDayStatus, NutritionEntry, NutritionMeal, NutritionMealStatus } from './nutrition.ts';
+import { NUTRIENT_KEYS, summarizeNutrients, type NutritionNutrients } from './nutrition-nutrients.ts';
 
 export interface NutritionInsightRange { from: string; to: string; days: 7 | 30 }
 export interface NutritionInsightDay {
@@ -10,6 +11,7 @@ export interface NutritionInsightDay {
   knownCount: number;
   complete: boolean;
   meals: Record<NutritionMeal, NutritionMealStatus>;
+  nutrients: NutritionNutrients;
 }
 export interface NutritionInsight {
   range: NutritionInsightRange;
@@ -17,8 +19,10 @@ export interface NutritionInsight {
   summary: {
     recordedDays: number; completeDays: number; comparableDays: number;
     knownCalories: string | null; averageCompleteKcal: string | null; unknownCount: number;
+    nutrients: NutritionNutrients;
+    nutrientAverages: Record<string, { average: string | null; comparableDays: number }>;
   };
-  meals: Array<{ meal: NutritionMeal; label: string; knownCalories: string | null; entryCount: number }>;
+  meals: Array<{ meal: NutritionMeal; label: string; knownCalories: string | null; entryCount: number; nutrients: NutritionNutrients }>;
   limitations: string[];
 }
 
@@ -68,18 +72,25 @@ export function buildNutritionInsight(entries: readonly NutritionEntry[], status
     const rows = selected.filter((entry) => entry.date === date);
     const summary = summarizeNutrition(rows);
     return { date, knownCalories: summary.knownCalories, entryCount: summary.entryCount,
-      unknownCount: summary.unknownCount, knownCount: summary.knownCount, ...nutritionDayCompleteness(rows, saved.get(date)) };
+      unknownCount: summary.unknownCount, knownCount: summary.knownCount, nutrients: summary.nutrients, ...nutritionDayCompleteness(rows, saved.get(date)) };
   });
   const summary = summarizeNutrition(selected);
   const comparable = days.filter((day) => day.complete && day.entryCount > 0 && day.unknownCount === 0);
   const comparableTotal = comparable.reduce((sum, day) => sum + BigInt(day.knownCalories!.replace('.', '')), BigInt(0));
   const divisor = BigInt(comparable.length);
+  const nutrientAverages = Object.fromEntries(NUTRIENT_KEYS.map((key) => {
+    const observed = days.filter((day) => day.complete && day.entryCount > 0 && day.nutrients[key].unknownCount === 0 && day.nutrients[key].total !== null);
+    const sum = observed.reduce((value, day) => value + BigInt(day.nutrients[key].total!.replace('.', '')), BigInt(0));
+    const n = BigInt(observed.length);
+    return [key, { average: observed.length ? decimal((sum + n / BigInt(2)) / n) : null, comparableDays: observed.length }];
+  }));
   return {
     range, days,
     summary: { recordedDays: days.filter((day) => day.entryCount > 0).length, completeDays: days.filter((day) => day.complete).length,
       comparableDays: comparable.length, knownCalories: summary.knownCalories,
-      averageCompleteKcal: comparable.length ? decimal((comparableTotal + divisor / BigInt(2)) / divisor) : null, unknownCount: summary.unknownCount },
-    meals: summary.meals.map(({ meal, label, knownCalories, entryCount }) => ({ meal, label, knownCalories, entryCount })),
+      averageCompleteKcal: comparable.length ? decimal((comparableTotal + divisor / BigInt(2)) / divisor) : null, unknownCount: summary.unknownCount,
+      nutrients: summarizeNutrients(selected), nutrientAverages },
+    meals: summary.meals.map(({ meal, label, knownCalories, entryCount, nutrients }) => ({ meal, label, knownCalories, entryCount, nutrients })),
     limitations: [
       '热量仅合计已记录且填写热量的食物，不代表实际全天总摄入；未知热量和未记录日期不按 0 计算。',
       '完整日均值仅包含已标记当天记完、至少有一项食物且全部热量已填写的日期；请同时查看可比较天数。',

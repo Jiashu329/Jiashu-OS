@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import type { NutritionInput } from '../lib/nutrition.ts';
+import { parseNutritionCreate, type NutritionInput } from '../lib/nutrition.ts';
 import { createNutritionEntry, listNutritionEntries, NutritionConflictError, readNutritionEntry,
   replaceNutritionEntry, setNutritionEntryDeleted, createNutritionBatch, readNutritionDayStatus, writeNutritionDayStatus, listNutritionDayStatuses, addNutritionFavorite, listNutritionFavorites, removeNutritionFavorite, recentNutritionFoods, readNutritionRangeSnapshot, creationFingerprint } from './nutrition-store.ts';
+import { readNutritionHistory, restoreNutritionRevision } from './nutrition-store.ts';
+import { readNutritionGoals, writeNutritionGoals } from './nutrition-goals-store.ts';
 import { calculateFoodSelection, searchFoods } from '../lib/food-catalog.ts';
 
 const NOW = '2026-11-10T04:00:00.000Z';
@@ -53,6 +55,53 @@ function fixture(t: TestContext, options: { file?: boolean } = {}) {
   };
 }
 const input = (patch: Partial<NutritionInput> = {}): NutritionInput => ({ date: '2026-11-10', meal: 'breakfast', name: 'synthetic oats', portion: 'one bowl', note: '', caloriesTenth: 1234, ...patch });
+
+void test('nutrition goals are owner-scoped, retain real zero and reject stale updates',async(t)=>{
+  const f=fixture(t);assert.equal((await readNutritionGoals(f.db,'alice')).revision,0);
+  const targets={calories:'1800.0',carbs:null,protein:'80.5',fat:'0.0'};
+  const first=await writeNutritionGoals(f.db,'alice',targets,0,NOW);assert.equal(first.revision,1);assert.equal(first.protein,'80.5');assert.equal(first.fat,'0.0');
+  assert.equal((await readNutritionGoals(f.db,'bob')).calories,null);
+  await assert.rejects(writeNutritionGoals(f.db,'alice',{...targets,protein:'90.0'},0,LATER),NutritionConflictError);
+  const next=await writeNutritionGoals(f.db,'alice',{...targets,protein:null},1,LATER);assert.equal(next.revision,2);assert.equal(next.protein,null);assert.equal(next.createdAt,NOW);
+});
+
+void test('structured origins and immutable snapshots survive edits and idempotent restoration',async(t)=>{
+  const f=fixture(t);
+  const original=input({caloriesTenth:4200,proteinTenth:180,provenance:{calories:{source:'ai',basis:'按两个包子估算',portion:'2个',originalValue:'420.0'},protein:{source:'ai',basis:'按肉馅比例估算',originalValue:'18.0'}}});
+  await createNutritionEntry(f.db,'alice',original,ID,NOW);
+  const creationHash=f.sqlite.prepare('SELECT creation_hash FROM nutrition_entries WHERE id=?').get(ID)?.creation_hash;
+  const firstHistory=await readNutritionHistory(f.db,'alice',ID);assert.equal(firstHistory?.length,1);assert.equal(firstHistory?.[0].action,'create');
+  assert.equal(firstHistory?.[0].after.provenance?.calories?.source,'ai');
+  const corrected=await replaceNutritionEntry(f.db,'alice',ID,input({caloriesTenth:3800,proteinTenth:180,provenance:{calories:{source:'label',basis:'包装已核对',originalValue:'420.0'}}}),1,LATER);
+  assert.equal(corrected?.provenance?.calories?.source,'label');assert.equal(corrected?.provenance?.protein?.source,'ai');
+  const restore=await restoreNutritionRevision(f.db,'alice',ID,1,2,SECOND,LATER);assert.equal(restore?.entry.revision,3);assert.equal(restore?.entry.caloriesTenth,4200);assert.equal(restore?.entry.provenance?.calories?.originalValue,'420.0');
+  assert.equal((await restoreNutritionRevision(f.db,'alice',ID,1,2,SECOND,LATER))?.replayed,true);
+  const history=await readNutritionHistory(f.db,'alice',ID);assert.deepEqual(history?.map((item)=>item.action),['restore','edit','create']);assert.equal(history?.[1].before?.calories,'420.0');assert.equal(history?.[1].after.calories,'380.0');
+  assert.equal(f.sqlite.prepare('SELECT creation_hash FROM nutrition_entries WHERE id=?').get(ID)?.creation_hash,creationHash);
+  assert.equal(await readNutritionHistory(f.db,'bob',ID),null);assert.equal(await restoreNutritionRevision(f.db,'bob',ID,1,3,SECOND,LATER),null);
+  await assert.rejects(restoreNutritionRevision(f.db,'alice',ID,2,2,'33333333-3333-4333-8333-333333333333',LATER),NutritionConflictError);
+});
+
+void test('restoring a deleted historical snapshot keeps an explicit restore audit event and can replay safely',async(t)=>{
+  const f=fixture(t);await createNutritionEntry(f.db,'alice',input(),ID,NOW);
+  await setNutritionEntryDeleted(f.db,'alice',ID,true,1,LATER);
+  await setNutritionEntryDeleted(f.db,'alice',ID,false,2,LATER);
+  const restored=await restoreNutritionRevision(f.db,'alice',ID,2,3,SECOND,LATER);
+  assert.equal(restored?.entry.revision,4);assert.equal(restored?.entry.deletedAt,LATER);
+  const history=await readNutritionHistory(f.db,'alice',ID);assert.equal(history?.[0].action,'restore');
+  assert.equal((await restoreNutritionRevision(f.db,'alice',ID,2,3,SECOND,LATER))?.replayed,true);
+  assert.equal((await readNutritionHistory(f.db,'alice',ID))?.length,4);
+});
+
+void test('legacy replacement that removes a catalog selection cannot leave an unverifiable catalog source',async(t)=>{
+  const f=fixture(t),food=searchFoods('米饭')[0];
+  const original=parseNutritionCreate({date:'2026-11-10',meal:'lunch',food:{id:food.id,amount:100,unit:'g'},carbs:null,protein:null,fat:null},Date.parse(NOW));
+  const saved=(await createNutritionEntry(f.db,'alice',original,ID,NOW)).entry;assert.equal(saved.provenance?.calories?.source,'catalog');
+  const {food:_food,provenance:_provenance,...legacy}=saved;
+  const replaced=await replaceNutritionEntry(f.db,'alice',ID,legacy,1,LATER);assert.ok(replaced);
+  assert.equal(replaced.food,undefined);assert.equal(replaced.provenance?.calories?.source,'unknown');
+  assert.doesNotThrow(()=>parseNutritionCreate({date:replaced.date,meal:replaced.meal,name:replaced.name,portion:replaced.portion,note:replaced.note,calories:String(replaced.caloriesTenth!/10),provenance:replaced.provenance},Date.parse(NOW)));
+});
 
 void test('zero calories and unknown calories remain distinct through persistence and list reads', async (t) => {
   const f = fixture(t);

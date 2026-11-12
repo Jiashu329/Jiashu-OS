@@ -7,6 +7,7 @@ export interface FinanceAccountRow {
   createdAt: string; updatedAt: string; archivedAt: string | null;
   balanceMinor: string; asOfDate: string; balanceUpdatedAt: string;
   balanceRevision: number;
+  metadataRevision: number;
 }
 export interface FinanceBalanceRow {
   id: string; accountId: string; amountMinor: string; asOfDate: string; note: string; createdAt: string;
@@ -19,7 +20,12 @@ export interface NewFinanceAccount {
   ledger: string; name: string; type: string; currency: string; note: string; amountMinor: string; asOfDate: string;
 }
 export interface NewFinanceBalance { amountMinor: string; asOfDate: string; note: string }
-export interface FinanceAccountPatch { name?: string; type?: string; note?: string; archived?: boolean }
+export interface FinanceAccountPatch { name?: string; type?: string; note?: string; archived?: boolean; expectedRevision: number }
+
+export class FinanceMetadataConflictError extends Error {
+  readonly code = 'FINANCE_METADATA_CONFLICT';
+  constructor(message = '账户或目标已经更新。你的填写已保留，请读取最新内容，核对后再保存。') { super(message); this.name = 'FinanceMetadataConflictError'; }
+}
 
 export class FinanceIdempotencyConflictError extends Error {
   constructor() { super('The submission key is already bound to different finance data'); this.name = 'FinanceIdempotencyConflictError'; }
@@ -42,7 +48,7 @@ async function balanceOperation(db: FinanceDatabase, id: string) {
 }
 
 const accountSelect = `SELECT a.id, a.ledger, a.name, a.type, a.currency, a.note,
-  a.balance_revision AS balanceRevision,
+  a.balance_revision AS balanceRevision, a.metadata_revision AS metadataRevision,
   a.created_at AS createdAt, a.updated_at AS updatedAt, a.archived_at AS archivedAt,
   b.amount_minor AS balanceMinor, b.as_of_date AS asOfDate, b.created_at AS balanceUpdatedAt
   FROM finance_accounts a JOIN (${EFFECTIVE_FINANCE_BALANCES}) b ON b.sequence = (
@@ -129,16 +135,19 @@ export async function createFinanceAccount(db: FinanceDatabase, userId: string, 
 }
 
 export async function patchFinanceAccount(db: FinanceDatabase, userId: string, accountId: string, patch: FinanceAccountPatch, now = new Date().toISOString()): Promise<boolean> {
+  if (!Number.isSafeInteger(patch.expectedRevision) || patch.expectedRevision < 1) throw new FinanceMetadataConflictError('账户版本缺失，请重新读取账户后保存。');
   const assignments: string[] = [];
-  const values: (string | null)[] = [];
+  const values: (string | number | null)[] = [];
   for (const key of ['name', 'type', 'note'] as const) {
     if (patch[key] !== undefined) { assignments.push(`${key} = ?`); values.push(patch[key]!); }
   }
   if (patch.archived !== undefined) { assignments.push('archived_at = ?'); values.push(patch.archived ? now : null); }
   if (!assignments.length) return false;
-  assignments.push('updated_at = ?'); values.push(now, userId, accountId);
-  const result = await db.prepare(`UPDATE finance_accounts SET ${assignments.join(', ')} WHERE user_id = ? AND id = ?`).bind(...values).run();
-  return result.meta.changes === 1;
+  assignments.push('updated_at = ?', 'metadata_revision = metadata_revision + 1'); values.push(now, userId, accountId, patch.expectedRevision);
+  const result = await db.prepare(`UPDATE finance_accounts SET ${assignments.join(', ')} WHERE user_id = ? AND id = ? AND metadata_revision = ?`).bind(...values).run();
+  if (result.meta.changes === 1) return true;
+  if (await findFinanceAccount(db, userId, accountId)) throw new FinanceMetadataConflictError();
+  return false;
 }
 
 export async function appendFinanceBalance(db: FinanceDatabase, userId: string, accountId: string, input: NewFinanceBalance, now = new Date().toISOString(), idempotencyKey?: string): Promise<string | null> {

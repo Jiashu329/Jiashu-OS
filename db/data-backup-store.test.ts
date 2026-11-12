@@ -10,7 +10,8 @@ import { writeHealthRecord } from './health-records-store.ts';
 import { parseHealthRecordCreate } from '../lib/health-records.ts';
 import { parseNutritionCreate } from '../lib/nutrition.ts';
 import { searchFoods } from '../lib/food-catalog.ts';
-import { createNutritionEntry, createNutritionBatch, addNutritionFavorite, readNutritionDayStatus, writeNutritionDayStatus } from './nutrition-store.ts';
+import { createNutritionEntry, createNutritionBatch, addNutritionFavorite, readNutritionDayStatus, writeNutritionDayStatus, replaceNutritionEntry, restoreNutritionRevision, readNutritionHistory } from './nutrition-store.ts';
+import { readNutritionGoals, writeNutritionGoals } from './nutrition-goals-store.ts';
 import { changeFinanceBalance, FinanceBalanceChangeConflictError, previewFinanceBalanceChange } from './finance-balance-changes-store.ts';
 import { readGoalSettings, writeGoalSettings, HealthGoalConflictError } from './health-goals-store.ts';
 import { readWeightPlanSettings, writeWeightPlanSettings, WeightPlanConflictError } from './weight-plan-store.ts';
@@ -42,7 +43,7 @@ async function seed(db:D1Database,sqlite:DatabaseSync,owner='alice') {
   sqlite.prepare('INSERT INTO finance_balance_entries (sequence,id,user_id,account_id,amount_minor,as_of_date,note,created_at) VALUES (?,?,?,?,?,?,?,?)').run(20,'initial:'+C,owner,C,'9007199254740993','2026-11-08','initial',NOW);
   sqlite.prepare('INSERT INTO finance_balance_entries (sequence,id,user_id,account_id,amount_minor,as_of_date,note,created_at) VALUES (?,?,?,?,?,?,?,?)').run(50,D,owner,C,'9007199254740994','2026-11-08','later',NOW);
   sqlite.prepare('INSERT INTO finance_balance_changes (sequence,id,user_id,account_id,entry_id,revision,action,amount_minor,as_of_date,note,reason,request_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(30,E,owner,C,D,1,'correct','9007199254740995','2026-11-07','','synthetic correction',HASH,NOW);
-  sqlite.prepare('INSERT INTO finance_goal_plans VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(A,owner,'personal','CNY','synthetic goal','100000','2026-12-31',JSON.stringify([C]),HASH,NOW,NOW,NOW);
+  sqlite.prepare('INSERT INTO finance_goal_plans (id,user_id,ledger,currency,name,target_minor,deadline,account_ids_json,creation_hash,created_at,updated_at,archived_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(A,owner,'personal','CNY','synthetic goal','100000','2026-12-31',JSON.stringify([C]),HASH,NOW,NOW,NOW);
   await writeFinanceRunwaySettings(db,owner,'personal','CNY',{monthlyExpenseMinor:'500000',targetMonths:6,accountIds:[C]},0,NOW);
   const batch=await createNutritionBatch(db,owner,[{date:'2026-11-08',meal:'breakfast',name:'synthetic rice',portion:'one bowl',note:'',caloriesTenth:0}],'66666666-6666-4666-8666-666666666666',NOW);
   const foodId=batch.entries[0].id;
@@ -58,7 +59,7 @@ function semantic(backup:DataBackup){return Object.fromEntries(BACKUP_TABLE_NAME
 void test('complete backup roundtrips old records, real import receipts, edits, deleted nutrition and exact ordered finance history',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);
   assert.equal(backup.tables.health_measurements[0].day,'2024-01-01');assert.equal(backup.tables.health_import_batches.length,2);assert.equal(JSON.parse(backup.tables.health_import_batches[1].receipt_json as string).imported,0);
-  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,19);
+  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,22);
   for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations','nutrition_batches','nutrition_day_status'] as const) assert.ok(backup.tables[table].length>0);
   assert.equal(JSON.stringify(backup).includes('user_id'),false);assert.equal(JSON.stringify(backup).includes('synthetic-token-hash'),false);
   const target=fixture(t);let preview=await previewDataRestore(target.db,'restored-owner',backup);assert.equal(preview.canRestore,true);assert.ok(preview.total.added>0);
@@ -300,7 +301,7 @@ void test('old v1 nutrition inserts include trigger-created dates in final row c
   const legacy=legacyV1(backup) as unknown as {kind:string;version:number;exportedAt:string;tables:Record<string,Array<Record<string,unknown>>>};
   delete legacy.tables.nutrition_favorites;delete legacy.tables.nutrition_day_status;delete legacy.tables.nutrition_entries[0].food_json;
   const target=fixture(t);
-  const rows=Array.from({length:BACKUP_MAX_ROWS-1},(_,index)=>{
+  const rows=Array.from({length:BACKUP_MAX_ROWS-2},(_,index)=>{
     const id='c'+index.toString(36),measurement={id,metric:'weight',value:70,unit:'kg',startDate:OLD,source:'s',aggregation:'sample'};
     return {record_key:'weight:'+id,metric:'weight',day:'2024-01-01',measurement_json:JSON.stringify(measurement),exported_at:NOW,received_at:NOW};
   });
@@ -314,7 +315,7 @@ void test('old v1 nutrition inserts include trigger-created dates in final row c
   await assert.rejects(restoreDataBackup(target.db,'alice',legacy,HASH),exceedsCapacity);
   assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_entries').get()?.n,0);
   assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_day_status').get()?.n,0);
-  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,BACKUP_MAX_ROWS-1);
+  assert.equal(target.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,BACKUP_MAX_ROWS-2);
 });
 
 void test('macronutrients including real zero survive backups, favorites and restoration for a different owner',async(t)=>{
@@ -341,6 +342,7 @@ void test('published v1 and v2 nutrition backups without macro columns or source
   for(const version of [1,2]){
     const backup=structuredClone(current) as unknown as {version:number;tables:Record<string,Array<Record<string,unknown>>>};
     backup.version=version;
+    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations'])delete backup.tables[name];
     if(version===1){for(const name of ['health_goal_versions','health_sync_attempts','nutrition_copy_operations'])delete backup.tables[name];}
     for(const row of backup.tables.nutrition_entries){
       for(const key of ['carbs_tenth','protein_tenth','fat_tenth'])delete row[key];
@@ -385,4 +387,35 @@ void test('backup validation rejects malformed macro amounts and tampered catalo
   const snapshot=structuredClone(original),row=snapshot.tables.nutrition_entries[0],food=JSON.parse(row.food_json as string);
   food.carbsTenth=(food.carbsTenth??0)+1;row.food_json=JSON.stringify(food);
   assert.throws(()=>parseDataBackup(snapshot),BackupValidationError);
+});
+
+void test('nutrition targets, structured sources and immutable restore receipts survive a complete backup',async(t)=>{
+  const source=fixture(t);
+  const first=parseNutritionCreate({date:'2026-11-09',meal:'lunch',name:'合成来源食物',portion:'1份',note:'',calories:'120',carbs:'10',protein:'4',fat:'3',
+    provenance:{calories:{source:'ai',basis:'按测试份量估算',portion:'1份',originalValue:'120'},protein:{source:'label',basis:'合成包装标签'}}},Date.parse(NOW));
+  await createNutritionEntry(source.db,'alice',first,A,NOW);
+  const edited=parseNutritionCreate({date:'2026-11-09',meal:'lunch',name:'合成来源食物',portion:'1份',note:'已核对',calories:'130',carbs:'11',protein:'5',fat:'3',provenance:{calories:{source:'label',basis:'合成标签核对'}}},Date.parse(NOW));
+  await replaceNutritionEntry(source.db,'alice',A,edited,1,NOW);
+  await restoreNutritionRevision(source.db,'alice',A,1,2,B,NOW);
+  await writeNutritionGoals(source.db,'alice',{calories:'2000.0',carbs:'200.0',protein:'100.0',fat:null},0,NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(backup.tables.nutrition_entry_history.length,3);assert.equal(backup.tables.nutrition_restore_operations.length,1);
+  assert.equal(JSON.parse(backup.tables.nutrition_entries[0].provenance_json as string).calories.source,'ai');
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored-owner',backup);await restoreDataBackup(target.db,'restored-owner',backup,preview.previewHash);
+  assert.deepEqual((await readNutritionHistory(target.db,'restored-owner',A))?.map((row)=>row.action),['restore','edit','create']);
+  assert.equal((await readNutritionGoals(target.db,'restored-owner')).protein,'100.0');
+  assert.equal((await restoreNutritionRevision(target.db,'restored-owner',A,1,2,B,NOW))?.replayed,true);
+  assert.deepEqual(semantic(await exportDataBackup(target.db,'restored-owner',NOW)),semantic(backup));
+  const forged=structuredClone(backup);forged.tables.nutrition_entry_history[0].after_json=JSON.stringify({...JSON.parse(forged.tables.nutrition_entry_history[0].after_json as string),proteinTenth:-1});
+  assert.throws(()=>parseDataBackup(forged),BackupValidationError);
+  const missing=structuredClone(backup);missing.tables.nutrition_entry_history=missing.tables.nutrition_entry_history.filter((row)=>row.revision!==2);
+  assert.throws(()=>parseDataBackup(missing),BackupValidationError);
+  const contradictory=structuredClone(backup),second=contradictory.tables.nutrition_entry_history.find((row)=>row.revision===2)!;
+  second.before_json=JSON.stringify({...JSON.parse(second.before_json as string),note:'凭空出现的旧值'});
+  assert.throws(()=>parseDataBackup(contradictory),BackupValidationError);
+  const restarted=structuredClone(backup),restart=restarted.tables.nutrition_entry_history.find((row)=>row.revision===2)!;restart.action='baseline';restart.before_json=null;
+  assert.throws(()=>parseDataBackup(restarted),BackupValidationError);
+  const migrated=structuredClone(backup);migrated.tables.nutrition_restore_operations=[];migrated.tables.nutrition_entry_history=migrated.tables.nutrition_entry_history.filter((row)=>row.revision!==1);
+  const baseline=migrated.tables.nutrition_entry_history.find((row)=>row.revision===2)!;baseline.action='baseline';baseline.before_json=null;
+  assert.doesNotThrow(()=>parseDataBackup(migrated),'Migrated baselines may begin after revision one');
 });

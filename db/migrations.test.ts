@@ -71,7 +71,9 @@ test('macro columns preserve old nutrition data and completeness triggers while 
     for (const name of migrations.filter((name) => name >= '0015')) run(name);
     const row = db.prepare('SELECT name,note,calories_tenth,creation_hash,carbs_tenth,protein_tenth,fat_tenth FROM nutrition_entries WHERE id=?').get('legacy-food');
     assert.deepEqual({ ...row }, { name: '旧食物', note: '保留备注', calories_tenth: 1234, creation_hash: 'legacy-hash', carbs_tenth: null, protein_tenth: null, fat_tenth: null });
-    assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='nutrition_entries' ORDER BY name").all(), beforeTriggers);
+    const afterTriggers=db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='nutrition_entries' ORDER BY name").all();
+    for(const trigger of beforeTriggers)assert.ok(afterTriggers.some((row)=>row.name===trigger.name));
+    assert.equal(db.prepare('SELECT action FROM nutrition_entry_history WHERE user_id=? AND entry_id=?').get('migration-user','legacy-food')?.action,'baseline');
     for (const column of ['carbs_tenth', 'protein_tenth', 'fat_tenth']) {
       db.prepare(`UPDATE nutrition_entries SET ${column}=? WHERE id=?`).run(0, 'legacy-food');
       db.prepare(`UPDATE nutrition_entries SET ${column}=? WHERE id=?`).run(200000, 'legacy-food');

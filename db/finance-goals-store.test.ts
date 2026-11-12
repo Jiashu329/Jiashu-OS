@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { FinanceIdempotencyConflictError } from './finance-store.ts';
+import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from './finance-store.ts';
 import { createFinanceGoalPlan, findFinanceGoalPlan, patchFinanceGoalPlan, readFinanceGoalPlans } from './finance-goals-store.ts';
 import type { FinanceGoalsDatabase } from './finance-goals-store.ts';
 import { FinanceGoalValidationError, parseFinanceGoalCreate } from '../lib/finance-goals.ts';
@@ -54,6 +54,35 @@ function input(patch: Record<string, unknown> = {}) {
   return parseFinanceGoalCreate({ ledger: 'personal', currency: 'CNY', name: '合成目标', targetAmount: '90071992547409.93', deadline: '2027-01-01', accountIds: [A], ...patch });
 }
 
+void test('goal edits archive and restore require the current revision and stale writes cannot change any field', async (t) => {
+  const { sqlite, db } = fixture(t);account(sqlite);
+  const key=crypto.randomUUID();const first=await createFinanceGoalPlan(db,'alice',input(),key,NOW);
+  assert.equal(first.revision,1);
+  const edited=(await patchFinanceGoalPlan(db,'alice',key,{name:'新目标',expectedRevision:1},LATER))!;
+  assert.equal(edited.revision,2);
+  await assert.rejects(patchFinanceGoalPlan(db,'alice',key,{archived:true,expectedRevision:1}),FinanceMetadataConflictError);
+  await assert.rejects(patchFinanceGoalPlan(db,'alice',key,{name:'legacy'} as never),FinanceMetadataConflictError);
+  assert.deepEqual(await findFinanceGoalPlan(db,'alice',key),edited);
+  const archived=(await patchFinanceGoalPlan(db,'alice',key,{archived:true,expectedRevision:2},LATER))!;
+  assert.equal(archived.revision,3);
+  await assert.rejects(patchFinanceGoalPlan(db,'alice',key,{archived:false,expectedRevision:2}),FinanceMetadataConflictError);
+  const restored=(await patchFinanceGoalPlan(db,'alice',key,{archived:false,expectedRevision:3},LATER))!;
+  assert.equal(restored.revision,4);assert.equal(restored.archivedAt,null);
+  assert.equal(await patchFinanceGoalPlan(db,'bob',key,{name:'foreign',expectedRevision:4}),null);
+  assert.equal((await createFinanceGoalPlan(db,'alice',input(),key,NOW)).revision,4);
+});
+
+void test('goal compare-and-swap also rejects a concurrent edit committed after prevalidation', async (t) => {
+  const { sqlite, db } = fixture(t); account(sqlite);
+  const goal = await createFinanceGoalPlan(db, 'alice', input(), crypto.randomUUID(), NOW);
+  const racing = adapter(sqlite, () => {
+    sqlite.prepare('UPDATE finance_goal_plans SET name = ?, revision = revision + 1 WHERE id = ?').run('并发页面的修改', goal.id);
+  });
+  await assert.rejects(patchFinanceGoalPlan(racing, 'alice', goal.id, { name: '过期填写', archived: true, expectedRevision: 1 }, LATER), FinanceMetadataConflictError);
+  const retained = (await findFinanceGoalPlan(db, 'alice', goal.id))!;
+  assert.equal(retained.name, '并发页面的修改'); assert.equal(retained.revision, 2); assert.equal(retained.archivedAt, null);
+});
+
 void test('a goal persists exact text money and duplicate references normalize before validation', async (t) => {
   const { sqlite, db } = fixture(t);
   account(sqlite);
@@ -72,7 +101,7 @@ void test('immutable creation fingerprints replay without rolling back edits or 
   const key = crypto.randomUUID();
   const initial = input();
   const created = await createFinanceGoalPlan(db, 'alice', initial, key, NOW);
-  const edited = await patchFinanceGoalPlan(db, 'alice', key, { name: '已编辑', targetMinor: '1', archived: true }, LATER);
+  const edited = await patchFinanceGoalPlan(db, 'alice', key, { expectedRevision: 1, name: '已编辑', targetMinor: '1', archived: true }, LATER);
   sqlite.prepare('UPDATE finance_accounts SET archived_at = ? WHERE id = ?').run(LATER, A);
   const replay = await createFinanceGoalPlan(db, 'alice', initial, key, '2026-11-11T02:00:00Z');
   assert.deepEqual(replay, edited);
@@ -105,11 +134,11 @@ void test('goal listings and mutations isolate owner, ledger, currency and archi
   assert.deepEqual((await readFinanceGoalPlans(db, 'alice', 'family', 'USD')).map((row) => row.id), [family.id]);
   assert.deepEqual(await readFinanceGoalPlans(db, 'alice', 'family', 'CNY'), []);
   assert.equal(await findFinanceGoalPlan(db, 'bob', alice.id), null);
-  assert.equal(await patchFinanceGoalPlan(db, 'bob', alice.id, { name: 'unowned' }, LATER), null);
-  await patchFinanceGoalPlan(db, 'alice', alice.id, { archived: true }, LATER);
+  assert.equal(await patchFinanceGoalPlan(db, 'bob', alice.id, { expectedRevision: 1, name: 'unowned' }, LATER), null);
+  await patchFinanceGoalPlan(db, 'alice', alice.id, { expectedRevision: 1, archived: true }, LATER);
   assert.deepEqual(await readFinanceGoalPlans(db, 'alice', 'personal', 'all'), []);
   assert.equal((await readFinanceGoalPlans(db, 'alice', 'personal', 'all', true)).length, 1);
-  await patchFinanceGoalPlan(db, 'alice', alice.id, { archived: false }, LATER);
+  await patchFinanceGoalPlan(db, 'alice', alice.id, { expectedRevision: 2, archived: false }, LATER);
   assert.equal((await readFinanceGoalPlans(db, 'alice', 'personal', 'CNY')).length, 1);
 });
 
@@ -123,7 +152,7 @@ void test('SQL rechecks linked account state after prevalidation and never write
   const existing = await createFinanceGoalPlan(db, 'alice', input(), crypto.randomUUID(), NOW);
   account(sqlite, B);
   const racingPatch = adapter(sqlite, () => { sqlite.prepare("UPDATE finance_accounts SET type = 'loan' WHERE id = ?").run(B); });
-  await assert.rejects(patchFinanceGoalPlan(racingPatch, 'alice', existing.id, { name: 'must not leak', accountIds: [B] }, LATER), FinanceGoalValidationError);
+  await assert.rejects(patchFinanceGoalPlan(racingPatch, 'alice', existing.id, { expectedRevision: 1, name: 'must not leak', accountIds: [B] }, LATER), FinanceGoalValidationError);
   assert.deepEqual(await findFinanceGoalPlan(db, 'alice', existing.id), existing);
 });
 
@@ -132,9 +161,9 @@ void test('inactive links can remain while renaming, archiving or restoring but 
   account(sqlite);
   const existing = await createFinanceGoalPlan(db, 'alice', input(), crypto.randomUUID(), NOW);
   sqlite.prepare('UPDATE finance_accounts SET archived_at = ? WHERE id = ?').run(LATER, A);
-  await patchFinanceGoalPlan(db, 'alice', existing.id, { name: '保留失效关联', archived: true }, LATER);
-  const restored = await patchFinanceGoalPlan(db, 'alice', existing.id, { archived: false }, LATER);
+  await patchFinanceGoalPlan(db, 'alice', existing.id, { expectedRevision: 1, name: '保留失效关联', archived: true }, LATER);
+  const restored = await patchFinanceGoalPlan(db, 'alice', existing.id, { expectedRevision: 2, archived: false }, LATER);
   assert.equal(restored!.archivedAt, null);
   assert.deepEqual(restored!.accountIds, [A]);
-  await assert.rejects(patchFinanceGoalPlan(db, 'alice', existing.id, { accountIds: [A] }, LATER), FinanceGoalValidationError);
+  await assert.rejects(patchFinanceGoalPlan(db, 'alice', existing.id, { expectedRevision: 3, accountIds: [A] }, LATER), FinanceGoalValidationError);
 });

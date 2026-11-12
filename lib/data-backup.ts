@@ -1,7 +1,8 @@
 import { measurementDay, measurementKey, normalizeTimestamp, parseSyncPayload, shanghaiDay } from './health.ts';
 import { parseGoalSettingsInput } from './health-goals.ts';
 import { parseWeightPlanInput } from './weight-plan.ts';
-import { parseNutritionCreate } from './nutrition.ts';
+import { parseNutritionCreate, parseNutritionProvenance } from './nutrition.ts';
+import type { NutritionInput } from './nutrition.ts';
 import { calculateFoodSelection } from './food-catalog.ts';
 import { decimalFromMinor, parseAccountPatch, parseAsOfDate, parseCurrency, parseLedger } from './finance.ts';
 import { parseFinanceGoalCreate } from './finance-goals.ts';
@@ -24,19 +25,24 @@ export const BACKUP_TABLES = {
   health_weight_plan_settings: { label: '体重计划', columns: ['baseline_weight','target_weight','start_date','deadline','enabled','created_at','updated_at','revision'], keys: [] },
   health_record_changes: { label: '健康修改历史', columns: ['change_id','record_key','request_hash','action','target_revision','before_state_json','after_state_json','reason','created_at'], keys: ['change_id'] },
   health_record_overrides: { label: '健康更正与屏蔽', columns: ['record_key','metric','day','override_json','deleted','revision','last_change_id','created_at','updated_at'], keys: ['record_key'] },
-  nutrition_entries: { label: '饮食记录（含营养素、已删除与食物来源）', columns: ['id','date','meal','name','portion','note','calories_tenth','carbs_tenth','protein_tenth','fat_tenth','food_json','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
+  nutrition_entry_history: { label: '饮食来源与修改历史', columns: ['entry_id','revision','action','before_json','after_json','created_at'], keys: ['entry_id','revision'] },
+  nutrition_entries: { label: '饮食记录（含营养素、已删除与食物来源）', columns: ['id','date','meal','name','portion','note','calories_tenth','carbs_tenth','protein_tenth','fat_tenth','food_json','provenance_json','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
+  nutrition_goal_settings: { label: '每日营养目标', columns: ['calories_tenth','carbs_tenth','protein_tenth','fat_tenth','revision','created_at','updated_at'], keys: [] },
+  nutrition_restore_operations: { label: '饮食历史恢复回执', columns: ['id','entry_id','source_revision','target_revision','request_hash','created_at'], keys: ['id'] },
   nutrition_favorites: { label: '常用食物', columns: ['id','template_hash','template_json','created_at'], keys: ['template_hash'], globalId: true },
   nutrition_day_status: { label: '饮食记录完整度', columns: ['date','complete','meals_json','revision','updated_at'], keys: ['date'] },
   nutrition_batches: { label: '饮食批量提交回执', columns: ['id','request_hash','entry_ids_json','created_at'], keys: ['id'] },
   nutrition_copy_operations: { label: '餐次复制回执', columns: ['id','request_hash','entry_ids_json','created_at'], keys: ['id'], globalId: true },
-  finance_accounts: { label: '财务账户（含归档）', columns: ['id','ledger','name','type','currency','creation_hash','note','balance_revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
+  finance_accounts: { label: '财务账户（含归档）', columns: ['id','ledger','name','type','currency','creation_hash','note','balance_revision','metadata_revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
   finance_balance_entries: { label: '余额原始历史', columns: ['sequence','id','account_id','amount_minor','as_of_date','note','created_at'], keys: ['id'], sequence: true, globalId: true },
   finance_balance_changes: { label: '余额更正与作废历史', columns: ['sequence','id','account_id','entry_id','revision','action','amount_minor','as_of_date','note','reason','request_hash','created_at'], keys: ['id'], sequence: true, globalId: true },
-  finance_goal_plans: { label: '资金目标（含归档）', columns: ['id','ledger','currency','name','target_minor','deadline','account_ids_json','creation_hash','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
+  finance_goal_plans: { label: '资金目标（含归档）', columns: ['id','ledger','currency','name','target_minor','deadline','account_ids_json','creation_hash','revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
   finance_runway_settings: { label: '应急储备设置', columns: ['ledger','currency','monthly_expense_minor','target_months','account_ids_json','created_at','updated_at','revision'], keys: ['ledger','currency'] },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
+const P1_BACKUP_TABLES = ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations'] as const;
+const BACKUP_LEGACY_V2_TABLE_NAMES = BACKUP_TABLE_NAMES.filter((table) => !(P1_BACKUP_TABLES as readonly string[]).includes(table));
 export const BACKUP_V1_TABLE_NAMES = ['health_measurements','health_syncs','health_import_batches','health_goal_settings','health_weight_plan_settings','health_record_changes','health_record_overrides','nutrition_entries','finance_accounts','finance_balance_entries','finance_balance_changes','finance_goal_plans','finance_runway_settings'] as const;
 const REVISION_SETTINGS: readonly BackupTable[] = ['health_goal_settings','health_weight_plan_settings','finance_runway_settings'];
 export interface DataBackup { kind: 'jiashu-os-backup'; version: 2; exportedAt: string; tables: Record<BackupTable, BackupRow[]> }
@@ -66,7 +72,19 @@ const macroSnapshotFields = macroNames.flatMap((key) => [key + 'Tenth', key + 'P
 function nutritionBackupRow(value: unknown): Record<string, unknown> {
   const raw = object(value);
   // Both published backup versions predate optional macronutrient columns.
-  return { ...Object.fromEntries(macroNames.map((key) => [key + '_tenth', null])), ...raw };
+  return { provenance_json:null, ...Object.fromEntries(macroNames.map((key) => [key + '_tenth', null])), ...raw };
+}
+function compatibleBackupRow(table: BackupTable, value: unknown): Record<string, unknown> {
+  const row = table === 'nutrition_entries' ? nutritionBackupRow(value) : object(value);
+  if (table === 'finance_accounts') return { metadata_revision:1, ...row };
+  if (table === 'finance_goal_plans') return { revision:1, ...row };
+  return row;
+}
+function nutritionSnapshot(row: Record<string, unknown>) {
+  return { id:row.id,date:row.date,meal:row.meal,name:row.name,portion:row.portion,note:row.note,
+    caloriesTenth:row.calories_tenth,carbsTenth:row.carbs_tenth,proteinTenth:row.protein_tenth,fatTenth:row.fat_tenth,
+    revision:row.revision,createdAt:row.created_at,updatedAt:row.updated_at,deletedAt:row.deleted_at,
+    food:row.food_json===null?null:parsedJson(row.food_json),provenance:row.provenance_json===null?null:parsedJson(row.provenance_json) };
 }
 function nutritionFoodSnapshot(value: unknown) {
   const raw = object(value);
@@ -91,14 +109,30 @@ function nutritionFoodSnapshot(value: unknown) {
 }
 function nutritionFavoriteTemplate(value: unknown, now: number) {
   const raw = object(value);
-  const template = exact(raw, ['name','portion','calories','note', ...macroNames.filter((key) => Object.hasOwn(raw, key)), ...(Object.hasOwn(raw,'food') ? ['food'] : [])]);
+  const template = exact(raw, ['name','portion','calories','note', ...macroNames.filter((key) => Object.hasOwn(raw, key)), ...(Object.hasOwn(raw,'food') ? ['food'] : []), ...(Object.hasOwn(raw,'provenance') ? ['provenance'] : [])]);
   const macros = Object.fromEntries(macroNames.filter((key) => Object.hasOwn(template, key)).map((key) => [key, template[key]]));
   const parsed = parseNutritionCreate({ date: new Date(now).toISOString().slice(0,10), meal:'snack', name:template.name, portion:template.portion, note:template.note, calories:template.calories, ...macros }, now);
   if (Object.hasOwn(template,'food')) {
     const food = nutritionFoodSnapshot(template.food);
     if (parsed.name !== food.foodName || parsed.portion !== String(food.amount)+food.unit || parsed.caloriesTenth !== food.caloriesTenth) backupFail('常用食物的来源快照与名称、份量或热量不一致。');
+    parsed.food = food;
   }
+  if (Object.hasOwn(template,'provenance')) parseNutritionProvenance(template.provenance, parsed);
   return template;
+}
+function nutritionHistorySnapshot(value: unknown, now: number) {
+  const row = exact(value, ['id','date','meal','name','portion','note','caloriesTenth','carbsTenth','proteinTenth','fatTenth','revision','createdAt','updatedAt','deletedAt','food','provenance']);
+  id(row.id); integer(row.revision,1); timestamp(row.createdAt); timestamp(row.updatedAt); timestamp(row.deletedAt,true);
+  if (Date.parse(row.updatedAt as string)>now+5*60000) backupFail('饮食历史时间不能晚于当前时间。');
+  for (const key of ['calories','carbs','protein','fat']) if (row[key+'Tenth']!==null) integer(row[key+'Tenth'],0,200000);
+  const values=Object.fromEntries(['calories','carbs','protein','fat'].map((key)=>[key,row[key+'Tenth']===null?null:(Number(row[key+'Tenth'])/10).toFixed(1)]));
+  const input: NutritionInput = parseNutritionCreate({date:row.date,meal:row.meal,name:row.name,portion:row.portion,note:row.note,...values},now);
+  if (row.food!==null) {
+    input.food=nutritionFoodSnapshot(row.food);
+    if(row.name!==input.food.foodName||row.portion!==String(input.food.amount)+input.food.unit||row.caloriesTenth!==input.food.caloriesTenth)backupFail('饮食历史与食物来源快照不一致。');
+  }
+  if(row.provenance!==null)parseNutritionProvenance(row.provenance,input);
+  return row;
 }
 function measurement(value: unknown, exportedAt: string) {
   try { return parseSyncPayload({ version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt, measurements: [value] }).measurements[0]; }
@@ -192,11 +226,27 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     id(r.id); hash(r.creation_hash); integer(r.revision, 1); if (r.calories_tenth !== null) integer(r.calories_tenth, 0, 200000);
     for (const key of macroNames) if (r[key + '_tenth'] !== null) integer(r[key + '_tenth'], 0, 200000);
     const macros = Object.fromEntries(macroNames.map((key) => [key, r[key + '_tenth'] === null ? null : (Number(r[key + '_tenth']) / 10).toFixed(1)]));
-    parseNutritionCreate({ date:r.date, meal:r.meal, name:r.name, portion:r.portion, note:r.note, calories:r.calories_tenth === null ? null : (Number(r.calories_tenth) / 10).toFixed(1), ...macros }, now);
+    const input=parseNutritionCreate({ date:r.date, meal:r.meal, name:r.name, portion:r.portion, note:r.note, calories:r.calories_tenth === null ? null : (Number(r.calories_tenth) / 10).toFixed(1), ...macros }, now);
     if (r.food_json !== null) {
       const food = nutritionFoodSnapshot(parsedJson(r.food_json));
       if (r.name !== food.foodName || r.portion !== String(food.amount)+food.unit || r.calories_tenth !== food.caloriesTenth) backupFail('饮食记录的来源快照与名称、份量或热量不一致。');
+      input.food=food;
     }
+    if(r.provenance_json!==null)parseNutritionProvenance(parsedJson(r.provenance_json),input);
+  }
+  if(table==='nutrition_entry_history'){
+    id(r.entry_id);integer(r.revision,1);if(!['baseline','create','edit','delete','restore'].includes(String(r.action)))backupFail('饮食历史操作无效。');
+    const after=nutritionHistorySnapshot(parsedJson(r.after_json),now);
+    if(after.id!==r.entry_id||after.revision!==r.revision||after.updatedAt!==r.created_at)backupFail('饮食历史版本或时间不一致。');
+    if(r.before_json===null){if(!['baseline','create'].includes(String(r.action)))backupFail('饮食历史缺少修改前状态。');}
+    else{const before=nutritionHistorySnapshot(parsedJson(r.before_json),now);if(before.id!==r.entry_id||before.revision!==Number(r.revision)-1||before.createdAt!==after.createdAt)backupFail('饮食历史前后版本不连续。');}
+  }
+  if(table==='nutrition_goal_settings'){
+    integer(r.revision,1);for(const key of ['calories_tenth','carbs_tenth','protein_tenth','fat_tenth'])if(r[key]!==null)integer(r[key],0,200000);
+  }
+  if(table==='nutrition_restore_operations'){
+    id(r.id);id(r.entry_id);integer(r.source_revision,1);integer(r.target_revision,2);hash(r.request_hash);
+    if(Number(r.source_revision)>=Number(r.target_revision))backupFail('饮食恢复回执版本无效。');
   }
   if (table === 'nutrition_favorites') { id(r.id); hash(r.template_hash); nutritionFavoriteTemplate(parsedJson(r.template_json), now); }
   if (table === 'nutrition_day_status') {
@@ -210,7 +260,7 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     if (!Array.isArray(ids) || ids.length < 1 || ids.length > 30 || new Set(ids).size !== ids.length) backupFail('饮食提交回执行数无效。');
     for (const entryId of ids) id(entryId);
   }
-  if (table === 'finance_accounts') { id(r.id); parseLedger(r.ledger); parseCurrency(r.currency); parseAccountPatch({ name:r.name, type:r.type, note:r.note }); hash(r.creation_hash, true); integer(r.balance_revision); }
+  if (table === 'finance_accounts') { id(r.id); parseLedger(r.ledger); parseCurrency(r.currency); parseAccountPatch({ name:r.name, type:r.type, note:r.note }); hash(r.creation_hash, true); integer(r.balance_revision); integer(r.metadata_revision,1); }
   if (table === 'finance_balance_entries') { integer(r.sequence, 1); id(r.id, true); id(r.account_id); minor(r.amount_minor); parseAsOfDate(r.as_of_date); }
   if (table === 'finance_balance_changes') {
     integer(r.sequence, 1); id(r.id); id(r.account_id); id(r.entry_id, true); integer(r.revision, 1); hash(r.request_hash); text(r.reason, 500, false);
@@ -218,11 +268,11 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     else if (r.action === 'correct') { minor(r.amount_minor); parseAsOfDate(r.as_of_date); text(r.note); }
     else backupFail('余额修改操作无效。');
   }
-  if (table === 'finance_goal_plans') { id(r.id); hash(r.creation_hash); minor(r.target_minor, true); parseFinanceGoalCreate({ ledger:r.ledger, currency:r.currency, name:r.name, targetAmount:decimalFromMinor(r.target_minor as string, r.currency as string), deadline:r.deadline, accountIds:parsedJson(r.account_ids_json) }); }
+  if (table === 'finance_goal_plans') { id(r.id); hash(r.creation_hash); integer(r.revision,1); minor(r.target_minor, true); parseFinanceGoalCreate({ ledger:r.ledger, currency:r.currency, name:r.name, targetAmount:decimalFromMinor(r.target_minor as string, r.currency as string), deadline:r.deadline, accountIds:parsedJson(r.account_ids_json) }); }
   if (table === 'finance_runway_settings') { integer(r.revision); parseLedger(r.ledger); parseCurrency(r.currency); minor(r.monthly_expense_minor, true); parseFinanceRunwayInput({ monthlyExpenseAmount:decimalFromMinor(r.monthly_expense_minor as string, r.currency as string), targetMonths:r.target_months, accountIds:parsedJson(r.account_ids_json) }, r.currency as Parameters<typeof parseFinanceRunwayInput>[1]); }
 }
 export function backupRowKey(table: BackupTable, row: BackupRow): string { return JSON.stringify((BACKUP_TABLES[table].keys as readonly string[]).map((k) => row[k])); }
-export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && k === 'balance_revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k))).map((k) => [k,row[k]]))); }
+export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && ['balance_revision','metadata_revision'].includes(k)) && !(table === 'finance_goal_plans' && k === 'revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k))).map((k) => [k,row[k]]))); }
 
 export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
   try {
@@ -232,19 +282,25 @@ export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
     if (raw.kind !== 'jiashu-os-backup' || (raw.version !== 1 && raw.version !== 2)) backupFail('请选择 Jiashu OS 完整备份 v1 或 v2 文件。');
     timestamp(raw.exportedAt);
     if (Date.parse(raw.exportedAt as string) > now + 5*60000) backupFail('备份导出时间不能晚于当前时间。');
-    const sourceTables = raw.version===2 ? exact(raw.tables,BACKUP_TABLE_NAMES) : object(raw.tables);
+    const sourceTables = object(raw.tables);
+    if(raw.version===2&&(BACKUP_LEGACY_V2_TABLE_NAMES.some((table)=>!Object.hasOwn(sourceTables,table))||Object.keys(sourceTables).some((table)=>!BACKUP_TABLE_NAMES.includes(table as BackupTable))))backupFail('备份含有缺失或不支持的数据表。');
+    const hadNutritionHistory=Object.hasOwn(sourceTables,'nutrition_entry_history');
     const optionalV1=['nutrition_favorites','nutrition_day_status','nutrition_batches'];
     if (raw.version===1 && (BACKUP_V1_TABLE_NAMES.some((table)=>!Object.hasOwn(sourceTables,table)) || Object.keys(sourceTables).some((table)=>!BACKUP_V1_TABLE_NAMES.includes(table as typeof BACKUP_V1_TABLE_NAMES[number])&&!optionalV1.includes(table)))) backupFail('旧版备份含有缺失或不支持的数据表。');
-    const tables = raw.version === 2 ? sourceTables : Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => {
+    const tables = raw.version === 2 ? Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,sourceTables[table]??[]])) : Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => {
       if (!Object.hasOwn(sourceTables,table)) return [table,[]];
       const rows = sourceTables[table]; if (!Array.isArray(rows)) return backupFail('备份数据表应为数组。');
       return [table,rows.map((value) => {
         const columns = BACKUP_TABLES[table].columns.filter((key) => !(REVISION_SETTINGS.includes(table) && key === 'revision'));
-        const original=table==='nutrition_entries'?nutritionBackupRow(value):object(value); const compatible=table==='nutrition_entries'&&!Object.hasOwn(original,'food_json')?{...original,food_json:null}:original;
+        const original=compatibleBackupRow(table,value); const compatible=table==='nutrition_entries'&&!Object.hasOwn(original,'food_json')?{...original,food_json:null}:original;
         const row = exact(compatible,columns);
         return REVISION_SETTINGS.includes(table) ? { ...row,revision:0 } : { ...row };
       })];
     }));
+    if(!hadNutritionHistory){
+      const entries=tables.nutrition_entries;if(!Array.isArray(entries))backupFail('备份饮食记录应为数组。');
+      tables.nutrition_entry_history=entries.map((value)=>{const row=nutritionBackupRow(value);return{entry_id:row.id,revision:row.revision,action:'baseline',before_json:null,after_json:JSON.stringify(nutritionSnapshot(row)),created_at:row.updated_at};});
+    }
     let count = 0;
     for (const table of BACKUP_TABLE_NAMES) {
       const rows = tables[table]; const spec = BACKUP_TABLES[table] as TableSpec;
@@ -253,7 +309,7 @@ export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
       const seen = new Set<string>(); const sequences = new Set<number>();
       const normalized: BackupRow[] = [];
       for (const value of rows) {
-        const row = exact(table === 'nutrition_entries' ? nutritionBackupRow(value) : value, spec.columns) as BackupRow;
+        const row = exact(compatibleBackupRow(table,value), spec.columns) as BackupRow;
         validateRow(table, row,now);
         const key = backupRowKey(table,row); if (seen.has(key)) backupFail('备份中含重复记录。'); seen.add(key);
         if (spec.sequence) { if (sequences.has(row.sequence as number)) backupFail('备份余额顺序重复。'); sequences.add(row.sequence as number); }
@@ -278,6 +334,24 @@ function validateBackupRelations(backup: DataBackup) {
     if (latest.revision !== goals.revision || latest.created_at !== goals.updated_at || ['steps_target','sleep_target','active_energy_target'].some((key)=>latest[key]!==goals[key])) backupFail('健康目标与最新历史版本不一致。');
   }
   const nutritionIds = new Set(t.nutrition_entries.map((row)=>row.id));
+  const nutritionRows=new Map(t.nutrition_entries.map((row)=>[row.id,row]));
+  const nutritionHistory=new Map(t.nutrition_entry_history.map((row)=>[String(row.entry_id)+':'+row.revision,row]));
+  const nutritionChains=new Map<string,BackupRow[]>();
+  for(const row of t.nutrition_entry_history){
+    const entry=nutritionRows.get(row.entry_id);if(!entry||Number(row.revision)>Number(entry.revision))backupFail('饮食历史缺少所属记录或版本超出当前记录。');
+    const chain=nutritionChains.get(String(row.entry_id))??[];chain.push(row);nutritionChains.set(String(row.entry_id),chain);
+  }
+  for(const chain of nutritionChains.values()){
+    chain.sort((a,b)=>Number(a.revision)-Number(b.revision));
+    const first=chain[0];
+    if(first.before_json!==null||!(first.action==='baseline'||(first.action==='create'&&first.revision===1)))backupFail('饮食修改历史缺少有效基线。');
+    for(let index=1;index<chain.length;index++){
+      const prior=chain[index-1],current=chain[index];
+      if(current.revision!==Number(prior.revision)+1||!['edit','delete','restore'].includes(String(current.action))||current.before_json===null||canonical(parsedJson(current.before_json))!==canonical(parsedJson(prior.after_json)))backupFail('饮食修改历史不连续或修改前状态不一致。');
+    }
+  }
+  for(const row of t.nutrition_entries){const latest=nutritionHistory.get(String(row.id)+':'+row.revision);if(!latest||canonical(parsedJson(latest.after_json))!==canonical(nutritionSnapshot(row)))backupFail('饮食记录与最新修改历史不一致。');}
+  for(const row of t.nutrition_restore_operations){const target=nutritionHistory.get(String(row.entry_id)+':'+row.target_revision);if(!nutritionIds.has(row.entry_id)||!nutritionHistory.has(String(row.entry_id)+':'+row.source_revision)||!target||target.action!=='restore')backupFail('饮食恢复回执缺少对应历史。');}
   for (const operation of [...t.nutrition_copy_operations,...t.nutrition_batches]) for (const entryId of parsedJson(operation.entry_ids_json) as string[]) if (!nutritionIds.has(entryId)) backupFail('饮食提交回执缺少所属用户的饮食记录。');
   if (t.nutrition_favorites.length>100 || new Set(t.nutrition_favorites.map((row)=>row.id)).size!==t.nutrition_favorites.length) backupFail('常用食物数量或记录标识无效。');
   for(const status of t.nutrition_day_status) if(status.complete===1){const meals=parsedJson(status.meals_json) as Record<string,unknown>;const active=t.nutrition_entries.filter((row)=>row.date===status.date&&row.deleted_at===null);if(['breakfast','lunch','dinner'].some((meal)=>!active.some((row)=>row.meal===meal)&&meals[meal]!=='skipped'))backupFail('已记完的饮食日期缺少对应餐次记录或未进食标记。');}

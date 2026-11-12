@@ -65,3 +65,28 @@ test('runway 409 preserves the draft until the user reads and acknowledges the l
   f.submit(); await settle(() => writes.length === 2 && f.el('form-status').textContent === '设置已保存。');
   assert.equal(writes[0].expectedRevision, 1); assert.equal(writes[1].monthlyExpenseAmount, '250.00'); assert.equal(writes[1].targetMonths, 9);
 });
+
+test('goal edit conflicts retain input and require explicit latest-version acknowledgement before saving',async()=>{
+  const goal={id:A,revision:1,ledger:'personal',currency:'CNY',name:'原目标',targetAmount:'1000.00',targetMinor:'100000',currentMinor:'0',gapMinor:'100000',percent:0,deadline:'2027-01-01',accountIds:[A],daysRemaining:40,monthlyMinor:'10000',status:'active',archived:false,matchedAccountCount:1,missingCount:0,staleAccountCount:0};
+  let current={...goal};const writes:Array<Record<string,unknown>>=[];
+  const f=fixture(renderFinanceGoalsPage('alice'),'finance-goals','/finance/goals?ledger=personal&currency=CNY',async(path,options)=>{
+    if(options?.method==='PATCH'){
+      const body=JSON.parse(String(options.body));writes.push(body);
+      if(writes.length===1){current={...current,name:'另一页面的新目标',revision:2};return Response.json({error:'目标已经更新',code:'FINANCE_METADATA_CONFLICT'},{status:409});}
+      assert.equal(body.expectedRevision,2);current={...current,...body,revision:3};return Response.json({goal:current});
+    }
+    if(path==='/api/finance/goals/'+A)return Response.json({goal:current});
+    if(path.startsWith('/api/finance?'))return Response.json({accounts:[account]});
+    return Response.json({ledger:'personal',currency:'CNY',today:'2026-11-09',goals:[current],accounts:[account]});
+  });
+  await settle(()=>Boolean(f.document.querySelector('[data-goal-action="edit"]')));
+  f.document.querySelector('[data-goal-action="edit"]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  await settle(()=>!(f.el('save') as HTMLButtonElement).disabled);
+  f.input('name','保留我的填写');f.submit();await settle(()=>writes.length===1&&!(f.el('form-error') as HTMLElement).hidden);
+  assert.equal((f.el('name') as HTMLInputElement).value,'保留我的填写');assert.equal((f.el('save') as HTMLButtonElement).disabled,true);
+  f.submit();assert.equal(writes.length,1);
+  f.click('reload-latest');await settle(()=>!(f.el('save') as HTMLButtonElement).disabled);
+  assert.equal((f.el('name') as HTMLInputElement).value,'保留我的填写');assert.match(f.el('current-info').textContent??'',/另一页面的新目标/);
+  f.submit();await settle(()=>writes.length===2&&!f.el('dialog').hasAttribute('open'));
+  assert.equal(writes[1].name,'保留我的填写');assert.equal(writes[1].expectedRevision,2);
+});

@@ -2,6 +2,7 @@ import { searchFoods, calculateFoodSelection } from './food-catalog.ts';
 import type { FoodItem } from './food-catalog.ts';
 import { validAssistantText } from './health-assistant-chat.ts';
 import { shanghaiDay } from './health.ts';
+import type { NutritionProvenance } from './nutrition.ts';
 
 export type NutritionDraftMeal = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 export type NutritionDraftMacro = 'carbs' | 'protein' | 'fat';
@@ -25,6 +26,7 @@ export interface NutritionDraft {
   protein: string | null;
   fat: string | null;
   macroSources: Record<NutritionDraftMacro, NutritionDraftSource>;
+  provenance: NutritionProvenance;
   note: string;
   food: { id: string; amount: number; unit: string } | null;
   candidates: FoodItem[];
@@ -225,7 +227,15 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     }
     const unknownMacros = macroFields.filter((key) => macros[key] === null).map((key) => macroLabels[key]);
     if (unknownMacros.length) warnings.push(unknownMacros.join('、') + '暂未提供，可手动填写；未知不会按0计算。');
-    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, calorieSource, ...macros, macroSources, note, food, candidates, warnings };
+    const provenance: NutritionProvenance = {};
+    for (const key of ['calories', ...macroFields] as const) {
+      const source = key === 'calories' ? calorieSource : macroSources[key];
+      provenance[key] = source === 'ai' && estimate
+        ? { source: 'ai', basis: estimate.basis, portion: estimate.portion, originalValue: key === 'calories' ? estimate.calories : estimate[key] }
+        : source === 'catalog' ? { source: 'catalog', basis: exact[0].source.name + ' · ' + exact[0].source.version, portion }
+          : { source: 'unknown' };
+    }
+    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, calorieSource, ...macros, macroSources, provenance, note, food, candidates, warnings };
   });
   return { drafts, warnings: drafts.length ? ['以下是识别草稿，检查食物、生熟状态与份量后可批量保存。'] : ['未识别到明确吃过的食物，请描述实际吃了什么及份量。'] };
 }

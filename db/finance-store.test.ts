@@ -14,7 +14,7 @@ import {
   listFinanceAccounts,
   listFinanceBalances,
   patchFinanceAccount,
-  FinanceIdempotencyConflictError,
+  FinanceIdempotencyConflictError, FinanceMetadataConflictError,
   type FinanceDatabase,
   type NewFinanceAccount,
 } from './finance-store.ts';
@@ -78,6 +78,26 @@ function fixture(t: TestContext) {
   return { sqlite, db: databaseAdapter(sqlite) };
 }
 
+test('account metadata uses the read revision while balance writes and creation replays keep independent identities', async (t) => {
+  const { db, sqlite } = fixture(t);
+  const key = crypto.randomUUID();
+  const id = await createFinanceAccount(db, 'alice', initial, sameTime, key);
+  const first = (await findFinanceAccount(db, 'alice', id))!;
+  assert.equal(first.metadataRevision, 1);
+  await appendFinanceBalance(db, 'alice', id, { amountMinor: '15000', asOfDate: initial.asOfDate, note: '' }, sameTime);
+  assert.equal((await findFinanceAccount(db, 'alice', id))!.metadataRevision, 1);
+  await patchFinanceAccount(db, 'alice', id, { name: '新名称', expectedRevision: first.metadataRevision }, sameTime);
+  const latest = (await findFinanceAccount(db, 'alice', id))!;
+  assert.equal(latest.metadataRevision, 2);assert.equal(latest.balanceMinor, '15000');
+  const before = JSON.stringify(sqlite.prepare('SELECT * FROM finance_accounts').all());
+  await assert.rejects(patchFinanceAccount(db, 'alice', id, { note: 'stale', expectedRevision: first.metadataRevision }), FinanceMetadataConflictError);
+  await assert.rejects(patchFinanceAccount(db, 'alice', id, { name: 'old-client' } as never), FinanceMetadataConflictError);
+  assert.equal(JSON.stringify(sqlite.prepare('SELECT * FROM finance_accounts').all()), before);
+  assert.equal(await patchFinanceAccount(db, 'bob', id, { name: 'foreign', expectedRevision: 2 }), false);
+  assert.equal(await createFinanceAccount(db, 'alice', initial, sameTime, key), id);
+  assert.deepEqual(await findFinanceAccount(db, 'alice', id), latest);
+});
+
 const initial: NewFinanceAccount = {
   ledger: 'personal', name: '合成测试银行账户', type: 'bank', currency: 'CNY',
   note: '', amountMinor: '10000', asOfDate: '2026-11-09',
@@ -120,7 +140,7 @@ test('all lookups and mutations are owner isolated and ledgers remain separate',
   assert.deepEqual((await listFinanceAccounts(db, 'bob', 'personal')).map((row) => row.id), [bobId]);
   assert.equal(await findFinanceAccount(db, 'alice', bobId), null);
   assert.deepEqual(await listFinanceBalances(db, 'alice', bobId), []);
-  assert.equal(await patchFinanceAccount(db, 'alice', bobId, { name: 'unauthorized', archived: true }), false);
+  assert.equal(await patchFinanceAccount(db, 'alice', bobId, { expectedRevision: 1, name: 'unauthorized', archived: true }), false);
   assert.equal(await appendFinanceBalance(db, 'alice', bobId, { amountMinor: '1', asOfDate: '2026-11-09', note: '' }), null);
   assert.equal((await findFinanceAccount(db, 'bob', bobId))!.name, 'Bob test');
   assert.equal((await listFinanceBalances(db, 'bob', bobId)).length, 1);
@@ -164,7 +184,7 @@ test('same-day and same-millisecond updates deterministically use the last appen
 test('archive and restore preserve history while archived accounts reject new balances', async (t) => {
   const { db } = fixture(t);
   const accountId = await createFinanceAccount(db, 'owner', initial, sameTime);
-  assert.equal(await patchFinanceAccount(db, 'owner', accountId, { archived: true }, sameTime), true);
+  assert.equal(await patchFinanceAccount(db, 'owner', accountId, { expectedRevision: 1, archived: true }, sameTime), true);
   assert.deepEqual(await listFinanceAccounts(db, 'owner', 'personal'), []);
   const archived = await listFinanceAccounts(db, 'owner', 'personal', true);
   assert.equal(archived.length, 1);
@@ -172,7 +192,7 @@ test('archive and restore preserve history while archived accounts reject new ba
   assert.equal(await appendFinanceBalance(db, 'owner', accountId, { amountMinor: '99999', asOfDate: initial.asOfDate, note: '' }), null);
   assert.equal((await listFinanceBalances(db, 'owner', accountId)).length, 1);
   assert.equal((await exportFinanceBalances(db, 'owner', 'personal')).length, 1);
-  assert.equal(await patchFinanceAccount(db, 'owner', accountId, { archived: false, name: '恢复后的账户', type: 'investment', note: 'retained' }), true);
+  assert.equal(await patchFinanceAccount(db, 'owner', accountId, { expectedRevision: 2, archived: false, name: '恢复后的账户', type: 'investment', note: 'retained' }), true);
   const restored = (await listFinanceAccounts(db, 'owner', 'personal'))[0];
   assert.equal(restored.archivedAt, null);
   assert.equal(restored.name, '恢复后的账户');
@@ -196,7 +216,7 @@ test('missing accounts are not created by failed updates or reads', async (t) =>
   const { db } = fixture(t);
   assert.equal(await findFinanceAccount(db, 'owner', 'missing'), null);
   assert.deepEqual(await listFinanceBalances(db, 'owner', 'missing'), []);
-  assert.equal(await patchFinanceAccount(db, 'owner', 'missing', { archived: true }), false);
+  assert.equal(await patchFinanceAccount(db, 'owner', 'missing', { expectedRevision: 1, archived: true }), false);
   assert.equal(await appendFinanceBalance(db, 'owner', 'missing', { amountMinor: '1', asOfDate: initial.asOfDate, note: '' }), null);
   assert.deepEqual(await listFinanceAccounts(db, 'owner', 'personal', true), []);
 });
@@ -218,7 +238,7 @@ test('retrying account creation keeps one account and initial balance without ro
   assert.equal((await listFinanceBalances(db, 'owner', accountId)).length, 1);
 
   await appendFinanceBalance(db, 'owner', accountId, { amountMinor: '25000', asOfDate: initial.asOfDate, note: 'new balance' }, '2026-11-09T04:00:00.000Z');
-  await patchFinanceAccount(db, 'owner', accountId, { name: '后续编辑后的账户', note: 'keep this metadata' }, '2026-11-09T05:00:00.000Z');
+  await patchFinanceAccount(db, 'owner', accountId, { expectedRevision: 1, name: '后续编辑后的账户', note: 'keep this metadata' }, '2026-11-09T05:00:00.000Z');
   const before = databaseSnapshot(sqlite);
   assert.equal(await createFinanceAccount(db, 'owner', { ...initial }, '2026-11-09T06:00:00.000Z', requestKey), accountId);
   assert.equal(databaseSnapshot(sqlite), before);
@@ -336,7 +356,7 @@ test('export reads one owner-and-ledger snapshot while another WAL connection co
   const writer = databaseAdapter(writerSqlite);
   const activeId = await createFinanceAccount(writer, 'owner', initial, sameTime);
   const archivedId = await createFinanceAccount(writer, 'owner', { ...initial, name: '归档账户' }, sameTime);
-  await patchFinanceAccount(writer, 'owner', archivedId, { archived: true }, sameTime);
+  await patchFinanceAccount(writer, 'owner', archivedId, { expectedRevision: 1, archived: true }, sameTime);
   const familyId = await createFinanceAccount(writer, 'owner', { ...initial, ledger: 'family', name: '家庭账户' }, sameTime);
   const otherOwnerId = await createFinanceAccount(writer, 'other-owner', initial, sameTime);
   let insertedId = '';
@@ -346,7 +366,7 @@ test('export reads one owner-and-ledger snapshot while another WAL connection co
     committedBetweenReads = true;
     await appendFinanceBalance(writer, 'owner', activeId, { amountMinor: '25000', asOfDate: initial.asOfDate, note: 'written between export reads' }, '2026-11-09T03:00:00.000Z');
     insertedId = await createFinanceAccount(writer, 'owner', { ...initial, name: '导出中途新增', amountMinor: '30000' }, '2026-11-09T03:00:00.000Z');
-    await patchFinanceAccount(writer, 'owner', archivedId, { archived: false }, '2026-11-09T03:00:00.000Z');
+    await patchFinanceAccount(writer, 'owner', archivedId, { expectedRevision: 2, archived: false }, '2026-11-09T03:00:00.000Z');
   });
 
   const snapshot = await exportFinanceSnapshot(reader, 'owner', 'personal');

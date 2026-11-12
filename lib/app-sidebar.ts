@@ -3,6 +3,7 @@ import { renderHealthAssistantWidget } from './health-assistant-widget.ts';
 import { APP_PAGE_UX_CSS } from './app-page-ux.ts';
 import { renderAppNavigationScript } from './app-navigation-ui.ts';
 import { DRAFT_GUARD_SCRIPT } from './draft-guard.ts';
+import { DURABLE_DRAFTS_SCRIPT } from './durable-drafts.ts';
 
 type AppPage = 'home' | 'health' | 'nutrition' | 'finance' | 'sync';
 
@@ -67,5 +68,5 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
   }).join('');
 
   const sections = Object.entries(contextNavigation).map(([group, section]) => `<section class="sidebar-context" data-navigation-group="${group}"${activePage !== group ? ' hidden' : ''}><p class="sidebar-context-title">${section.label}</p><nav class="context-nav" aria-label="${section.label}">${section.links.map(([href, label]) => `<a class="context-link" href="${href}" data-context-path="${href}">${label}</a>`).join('')}</nav></section>`).join('');
-  return `<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside><script>${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}`;
+  return `<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<div class="sidebar-foot"><span class="space-avatar" aria-hidden="true">J</span><div><strong>个人管理空间</strong><small>Jiashu OS</small></div></div></aside><script>${DURABLE_DRAFTS_SCRIPT}${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}`;
 }

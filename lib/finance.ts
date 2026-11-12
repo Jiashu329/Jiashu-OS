@@ -206,6 +206,15 @@ export function parseAccountPatch(input: unknown): AccountPatch {
 
 export const parseAccountUpdate = parseAccountPatch;
 
+export interface AccountPatchCommand extends AccountPatch { expectedRevision: number }
+/** Writes require the version the editor actually read; bare patch parsing is also used by backup validation. */
+export function parseAccountPatchCommand(input: unknown): AccountPatchCommand {
+  const raw = fields(input, ['name', 'type', 'note', 'archived', 'expectedRevision']);
+  if (!Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1) return fail('expectedRevision', '请先读取最新账户版本，再保存修改。');
+  const { expectedRevision, ...patch } = raw;
+  return { ...parseAccountPatch(patch), expectedRevision: expectedRevision as number };
+}
+
 export interface BalanceEntryInput { amount: string; amountMinor: string; asOfDate: string; note: string }
 
 export function parseBalanceEntry(input: unknown, currency: CurrencyCode | string, options: { today?: string } = {}): BalanceEntryInput {

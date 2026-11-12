@@ -21,7 +21,7 @@ async function settled(check: () => boolean) {
   assert.ok(check(), 'The synthetic DOM operation did not settle');
 }
 
-function fixture({ reducedMotion = true } = {}) {
+function fixture({ reducedMotion = true, nutrients = false } = {}) {
   const { window, document } = parseHTML('<!doctype html><html><body><a id="original-entry" href="/health/assistant">健康助手</a>' + renderHealthAssistantWidget() + '</body></html>');
   const epoch = Date.now();
   let now = 0, timerId = 0;
@@ -42,7 +42,8 @@ function fixture({ reducedMotion = true } = {}) {
       const handler = nextPost; nextPost = undefined;
       return handler ? handler() : Response.json(completion(body?.days as number));
     }
-    return Response.json(metadata(Number(new URL(url, location.origin).searchParams.get('days'))));
+    const preview=metadata(Number(new URL(url,location.origin).searchParams.get('days')));
+    return Response.json(nutrients?{...preview,context:{...preview.context,nutrition:{recordedDays:3,days:[{nutrients:{carbs:{total:'0.0',knownCount:1,unknownCount:0},protein:{total:'12.3',knownCount:1,unknownCount:1},fat:{total:null,knownCount:0,unknownCount:2}}}]},goals:{targets:[],nutritionTargets:[{nutrient:'protein',value:'80.0',unit:'g'}],weightPlan:null,notes:[]}}}:preview);
   };
   const source = renderHealthAssistantWidgetScript().replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
   runInNewContext(source, { window, document, Element: window.Element, location, navigator: {}, fetch,
@@ -142,6 +143,16 @@ test('nutrition review links prepare a question without automatically calling th
   assert.equal(f.el('question').value, '请总结近7天饮食记录，并说明记录缺口。');
   assert.equal(f.el('panel').hidden, false);
   assert.equal(f.requests.filter((item) => item.method === 'POST').length, 0);
+});
+
+test('shared nutrition preview explains per-field missing counts and only shows targets after explicit goal sharing',async()=>{
+  const f=fixture({nutrients:true});await f.open();
+  assert.match(f.el('coverage').textContent??'',/蛋白质（g）已填 1 项，未填 1 项/);
+  assert.match(f.el('coverage').textContent??'',/脂肪（g）已填 0 项，未填 2 项/);
+  assert.ok(!(f.el('coverage').textContent??'').includes('80.0'));
+  const goalField=f.el('include-goals') as unknown as HTMLInputElement;goalField.checked=true;goalField.dispatchEvent(f.event('change'));
+  await settled(()=>(f.el('coverage').textContent??'').includes('蛋白质 80.0 g'));
+  assert.equal(f.requests.filter((request)=>request.method==='POST').length,0);
 });
 
 test('consecutive messages carry successful history and show safe Markdown while user text stays inert', async () => {

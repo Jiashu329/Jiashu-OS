@@ -1,6 +1,6 @@
 import { FinanceValidationError, LEDGERS } from '../../../lib/finance';
 import { apiUser, isSameOrigin, json } from '../_shared';
-import { FinanceIdempotencyConflictError } from '../../../db/finance-store';
+import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from '../../../db/finance-store';
 import { FinanceBalanceChangeConflictError, FinanceLastBalanceError } from '../../../db/finance-balance-changes-store';
 
 export { apiUser, json };
@@ -14,6 +14,7 @@ export function financeNotFound() {
 }
 
 export function financeError(error: unknown) {
+  if (error instanceof FinanceMetadataConflictError) return json({ error: error.message, code: error.code }, 409);
   if (error instanceof FinanceBalanceChangeConflictError || error instanceof FinanceLastBalanceError) return json({ error: error.message, code: error instanceof FinanceLastBalanceError ? 'FINANCE_LAST_BALANCE' : 'FINANCE_BALANCE_CHANGED' }, 409);
   if (error instanceof FinanceIdempotencyConflictError) return json({ error: '这次提交标识已用于其他内容，已有记录没有被修改。请重新打开表单后再保存。', code: 'FINANCE_IDEMPOTENCY_CONFLICT' }, 409);
   if (error instanceof FinanceValidationError) return json({ error: '请检查账户、金额和记录日期。', code: error.code, issues: error.issues }, 400);

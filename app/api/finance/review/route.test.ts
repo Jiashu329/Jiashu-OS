@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { FinanceIdempotencyConflictError } from '../../../../db/finance-store.ts';
+import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from '../../../../db/finance-store.ts';
 import { readFinanceReviewSnapshot } from '../../../../db/finance-review-store.ts';
 import { FinanceValidationError, LEDGERS, type AccountType, type CurrencyCode, type LedgerKind } from '../../../../lib/finance.ts';
 import { buildFinanceReview, parseFinanceReviewQuery, type FinanceReview } from '../../../../lib/finance-review.ts';
@@ -77,7 +77,7 @@ function fixture(t: TestContext) {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, ...balanceChanges, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError,
+    ...shared, ...balanceChanges, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError, FinanceMetadataConflictError,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview,

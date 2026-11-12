@@ -72,7 +72,7 @@ async function fixture(t: TestContext) {
     ['family', 'CNY', 'bank', 'alice', 'family', '1000'], ['loan', 'CNY', 'loan', 'alice', 'personal', '10000'],
     ['archived', 'CNY', 'bank', 'alice', 'personal', '10000'], ['bob', 'CNY', 'bank', 'bob', 'personal', '77700'],
   ] as const) await financeStore.createFinanceAccount(db, userId, { ledger, currency, type, name: key, note: '', amountMinor, asOfDate: finance.todayShanghai() }, new Date().toISOString(), ids[key]);
-  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { archived: true }); queries.length = 0;
+  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { expectedRevision: 1, archived: true }); queries.length = 0;
   return {
     sqlite, db, env, queries,
     signIn(userId: string | null) { owner = userId; },
@@ -136,7 +136,7 @@ test('extreme balances, fractional coverage and JPY retain exact string arithmet
 });
 
 test('unchanged invalid links can be retained for expense edits, while failed re-selection leaves settings unchanged', async (t) => {
-  const f = await fixture(t); await f.put(input()); await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { archived: true });
+  const f = await fixture(t); await f.put(input()); await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { expectedRevision: 1, archived: true });
   const edited = await readRunway(await f.put(input({ monthlyExpenseAmount: '200', targetMonths: 9, expectedRevision: 1 }))); assert.ok(edited.progress); assert.ok(edited.settings); assert.equal(edited.progress.missingCount, 1); assert.equal(edited.progress.currentMinor, '0'); assert.equal(edited.settings.monthlyExpenseMinor, '20000');
   f.beforeWrite(() => f.sqlite.prepare('UPDATE finance_accounts SET archived_at=? WHERE id=?').run(new Date().toISOString(), ids.cny));
   assert.equal((await f.put(input({ accountIds: [ids.cny], monthlyExpenseAmount: '999', expectedRevision: 2 }))).status, 400);

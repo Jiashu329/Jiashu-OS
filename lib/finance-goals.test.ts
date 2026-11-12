@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildFinanceGoalView, FinanceGoalValidationError, parseFinanceGoalCreate, parseFinanceGoalPatch } from './finance-goals.ts';
+import { buildFinanceGoalView, FinanceGoalValidationError, parseFinanceGoalCreate, parseFinanceGoalPatch, parseFinanceGoalPatchCommand } from './finance-goals.ts';
 import type { FinanceGoalAccount, FinanceGoalPlan } from './finance-goals.ts';
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -11,7 +11,7 @@ function input(patch: Record<string, unknown> = {}) {
 }
 function plan(patch: Partial<FinanceGoalPlan> = {}): FinanceGoalPlan {
   return { ...parseFinanceGoalCreate(input()), id: crypto.randomUUID(), userId: 'alice', creationHash: 'immutable-initial-hash',
-    createdAt: '2026-11-09T00:00:00Z', updatedAt: '2026-11-09T00:00:00Z', archivedAt: null, ...patch };
+    createdAt: '2026-11-09T00:00:00Z', updatedAt: '2026-11-09T00:00:00Z', archivedAt: null, revision: 1, ...patch };
 }
 function account(id: string, balanceMinor: string, patch: Partial<FinanceGoalAccount> = {}): FinanceGoalAccount {
   return { id, name: '合成账户', ledger: 'personal', currency: 'CNY', type: 'bank', balanceMinor, asOfDate: TODAY, archivedAt: null, ...patch };
@@ -132,4 +132,11 @@ void test('archived, missing and reclassified links are counted separately from 
   assert.equal(view.missingAccountCount, 1);
   assert.equal(view.unavailableAccountCount, 1);
   assert.equal(view.staleAccountCount, 1);
+});
+
+
+test('goal write commands retain precise edits and reject missing or malformed versions', () => {
+  assert.deepEqual(parseFinanceGoalPatchCommand({targetAmount:'123.45',expectedRevision:3},'CNY'),{targetMinor:'12345',expectedRevision:3});
+  for(const expectedRevision of [undefined,null,0,-1,1.5,'1',Number.MAX_SAFE_INTEGER+1])assert.throws(()=>parseFinanceGoalPatchCommand({name:'旧页面',expectedRevision},'CNY'),FinanceGoalValidationError);
+  assert.throws(()=>parseFinanceGoalPatchCommand({expectedRevision:1},'CNY'),FinanceGoalValidationError);
 });

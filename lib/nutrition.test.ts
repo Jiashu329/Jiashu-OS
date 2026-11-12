@@ -111,7 +111,9 @@ void test('active summaries preserve null, zero and exact decimals and include m
   assert.equal(mixed.entryCount, 3);
   assert.equal(mixed.knownCount, 2);
   assert.equal(mixed.unknownCount, 1);
-  assert.deepEqual(mixed.meals[0], { meal: 'breakfast', label: '早餐', entryCount: 2, knownCount: 2, unknownCount: 0, knownCalories: '0.3' });
+  const { nutrients: breakfastNutrients, ...breakfast } = mixed.meals[0];
+  assert.deepEqual(breakfast, { meal: 'breakfast', label: '早餐', entryCount: 2, knownCount: 2, unknownCount: 0, knownCalories: '0.3' });
+  assert.deepEqual(breakfastNutrients.calories, {total:'0.3',knownCount:2,unknownCount:0});
   assert.equal(mixed.meals[1].unknownCount, 1);
   assert.equal(mixed.meals[2].entryCount, 0);
   assert.equal(mixed.meals[3].knownCalories, null);

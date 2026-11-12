@@ -13,8 +13,9 @@ const snapshot = () => ({
   priorities: [{ id: 'synthetic-priority', tone: 'attention', title: '核对最近记录', detail: '这是合成测试事项。', href: '/health', actionLabel: '查看记录' }],
 });
 
-async function fixture(data = snapshot()) {
+async function fixture(data = snapshot(), drafts?: {ready:()=>Promise<string|null>;list:()=>Array<{id:string;label:string;url:string;kind:string}>;problem?:string}) {
   const { document, window } = parseHTML(renderHomeApp());
+  if(drafts)Object.assign(window,{JiashuDrafts:drafts});
   const script = [...document.querySelectorAll('script[type="module"]')].find((node) => node.textContent?.includes('const metricLabels='))!.textContent!;
   runInNewContext(script, { document, window, Event: window.Event, fetch: async () => Response.json(data), AbortController, URLSearchParams, Intl, Date, setTimeout, clearTimeout });
   for (let index = 0; index < 25 && document.getElementById('refresh')!.hasAttribute('disabled'); index++) {
@@ -71,4 +72,61 @@ test('recording food is one direct home-header action and remains available when
   assert.equal(target.searchParams.get('compose'), '1');
   assert.equal(action.closest('[hidden],details'), null);
   assert.equal(document.getElementById('overview-content')!.contains(action), false);
+});
+
+test('today hub shows partial nutrient values and targets without turning unknown grams into zero',async()=>{
+  const data={...snapshot(),nutrition:{status:'ready',entryCount:1,complete:false,
+    nutrients:{calories:{total:'120.0',knownCount:1,unknownCount:0},carbs:{total:'0.0',knownCount:1,unknownCount:0},
+      protein:{total:'12.3',knownCount:1,unknownCount:0},fat:{total:null,knownCount:0,unknownCount:1}},
+    targets:{calories:'1800.0',carbs:null,protein:'80.0',fat:'60.0'},meals:{breakfast:'skipped',lunch:'recorded',dinner:'unrecorded',snack:'unrecorded'}}};
+  const {document}=await fixture(data);
+  assert.match(document.getElementById('home-nutrition-nutrients')!.textContent!,/12\.3.*80\.0/);
+  assert.match(document.getElementById('home-nutrition-nutrients')!.textContent!,/0\.0/);
+  const fat=[...document.querySelectorAll('.home-nutrient')].find((node)=>node.querySelector('h3')?.textContent==='脂肪')!;
+  assert.equal(fat.querySelector('strong')?.textContent,'—');assert.match(fat.textContent!,/1 项待补充/);
+  assert.match(document.getElementById('home-nutrition-meals')!.textContent!,/早餐 未进食.*午餐 已记录/);
+  assert.equal(document.querySelector('.home-weight-action')?.getAttribute('href'),'/health/records?metric=weight&compose=1');
+});
+
+test('an unavailable diet is independent of available health and local pending work only offers explicit continuation',async()=>{
+  const data={...snapshot(),nutrition:{status:'unavailable'}};
+  const rows=[{id:'pending',label:'原财务提交',url:'/finance?ledger=personal',kind:'pending'},
+    {id:'draft',label:'<img src=x>尚未保存的饮食',url:'/health/nutrition?compose=1',kind:'draft'},
+    {id:'unsafe',label:'外部页面',url:'https://elsewhere.example',kind:'pending'}];
+  let ownerReads=0;const {document,window}=await fixture(data,{ready:async()=>{ownerReads++;return 'synthetic-owner';},list:()=>rows});
+  assert.equal(document.getElementById('overview-content')!.hasAttribute('hidden'),false);
+  assert.match(document.getElementById('home-nutrition-status')!.textContent!,/暂时无法读取/);
+  assert.equal(document.getElementById('home-work-inbox')!.hasAttribute('hidden'),false);
+  assert.equal(document.querySelectorAll('#home-work-items li').length,2);
+  assert.equal(document.querySelectorAll('#home-work-items img, #home-work-items button').length,0);
+  assert.match(document.getElementById('home-work-items')!.textContent!,/继续核对.*继续填写/);
+  document.dispatchEvent(new window.Event('jiashu-work-changed'));assert.equal(ownerReads,1);
+});
+
+test('a failed owner lookup visibly explains why local work cannot be read without exposing drafts',async()=>{
+  let localReads=0,ownerReads=0;
+  const problem='请登录后再恢复本机草稿；当前填写不会自动提交。';
+  const {document}=await fixture(snapshot(),{ready:async()=>{ownerReads++;return null;},list:()=>{localReads++;return [];},problem});
+  assert.equal(document.getElementById('home-work-inbox')!.hasAttribute('hidden'),false);
+  assert.equal(document.getElementById('home-work-status')!.textContent,problem);
+  assert.equal(document.querySelectorAll('#home-work-items li').length,0);
+  assert.equal(localReads,0);assert.equal(ownerReads,1);
+  assert.equal(document.getElementById('overview-content')!.hasAttribute('hidden'),false);
+});
+
+test('an unreadable local store remains visible and clears its warning only after the manager recovers',async()=>{
+  let ownerReads=0,unreadable=true;
+  const manager={problem:'',ready:async()=>{ownerReads++;return 'synthetic-owner';},list:()=>{
+    manager.problem=unreadable?'本地草稿暂时无法读取，当前填写仍会保留。':'';
+    return unreadable?[]:[{id:'recovered',label:'待核对的食物',url:'/health/nutrition?resumeDraft=recovered',kind:'draft'}];
+  }};
+  const {document,window}=await fixture(snapshot(),manager);
+  assert.equal(document.getElementById('home-work-inbox')!.hasAttribute('hidden'),false);
+  assert.match(document.getElementById('home-work-status')!.textContent!,/暂时无法读取/);
+  assert.equal(document.querySelectorAll('#home-work-items li').length,0);
+  unreadable=false;document.dispatchEvent(new window.Event('jiashu-work-changed'));
+  assert.equal(document.getElementById('home-work-inbox')!.hasAttribute('hidden'),false);
+  assert.equal(document.getElementById('home-work-status')!.textContent,'只保存在当前浏览器，继续前可核对原内容。');
+  assert.equal(document.querySelectorAll('#home-work-items li').length,1);
+  assert.equal(ownerReads,1);
 });

@@ -7,6 +7,9 @@ import test, { type TestContext } from 'node:test';
 import { shanghaiDay } from '../../../../lib/health.ts';
 import * as nutritionRules from '../../../../lib/nutrition.ts';
 import * as nutritionStore from '../../../../db/nutrition-store.ts';
+import * as nutritionGoals from '../../../../lib/nutrition-goals.ts';
+import * as nutritionGoalStore from '../../../../db/nutrition-goals-store.ts';
+import { readWeightPlanSettings } from '../../../../db/weight-plan-store.ts';
 import { searchFoods, calculateFoodSelection } from '../../../../lib/food-catalog.ts';
 
 const ORIGIN = 'https://synthetic-nutrition.example';
@@ -59,7 +62,7 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
-  const bindings = { ...shared, ...nutritionRules, ...nutritionStore, env };
+  const bindings = { ...shared, ...nutritionRules, ...nutritionStore, ...nutritionGoals, ...nutritionGoalStore, readWeightPlanSettings, shanghaiDay, env };
   const nutritionShared = loadExports(new URL('./_shared.ts', import.meta.url), bindings);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(request: Request): Promise<Response>; POST(request: Request): Promise<Response> };
   const itemRoute = loadExports(new URL('./[id]/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as {
@@ -69,6 +72,9 @@ async function fixture(t: TestContext) {
   const batchRoute = loadExports(new URL('./batch/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { POST(request: Request): Promise<Response> };
   const statusRoute = loadExports(new URL('./status/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(request: Request): Promise<Response>; PATCH(request: Request): Promise<Response> };
   const favoritesRoute = loadExports(new URL('./favorites/route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(): Promise<Response>; POST(request: Request): Promise<Response>; DELETE(request: Request): Promise<Response> };
+  const goalsRoute=loadExports(new URL('./goals/route.ts',import.meta.url),{...bindings,...nutritionShared}) as {GET():Promise<Response>;PUT(request:Request):Promise<Response>};
+  const historyRoute=loadExports(new URL('./[id]/history/route.ts',import.meta.url),{...bindings,...nutritionShared}) as {GET(request:Request,context:{params:Promise<{id:string}>}):Promise<Response>};
+  const restoreRoute=loadExports(new URL('./[id]/restore/route.ts',import.meta.url),{...bindings,...nutritionShared}) as {POST(request:Request,context:{params:Promise<{id:string}>}):Promise<Response>};
   function request(method: string, path: string, body?: unknown, options: { key?: string | null; origin?: string | null; contentType?: string; raw?: boolean } = {}) {
     const headers = new Headers({ 'Content-Type': options.contentType ?? 'application/json' });
     if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
@@ -79,6 +85,10 @@ async function fixture(t: TestContext) {
   return {
     sqlite, db, env, queries,
     signIn(userId: string | null) { owner = userId; },
+    goals(){return goalsRoute.GET();},
+    setGoals(body:unknown,options:Parameters<typeof request>[3]={}){return goalsRoute.PUT(request('PUT','/api/health/nutrition/goals',body,options));},
+    history(id:string){return historyRoute.GET(request('GET','/api/health/nutrition/'+id+'/history'),{params:Promise.resolve({id})});},
+    restore(id:string,body:unknown,options:Parameters<typeof request>[3]={}){return restoreRoute.POST(request('POST','/api/health/nutrition/'+id+'/restore',body,options),{params:Promise.resolve({id})});},
     list(date = TODAY, includeDeleted = false) { return route.GET(request('GET', '/api/health/nutrition?date=' + date + (includeDeleted ? '&includeDeleted=1' : ''))); },
     get(id: string) { return itemRoute.GET(request('GET', '/api/health/nutrition/' + id), { params: Promise.resolve({ id }) }); },
     create(body: unknown, options: Parameters<typeof request>[3] = {}) { return route.POST(request('POST', '/api/health/nutrition', body, options)); },
@@ -99,6 +109,31 @@ async function readMutation(response: Response): Promise<MutationResponse> { ret
 async function readList(response: Response): Promise<ListResponse> { return await response.json() as ListResponse; }
 const input = (patch: Record<string, unknown> = {}) => ({ date: TODAY, meal: 'breakfast', name: 'Synthetic meal', portion: '1 serving', calories: '0', note: 'Synthetic test', ...patch });
 const edit = (entry: EntryView, patch: Record<string, unknown> = {}) => ({ date: entry.date, meal: entry.meal, name: entry.name, portion: entry.portion, calories: entry.calories, note: entry.note, expectedRevision: entry.revision, ...patch });
+
+void test('nutrition targets require owner login, same-origin writes and a current revision',async(t)=>{
+  const f=await fixture(t);f.signIn(null);assert.equal((await f.goals()).status,401);
+  assert.equal((await f.setGoals({})).status,401);f.signIn('alice');
+  const empty=await(await f.goals()).json() as {goals:nutritionGoals.NutritionGoals;weightPlan:unknown};assert.equal(empty.goals.revision,0);assert.equal(empty.weightPlan,null);
+  const command={calories:'1800',carbs:null,protein:'80.5',fat:'0',expectedRevision:0};
+  assert.equal((await f.setGoals(command,{origin:null})).status,403);
+  const response=await f.setGoals(command);assert.equal(response.status,200);
+  const saved=await response.json() as {goals:nutritionGoals.NutritionGoals};assert.equal(saved.goals.protein,'80.5');assert.equal(saved.goals.fat,'0.0');
+  assert.equal((await f.setGoals(command)).status,409);
+  f.signIn('bob');assert.equal(((await(await f.goals()).json()) as {goals:nutritionGoals.NutritionGoals}).goals.protein,null);
+});
+
+void test('nutrition history and revision restoration are private, audited and replay-safe',async(t)=>{
+  const f=await fixture(t);const created=(await readMutation(await f.create(input({calories:'420',provenance:{calories:{source:'ai',basis:'按普通份量估算',originalValue:'420'}}})))).entry;
+  const edited=(await readMutation(await f.patch(created.id,edit(created,{calories:'380',provenance:{calories:{source:'label',basis:'包装已核对',originalValue:'420'}}})))).entry;
+  assert.equal(edited.provenance?.calories?.source,'label');
+  const history=await(await f.history(created.id)).json() as {history:nutritionStore.NutritionHistoryItem[]};assert.equal(history.history.length,2);assert.equal(history.history[0].before?.calories,'420.0');
+  const key=crypto.randomUUID(),command={revision:1,expectedRevision:2};
+  assert.equal((await f.restore(created.id,command,{origin:null,key})).status,403);
+  const restored=await readMutation(await f.restore(created.id,command,{key}));assert.equal(restored.entry.calories,'420.0');assert.equal(restored.entry.revision,3);assert.equal(restored.entry.provenance?.calories?.source,'ai');
+  const replay=await readMutation(await f.restore(created.id,command,{key}));assert.equal(replay.replayed,true);assert.equal(replay.entry.revision,3);
+  const after=await(await f.history(created.id)).json() as {history:nutritionStore.NutritionHistoryItem[]};assert.equal(after.history.length,3);assert.equal(after.history[0].action,'restore');
+  f.signIn('bob');assert.equal((await f.history(created.id)).status,404);assert.equal((await f.restore(created.id,command,{key})).status,404);
+});
 
 void test('macro grams roundtrip through create, list, edit and deleted-record restoration without replacing unknown with zero', async (t) => {
   const f = await fixture(t);

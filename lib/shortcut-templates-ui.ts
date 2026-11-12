@@ -11,12 +11,12 @@ let metrics=allowedMetrics.slice();
 let startedAt=null,busy=false,arrived=false;
 function message(text,error=false){$('template-status').textContent=text;$('template-status').classList.toggle('error',error);}
 async function start(){
-  if(busy||!metrics.length)return;busy=true;options.forEach((input)=>input.disabled=true);startedAt=null;arrived=false;
+  if(busy||!metrics.length)return;busy=true;options.forEach((input)=>input.disabled=true);startedAt=null;arrived=false;delete $('template-check').dataset.acceptanceStartedAt;
   $('template-start').disabled=true;$('template-check-now').disabled=true;$('template-confirm').checked=false;$('template-confirm').disabled=true;$('template-results').replaceChildren();
   message('正在取得服务器核对起点，请稍候…');
   try{const data=await requestJSON('/api/health/import');const time=Date.parse(data.checkedAt);
     if(!Number.isFinite(time))throw new Error('未取得服务器核对时间，请刷新后重试。');
-    startedAt=time;message('本次核对已开始。请在 iPhone 运行快捷指令，返回后点击“检查新同步”。');
+    startedAt=time;$('template-check').dataset.acceptanceStartedAt=new Date(time).toISOString();message('本次核对已开始。请在 iPhone 运行快捷指令，返回后点击“检查新同步”。');
   }catch(error){message(error.message||'暂时无法开始核对，请重试。',true);}
   finally{busy=false;options.forEach((input)=>input.disabled=false);$('template-start').disabled=!metrics.length;$('template-check-now').disabled=startedAt===null;}
 }

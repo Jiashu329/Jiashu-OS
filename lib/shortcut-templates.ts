@@ -1,3 +1,5 @@
+import { SHORTCUT_GUIDE_VERSION } from './shortcut-acceptance.ts';
+
 export const SHORTCUT_TEMPLATES = [
   { id: 'steps', name: '步数', metrics: ['steps'], url: 'https://www.icloud.com/shortcuts/15f4a55757e24b73bc3fc841db91a50d', guide: '/connect-steps' },
   { id: 'active_energy', name: '活动热量', metrics: ['active_energy'], url: 'https://www.icloud.com/shortcuts/bdade70b826c4f0fb05f3a52913844c2', guide: '/connect-steps?metric=active_energy' },
@@ -10,7 +12,7 @@ export function shortcutTemplate(input: unknown) { return SHORTCUT_TEMPLATES.fin
 
 export function renderShortcutInstallCard(id: ShortcutTemplateId) {
   const item = shortcutTemplate(id);
-  return `<section class="card shortcut-template-card"><h2>安装${item.name}模板</h2><p>可以先安装你提供的 iCloud 快捷指令，再按下方指南核对网站地址、连接与实际来源。模板内容尚未在当前环境检查，iPhone 安装和运行待验收。</p><div class="actions"><a class="btn primary" href="${item.url}" target="_blank" rel="noopener noreferrer">在 iPhone 安装模板 ↗</a><a class="btn" href="/sync/templates?template=${item.id}">运行后核对同步结果 →</a></div></section>`;
+  return `<section class="card shortcut-template-card"><h2>安装${item.name}模板</h2><p>可以先安装你提供的 iCloud 快捷指令，再按下方指南核对网站地址、连接与实际来源。模板内容尚未在当前环境检查，iPhone 安装和运行待验收。核对指南版本：${SHORTCUT_GUIDE_VERSION}；这不是 iCloud 模板内容版本。</p><div class="actions"><a class="btn primary" href="${item.url}" target="_blank" rel="noopener noreferrer">在 iPhone 安装模板 ↗</a><a class="btn" href="/sync/templates?template=${item.id}">运行后核对同步结果 →</a></div></section>`;
 }
 
 export function withShortcutInstallCard(html: string, id: ShortcutTemplateId): string {

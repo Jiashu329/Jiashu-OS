@@ -1,17 +1,17 @@
-import { FinanceIdempotencyConflictError } from './finance-store.ts';
+import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from './finance-store.ts';
 import { FinanceGoalValidationError } from '../lib/finance-goals.ts';
-import type { FinanceGoalCreate, FinanceGoalPatch, FinanceGoalPlan } from '../lib/finance-goals.ts';
+import type { FinanceGoalCreate, FinanceGoalPatchCommand, FinanceGoalPlan } from '../lib/finance-goals.ts';
 import type { CurrencyCode, LedgerKind } from '../lib/finance.ts';
 
 export type FinanceGoalsDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 interface GoalRow {
   id: string; userId: string; ledger: LedgerKind; currency: CurrencyCode; name: string;
   targetMinor: string; deadline: string; accountIdsJson: string; creationHash: string;
-  createdAt: string; updatedAt: string; archivedAt: string | null;
+  createdAt: string; updatedAt: string; archivedAt: string | null; revision: number;
 }
 const columns = `id, user_id AS userId, ledger, currency, name, target_minor AS targetMinor,
   deadline, account_ids_json AS accountIdsJson, creation_hash AS creationHash,
-  created_at AS createdAt, updated_at AS updatedAt, archived_at AS archivedAt`;
+  created_at AS createdAt, updated_at AS updatedAt, archived_at AS archivedAt, revision`;
 const validAccounts = `SELECT COUNT(*) FROM finance_accounts WHERE user_id = ? AND ledger = ? AND currency = ?
   AND archived_at IS NULL AND type IN ('cash','bank','investment','property','receivable','other_asset')
   AND id IN (SELECT value FROM json_each(?))`;
@@ -69,28 +69,32 @@ export async function createFinanceGoalPlan(db: FinanceGoalsDatabase, userId: st
   return invalidAccounts();
 }
 
-export async function patchFinanceGoalPlan(db: FinanceGoalsDatabase, userId: string, id: string, patch: FinanceGoalPatch, now = new Date().toISOString()): Promise<FinanceGoalPlan | null> {
+export async function patchFinanceGoalPlan(db: FinanceGoalsDatabase, userId: string, id: string, patch: FinanceGoalPatchCommand, now = new Date().toISOString()): Promise<FinanceGoalPlan | null> {
   const existing = await findFinanceGoalPlan(db, userId, id);
   if (!existing) return null;
+  if (!Number.isSafeInteger(patch.expectedRevision) || patch.expectedRevision < 1 || existing.revision !== patch.expectedRevision) throw new FinanceMetadataConflictError();
   if (patch.accountIds) await checkAccounts(db, userId, { ledger: existing.ledger, currency: existing.currency, accountIds: patch.accountIds });
   const assignments: string[] = [];
-  const values: (string | null)[] = [];
+  const values: (string | number | null)[] = [];
   for (const [key, column] of [['name', 'name'], ['targetMinor', 'target_minor'], ['deadline', 'deadline']] as const) {
     if (patch[key] !== undefined) { assignments.push(column + ' = ?'); values.push(patch[key]!); }
   }
   if (patch.accountIds) { assignments.push('account_ids_json = ?'); values.push(JSON.stringify(patch.accountIds)); }
   if (patch.archived !== undefined) { assignments.push('archived_at = ?'); values.push(patch.archived ? existing.archivedAt ?? now : null); }
   if (!assignments.length) return existing;
-  assignments.push('updated_at = ?');
+  assignments.push('updated_at = ?', 'revision = revision + 1');
   const condition = patch.accountIds ? `AND (${validAccounts}) = ?` : '';
   const accountParams = patch.accountIds ? [userId, existing.ledger, existing.currency, JSON.stringify(patch.accountIds), patch.accountIds.length] : [];
   const result = await db.batch<GoalRow>([
-    db.prepare(`UPDATE finance_goal_plans SET ${assignments.join(', ')} WHERE user_id = ? AND id = ? ${condition}`)
-      .bind(...values, now, userId, id, ...accountParams),
+    db.prepare(`UPDATE finance_goal_plans SET ${assignments.join(', ')} WHERE user_id = ? AND id = ? AND revision = ? ${condition}`)
+      .bind(...values, now, userId, id, patch.expectedRevision, ...accountParams),
     db.prepare(`SELECT ${columns} FROM finance_goal_plans WHERE user_id = ? AND id = ?`).bind(userId, id),
   ]);
   const updated = result[1].results[0];
   if (!updated) return null;
-  if (result[0].meta.changes !== 1) return invalidAccounts();
+  if (result[0].meta.changes !== 1) {
+    if (updated.revision !== patch.expectedRevision) throw new FinanceMetadataConflictError();
+    return invalidAccounts();
+  }
   return plan(updated);
 }

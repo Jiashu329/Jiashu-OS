@@ -40,8 +40,9 @@ void test('scope filtering happens before validating or projecting unshared nutr
 
 void test('360-day summaries cover the actual full range within provider budget with explicit group semantics', () => {
   const measurements:HealthMeasurement[]=[];const nutrition:NutritionEntry[]=[];
-  for(let index=1;index<360;index++){const date=shift('2026-11-11',-index);measurements.push(daily('steps',date,1000+index),daily('sleep',date,7),daily('active_energy',date,200),mass('weight',date,70),mass('lean_body_mass',date,55));nutrition.push(food(date,1234));}
-  const result=buildHealthAssistantContext({measurements,nutrition,days:360,now:NOW});
+  for(let index=1;index<360;index++){const date=shift('2026-11-11',-index);measurements.push(daily('steps',date,1000+index),daily('sleep',date,7),daily('active_energy',date,200),mass('weight',date,70),mass('lean_body_mass',date,55));nutrition.push({...food(date,1234),carbsTenth:2000,proteinTenth:800,fatTenth:600});}
+  const nutritionStatuses=nutrition.map((row):NutritionDayStatus=>({date:row.date,complete:true,revision:1,meals:{breakfast:'skipped',lunch:'recorded',dinner:'skipped',snack:'unrecorded'}}));
+  const result=buildHealthAssistantContext({measurements,nutrition,nutritionStatuses,days:360,now:NOW});
   assert.equal(result.context.range.days,360);assert.equal(result.context.health[0].recordedDays,359);
   assert.ok(result.context.health.every((metric)=>metric.points.length<=26));
   assert.ok(result.context.limitations.some((text)=>text.includes('14日分组')));
@@ -163,7 +164,7 @@ void test('nutrition totals preserve true zero and unknown calories while exclud
     food('2026-11-09', 5000, true), food('2026-11-12', 9999),
   ], days: 7, now: NOW });
   assert.equal(result.hasData, true);
-  assert.deepEqual(result.context.nutrition, { recordedDays: 3, days: [
+  assert.deepEqual({...result.context.nutrition,days:result.context.nutrition.days.map(({nutrients:_nutrients,...day})=>day)}, { recordedDays: 3, days: [
     { date: '2026-11-07', entryCount: 1, knownCalorieCount: 1, unknownCalorieCount: 0, recordedKnownKcal: '0.0', sourceRef: 'N1-20261107' },
     { date: '2026-11-08', entryCount: 1, knownCalorieCount: 0, unknownCalorieCount: 1, recordedKnownKcal: null, sourceRef: 'N1-20261108' },
     { date: '2026-11-09', entryCount: 3, knownCalorieCount: 2, unknownCalorieCount: 1, recordedKnownKcal: '300.3', sourceRef: 'N1-20261109' },
@@ -245,4 +246,34 @@ void test('unshared nutrition includes neither completion labels nor food snapsh
   const row=Object.assign(food(),{food:{name:'PRIVATE_CATALOG_LABEL',source:'PRIVATE_CATALOG_SOURCE',protein:123}});
   const result=buildHealthAssistantContext({measurements:[daily('steps')],nutrition:[row],nutritionStatuses:[{date:'2026-11-10',complete:true,revision:1,meals:{breakfast:'skipped',lunch:'recorded',dinner:'skipped',snack:'unrecorded'}}],days:7,now:NOW,scope:{metrics:['steps'],includeNutrition:false,includeGoals:false}});
   assert.deepEqual(result.context.nutrition,{recordedDays:0,days:[]});assert.ok(result.sources.every((source)=>!source.id.startsWith('N')));assert.ok(!JSON.stringify(result.context).includes('PRIVATE_'));
+});
+
+void test('macro projection keeps per-field missingness, exact zero and private source notes out of model data',()=>{
+  const row={...food(),carbsTenth:0,proteinTenth:123,fatTenth:null,provenance:{protein:{source:'ai' as const,basis:'PRIVATE_ESTIMATE_BASIS'}}};
+  const context=buildHealthAssistantContext({measurements:[],nutrition:[row],days:7,now:NOW}).context;
+  assert.deepEqual(context.nutrition.days[0].nutrients,{
+    calories:{total:'100.1',knownCount:1,unknownCount:0},carbs:{total:'0.0',knownCount:1,unknownCount:0},
+    protein:{total:'12.3',knownCount:1,unknownCount:0},fat:{total:null,knownCount:0,unknownCount:1},
+  });
+  assert.ok(!JSON.stringify(context).includes('PRIVATE_'));
+  assert.throws(()=>buildHealthAssistantContext({measurements:[],nutrition:[{...food(),proteinTenth:NaN}],days:7,now:NOW}),/营养素/);
+  assert.doesNotThrow(()=>buildHealthAssistantContext({measurements:[daily('steps')],nutrition:[{...food(),proteinTenth:NaN}],days:7,now:NOW,
+    scope:{metrics:['steps'],includeNutrition:false,includeGoals:false}}));
+});
+
+void test('nutrition targets require both goal and nutrition sharing and long groups compare each nutrient on its own complete days',()=>{
+  const first=assistantRange(90,NOW).from,second=shift(first,1);
+  const status=(date:string):NutritionDayStatus=>({date,complete:true,revision:1,meals:{breakfast:'skipped',lunch:'recorded',dinner:'skipped',snack:'unrecorded'}});
+  const input={measurements:[],nutrition:[{...food(first,1000),carbsTenth:0,proteinTenth:100,fatTenth:null},
+    {...food(second,null),carbsTenth:200,proteinTenth:null,fatTenth:50}],nutritionStatuses:[status(first),status(second)],days:90 as const,now:NOW,
+    nutritionGoals:{calories:'1800.0',carbs:'200.0',protein:'80.0',fat:'60.0'}};
+  const result=buildHealthAssistantContext({...input,scope:{metrics:[],includeNutrition:true,includeGoals:true}}).context;
+  const comparisons=result.nutrition.days[0].nutrientComparisons!;
+  assert.deepEqual(comparisons.carbs,{comparableDays:2,total:'20.0',average:'10.0'});
+  assert.deepEqual(comparisons.protein,{comparableDays:1,total:'10.0',average:'10.0'});
+  assert.deepEqual(comparisons.calories,{comparableDays:1,total:'100.0',average:'100.0'});
+  assert.deepEqual(result.goals?.nutritionTargets?.find((target)=>target.nutrient==='protein'),{nutrient:'protein',value:'80.0',unit:'g'});
+  assert.equal(buildHealthAssistantContext({...input,scope:{metrics:[],includeNutrition:true,includeGoals:false}}).context.goals,undefined);
+  const unshared=buildHealthAssistantContext({...input,measurements:[daily('steps')],scope:{metrics:['steps'],includeNutrition:false,includeGoals:true}}).context;
+  assert.equal(unshared.goals?.nutritionTargets,undefined);assert.deepEqual(unshared.nutrition.days,[]);
 });

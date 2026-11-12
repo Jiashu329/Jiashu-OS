@@ -9,19 +9,22 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   return new Function(...Object.keys(bindings), source + '\nreturn {' + names.join(',') + '};')(...Object.values(bindings));
 }
-function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; personal?: 'failed' } = {}) {
+function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; personal?: 'failed'; nutrition?: 'pending'|'failed' } = {}) {
   const logs: string[] = []; const owners: string[] = [];
   const shared = load(new URL('../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => options.signedIn === false ? null : { userId: 'synthetic-owner' },
     console: { error: (value: string) => logs.push(value) },
   }, ['apiUser', 'json', 'storageDiagnostic', 'unavailable']);
   const { GET } = load(new URL('./route.ts', import.meta.url), {
-    ...shared, readWithDeadline: <T>(operation: Promise<T>) => readWithDeadline(operation, 10),
+    ...shared, env:{DB:{}},shanghaiDay:()=> '2026-11-11',readWithDeadline: <T>(operation: Promise<T>) => readWithDeadline(operation, 10),
+    readNutritionRangeSnapshot:async(_db:unknown,owner:string)=>{owners.push(owner);if(options.nutrition==='pending')return new Promise(()=>{});if(options.nutrition==='failed')throw new Error('synthetic-private-food');return {entries:[],statuses:[]};},
+    readNutritionGoals:async(_db:unknown,owner:string)=>{owners.push(owner);return {calories:null,carbs:null,protein:null,fat:null,revision:0};},
     readHealth: async (owner: string) => { owners.push(owner); if (options.health === 'pending') return new Promise(() => {}); if (options.health === 'failed') throw new Error('synthetic-private-record-and-key'); return {}; },
     financeOverview: async (owner: string, ledger: string) => { owners.push(owner); if (ledger === 'personal' && options.personal === 'failed') throw new Error('synthetic-private-account'); return {}; },
     buildHomeOverview: (sources: Record<string, unknown>) => ({ asOf: '2026-11-11T00:00:00Z',
       health: { status: sources.health ? 'ready' : 'unavailable' },
       finance: Object.fromEntries(['personal', 'family'].map((key) => [key, { status: sources[key] ? 'ready' : 'unavailable' }])),
+      nutrition:{status:sources.nutrition?'ready':'unavailable'},
     }),
   }, ['GET']);
   return { GET: GET as () => Promise<Response>, logs, owners, unavailable: shared.unavailable as () => Response };
@@ -49,4 +52,12 @@ test('module failures and health 503 responses never expose raw errors in diagno
   const unavailable = f.unavailable(); assert.equal(unavailable.status, 503);
   const data = await unavailable.json() as { code: string; diagnosticId: string };
   assert.equal(data.code, 'HEALTH_STORAGE_UNAVAILABLE'); assert.equal(unavailable.headers.get('X-Diagnostic-ID'), data.diagnosticId);
+});
+
+test('nutrition failure stays separate from ready health and finance and never appears as an empty diet',async()=>{
+  const f=fixture({nutrition:'failed'});const response=await f.GET();assert.equal(response.status,200);
+  const data=await response.json() as {health:{status:string};nutrition:{status:string};modules:Record<string,{status:string;diagnosticId?:string}>};
+  assert.equal(data.health.status,'ready');assert.equal(data.nutrition.status,'unavailable');assert.equal(data.modules.nutrition.status,'unavailable');
+  assert.match(data.modules.nutrition.diagnosticId!,/^[a-f0-9]{32}$/);assert.equal(f.logs.length,1);assert.ok(!JSON.stringify(data).includes('synthetic-private'));
+  assert.ok(f.owners.every((owner)=>owner==='synthetic-owner'));
 });

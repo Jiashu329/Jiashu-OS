@@ -1,5 +1,5 @@
 import { financeAccountDetails, updateFinanceAccount } from '../../../../../db/finance-repository';
-import { parseAccountPatch } from '../../../../../lib/finance';
+import { parseAccountPatchCommand } from '../../../../../lib/finance';
 import { apiUser, financeBody, financeError, financeNotFound, financeUnauthenticated, guardFinanceWrite, json, validAccountId } from '../../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -19,6 +19,6 @@ export async function PATCH(request: Request, context: Context) {
   if (guard) return guard;
   const { id } = await context.params;
   if (!validAccountId(id)) return financeNotFound();
-  try { const result = await updateFinanceAccount(user.userId, id, parseAccountPatch(await financeBody(request))); return result ? json(result) : financeNotFound(); }
+  try { const result = await updateFinanceAccount(user.userId, id, parseAccountPatchCommand(await financeBody(request))); return result ? json(result) : financeNotFound(); }
   catch (error) { return financeError(error); }
 }

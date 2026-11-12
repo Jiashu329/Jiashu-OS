@@ -11,6 +11,7 @@ import { buildHealthSummary } from './health.ts';
 import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
+import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -79,15 +80,18 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
   const sessionStorage = storage(seedStorage);
   Object.defineProperty(window, 'sessionStorage', { value: sessionStorage, configurable: true });
+  const localStorage = storage();
+  Object.defineProperty(window, 'localStorage', { value: localStorage, configurable: true });
   const requests: Array<{ path: string; method: string }> = [];
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] } });
+  const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] }, nutrition: { entries: [], statuses: [], goals: EMPTY_NUTRITION_GOALS } });
   const fetch = async (url: string | URL, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
     requests.push({ path, method });
     // Initializing any page must remain read-only, even when session storage
     // contains another signed-in owner's original pending requests.
     if (method !== 'GET') throw new Error('Unexpected automatic production write: ' + method + ' ' + path);
+    if (path === '/api/session') return Response.json({ userId: 'synthetic-production-owner' });
     if (path === '/api/overview') return Response.json(overview);
     if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
     if (path === '/api/ai/settings') return Response.json({ settings: { configured: false, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
@@ -99,6 +103,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
     if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:[]});
+    if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
     if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
     if (parsed.pathname === '/api/health/nutrition/favorites') return Response.json({favorites:[]});
     if (parsed.pathname === '/api/health/nutrition/status') return Response.json({dayStatus:{date:parsed.searchParams.get('date') ?? today,complete:false,revision:0,meals:emptyMealStates}});
@@ -107,7 +112,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       context: { version: 1, timezone: 'Asia/Shanghai', range: { from: today, to: today, today, days: 7 }, health: [], nutrition: { recordedDays: 0, days: [] }, limitations: ['暂无合成测试记录'] }, sources: [] });
     throw new Error('Unexpected production client request: ' + method + ' ' + path);
   };
-  const context = { window, document, location, history, navigator: {}, sessionStorage, fetch, URL, URLSearchParams, TextEncoder, AbortController,
+  const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, URLSearchParams, TextEncoder, AbortController,
     crypto: webcrypto, Intl, Date, Event: window.Event, Element: window.Element, innerWidth: width,
     Headers, setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
   for (const [index, script] of [...document.querySelectorAll('script')].entries()) {
@@ -261,7 +266,7 @@ test('390px minified nutrition opens direct recording with lazy history and prot
   assert.equal(f.document.getElementById('nutrition-dialog')?.hasAttribute('open'),false);
   assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'),'true');
   assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')&&!request.path.includes('/assistant')));
-  assert.deepEqual(f.requests.map((request)=>new URL(request.path,'https://synthetic-production.example').pathname).sort(),['/api/health/nutrition','/api/health/nutrition/favorites','/api/health/nutrition/review']);
+  assert.deepEqual(f.requests.map((request)=>new URL(request.path,'https://synthetic-production.example').pathname).sort(),['/api/health/nutrition','/api/health/nutrition/favorites','/api/health/nutrition/goals','/api/health/nutrition/review']);
   for(const [key,value] of Object.entries(foreignStorage))assert.equal(f.sessionStorage.getItem(key),value);
   assert.ok(!f.document.body.textContent?.includes('OTHER_OWNER_PRIVATE_DRAFT'));
 });

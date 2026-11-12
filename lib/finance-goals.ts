@@ -16,6 +16,7 @@ export interface FinanceGoalPatch {
   accountIds?: string[];
   archived?: boolean;
 }
+export interface FinanceGoalPatchCommand extends FinanceGoalPatch { expectedRevision: number }
 export interface FinanceGoalPlan extends FinanceGoalCreate {
   id: string;
   userId: string;
@@ -23,6 +24,7 @@ export interface FinanceGoalPlan extends FinanceGoalCreate {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  revision: number;
 }
 export interface FinanceGoalAccount {
   id: string;
@@ -47,6 +49,7 @@ export interface FinanceGoalView {
   updatedAt: string;
   archivedAt: string | null;
   archived: boolean;
+  revision: number;
   currentMinor: string;
   gapMinor: string;
   percent: number;
@@ -139,6 +142,13 @@ export function parseFinanceGoalPatch(input: unknown, currency: CurrencyCode): F
   return patch;
 }
 
+export function parseFinanceGoalPatchCommand(input: unknown, currency: CurrencyCode): FinanceGoalPatchCommand {
+  const raw = fields(input, ['name', 'targetAmount', 'deadline', 'accountIds', 'archived', 'expectedRevision']);
+  if (!Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1) return fail('expectedRevision', '请先读取最新目标版本，再保存修改。');
+  const { expectedRevision, ...patch } = raw;
+  return { ...parseFinanceGoalPatch(patch, currency), expectedRevision: expectedRevision as number };
+}
+
 /** Linked balances are a view of savings, never a reservation or a transfer. */
 export function buildFinanceGoalView(plan: FinanceGoalPlan, accounts: readonly FinanceGoalAccount[], today = todayShanghai()): FinanceGoalView {
   const linked = new Set(plan.accountIds);
@@ -166,7 +176,7 @@ export function buildFinanceGoalView(plan: FinanceGoalPlan, accounts: readonly F
     id: plan.id, ledger: plan.ledger, currency: plan.currency, name: plan.name,
     targetMinor: plan.targetMinor, targetAmount: decimalFromMinor(plan.targetMinor, plan.currency),
     deadline: plan.deadline, accountIds: [...plan.accountIds], createdAt: plan.createdAt, updatedAt: plan.updatedAt,
-    archivedAt: plan.archivedAt, archived: plan.archivedAt !== null,
+    archivedAt: plan.archivedAt, archived: plan.archivedAt !== null, revision: plan.revision,
     currentMinor: current.toString(), gapMinor: gap.toString(), percent,
     daysRemaining: Math.max(0, days), monthsRemaining: months, monthlyMinor: monthly,
     missingCount: linked.size - matched.size, matchedAccountCount: matched.size,

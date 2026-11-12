@@ -66,6 +66,7 @@ function fixture() {
     },
     readAIQuota: async () => ({allowed:true,retryAfter:0,remainingToday:20}),
     readGoalSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'goals'});return {targets:{steps:8000,sleep:8,active_energy:null},effectiveFrom:today}; },
+    readNutritionGoals:async(_db:unknown,user:string)=>{reads.push({user,from:today,to:today,kind:'nutrition-goals'});return {calories:'1800.0',carbs:'200.0',protein:'80.0',fat:'60.0',revision:1};},
     readWeightPlanSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'plan'});return {enabled:true,baselineWeight:75,targetWeight:70,startDate:today,deadline:'2027-01-01'}; },
     consumeAIQuota: async (_db: unknown, user: string) => {
       quotaUsers.push(user); const hook = quotaHook; quotaHook = null; await hook?.();
@@ -114,6 +115,11 @@ void test('selected scope controls database reads and provider projection, inclu
   const g=fixture();assert.equal((await g.post({question:'对照我的目标',days:7,scope:{...scope,includeGoals:true},shareHealthData:true})).status,200);
   assert.deepEqual(g.reads.map((r)=>r.kind).sort(),['goals','health']);
   assert.equal(g.outgoing[0].context.goals?.targets[0].value,8000);
+  const nutrition=fixture();const preview=await nutrition.get('?days=7&metrics=steps&nutrition=1&goals=1');
+  assert.equal(preview.status,200);assert.ok(nutrition.reads.some((read)=>read.kind==='nutrition-goals'&&read.user==='alice'));
+  const selected=await preview.json() as {context:rules.HealthAssistantContext};
+  assert.deepEqual(selected.context.goals?.nutritionTargets?.find((target)=>target.nutrient==='protein'),{nutrient:'protein',value:'80.0',unit:'g'});
+  assert.equal(nutrition.quotaUsers.length,0);assert.equal(nutrition.outgoing.length,0);
 });
 
 void test('invalid scopes and changed history scopes fail before database or quota and GET supports exact long ranges',async()=>{

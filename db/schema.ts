@@ -99,6 +99,7 @@ export const financeAccounts = sqliteTable('finance_accounts', {
   currency: text('currency').notNull(),
   creationHash: text('creation_hash'),
   balanceRevision: integer('balance_revision').notNull().default(0),
+  metadataRevision: integer('metadata_revision').notNull().default(1),
   note: text('note').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -146,6 +147,7 @@ export const financeGoalPlans = sqliteTable('finance_goal_plans', {
   deadline: text('deadline').notNull(),
   accountIdsJson: text('account_ids_json').notNull(),
   creationHash: text('creation_hash').notNull(),
+  revision: integer('revision').notNull().default(1),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   archivedAt: text('archived_at'),
@@ -220,6 +222,7 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   proteinTenth: integer('protein_tenth'),
   fatTenth: integer('fat_tenth'),
   foodJson: text('food_json'),
+  provenanceJson: text('provenance_json'),
   creationHash: text('creation_hash').notNull(),
   revision: integer('revision').notNull(),
   createdAt: text('created_at').notNull(),
@@ -230,6 +233,27 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   check('nutrition_entries_protein_bounds', sql`${table.proteinTenth} IS NULL OR (typeof(${table.proteinTenth}) = 'integer' AND ${table.proteinTenth} BETWEEN 0 AND 200000)`),
   check('nutrition_entries_fat_bounds', sql`${table.fatTenth} IS NULL OR (typeof(${table.fatTenth}) = 'integer' AND ${table.fatTenth} BETWEEN 0 AND 200000)`),
 ]);
+
+export const nutritionGoalSettings = sqliteTable('nutrition_goal_settings', {
+  userId: text('user_id').primaryKey(),
+  caloriesTenth: integer('calories_tenth'), carbsTenth: integer('carbs_tenth'), proteinTenth: integer('protein_tenth'), fatTenth: integer('fat_tenth'),
+  revision: integer('revision').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('nutrition_goals_calories_bounds', sql`${table.caloriesTenth} IS NULL OR (typeof(${table.caloriesTenth}) = 'integer' AND ${table.caloriesTenth} BETWEEN 0 AND 200000)`),
+  check('nutrition_goals_carbs_bounds', sql`${table.carbsTenth} IS NULL OR (typeof(${table.carbsTenth}) = 'integer' AND ${table.carbsTenth} BETWEEN 0 AND 200000)`),
+  check('nutrition_goals_protein_bounds', sql`${table.proteinTenth} IS NULL OR (typeof(${table.proteinTenth}) = 'integer' AND ${table.proteinTenth} BETWEEN 0 AND 200000)`),
+  check('nutrition_goals_fat_bounds', sql`${table.fatTenth} IS NULL OR (typeof(${table.fatTenth}) = 'integer' AND ${table.fatTenth} BETWEEN 0 AND 200000)`),
+]);
+
+export const nutritionEntryHistory = sqliteTable('nutrition_entry_history', {
+  userId: text('user_id').notNull(), entryId: text('entry_id').notNull(), revision: integer('revision').notNull(),
+  action: text('action').notNull(), beforeJson: text('before_json'), afterJson: text('after_json').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.entryId, table.revision] }), index('nutrition_history_owner_entry_idx').on(table.userId, table.entryId)]);
+
+export const nutritionRestoreOperations = sqliteTable('nutrition_restore_operations', {
+  userId: text('user_id').notNull(), id: text('id').notNull(), entryId: text('entry_id').notNull(),
+  sourceRevision: integer('source_revision').notNull(), targetRevision: integer('target_revision').notNull(), requestHash: text('request_hash').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.id] })]);
 
 export const nutritionCopyOperations = sqliteTable('nutrition_copy_operations', {
   id: text('id').primaryKey(), userId: text('user_id').notNull(), requestHash: text('request_hash').notNull(),

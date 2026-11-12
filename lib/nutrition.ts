@@ -1,5 +1,6 @@
 import { normalizeTimestamp, shanghaiDay } from './health.ts';
 import { calculateFoodSelection, type FoodSnapshot } from './food-catalog.ts';
+import { NUTRIENT_KEYS, summarizeNutrients, type NutrientKey, type NutritionNutrients } from './nutrition-nutrients.ts';
 
 export const NUTRITION_MEALS = {
   breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '加餐',
@@ -8,6 +9,9 @@ export type NutritionMeal = keyof typeof NUTRITION_MEALS;
 export type NutritionMealStatus = 'unrecorded' | 'recorded' | 'skipped';
 export interface NutritionDayStatus { date: string; complete: boolean; meals: Record<NutritionMeal, NutritionMealStatus>; revision: number }
 export interface NutritionDayStatusInput extends Omit<NutritionDayStatus, 'revision'> { expectedRevision: number }
+export type NutritionSource = 'manual' | 'label' | 'catalog' | 'ai' | 'unknown';
+export interface NutritionValueProvenance { source: NutritionSource; basis?: string; portion?: string; originalValue?: string | null }
+export type NutritionProvenance = Partial<Record<NutrientKey, NutritionValueProvenance>>;
 export interface NutritionInput {
   date: string;
   meal: NutritionMeal;
@@ -19,6 +23,7 @@ export interface NutritionInput {
   proteinTenth?: number | null;
   fatTenth?: number | null;
   food?: FoodSnapshot;
+  provenance?: NutritionProvenance;
 }
 export interface NutritionEntry extends NutritionInput {
   id: string;
@@ -35,12 +40,14 @@ export interface NutritionMealSummary {
   knownCount: number;
   unknownCount: number;
   knownCalories: string | null;
+  nutrients: NutritionNutrients;
 }
 export interface NutritionSummary {
   entryCount: number;
   knownCount: number;
   unknownCount: number;
   knownCalories: string | null;
+  nutrients: NutritionNutrients;
   meals: NutritionMealSummary[];
 }
 export interface NutritionQuery {
@@ -132,7 +139,7 @@ export function validNutritionId(input: unknown): input is string {
   return typeof input === 'string' && input.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input);
 }
 export function parseNutritionCreate(input: unknown, now: Date | number = Date.now()): NutritionInput {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food', 'provenance']);
   if (typeof raw.meal !== 'string' || !Object.hasOwn(NUTRITION_MEALS, raw.meal)) return fail('meal', '请选择早餐、午餐、晚餐或加餐。');
   let food: FoodSnapshot | undefined;
   if (raw.food !== undefined && raw.food !== null) {
@@ -149,7 +156,7 @@ export function parseNutritionCreate(input: unknown, now: Date | number = Date.n
     const field = `${key}Tenth` as 'carbsTenth' | 'proteinTenth' | 'fatTenth';
     macros[field] = macroGrams(raw[key], key) ?? food?.[field] ?? null;
   }
-  return {
+  const result: NutritionInput = {
     date: date(raw.date, shanghaiDay(new Date(now).toISOString())), meal: raw.meal as NutritionMeal,
     name: food ? text(food.foodName, 'name', 100) : text(raw.name, 'name', 100),
     portion: food ? text(String(food.amount) + food.unit, 'portion', 100) : text(raw.portion, 'portion', 100, true),
@@ -157,9 +164,11 @@ export function parseNutritionCreate(input: unknown, now: Date | number = Date.n
     ...macros,
     ...(food ? { food } : {}),
   };
+  if (Object.hasOwn(raw, 'provenance')) result.provenance = parseNutritionProvenance(raw.provenance, result);
+  return result;
 }
 export function parseNutritionPatch(input: unknown, now: Date | number = Date.now()): NutritionPatch {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food', 'deleted', 'expectedRevision']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food', 'provenance', 'deleted', 'expectedRevision']);
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1) return fail('expectedRevision', '请先读取最新版本的饮食记录。');
   if (Object.hasOwn(raw, 'deleted')) {
     if (typeof raw.deleted !== 'boolean' || Object.keys(raw).some((key) => !['deleted', 'expectedRevision'].includes(key))) return fail('deleted', '删除或恢复操作仅提交状态和当前版本，不同时编辑食物。');
@@ -169,6 +178,44 @@ export function parseNutritionPatch(input: unknown, now: Date | number = Date.no
   for (const key of required) if (!Object.hasOwn(raw, key)) return fail(key, '编辑时请提交完整食物记录；未知热量使用 null。');
   const { expectedRevision, ...edit } = raw;
   return { kind: 'edit', input: parseNutritionCreate(edit, now), expectedRevision };
+}
+
+/** New writes store explicit field origins; old omitted metadata stays hash-compatible. */
+export function parseNutritionProvenance(value: unknown, input: NutritionInput): NutritionProvenance {
+  const raw = fields(value, NUTRIENT_KEYS);
+  const result: NutritionProvenance = {};
+  for (const key of NUTRIENT_KEYS) {
+    if (!Object.hasOwn(raw, key)) continue;
+    const item = fields(raw[key], ['source', 'basis', 'portion', 'originalValue']);
+    if (!['manual', 'label', 'catalog', 'ai', 'unknown'].includes(String(item.source))) return fail('provenance.' + key, '请选择有效的营养数据来源。');
+    const source = item.source as NutritionSource;
+    const parsed: NutritionValueProvenance = { source };
+    for (const field of ['basis', 'portion'] as const) if (Object.hasOwn(item, field)) {
+      if (typeof item[field] !== 'string' || item[field].length > (field === 'basis' ? 300 : 100) || /[\u0000-\u001f\u007f]/.test(item[field])) return fail('provenance.' + key + '.' + field, '来源依据或份量说明格式不正确。');
+      if (item[field].trim()) parsed[field] = item[field].trim();
+    }
+    if (Object.hasOwn(item, 'originalValue')) {
+      const original = key === 'calories' ? calories(item.originalValue) : macroGrams(item.originalValue, key);
+      parsed.originalValue = original === null ? null : decimal(BigInt(original));
+    }
+    if (source === 'ai' && !parsed.basis) return fail('provenance.' + key + '.basis', 'AI 估算需保留估算依据。');
+    const field = `${key}Tenth` as 'caloriesTenth' | 'carbsTenth' | 'proteinTenth' | 'fatTenth';
+    if (source === 'catalog' && (!input.food || input.food[field] === undefined || input[field] !== input.food[field])) return fail('provenance.' + key, '食物库来源需与当前选中食物和份量的计算值一致。');
+    if (input[field] === undefined || input[field] === null) parsed.source = 'unknown';
+    result[key] = parsed;
+  }
+  return result;
+}
+
+export function nutritionProvenance(input: NutritionInput): NutritionProvenance {
+  return Object.fromEntries(NUTRIENT_KEYS.map((key) => {
+    const field = `${key}Tenth` as 'caloriesTenth' | 'carbsTenth' | 'proteinTenth' | 'fatTenth';
+    const value = input[field];
+    const supplied = input.provenance?.[key];
+    const catalog = value !== null && value !== undefined && input.food?.[field] !== undefined && input.food[field] === value;
+    const source = value === null || value === undefined ? 'unknown' : key === 'calories' && catalog ? 'catalog' : supplied?.source ?? (catalog ? 'catalog' : 'unknown');
+    return [key, { ...supplied, source }];
+  }));
 }
 export function parseNutritionQuery(params: URLSearchParams, now: Date | number = Date.now()): NutritionQuery {
   const today = shanghaiDay(new Date(now).toISOString());
@@ -188,8 +235,8 @@ export function summarizeNutrition(entries: readonly NutritionEntry[]): Nutritio
     return { entryCount: rows.length, knownCount: known.length, unknownCount: rows.length - known.length,
       knownCalories: known.length ? decimal(total) : null };
   };
-  return { ...sum(active), meals: (Object.keys(NUTRITION_MEALS) as NutritionMeal[]).map((meal) => ({
-    meal, label: NUTRITION_MEALS[meal], ...sum(active.filter((entry) => entry.meal === meal)),
+  return { ...sum(active), nutrients: summarizeNutrients(active), meals: (Object.keys(NUTRITION_MEALS) as NutritionMeal[]).map((meal) => ({
+    meal, label: NUTRITION_MEALS[meal], ...sum(active.filter((entry) => entry.meal === meal)), nutrients: summarizeNutrients(active.filter((entry) => entry.meal === meal)),
   })) };
 }
 export function buildNutritionReview(entries: readonly NutritionEntry[], selection: NutritionQuery): NutritionReview {

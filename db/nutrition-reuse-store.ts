@@ -52,8 +52,8 @@ export async function copyNutritionMeal(db:NutritionDatabase,userId:string,selec
   const rows=await Promise.all(sources.map(async(source,index)=>{
     const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(id+':'+index)));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
     const hex=[...bytes.slice(0,16)].map((b)=>b.toString(16).padStart(2,'0')).join('');const entryId=hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
-    const input:NutritionInput={date:selection.toDate,meal:selection.toMeal,name:source.name,portion:source.portion,note:source.note,caloriesTenth:source.caloriesTenth,carbsTenth:source.carbsTenth??null,proteinTenth:source.proteinTenth??null,fatTenth:source.fatTenth??null,...(source.food?{food:source.food}:{})};
-    return {id:entryId,...input,foodJson:source.food?JSON.stringify(source.food):null,creationHash:await creationFingerprint(input)};
+    const input:NutritionInput={date:selection.toDate,meal:selection.toMeal,name:source.name,portion:source.portion,note:source.note,caloriesTenth:source.caloriesTenth,carbsTenth:source.carbsTenth??null,proteinTenth:source.proteinTenth??null,fatTenth:source.fatTenth??null,...(source.food?{food:source.food}:{}),provenance:source.provenance??{calories:{source:'unknown'},carbs:{source:'unknown'},protein:{source:'unknown'},fat:{source:'unknown'}}};
+    return {id:entryId,...input,foodJson:source.food?JSON.stringify(source.food):null,provenanceJson:JSON.stringify(input.provenance),creationHash:await creationFingerprint(input)};
   }));
   const ids=rows.map((row)=>row.id);const snapshot=sources.map((e)=>({id:e.id,revision:e.revision}));
   const result=await db.batch([
@@ -61,8 +61,8 @@ export async function copyNutritionMeal(db:NutritionDatabase,userId:string,selec
       WHERE (SELECT COUNT(*) FROM nutrition_entries WHERE user_id=? AND date=? AND meal=? AND deleted_at IS NULL)=?
       AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE NOT EXISTS (SELECT 1 FROM nutrition_entries n WHERE n.user_id=? AND n.id=json_extract(s.value,'$.id') AND n.revision=json_extract(s.value,'$.revision') AND n.deleted_at IS NULL)) ON CONFLICT(id) DO NOTHING`)
       .bind(id,userId,requestHash,JSON.stringify(ids),now,userId,selection.fromDate,selection.fromMeal,sources.length,JSON.stringify(snapshot),userId),
-    db.prepare(`INSERT INTO nutrition_entries (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at,food_json,carbs_tenth,protein_tenth,fat_tenth)
-      SELECT json_extract(value,'$.id'),?,json_extract(value,'$.date'),json_extract(value,'$.meal'),json_extract(value,'$.name'),json_extract(value,'$.portion'),json_extract(value,'$.note'),json_extract(value,'$.caloriesTenth'),json_extract(value,'$.creationHash'),1,?,?,NULL,json_extract(value,'$.foodJson'),json_extract(value,'$.carbsTenth'),json_extract(value,'$.proteinTenth'),json_extract(value,'$.fatTenth') FROM json_each(?)
+    db.prepare(`INSERT INTO nutrition_entries (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at,food_json,carbs_tenth,protein_tenth,fat_tenth,provenance_json)
+      SELECT json_extract(value,'$.id'),?,json_extract(value,'$.date'),json_extract(value,'$.meal'),json_extract(value,'$.name'),json_extract(value,'$.portion'),json_extract(value,'$.note'),json_extract(value,'$.caloriesTenth'),json_extract(value,'$.creationHash'),1,?,?,NULL,json_extract(value,'$.foodJson'),json_extract(value,'$.carbsTenth'),json_extract(value,'$.proteinTenth'),json_extract(value,'$.fatTenth'),json_extract(value,'$.provenanceJson') FROM json_each(?)
       WHERE changes()=1 AND EXISTS (SELECT 1 FROM nutrition_copy_operations WHERE id=? AND user_id=? AND request_hash=?)`)
       .bind(userId,now,now,JSON.stringify(rows),id,userId,requestHash),
   ]);

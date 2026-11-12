@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderNutritionScript } from './nutrition-ui.ts';
+import { parseNutritionCreate } from './nutrition.ts';
 
 const DAY = '2026-11-11';
 const NOW = Date.parse(DAY + 'T04:00:00Z');
@@ -33,7 +34,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -56,6 +57,9 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   const entries = [...(options.entries ?? [])];
   const favorites: Array<Record<string, any>> = [];
   let nextBatch: (() => Promise<Response>) | undefined;
+  let nextGoal: (() => Promise<Response>) | undefined;
+  let nextRestore: (() => Promise<Response>) | undefined;
+  let goals={calories:null,carbs:null,protein:null,fat:null,revision:0,createdAt:null,updatedAt:null,...options.goals};
   let dayStatus = { date: DAY, complete: false, meals: emptyMealStates(), revision: 0 };
   const baseData = (date: string) => {
     const rows = date === '2026-11-10' ? options.yesterdayEntries ?? [] : entries.filter((item) => item.date === date);
@@ -68,6 +72,12 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const headers = new Headers(init?.headers);
     requests.push({ url, method, body, key: headers.get('Idempotency-Key') });
+    if (parsed.pathname.endsWith('/goals')) {
+      if(method==='PUT'){const handler=nextGoal;nextGoal=undefined;if(handler)return handler();if(body.expectedRevision!==goals.revision)return Response.json({error:'目标已经更新',code:'NUTRITION_CONFLICT'},{status:409});goals={...goals,...body,revision:goals.revision+1};}
+      return Response.json({goals,weightPlan:null});
+    }
+    if(parsed.pathname.endsWith('/history'))return Response.json({entryId:ID,history:options.history??[]});
+    if(parsed.pathname.endsWith('/restore')){const handler=nextRestore;nextRestore=undefined;if(handler)return handler();const current=entries.find(item=>item.id===ID)!;const target=options.history?.find(item=>item.revision===body.revision)?.after;if(!target)return Response.json({error:'找不到这个版本'},{status:404});Object.assign(current,target,{revision:current.revision+1});return Response.json({entry:current,replayed:false});}
     if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: [food] });
     if (parsed.pathname.endsWith('/parse')) return Response.json({ drafts: options.drafts ?? [draft()], warnings: [], provider: 'MiniMax', model: 'synthetic' });
     if (parsed.pathname.endsWith('/batch')) {
@@ -83,7 +93,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
       return Response.json({ favorites });
     }
     if (parsed.pathname.endsWith('/status')) { dayStatus = { ...body, revision: dayStatus.revision + 1 }; return Response.json({ dayStatus }); }
-    if (parsed.pathname.endsWith('/review')) return Response.json({ range: { from: '2026-11-05', to: DAY, days: Number(parsed.searchParams.get('days')) || 7 },
+    if (parsed.pathname.endsWith('/review')) return Response.json(options.review??{ range: { from: '2026-11-05', to: DAY, days: Number(parsed.searchParams.get('days')) || 7 },
       days: [{ date: DAY, knownCalories: null, entryCount: 0, knownCount: 0, unknownCount: 0, complete: false, meals: emptyMealStates() }],
       summary: { recordedDays: 0, completeDays: 0, comparableDays: 0, knownCalories: null, averageCompleteKcal: null, unknownCount: 0 }, meals: Object.entries(meals).map(([meal, label]) => ({ meal, label, knownCalories: null, entryCount: 0 })), limitations: ['未记录不表示未进食。'] });
     if (parsed.pathname === '/api/health/nutrition' && method === 'POST') { const created = entry(body); entries.push(created); return Response.json({ entry: created, replayed: false }); }
@@ -98,6 +108,8 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   const location = { pathname: '/health/nutrition', search: options.search ?? '?date=' + DAY, origin: 'https://synthetic-nutrition.example' };
   const history = { replaceState(_state: unknown, _title: string, path: string) { const url = new URL(path, location.origin); location.pathname = url.pathname; location.search = url.search; } };
   const sessionStorage = { getItem(key: string) { return storage.get(key) ?? null; }, setItem(key: string, value: string) { if (options.storageFails) throw new Error('Synthetic storage unavailable'); storage.set(key, value); }, removeItem(key: string) { storage.delete(key); } };
+  (window as unknown as Record<string,unknown>).JiashuDrafts=undefined;
+  if(options.durable){const saved=options.durable;Object.assign(window,{JiashuDrafts:{setOwner(){},storage(){return sessionStorage;},save(id:string,label:string,data:unknown,meta:Record<string,unknown>={}){if(options.durableFails)return false;saved.set(id,{id,label,data:structuredClone(data),updatedAt:NOW,...meta});return true;},get(id:string){return saved.get(id)??null;},list(){return [...saved.values()];},remove(id:string){return saved.delete(id);},clearConfirmed(id:string){return saved.delete(id);}}});}
   let focused: Element | null = null;
   for (const node of document.querySelectorAll('input,button,textarea,select')) Object.defineProperty(node, 'focus', { configurable: true, value() { focused = node; } });
   const source = renderNutritionScript('test').replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
@@ -108,6 +120,9 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   const submit = (id: string) => el(id).dispatchEvent(event('submit'));
   return { window, document, requests, entries, favorites, storage, el, click, input, submit, event, get focused() { return focused; },
     nextBatch(handler: () => Promise<Response>) { nextBatch = handler; },
+    nextGoal(handler: () => Promise<Response>) { nextGoal = handler; },
+    nextRestore(handler: () => Promise<Response>) { nextRestore = handler; },
+    setGoals(value: Record<string,any>) { goals={...goals,...value}; },
     async ready() { await settled(() => !el('content').hidden); },
     async history() { el('history').open = true; el('history').setAttribute('open', ''); el('history').dispatchEvent(event('toggle')); await settled(() => el('review-status').textContent?.includes('已记录部分') === true); },
     async parse() { input('ai-text', '午餐吃了测试食物'); click('ai-parse'); await settled(() => el('batch-dialog').open); },
@@ -126,6 +141,124 @@ test('opening nutrition keeps history closed and only requests the review when t
   assert.match(f.el('review-summary').textContent ?? '', /暂无可比较日期/);
   f.el('history').dispatchEvent(f.event('toggle'));
   assert.equal(f.requests.filter((request) => request.url.includes('/review')).length, 1);
+});
+
+test('daily goals show recorded partial progress, real zero and leave unset targets hidden', async () => {
+  const f=fixture({goals:{calories:'200.0',protein:'50.0',fat:'0.0',revision:1},entries:[entry({protein:'0.0',fat:'0.0'}),entry({id:ID+'1',calories:null,protein:null,fat:null})]});
+  await f.ready();await settled(()=>!f.el('goal-progress').hidden);
+  assert.match(f.el('goal-progress').textContent??'',/蛋白质0.0 g.*50.0 g/);
+  assert.match(f.el('goal-progress').textContent??'',/1 项未填，仅比较已记录部分/);
+  assert.match(f.el('goal-progress').textContent??'',/脂肪0.0 g.*0.0 g/);
+  assert.equal(f.el('goal-progress').querySelectorAll('article').length,3);
+  assert.ok(!f.requests.some(request=>request.method!=='GET'));
+});
+
+test('goal conflicts preserve typed values and require reading the latest revision before retrying', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:1}});await f.ready();await settled(()=>f.el('goal-protein').value==='80.0');
+  f.input('goal-protein','95');f.setGoals({protein:'90.0',revision:2});f.submit('goals-form');
+  await settled(()=>f.el('goals-status').textContent?.includes('其他页面更新')===true);
+  assert.equal(f.el('goal-protein').value,'95');assert.equal(f.el('goals-save').disabled,true);
+  f.click('goals-reload');await settled(()=>f.el('goals-save').disabled===false);
+  assert.equal(f.el('goal-protein').value,'95');f.submit('goals-form');
+  await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  const writes=f.requests.filter(request=>request.method==='PUT');
+  assert.deepEqual(writes.map(request=>request.body.expectedRevision),[1,2]);
+  assert.equal(writes[1].body.protein,'95.0');
+});
+
+test('nutrient review switches trends and uses only complete days with that nutrient filled for averages', async () => {
+  const stat=(total:string|null,knownCount=1,unknownCount=0)=>({total,knownCount,unknownCount});
+  const review={range:{from:'2026-11-10',to:DAY,days:7},days:[
+    {date:'2026-11-10',entryCount:1,complete:true,knownCalories:'200.0',nutrients:{protein:stat('80.0')}},
+    {date:DAY,entryCount:2,complete:false,knownCalories:'300.0',nutrients:{protein:stat('90.0',1,1)}},
+  ],summary:{recordedDays:2,completeDays:1,comparableDays:1,knownCalories:'500.0',unknownCount:0,nutrients:{protein:stat('170.0',2,1)}},meals:[{meal:'lunch',label:'午餐',entryCount:3,knownCalories:'500.0',nutrients:{protein:stat('170.0',2,1)}}],limitations:['仅已记录值']};
+  const f=fixture({review});await f.ready();await f.history();
+  f.click(f.document.querySelector('[data-nutrition-review-metric="protein"]')!);
+  assert.match(f.el('review-summary').textContent??'',/170.0 g/);
+  assert.match(f.el('review-summary').textContent??'',/80.0 g（1 天）/);
+  assert.match(f.el('review-summary').textContent??'',/1 项蛋白质未填/);
+  assert.match(f.el('review-meals').textContent??'',/午餐：170.0 g/);
+  assert.equal(f.el('review-chart').getAttribute('aria-label'),'每日已记录蛋白质');
+});
+
+test('packaging provenance is editable and submitted independently of notes with a valid server payload', async () => {
+  const f=fixture();await f.ready();f.click('add');f.input('name','测试包装食品');f.input('calories','120');f.input('protein','8.5');
+  f.input('source-protein','label','change');f.input('basis-protein','包装标注当前份量8.5g蛋白质');f.submit('form');
+  await settled(()=>f.entries.length===1&&!f.el('dialog').open);
+  const post=f.requests.find(request=>request.method==='POST'&&request.url==='/api/health/nutrition')!;
+  assert.deepEqual(post.body.provenance.protein,{source:'label',basis:'包装标注当前份量8.5g蛋白质'});
+  assert.equal(post.body.note,'');
+  const parsed=parseNutritionCreate(post.body,new Date(NOW));assert.equal(parsed.provenance?.protein?.source,'label');
+  assert.match(f.el('list').textContent??'',/包装标签.*当前份量8.5g/);
+});
+
+test('structured AI provenance survives manual correction and keeps the original estimate without note inference', async () => {
+  const provenance={calories:{source:'ai',basis:'按常见烹饪方式估算',originalValue:'350.0'},protein:{source:'ai',basis:'按肉类份量估算',originalValue:'25.0'}};
+  const f=fixture({drafts:[draft({calories:'350.0',protein:'25.0',note:'普通备注',provenance})]});await f.ready();await f.parse();
+  const node=f.el('batch-rows');f.input(node.querySelector('[data-draft-field="protein"]')!,'30.0');f.submit('batch-form');
+  await settled(()=>!f.el('batch-dialog').open);
+  const body=f.requests.find(request=>request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(body.provenance.protein.source,'manual');assert.equal(body.provenance.protein.originalValue,'25.0');
+  assert.equal(body.provenance.calories.source,'ai');assert.equal(body.provenance.calories.basis,'按常见烹饪方式估算');
+  assert.equal(parseNutritionCreate(body,new Date(NOW)).provenance?.protein?.source,'manual');
+});
+
+test('history renders field sources safely and uncertain restores retry the identical revision and request key', async () => {
+  const first=entry({revision:1,calories:'100.0',provenance:{calories:{source:'label',basis:'<img src=x onerror=bad()>'}}});
+  const current=entry({revision:2,calories:'120.0'});const f=fixture({entries:[current],history:[{revision:1,action:'create',createdAt:'2026-11-11T01:00:00Z',before:null,after:first},{revision:2,action:'edit',createdAt:'2026-11-11T02:00:00Z',before:first,after:current}]});
+  await f.ready();f.click(f.el('list').querySelector('[data-nutrition-history]')!);
+  await settled(()=>f.el('record-history-rows').querySelectorAll('.nt-audit-row').length===2);
+  assert.equal(f.el('record-history-rows').querySelectorAll('img,script').length,0);
+  f.nextRestore(async()=>new Response('not json',{status:200,headers:{'Content-Type':'application/json'}}));
+  f.click(f.el('record-history-rows').querySelector('[data-restore-nutrition-revision="1"]')!);
+  await settled(()=>!f.el('record-history-retry').hidden&&!f.el('record-history-retry').disabled);
+  assert.ok([...f.el('record-history-rows').querySelectorAll('button')].every(button=>button.hasAttribute('disabled')));
+  f.click('record-history-retry');await settled(()=>f.el('record-history-status').textContent?.includes('已恢复为所选内容')===true);
+  const writes=f.requests.filter(request=>request.url.endsWith('/restore'));assert.equal(writes.length,2);
+  assert.equal(writes[0].key,writes[1].key);assert.deepEqual(writes[0].body,writes[1].body);
+  assert.deepEqual(writes[0].body,{revision:1,expectedRevision:2});assert.equal(f.entries[0].calories,'100.0');
+});
+
+test('durable description and batch drafts restore explicitly after restart without calling AI or saving', async () => {
+  const durable=new Map<string,any>();const first=fixture({durable});await first.ready();first.input('ai-text','午餐吃了2个肉包子');
+  assert.equal(durable.get('nutrition-description')?.data.text,'午餐吃了2个肉包子');
+  const second=fixture({durable});await second.ready();assert.equal(second.el('ai-text').value,'');
+  assert.equal(second.el('draft-recovery').hidden,false);second.click(second.el('draft-recovery-list').querySelector('[data-recover-nutrition-draft="nutrition-description"]')!);
+  assert.equal(second.el('ai-text').value,'午餐吃了2个肉包子');assert.ok(second.requests.every(request=>request.method==='GET'));
+  await second.parse();assert.ok(durable.has('nutrition-batch'));
+  const third=fixture({durable});await third.ready();assert.equal(third.el('batch-dialog').open,false);
+  third.click(third.el('draft-recovery-list').querySelector('[data-recover-nutrition-draft="nutrition-batch"]')!);
+  assert.equal(third.el('batch-dialog').open,true);assert.ok(third.requests.every(request=>request.method==='GET'));
+});
+
+test('an unrecovered older description is not overwritten by new typing and storage failure is visible', async () => {
+  const durable=new Map<string,any>([['nutrition-description',{id:'nutrition-description',label:'旧饮食描述',updatedAt:NOW-3600000,data:{text:'昨天吃了旧早餐',date:DAY,meal:'breakfast'}}]]);
+  const f=fixture({durable});await f.ready();f.input('ai-text','今天的新午餐');
+  assert.equal(durable.get('nutrition-description').data.text,'昨天吃了旧早餐');
+  assert.match(f.el('draft-save-status').textContent??'',/旧草稿待恢复或丢弃/);
+  f.click(f.el('draft-recovery-list').querySelector('[data-discard-nutrition-draft="nutrition-description"]')!);
+  assert.equal(durable.get('nutrition-description').data.text,'今天的新午餐');assert.equal(f.el('draft-recovery').hidden,true);
+  const blocked=fixture({durable:new Map(),durableFails:true});await blocked.ready();blocked.input('ai-text','无法持久化的描述');
+  assert.equal(blocked.el('draft-save-status').hidden,false);assert.match(blocked.el('draft-save-status').textContent??'',/暂时无法保存跨会话草稿/);
+  assert.ok(blocked.requests.every(request=>request.method==='GET'));
+});
+
+test('a pending history restore remains resumable after viewing a different entry and clears its banner on success', async () => {
+  const otherId='ad0c5a3c-6105-4b6b-b065-1472594b5e04';
+  const first=entry({revision:1,calories:'100.0'}),current=entry({revision:2,calories:'120.0'});
+  const f=fixture({entries:[current,entry({id:otherId,name:'另一项食物'})],history:[{revision:1,action:'create',createdAt:'2026-11-11T01:00:00Z',before:null,after:first}]});
+  await f.ready();f.click(f.el('list').querySelector('[data-nutrition-history="'+ID+'"]')!);
+  await settled(()=>f.el('record-history-rows').querySelector('[data-restore-nutrition-revision="1"]')!==null);
+  f.nextRestore(async()=>{throw new TypeError('Lost restore acknowledgement');});f.click(f.el('record-history-rows').querySelector('[data-restore-nutrition-revision="1"]')!);
+  await settled(()=>!f.el('record-history-retry').hidden&&!f.el('record-history-retry').disabled);assert.equal(f.el('history-pending').hidden,false);
+  f.click('record-history-close');f.click(f.el('list').querySelector('[data-nutrition-history="'+otherId+'"]')!);
+  await settled(()=>f.el('record-history-status').textContent?.includes('另一条记录')===true);
+  assert.ok([...f.el('record-history-rows').querySelectorAll('button')].every(button=>button.hasAttribute('disabled')));
+  f.click('record-history-close');f.click('history-pending-resume');
+  await settled(()=>!f.el('record-history-retry').hidden);f.click('record-history-retry');
+  await settled(()=>f.el('record-history-status').textContent?.includes('已恢复为所选内容')===true);
+  const calls=f.requests.filter(request=>request.url.endsWith('/restore'));assert.equal(calls.length,2);assert.equal(calls[0].key,calls[1].key);assert.deepEqual(calls[0].body,calls[1].body);
+  assert.equal(f.el('history-pending').hidden,true);
 });
 
 test('daily nutrient totals add exact tenths, retain a real zero and disclose incomplete entries', async () => {
