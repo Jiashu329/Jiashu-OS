@@ -147,7 +147,7 @@ test('390px production assistant fixture preserves navigation and accessible laz
   const f = await fixture('ha-intro-cards', '/health/assistant', 390);
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:760px\)/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length, 4);
+  assert.equal(f.document.querySelectorAll('.nav-link').length, 5);
   assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'), 'true');
   await settle(() => f.requests.length === 1 && f.document.getElementById('health-chat-context')?.hidden === false);
   assert.equal(f.document.getElementById('health-chat-panel')?.hidden, false);
@@ -166,7 +166,7 @@ test('390px production backup page initializes every inline script and gates res
   const f = await fixture('id="backup-file"', '/data', 390);
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:700px\)/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length, 4);
+  assert.equal(f.document.querySelectorAll('.nav-link').length, 5);
   assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择 Jiashu OS 完整备份（v1 或 v2）');
   const file = f.document.getElementById('backup-file')! as HTMLInputElement;
   const preview = f.document.getElementById('backup-preview')! as HTMLButtonElement;
@@ -212,7 +212,7 @@ test('production shortcut installation page waits for user action before taking 
   assert.deepEqual(f.requests, [{ path: '/api/health/import', method: 'GET' }]);
 });
 
-test('390px minified nutrition page initializes rich recording, reuse and draft guards without automatic writes or foreign pending recovery',async()=>{
+test('390px minified nutrition opens direct recording with lazy history and protected drafts without automatic writes',async()=>{
   const today=new Date(Date.now()+8*60*60*1000).toISOString().slice(0,10);
   const foreignOwner='another-synthetic-owner',operation='11111111-1111-4111-8111-111111111111';
   const foreignStorage={
@@ -220,17 +220,27 @@ test('390px minified nutrition page initializes rich recording, reuse and draft 
     ['jiashu-nutrition-copy:'+foreignOwner]:JSON.stringify({key:operation,body:{action:'copy',fromDate:today,fromMeal:'breakfast',toDate:today,toMeal:'lunch',previewToken:'a'.repeat(64)}}),
     ['jiashu-nutrition-favorite:'+foreignOwner]:JSON.stringify({key:operation,body:{entryId:operation,expectedRevision:1}}),
   };
-  const f=await fixture('id="nutrition-page"','/health/nutrition',390,foreignStorage);
-  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false'&&f.document.getElementById('nutrition-content')?.hidden===false&&Boolean(f.document.getElementById('nutrition-review-status')?.textContent?.includes('已记录部分')));
-  assert.match(f.html,/name="viewport"/);assert.match(f.html,/@media\(max-width:450px\)/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length,4);
-  assert.equal(f.document.querySelector('[data-context-path="/health/nutrition"]')?.getAttribute('aria-current'),'page');
-  assert.equal(f.document.getElementById('nutrition-total')?.textContent,'暂无记录');
+  const f=await fixture('id="nutrition-page"','/health/nutrition?compose=1',390,foreignStorage);
+  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false'&&f.document.getElementById('nutrition-content')?.hidden===false);
+  assert.match(f.html,/name="viewport"/);
+  assert.equal(f.document.querySelectorAll('.nav-link').length,5);
+  assert.equal(f.document.querySelector('[data-navigation-page="nutrition"]')?.getAttribute('aria-current'),'page');
+  assert.equal(f.document.getElementById('nutrition-total')?.textContent,'—');
+  const ids=[...f.document.querySelectorAll('[id]')].map((element)=>element.id);
+  assert.equal(new Set(ids).size,ids.length);
+  for(const key of ['carbs','protein','fat'])assert.equal(f.document.getElementById('nutrition-'+key)?.tagName,'INPUT');
+  assert.equal(f.document.getElementById('nutrition-entry-ai')?.hidden,false);
+  assert.equal(f.document.querySelector('[data-entry-method="ai"]')?.getAttribute('aria-selected'),'true');
   assert.equal(f.document.querySelectorAll('[data-nutrition-add-meal]').length,4);
   assert.equal(f.document.querySelectorAll('[data-nutrition-copy-meal]').length,4);
   assert.equal(f.document.querySelectorAll('[data-nutrition-skip-meal]').length,4);
   assert.ok(f.document.querySelector('label[for="nutrition-day"]'));
   assert.ok(f.document.querySelector('label[for="nutrition-ai-text"]'));
+  const historyPanel=f.document.getElementById('nutrition-history')! as unknown as HTMLDetailsElement;
+  assert.equal(historyPanel.hasAttribute('open'),false);
+  assert.ok(!f.requests.some((request)=>request.path.includes('/nutrition/review')));
+  historyPanel.open=true;historyPanel.setAttribute('open','');historyPanel.dispatchEvent(new f.window.Event('toggle'));
+  await settle(()=>Boolean(f.document.getElementById('nutrition-review-status')?.textContent?.includes('已记录部分')));
   assert.equal(f.document.getElementById('nutrition-review-chart')?.querySelectorAll('.is-missing').length,7);
   assert.match(f.document.getElementById('nutrition-review-summary')?.textContent ?? '',/暂无可比较日期/);
   assert.equal(f.document.getElementById('nutrition-pending')?.hidden,true);
@@ -242,7 +252,7 @@ test('390px minified nutrition page initializes rich recording, reuse and draft 
   assert.equal(f.document.getElementById('nutrition-copy-dialog')?.hasAttribute('open'),false);
   // Opening the manual form exercises its minified helper references without
   // parsing a meal, saving, marking status or invoking the provider.
-  f.document.getElementById('nutrition-add')!.dispatchEvent(new f.window.Event('click',{bubbles:true,cancelable:true}));
+  f.document.querySelector('[data-entry-method="manual"]')!.dispatchEvent(new f.window.Event('click',{bubbles:true,cancelable:true}));
   assert.equal(f.document.getElementById('nutrition-dialog')?.hasAttribute('open'),true);
   assert.equal((f.document.getElementById('nutrition-name') as HTMLInputElement).value,'');
   assert.ok(f.document.getElementById('nutrition-food-search-button'));

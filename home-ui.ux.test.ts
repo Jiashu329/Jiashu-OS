@@ -59,3 +59,16 @@ test('a failed overview does not remove the separate goals entry or misrepresent
   assert.match(document.getElementById('status-title')!.textContent!, /读取失败/);
   assert.match(document.querySelector('.metric-card.sleep .metric-value')!.textContent!, /暂时无法读取/);
 });
+
+test('recording food is one direct home-header action and remains available when overview data fails', async () => {
+  const data = snapshot(); data.health.status = 'unavailable';
+  const { document } = await fixture(data);
+  const action = document.querySelector('main .heading .home-nutrition-action')!;
+  assert.ok(action, 'The recording action should be in the home header');
+  assert.equal(action.textContent, '记饮食');
+  const target = new URL(action.getAttribute('href')!, 'https://synthetic-home.example');
+  assert.equal(target.pathname, '/health/nutrition');
+  assert.equal(target.searchParams.get('compose'), '1');
+  assert.equal(action.closest('[hidden],details'), null);
+  assert.equal(document.getElementById('overview-content')!.contains(action), false);
+});

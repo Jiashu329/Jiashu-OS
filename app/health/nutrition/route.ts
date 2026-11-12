@@ -12,6 +12,7 @@ export async function GET(request: Request) {
     && normalizeTimestamp(requested + 'T12:00:00+08:00') && requested <= today ? requested : today;
   const query = new URLSearchParams({ date });
   if (source.get('includeDeleted') === '1') query.set('includeDeleted', '1');
+  if (source.get('compose') === '1') query.set('compose', '1');
   const user = await requireChatGPTUser('/health/nutrition?' + query);
   return new Response(renderNutritionPage(user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',

@@ -15,17 +15,37 @@ function fixture(pathname: string, search = '') {
     navigate(path: string, query = '') { location.pathname = path; location.search = query; window.dispatchEvent(new window.Event('jiashu-navigation')); } };
 }
 
-test('context navigation follows the actual secondary page and keeps the right module visible', () => {
+test('nutrition has its own primary entry without a second menu, and health/sync contexts restore independently', () => {
   const f = fixture('/health/nutrition');
-  assert.equal(f.sidebar.querySelector('[data-context-path="/health/nutrition"]')!.getAttribute('aria-current'), 'page');
-  assert.equal(f.sidebar.querySelector('[data-navigation-group="health"]')!.hasAttribute('hidden'), false);
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'page');
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('href'), '/health/nutrition');
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="health"]')!.hasAttribute('aria-current'), false);
+  assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 0);
   assert.equal(f.sidebar.querySelector('[data-navigation-group="finance"]')!.hasAttribute('hidden'), true);
+  f.navigate('/health/weight-plan');
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="health"]')!.getAttribute('aria-current'), 'true');
+  assert.equal(f.sidebar.querySelector('[data-navigation-group="health"]')!.hasAttribute('hidden'), false);
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.hasAttribute('aria-current'), false);
   f.navigate('/sync');
   assert.equal(f.sidebar.querySelector('[data-navigation-group="health"]')!.hasAttribute('hidden'), true);
   assert.equal(f.sidebar.querySelector('[data-navigation-group="sync"]')!.hasAttribute('hidden'), false);
   assert.equal(f.sidebar.querySelector('[data-navigation-page="sync"]')!.getAttribute('aria-current'), 'page');
   f.navigate('/');
   assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 0);
+});
+
+test('every application shell offers five direct primary destinations and nutrition is active before scripts run', () => {
+  for (const page of ['home','health','nutrition','finance','sync'] as const) {
+    const { document } = parseHTML(renderAppSidebar(page, {healthNavigation: page === 'health'}));
+    const main = document.querySelector('nav[aria-label="主要页面"]')!;
+    assert.equal(main.children.length, 5);
+    const nutrition = main.querySelector('[data-navigation-page="nutrition"]')!;
+    assert.equal(nutrition.tagName, 'A');
+    assert.equal(nutrition.getAttribute('href'), '/health/nutrition');
+    assert.equal(nutrition.textContent, '饮食');
+    assert.equal(nutrition.getAttribute('aria-current'), page === 'nutrition' ? 'page' : null);
+    assert.equal(main.querySelectorAll('[aria-current="page"]').length, 1);
+  }
 });
 
 test('financial subnavigation carries ledger and currency but drops unrelated and untrusted parameters', () => {

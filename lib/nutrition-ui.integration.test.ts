@@ -33,7 +33,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>> } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -95,30 +95,143 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
     if (parsed.pathname === '/api/health/nutrition') return Response.json(baseData(parsed.searchParams.get('date') || DAY));
     throw new Error('Unexpected request: ' + method + ' ' + url);
   };
-  const location = { pathname: '/health/nutrition', search: '?date=' + DAY, origin: 'https://synthetic-nutrition.example' };
+  const location = { pathname: '/health/nutrition', search: options.search ?? '?date=' + DAY, origin: 'https://synthetic-nutrition.example' };
   const history = { replaceState(_state: unknown, _title: string, path: string) { const url = new URL(path, location.origin); location.pathname = url.pathname; location.search = url.search; } };
   const sessionStorage = { getItem(key: string) { return storage.get(key) ?? null; }, setItem(key: string, value: string) { if (options.storageFails) throw new Error('Synthetic storage unavailable'); storage.set(key, value); }, removeItem(key: string) { storage.delete(key); } };
+  let focused: Element | null = null;
+  for (const node of document.querySelectorAll('input,button,textarea,select')) Object.defineProperty(node, 'focus', { configurable: true, value() { focused = node; } });
   const source = renderNutritionScript('test').replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
   runInNewContext(source, { window, document, Element: window.Element, Event: window.Event, fetch, location, history, sessionStorage, Date: FixedDate, Intl, URL, URLSearchParams, Headers, AbortController, crypto: webcrypto, setTimeout, clearTimeout, queueMicrotask });
   const el = (id: string) => document.getElementById('nutrition-' + id)! as unknown as HTMLElement & { value: string; checked: boolean; disabled: boolean; open: boolean };
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click', { button: 0 }));
   const input = (target: string | Element, value: string, kind = 'input') => { const node = typeof target === 'string' ? el(target) : target as unknown as typeof el extends (...args: any[]) => infer R ? R : never; (node as any).value = value; node.dispatchEvent(event(kind)); };
   const submit = (id: string) => el(id).dispatchEvent(event('submit'));
-  return { window, document, requests, entries, favorites, storage, el, click, input, submit, event,
+  return { window, document, requests, entries, favorites, storage, el, click, input, submit, event, get focused() { return focused; },
     nextBatch(handler: () => Promise<Response>) { nextBatch = handler; },
-    async ready() { await settled(() => !el('content').hidden); await settled(() => el('review-status').textContent?.includes('已记录部分') === true); },
+    async ready() { await settled(() => !el('content').hidden); },
+    async history() { el('history').open = true; el('history').setAttribute('open', ''); el('history').dispatchEvent(event('toggle')); await settled(() => el('review-status').textContent?.includes('已记录部分') === true); },
     async parse() { input('ai-text', '午餐吃了测试食物'); click('ai-parse'); await settled(() => el('batch-dialog').open); },
   };
 }
 
-test('opening nutrition only reads data, favorites and review, and unknown intake is shown as a gap', async () => {
+test('opening nutrition keeps history closed and only requests the review when the user expands it', async () => {
   const f = fixture(); await f.ready();
   assert.ok(f.requests.every((request) => request.method === 'GET'));
   assert.ok(f.requests.every((request) => !request.url.includes('/parse')));
   assert.equal(f.el('dialog').open, false); assert.equal(f.el('batch-dialog').open, false);
+  assert.ok(!f.requests.some((request) => request.url.includes('/review')));
+  await f.history();
   assert.match(f.el('review-chart').textContent ?? '', /—/);
   assert.equal(f.el('review-chart').querySelectorAll('.is-missing').length, 1);
   assert.match(f.el('review-summary').textContent ?? '', /暂无可比较日期/);
+  f.el('history').dispatchEvent(f.event('toggle'));
+  assert.equal(f.requests.filter((request) => request.url.includes('/review')).length, 1);
+});
+
+test('daily nutrient totals add exact tenths, retain a real zero and disclose incomplete entries', async () => {
+  const f = fixture({ entries: [entry({ carbs: '0.1', protein: '0.0', fat: null }),
+    entry({ id: ID + '1', carbs: '0.2', protein: null, fat: null }),
+    entry({ id: ID + '2', carbs: '100.0', protein: '100.0', fat: '100.0', deleted: true })] });
+  await f.ready();
+  assert.equal(f.el('carbs').closest('dialog') !== null, true, 'Existing editable macro control remains available');
+  const cards = f.el('summary').querySelectorAll('.nt-card');
+  assert.equal(cards.length, 4);
+  assert.match(cards[1].textContent ?? '', /碳水化合物0.3g/);
+  assert.match(cards[2].textContent ?? '', /蛋白质0.0g1 项待补充/);
+  assert.match(cards[3].textContent ?? '', /脂肪—2 项待补充/);
+  const ids = [...f.document.querySelectorAll('[id]')].map((node) => node.id);
+  assert.equal(new Set(ids).size, ids.length, 'Summary IDs must not shadow editable nutrition fields');
+});
+
+test('saved food rows keep a visible estimate badge and tuck destructive actions and source notes behind details', async () => {
+  const f = fixture({ entries: [entry({ calories: '420.0', note: 'AI 估算：按中等份量估算。' })] });
+  await f.ready();
+  const row = f.el('list').querySelector('[data-nutrition-entry]')!;
+  assert.equal(row.querySelector('.nt-estimate-badge')?.textContent, '含 AI 估算');
+  assert.equal(row.querySelector('.nt-row-menu')?.hasAttribute('open'), false);
+  assert.equal(row.querySelector('.nt-food-detail')?.hasAttribute('open'), false);
+  f.click(row.querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(f.el('dialog').open, true);
+});
+
+test('entry methods preserve the description and prefill manual date and meal while revealing invalid optional fields', async () => {
+  const f = fixture(); await f.ready();
+  assert.equal(f.el('entry-ai').hidden, false); assert.equal(f.el('entry-quick').hidden, true);
+  assert.equal(f.el('ai-meal').value, 'lunch');
+  f.input('ai-text', '晚餐吃了半碗饭');
+  f.click(f.document.querySelector('[data-entry-method="quick"]')!);
+  assert.equal(f.el('entry-quick').hidden, false); assert.equal(f.el('ai-text').value, '晚餐吃了半碗饭');
+  f.input('ai-meal', 'dinner', 'change');
+  f.click(f.document.querySelector('[data-entry-method="manual"]')!);
+  assert.equal(f.el('dialog').open, true); assert.equal(f.el('form-day').value, DAY); assert.equal(f.el('meal').value, 'dinner');
+  assert.equal(f.el('form-nutrients').hasAttribute('open'), false);
+  f.input('name', '合成食物'); f.input('fat', '-1'); f.submit('form');
+  assert.equal(f.el('form-nutrients').hasAttribute('open'), true);
+  assert.match(f.el('form-error').textContent ?? '', /脂肪/);
+  assert.equal(f.requests.filter((request) => request.method !== 'GET').length, 0);
+});
+
+test('a meal record shortcut and compose link focus the primary entry without opening a dialog or calling AI', async () => {
+  const f = fixture({ search: '?date=' + DAY + '&compose=1' }); await f.ready();
+  await settled(() => f.focused?.id === 'nutrition-ai-text');
+  assert.equal(f.el('dialog').open, false); assert.equal(f.el('batch-dialog').open, false);
+  f.click(f.el('list').querySelector('[data-nutrition-add-meal="breakfast"]')!);
+  assert.equal(f.el('ai-meal').value, 'breakfast'); assert.equal(f.el('entry-ai').hidden, false);
+  assert.equal(f.focused?.id, 'nutrition-ai-text');
+  f.click('add'); assert.equal(f.el('meal').value, 'breakfast');
+  assert.equal(f.requests.filter((request) => request.method !== 'GET').length, 0);
+});
+
+test('compact AI rows show the destination and estimates, update changed values, and reveal validation errors', async () => {
+  const f = fixture({ drafts: [draft({ name: '合成米饭', calories: '180.0', carbs: '40.0', protein: '3.0', fat: '0.0',
+    calorieSource: 'ai', note: 'AI 估算：按1碗米饭估算。' })] });
+  await f.ready(); await f.parse();
+  const details = f.el('batch-rows').querySelector('details')!;
+  assert.equal(details.hasAttribute('open'), false);
+  assert.match(details.querySelector('summary')?.textContent ?? '', /合成米饭.*180.0 kcal.*含 AI 估算/);
+  f.input(details.querySelector('[data-draft-field="meal"]')!, 'dinner', 'change');
+  f.input(details.querySelector('[data-draft-field="date"]')!, '2026-11-10', 'change');
+  f.input(details.querySelector('[data-draft-field="calories"]')!, '200');
+  assert.match(details.querySelector('[data-draft-summary-context]')?.textContent ?? '', /晚餐 · 2026-11-10/);
+  assert.match(details.querySelector('[data-draft-summary-calories]')?.textContent ?? '', /200 kcal/);
+  f.input(details.querySelector('[data-draft-field="protein"]')!, '-2'); f.submit('batch-form');
+  assert.equal(details.hasAttribute('open'), true); assert.match(f.el('batch-error').textContent ?? '', /蛋白质/);
+  assert.equal(f.requests.filter((request) => request.url.endsWith('/batch')).length, 0);
+});
+
+test('confirmed AI batch save clears only the exact consumed description and its old status', async () => {
+  const f = fixture(); await f.ready();
+  f.input('ai-text', '  午餐吃了测试食物  '); f.click('ai-parse'); await settled(() => f.el('batch-dialog').open);
+  assert.equal(f.el('ai-text').value, '  午餐吃了测试食物  ');
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  assert.equal(f.el('ai-text').value, ''); assert.equal(f.el('ai-status').hidden, true);
+  assert.equal(f.el('ai-status').textContent, '');
+  assert.equal(f.requests.filter((request) => request.url.endsWith('/parse')).length, 1);
+});
+
+test('failed AI save retains the consumed description until the original batch is confirmed', async () => {
+  const f = fixture(); await f.ready(); await f.parse();
+  const description=f.el('ai-text').value;
+  f.nextBatch(async () => { throw new Error('Synthetic uncertain save'); });
+  f.submit('batch-form'); await settled(() => !f.el('batch-error').hidden && !f.el('batch-save').disabled);
+  assert.equal(f.el('ai-text').value, description); assert.equal(f.el('ai-status').hidden, false);
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  assert.equal(f.el('ai-text').value, '');
+  const posts=f.requests.filter((request) => request.url.endsWith('/batch'));
+  assert.equal(posts.length,2);assert.equal(posts[0].key,posts[1].key);assert.deepEqual(posts[0].body,posts[1].body);
+});
+
+test('saving copied batches or an AI batch with unrelated new text does not discard the unsent description', async () => {
+  const copied=fixture({yesterdayEntries:[entry({date:'2026-11-10'})]});await copied.ready();
+  copied.input('ai-text','晚餐还没有识别的描述');
+  copied.click(copied.el('list').querySelector('[data-nutrition-copy-meal="lunch"]')!);
+  await settled(()=>copied.el('batch-dialog').open);copied.submit('batch-form');await settled(()=>!copied.el('batch-dialog').open);
+  assert.equal(copied.el('ai-text').value,'晚餐还没有识别的描述');
+  assert.equal(copied.requests.filter((request)=>request.url.endsWith('/parse')).length,0);
+
+  const changed=fixture();await changed.ready();await changed.parse();
+  changed.input('ai-text','另外一餐尚未识别');changed.submit('batch-form');await settled(()=>!changed.el('batch-dialog').open);
+  assert.equal(changed.el('ai-text').value,'另外一餐尚未识别');
 });
 
 test('save and continue retains date and meal but clears the previous food, and closing restores an unsent draft', async () => {
@@ -402,7 +515,7 @@ test('day completeness requires a status for all main meals, while skipped meals
   const request = f.requests.find((request) => request.url.endsWith('/status'))!;
   assert.equal(request.method, 'PATCH'); assert.equal(request.body.meals.breakfast, 'skipped');
   assert.equal(request.body.complete, false); assert.equal(request.body.expectedRevision, 0);
-  assert.match(f.el('list').textContent ?? '', /已标记这餐未进食/);
+  assert.match(f.el('list').textContent ?? '', /这餐未进食/);
 });
 
 test('matched AI drafts retain their food IDs and recalculate editable quantities before batch save', async () => {
