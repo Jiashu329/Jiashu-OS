@@ -14,6 +14,7 @@ import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
+import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -90,7 +91,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[] } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   let current = new URL(path, 'https://synthetic-production.example');
@@ -148,7 +149,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const selection = parseNutritionQuery(parsed.searchParams);
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
-    if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:[]});
+    if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
     if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
     if (parsed.pathname === '/api/health/nutrition/templates') return Response.json({ templates: [] });
     if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
@@ -352,4 +353,30 @@ test('390px minified nutrition opens direct recording with lazy history and prot
   assert.deepEqual(f.requests.map((request)=>new URL(request.path,'https://synthetic-production.example').pathname).sort(),['/api/health/nutrition','/api/health/nutrition/favorites','/api/health/nutrition/goals','/api/health/nutrition/review']);
   for(const [key,value] of Object.entries(foreignStorage))assert.equal(f.sessionStorage.getItem(key),value);
   assert.ok(!f.document.body.textContent?.includes('OTHER_OWNER_PRIVATE_DRAFT'));
+});
+
+test('minified official McDonald serving selection keeps its published SKU, half/two serving calories and separate source metadata', { skip: !hasBuild }, async()=>{
+  const burger=getFood('mcd-cn:49:28');assert.ok(burger);assert.equal(burger.basis,'perServing');
+  const f=await fixture('id="nutrition-page"','/health/nutrition',390,{}, {foods:[burger],sources:FOOD_CATALOG_SOURCES});
+  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false');
+  f.document.getElementById('nutrition-add')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  const search=f.document.getElementById('nutrition-food-search') as HTMLInputElement;search.value='麦当劳';
+  f.document.getElementById('nutrition-food-search-button')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  await settle(()=>Boolean(f.document.querySelector('#nutrition-food-results [data-food-id]')));
+  const results=f.document.getElementById('nutrition-food-results')!,choice=results.querySelector('[data-food-id]')!;
+  assert.match(choice.textContent??'',/巨无霸.*每份 513 kcal/);
+  assert.equal(results.querySelectorAll('details').length,FOOD_CATALOG_SOURCES.length);
+  for(const source of FOOD_CATALOG_SOURCES)assert.ok([...results.querySelectorAll('a')].some((link)=>link.getAttribute('href')===source.url),'each source retains its own official citation');
+  const brandSource=[...results.querySelectorAll('details')].find((node)=>node.textContent?.includes('麦当劳中国官网'))!;assert.ok(brandSource);assert.match(brandSource.textContent??'',/未提供开放数据许可/);assert.equal(brandSource.querySelectorAll('a').length,1);
+  choice.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  const quantity=f.document.getElementById('nutrition-food-quantity') as HTMLInputElement;
+  const unit=f.document.getElementById('nutrition-food-unit') as unknown as HTMLSelectElement;
+  const calories=f.document.getElementById('nutrition-calories') as HTMLInputElement;
+  assert.equal(quantity.value,'1');assert.deepEqual([...unit.querySelectorAll('option')].map((option)=>option.getAttribute('value')),['份']);
+  assert.equal(calories.value,'513.0');
+  quantity.value='0.5';quantity.dispatchEvent(new f.window.Event('input',{bubbles:true}));assert.equal(calories.value,'256.5');
+  quantity.value='2';quantity.dispatchEvent(new f.window.Event('input',{bubbles:true}));assert.equal(calories.value,'1026.0');
+  const preview=f.document.getElementById('nutrition-food-preview')!.textContent??'';
+  assert.match(preview,/2 份/);assert.match(preview,/未提供可靠克重/);assert.ok(!/NaN|100g|nullg|0g/.test(preview));
+  assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')&&!request.path.includes('/photo')));
 });

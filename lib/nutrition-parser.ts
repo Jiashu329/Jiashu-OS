@@ -171,7 +171,10 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     const date = dateFromText(value.dateText, request), meal = validMeal(value.meal) ? value.meal
       : mealFromText(value.sourceText as string, value.dateText as string | null, request.text) ?? request.meal;
     const candidates = searchFoods(name, 6);
-    const exact = candidates.filter((food) => [food.name, ...food.aliases].some((alias) => normalized(alias) === normalized(name))
+    // The official display name carries its specification; a branded base name
+    // may resolve only when exactly one specification matches.
+    const exact = candidates.filter((food) => [food.name, ...food.aliases,
+      ...(food.basis === 'perServing' ? [food.name.replace(/［[^［］]+］$/, '')] : [])].some((alias) => normalized(alias) === normalized(name))
       && compatiblePreparation(value.sourceText as string, food));
     const warnings: string[] = [];
     const estimate = calorieEstimate(value.estimate);
@@ -199,10 +202,13 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
             macroSources[key] = 'catalog';
           }
         }
-        portion = String(amount) + unit + (unit === 'g' || unit === '克' || unit === '公克' ? '' : '（' + calculated.grams + 'g）');
+        const knownGrams = typeof calculated.grams === 'number' && Number.isFinite(calculated.grams);
+        portion = String(amount) + unit + (knownGrams && !['g', '克', '公克'].includes(unit) ? '（' + calculated.grams + 'g）' : '');
         if (calculated.estimated) warnings.push('份量换算使用食物库参考重量，请核对实际份量。');
       } catch {
-        warnings.push('这个单位没有食物库重量换算；请改填克重，或核对下方估算。');
+        warnings.push(exact[0].basis === 'perServing'
+          ? '这个规格只提供官方每份营养值，尚无可靠克重。请核对规格并选择份数，或核对下方估算。'
+          : '这个单位没有食物库重量换算；请改填克重，或核对下方估算。');
       }
     }
     if (calories === null && estimate) {

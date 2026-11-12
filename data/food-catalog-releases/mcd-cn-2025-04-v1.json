@@ -1,0 +1,4393 @@
+{
+  "id": "catalog-2026-11-12-mcd-cn-v1",
+  "parent": "tfda-2024-03-29-cn2",
+  "label": "麦当劳中国官方标准份（官网2025年4月数据）",
+  "publishedAt": "2026-11-12",
+  "description": "2026年11月12日保存的官网快照；官网营养数据更新于2025年4月。137个官方商品规格按份记录，不推算重量或每100克营养值。",
+  "foods": [
+    {
+      "id": "mcd-cn:49:28",
+      "name": "麦当劳巨无霸［1个］",
+      "aliases": [
+        "巨无霸"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 513,
+        "energyKj": 2146,
+        "protein": 27,
+        "fat": 26,
+        "carbs": 42,
+        "sodiumMg": 961,
+        "calciumMg": 171
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "49:28",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:42:1",
+      "name": "麦当劳汉堡包［1个］",
+      "aliases": [
+        "汉堡包"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 248,
+        "energyKj": 1039,
+        "protein": 13,
+        "fat": 8,
+        "carbs": 29,
+        "sodiumMg": 492,
+        "calciumMg": 61
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "42:1",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:47:26",
+      "name": "麦当劳麦辣鸡腿汉堡［1个］",
+      "aliases": [
+        "麦辣鸡腿汉堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 485,
+        "energyKj": 2029,
+        "protein": 24,
+        "fat": 24,
+        "carbs": 42,
+        "sodiumMg": 1208,
+        "calciumMg": 154
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "47:26",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:48:29",
+      "name": "麦当劳板烧鸡腿堡［1个］",
+      "aliases": [
+        "板烧鸡腿堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 391,
+        "energyKj": 1638,
+        "protein": 23,
+        "fat": 17,
+        "carbs": 35,
+        "sodiumMg": 1041,
+        "calciumMg": 93
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "48:29",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:45:24",
+      "name": "麦当劳麦香鸡［1个］",
+      "aliases": [
+        "麦香鸡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 370,
+        "energyKj": 1546,
+        "protein": 15,
+        "fat": 17,
+        "carbs": 39,
+        "sodiumMg": 731,
+        "calciumMg": 73
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "45:24",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:46:25",
+      "name": "麦当劳麦香鱼［1个］",
+      "aliases": [
+        "麦香鱼"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 325,
+        "energyKj": 1359,
+        "protein": 16,
+        "fat": 13,
+        "carbs": 35,
+        "sodiumMg": 556,
+        "calciumMg": 99
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "46:25",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:43:10",
+      "name": "麦当劳吉士汉堡包［1个］",
+      "aliases": [
+        "吉士汉堡包"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 294,
+        "energyKj": 1231,
+        "protein": 16,
+        "fat": 12,
+        "carbs": 30,
+        "sodiumMg": 673,
+        "calciumMg": 144
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "43:10",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:44:23",
+      "name": "麦当劳双层吉士汉堡［1个］",
+      "aliases": [
+        "双层吉士汉堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 429,
+        "energyKj": 1796,
+        "protein": 27,
+        "fat": 22,
+        "carbs": 31,
+        "sodiumMg": 1017,
+        "calciumMg": 232
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "44:23",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:145:173",
+      "name": "麦当劳不素之霸双层牛堡［1个］",
+      "aliases": [
+        "不素之霸双层牛堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 493,
+        "energyKj": 2062,
+        "protein": 28,
+        "fat": 27,
+        "carbs": 34,
+        "sodiumMg": 1012,
+        "calciumMg": 75
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "145:173",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:146:174",
+      "name": "麦当劳双层深海鳕鱼堡［1个］",
+      "aliases": [
+        "双层深海鳕鱼堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 485,
+        "energyKj": 2029,
+        "protein": 28,
+        "fat": 21,
+        "carbs": 46,
+        "sodiumMg": 917,
+        "calciumMg": 147
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "146:174",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:161:188",
+      "name": "麦当劳培根安格斯厚牛堡［1个］",
+      "aliases": [
+        "培根安格斯厚牛堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 707,
+        "energyKj": 2959,
+        "protein": 34,
+        "fat": 44,
+        "carbs": 43,
+        "sodiumMg": 1037,
+        "calciumMg": 161
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "161:188",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:162:191",
+      "name": "麦当劳芝士安格斯厚牛堡［1个］",
+      "aliases": [
+        "芝士安格斯厚牛堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 696,
+        "energyKj": 2914,
+        "protein": 32,
+        "fat": 44,
+        "carbs": 43,
+        "sodiumMg": 897,
+        "calciumMg": 150
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "162:191",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:50:27",
+      "name": "麦当劳培根蔬萃双层牛堡［1个］",
+      "aliases": [
+        "培根蔬萃双层牛堡"
+      ],
+      "category": "汉堡和卷",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 442,
+        "energyKj": 1850,
+        "protein": 24,
+        "fat": 23,
+        "carbs": 34,
+        "sodiumMg": 728,
+        "calciumMg": 73
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "50:27",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:51:72",
+      "name": "麦当劳可口可乐［小］",
+      "aliases": [
+        "可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 107,
+        "energyKj": 446,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 26,
+        "sodiumMg": 0,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "51:72",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:51:73",
+      "name": "麦当劳可口可乐［中］",
+      "aliases": [
+        "可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 147,
+        "energyKj": 616,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 36,
+        "sodiumMg": 0,
+        "calciumMg": 10
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "51:73",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:51:74",
+      "name": "麦当劳可口可乐［大］",
+      "aliases": [
+        "可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 224,
+        "energyKj": 936,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 55,
+        "sodiumMg": 0,
+        "calciumMg": 15
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "51:74",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:53:82",
+      "name": "麦当劳无糖可口可乐［小］",
+      "aliases": [
+        "无糖可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 0,
+        "energyKj": 0,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 0,
+        "sodiumMg": 25,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "53:82",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:53:83",
+      "name": "麦当劳无糖可口可乐［中］",
+      "aliases": [
+        "无糖可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 0,
+        "energyKj": 0,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 1,
+        "sodiumMg": 35,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "53:83",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:53:84",
+      "name": "麦当劳无糖可口可乐［大］",
+      "aliases": [
+        "无糖可口可乐"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 0,
+        "energyKj": 0,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 1,
+        "sodiumMg": 53,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "53:84",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:102:78",
+      "name": "麦当劳阳光柠檬红茶［小］",
+      "aliases": [
+        "阳光柠檬红茶"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 85,
+        "energyKj": 354,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 21,
+        "sodiumMg": 12,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "102:78",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:102:79",
+      "name": "麦当劳阳光柠檬红茶［中］",
+      "aliases": [
+        "阳光柠檬红茶"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 117,
+        "energyKj": 488,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 29,
+        "sodiumMg": 17,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "102:79",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:102:80",
+      "name": "麦当劳阳光柠檬红茶［大］",
+      "aliases": [
+        "阳光柠檬红茶"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 178,
+        "energyKj": 743,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 43,
+        "sodiumMg": 25,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "102:80",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:52:85",
+      "name": "麦当劳雪碧［小］",
+      "aliases": [
+        "雪碧"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 76,
+        "energyKj": 319,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 19,
+        "sodiumMg": 21,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "52:85",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:52:86",
+      "name": "麦当劳雪碧［中］",
+      "aliases": [
+        "雪碧"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 105,
+        "energyKj": 440,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 26,
+        "sodiumMg": 29,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "52:86",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:52:87",
+      "name": "麦当劳雪碧［大］",
+      "aliases": [
+        "雪碧"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 160,
+        "energyKj": 669,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 39,
+        "sodiumMg": 45,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "52:87",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:344:427",
+      "name": "麦当劳怡泉+C［中］",
+      "aliases": [
+        "怡泉+C"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 110,
+        "energyKj": 461,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 27,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "344:427",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:344:428",
+      "name": "麦当劳怡泉+C［大］",
+      "aliases": [
+        "怡泉+C"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 168,
+        "energyKj": 701,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 41,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "344:428",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:66:160",
+      "name": "麦当劳阳光橙麦炫酷［1份（官网默认规格）］",
+      "aliases": [
+        "阳光橙麦炫酷"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 228,
+        "energyKj": 955,
+        "protein": 1,
+        "fat": 2,
+        "carbs": 50,
+        "sodiumMg": 77,
+        "calciumMg": 52
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "66:160",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:248:243",
+      "name": "麦当劳【美汁源】“黄金橙橙”［中］",
+      "aliases": [
+        "【美汁源】“黄金橙橙”"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 165,
+        "energyKj": 691,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 41,
+        "sodiumMg": 53,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "248:243",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:111:88",
+      "name": "麦当劳100%苹果汁［1盒］",
+      "aliases": [
+        "100%苹果汁"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1盒",
+        "originalLabel": "1盒",
+        "kcal": 88,
+        "energyKj": 368,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 21,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "111:88",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:62:90",
+      "name": "麦当劳优品豆浆［小］",
+      "aliases": [
+        "优品豆浆"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 151,
+        "energyKj": 633,
+        "protein": 6,
+        "fat": 3,
+        "carbs": 25,
+        "sodiumMg": 32,
+        "calciumMg": 15
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "62:90",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:62:91",
+      "name": "麦当劳优品豆浆［大］",
+      "aliases": [
+        "优品豆浆"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 202,
+        "energyKj": 844,
+        "protein": 8,
+        "fat": 4,
+        "carbs": 33,
+        "sodiumMg": 43,
+        "calciumMg": 21
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "62:91",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:61:178",
+      "name": "麦当劳纯牛奶（盒装）［1份（官网默认规格）］",
+      "aliases": [
+        "纯牛奶（盒装）"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 129,
+        "energyKj": 541,
+        "protein": 7,
+        "fat": 7,
+        "carbs": 10,
+        "sodiumMg": 73,
+        "calciumMg": 231
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "61:178",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:57:93",
+      "name": "麦当劳锡兰红茶［1份（官网默认规格）］",
+      "aliases": [
+        "锡兰红茶"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 2,
+        "energyKj": 8,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 0,
+        "sodiumMg": 0,
+        "calciumMg": 5
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "57:93",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:63:81",
+      "name": "麦当劳纯悦［1份（官网默认规格）］",
+      "aliases": [
+        "纯悦"
+      ],
+      "category": "饮品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 0,
+        "energyKj": 0,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 0,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "63:81",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:21:422",
+      "name": "麦当劳薯条［迷你］",
+      "aliases": [
+        "薯条"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "迷你",
+        "originalLabel": "迷你",
+        "kcal": 106,
+        "energyKj": 444,
+        "protein": 2,
+        "fat": 4,
+        "carbs": 14,
+        "sodiumMg": 61,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "21:422",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:21:11",
+      "name": "麦当劳薯条［小］",
+      "aliases": [
+        "薯条"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 210,
+        "energyKj": 877,
+        "protein": 3,
+        "fat": 9,
+        "carbs": 28,
+        "sodiumMg": 120,
+        "calciumMg": 13
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "21:11",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:21:12",
+      "name": "麦当劳薯条［中］",
+      "aliases": [
+        "薯条"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 289,
+        "energyKj": 1210,
+        "protein": 4,
+        "fat": 12,
+        "carbs": 38,
+        "sodiumMg": 165,
+        "calciumMg": 18
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "21:12",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:21:14",
+      "name": "麦当劳薯条［大］",
+      "aliases": [
+        "薯条"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 379,
+        "energyKj": 1587,
+        "protein": 6,
+        "fat": 16,
+        "carbs": 50,
+        "sodiumMg": 216,
+        "calciumMg": 23
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "21:14",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:326:410",
+      "name": "麦当劳脆脆薯条［中］",
+      "aliases": [
+        "脆脆薯条"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 279,
+        "energyKj": 1168,
+        "protein": 4,
+        "fat": 14,
+        "carbs": 32,
+        "sodiumMg": 540,
+        "calciumMg": 13
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "326:410",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:26:19",
+      "name": "麦当劳麦辣鸡翅［2块］",
+      "aliases": [
+        "麦辣鸡翅"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "2块",
+        "originalLabel": "2块",
+        "kcal": 224,
+        "energyKj": 937,
+        "protein": 13,
+        "fat": 15,
+        "carbs": 9,
+        "sodiumMg": 537,
+        "calciumMg": 13
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "26:19",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:329:413",
+      "name": "麦当劳薄皮焦香V翅［2块］",
+      "aliases": [
+        "薄皮焦香V翅"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "2块",
+        "originalLabel": "2块",
+        "kcal": 192,
+        "energyKj": 804,
+        "protein": 17,
+        "fat": 11,
+        "carbs": 6,
+        "sodiumMg": 594,
+        "calciumMg": 15
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "329:413",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:23:15",
+      "name": "麦当劳麦乐鸡 (5块)［5块］",
+      "aliases": [
+        "麦乐鸡 (5块)"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "5块",
+        "originalLabel": "5块",
+        "kcal": 213,
+        "energyKj": 890,
+        "protein": 12,
+        "fat": 12,
+        "carbs": 13,
+        "sodiumMg": 422,
+        "calciumMg": 9
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "23:15",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:101:22",
+      "name": "麦当劳那么大鸡排（椒盐风味）［1个］",
+      "aliases": [
+        "那么大鸡排（椒盐风味）"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 385,
+        "energyKj": 1612,
+        "protein": 24,
+        "fat": 21,
+        "carbs": 24,
+        "sodiumMg": 996,
+        "calciumMg": 13
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "101:22",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:24:16",
+      "name": "麦当劳玉米杯［小］",
+      "aliases": [
+        "玉米杯"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 53,
+        "energyKj": 223,
+        "protein": 2,
+        "fat": 1,
+        "carbs": 7,
+        "sodiumMg": 1,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "24:16",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:24:17",
+      "name": "麦当劳玉米杯［大］",
+      "aliases": [
+        "玉米杯"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 87,
+        "energyKj": 365,
+        "protein": 4,
+        "fat": 1,
+        "carbs": 12,
+        "sodiumMg": 2,
+        "calciumMg": 10
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "24:17",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:136:161",
+      "name": "麦当劳苹果片［1份（官网默认规格）］",
+      "aliases": [
+        "苹果片"
+      ],
+      "category": "小食",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 32,
+        "energyKj": 133,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 7,
+        "sodiumMg": 0,
+        "calciumMg": 18
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "136:161",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:22:31",
+      "name": "麦当劳圆筒冰淇淋［1个］",
+      "aliases": [
+        "圆筒冰淇淋"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 93,
+        "energyKj": 391,
+        "protein": 2,
+        "fat": 3,
+        "carbs": 14,
+        "sodiumMg": 36,
+        "calciumMg": 77
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "22:31",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:34:34",
+      "name": "麦当劳奥利奥麦旋风［1个］",
+      "aliases": [
+        "奥利奥麦旋风"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 266,
+        "energyKj": 1115,
+        "protein": 5,
+        "fat": 9,
+        "carbs": 40,
+        "sodiumMg": 116,
+        "calciumMg": 185
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "34:34",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:35:35",
+      "name": "麦当劳草莓麦旋风［1个］",
+      "aliases": [
+        "草莓麦旋风"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 295,
+        "energyKj": 1234,
+        "protein": 6,
+        "fat": 9,
+        "carbs": 47,
+        "sodiumMg": 122,
+        "calciumMg": 186
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "35:35",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:32:32",
+      "name": "麦当劳朱古力新地［1个］",
+      "aliases": [
+        "朱古力新地"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 282,
+        "energyKj": 1178,
+        "protein": 5,
+        "fat": 9,
+        "carbs": 44,
+        "sodiumMg": 126,
+        "calciumMg": 182
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "32:32",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:33:33",
+      "name": "麦当劳草莓新地［1个］",
+      "aliases": [
+        "草莓新地"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 245,
+        "energyKj": 1027,
+        "protein": 4,
+        "fat": 6,
+        "carbs": 43,
+        "sodiumMg": 84,
+        "calciumMg": 158
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "33:33",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:340:423",
+      "name": "麦当劳迷你朱古力新地［1份］",
+      "aliases": [
+        "迷你朱古力新地"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 140,
+        "energyKj": 586,
+        "protein": 3,
+        "fat": 4,
+        "carbs": 22,
+        "sodiumMg": 63,
+        "calciumMg": 90
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "340:423",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:341:424",
+      "name": "麦当劳迷你草莓新地［1份］",
+      "aliases": [
+        "迷你草莓新地"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 122,
+        "energyKj": 511,
+        "protein": 2,
+        "fat": 3,
+        "carbs": 21,
+        "sodiumMg": 42,
+        "calciumMg": 78
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "341:424",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:36:36",
+      "name": "麦当劳香芋派［1个］",
+      "aliases": [
+        "香芋派"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 232,
+        "energyKj": 971,
+        "protein": 2,
+        "fat": 12,
+        "carbs": 28,
+        "sodiumMg": 159,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "36:36",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:37:37",
+      "name": "麦当劳菠萝派［1个］",
+      "aliases": [
+        "菠萝派"
+      ],
+      "category": "甜品",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 221,
+        "energyKj": 925,
+        "protein": 2,
+        "fat": 11,
+        "carbs": 27,
+        "sodiumMg": 147,
+        "calciumMg": 5
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "37:37",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:15:43",
+      "name": "麦当劳猪柳麦满分［1个］",
+      "aliases": [
+        "猪柳麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 308,
+        "energyKj": 1288,
+        "protein": 16,
+        "fat": 16,
+        "carbs": 24,
+        "sodiumMg": 781,
+        "calciumMg": 213
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "15:43",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:17:53",
+      "name": "麦当劳猪柳蛋麦满分［1个］",
+      "aliases": [
+        "猪柳蛋麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 387,
+        "energyKj": 1618,
+        "protein": 23,
+        "fat": 21,
+        "carbs": 25,
+        "sodiumMg": 846,
+        "calciumMg": 243
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "17:53",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:321:402",
+      "name": "麦当劳双层猪柳蛋麦满分［1个］",
+      "aliases": [
+        "双层猪柳蛋麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 513,
+        "energyKj": 2148,
+        "protein": 29,
+        "fat": 32,
+        "carbs": 26,
+        "sodiumMg": 1210,
+        "calciumMg": 249
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "321:402",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:20:46",
+      "name": "麦当劳火腿扒麦满分［1个］",
+      "aliases": [
+        "火腿扒麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 261,
+        "energyKj": 1092,
+        "protein": 14,
+        "fat": 12,
+        "carbs": 24,
+        "sodiumMg": 608,
+        "calciumMg": 131
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "20:46",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:39:54",
+      "name": "麦当劳大脆鸡扒麦满分［1个］",
+      "aliases": [
+        "大脆鸡扒麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 361,
+        "energyKj": 1510,
+        "protein": 16,
+        "fat": 17,
+        "carbs": 35,
+        "sodiumMg": 804,
+        "calciumMg": 130
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "39:54",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:40:55",
+      "name": "麦当劳原味板烧鸡腿麦满分［1份（官网默认规格）］",
+      "aliases": [
+        "原味板烧鸡腿麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 246,
+        "energyKj": 1029,
+        "protein": 15,
+        "fat": 9,
+        "carbs": 25,
+        "sodiumMg": 611,
+        "calciumMg": 133
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "40:55",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:41:56",
+      "name": "麦当劳双层原味板烧鸡腿麦满分［1个］",
+      "aliases": [
+        "双层原味板烧鸡腿麦满分"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 355,
+        "energyKj": 1486,
+        "protein": 23,
+        "fat": 17,
+        "carbs": 27,
+        "sodiumMg": 984,
+        "calciumMg": 138
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "41:56",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:320:401",
+      "name": "麦当劳原味板烧鸡腿炒双蛋堡［1个］",
+      "aliases": [
+        "原味板烧鸡腿炒双蛋堡"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 419,
+        "energyKj": 1754,
+        "protein": 27,
+        "fat": 21,
+        "carbs": 30,
+        "sodiumMg": 715,
+        "calciumMg": 116
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "320:401",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:172:198",
+      "name": "麦当劳猪柳炒双蛋堡［1个］",
+      "aliases": [
+        "猪柳炒双蛋堡"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 437,
+        "energyKj": 1827,
+        "protein": 25,
+        "fat": 24,
+        "carbs": 29,
+        "sodiumMg": 705,
+        "calciumMg": 116
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "172:198",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:209:220",
+      "name": "麦当劳火腿扒早安营养卷［1个］",
+      "aliases": [
+        "火腿扒早安营养卷"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 444,
+        "energyKj": 1857,
+        "protein": 16,
+        "fat": 24,
+        "carbs": 39,
+        "sodiumMg": 1065,
+        "calciumMg": 108
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "209:220",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:221:222",
+      "name": "麦当劳图林根香肠早安营养卷［1个］",
+      "aliases": [
+        "图林根香肠早安营养卷"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 425,
+        "energyKj": 1779,
+        "protein": 14,
+        "fat": 23,
+        "carbs": 38,
+        "sodiumMg": 977,
+        "calciumMg": 68
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "221:222",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:168:194",
+      "name": "麦当劳皮蛋鸡肉粥［1份］",
+      "aliases": [
+        "皮蛋鸡肉粥"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 133,
+        "energyKj": 558,
+        "protein": 6,
+        "fat": 3,
+        "carbs": 20,
+        "sodiumMg": 611,
+        "calciumMg": 20
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "168:194",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:169:195",
+      "name": "麦当劳雪菜脆笋鸡肉粥［1份］",
+      "aliases": [
+        "雪菜脆笋鸡肉粥"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 120,
+        "energyKj": 504,
+        "protein": 4,
+        "fat": 2,
+        "carbs": 22,
+        "sodiumMg": 552,
+        "calciumMg": 14
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "169:195",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:107:38",
+      "name": "麦当劳脆薯饼［1个］",
+      "aliases": [
+        "脆薯饼"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 146,
+        "energyKj": 612,
+        "protein": 1,
+        "fat": 9,
+        "carbs": 14,
+        "sodiumMg": 311,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "107:38",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:108:39",
+      "name": "麦当劳脆香油条［1个］",
+      "aliases": [
+        "脆香油条"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 202,
+        "energyKj": 844,
+        "protein": 5,
+        "fat": 12,
+        "carbs": 19,
+        "sodiumMg": 230,
+        "calciumMg": 18
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "108:39",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:220:221",
+      "name": "麦当劳德式图林根香肠［1个］",
+      "aliases": [
+        "德式图林根香肠"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 87,
+        "energyKj": 366,
+        "protein": 5,
+        "fat": 6,
+        "carbs": 2,
+        "sodiumMg": 293,
+        "calciumMg": 5
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "220:221",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:250:257",
+      "name": "麦当劳优品豆浆［小］",
+      "aliases": [
+        "优品豆浆"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 151,
+        "energyKj": 633,
+        "protein": 6,
+        "fat": 3,
+        "carbs": 25,
+        "sodiumMg": 32,
+        "calciumMg": 15
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "250:257",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:250:258",
+      "name": "麦当劳优品豆浆［大］",
+      "aliases": [
+        "优品豆浆"
+      ],
+      "category": "早餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 202,
+        "energyKj": 844,
+        "protein": 8,
+        "fat": 4,
+        "carbs": 33,
+        "sodiumMg": 43,
+        "calciumMg": 21
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "250:258",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:335:417",
+      "name": "麦当劳“苹板”支撑Pro［1份］",
+      "aliases": [
+        "“苹板”支撑Pro"
+      ],
+      "category": "500大卡套餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 476,
+        "energyKj": 1993,
+        "protein": 25,
+        "fat": 18,
+        "carbs": 50,
+        "sodiumMg": 1077,
+        "calciumMg": 117
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "335:417",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:338:420",
+      "name": "麦当劳牛气满满［1份］",
+      "aliases": [
+        "牛气满满"
+      ],
+      "category": "500大卡套餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份",
+        "originalLabel": "1份",
+        "kcal": 495,
+        "energyKj": 2073,
+        "protein": 26,
+        "fat": 24,
+        "carbs": 42,
+        "sodiumMg": 764,
+        "calciumMg": 79
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "338:420",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:154:179",
+      "name": "麦当劳儿童鱼排堡［1个］",
+      "aliases": [
+        "儿童鱼排堡"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1个",
+        "originalLabel": "1个",
+        "kcal": 269,
+        "energyKj": 1126,
+        "protein": 15,
+        "fat": 6,
+        "carbs": 36,
+        "sodiumMg": 442,
+        "calciumMg": 58
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "154:179",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:119:61",
+      "name": "麦当劳汉堡包［1份（官网默认规格）］",
+      "aliases": [
+        "汉堡包"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 248,
+        "energyKj": 1039,
+        "protein": 13,
+        "fat": 8,
+        "carbs": 29,
+        "sodiumMg": 492,
+        "calciumMg": 61
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "119:61",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:121:63",
+      "name": "麦当劳麦乐鸡（4块）［4块］",
+      "aliases": [
+        "麦乐鸡（4块）"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "4块",
+        "originalLabel": "4块",
+        "kcal": 170,
+        "energyKj": 712,
+        "protein": 10,
+        "fat": 10,
+        "carbs": 11,
+        "sodiumMg": 337,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "121:63",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:153:180",
+      "name": "麦当劳薯条（迷你）［薯条（迷你）］",
+      "aliases": [
+        "薯条（迷你）"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "薯条（迷你）",
+        "originalLabel": "薯条（迷你）",
+        "kcal": 106,
+        "energyKj": 444,
+        "protein": 2,
+        "fat": 4,
+        "carbs": 14,
+        "sodiumMg": 61,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "153:180",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:122:64",
+      "name": "麦当劳玉米杯 (小)［小］",
+      "aliases": [
+        "玉米杯 (小)"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 53,
+        "energyKj": 223,
+        "protein": 2,
+        "fat": 1,
+        "carbs": 7,
+        "sodiumMg": 1,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "122:64",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:155:181",
+      "name": "麦当劳苹果片［1份（官网默认规格）］",
+      "aliases": [
+        "苹果片"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 32,
+        "energyKj": 133,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 7,
+        "sodiumMg": 0,
+        "calciumMg": 18
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "155:181",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:125:67",
+      "name": "麦当劳纯牛奶（盒装）［1份（官网默认规格）］",
+      "aliases": [
+        "纯牛奶（盒装）"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 129,
+        "energyKj": 541,
+        "protein": 7,
+        "fat": 7,
+        "carbs": 10,
+        "sodiumMg": 73,
+        "calciumMg": 231
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "125:67",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:129:71",
+      "name": "麦当劳纯悦［1份（官网默认规格）］",
+      "aliases": [
+        "纯悦"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "1份（官网默认规格）",
+        "originalLabel": "默认",
+        "kcal": 0,
+        "energyKj": 0,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 0,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "129:71",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:141:168",
+      "name": "麦当劳美汁源100%苹果汁 (小)［小］",
+      "aliases": [
+        "美汁源100%苹果汁 (小)"
+      ],
+      "category": "开心乐园餐",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 88,
+        "energyKj": 368,
+        "protein": 0,
+        "fat": 0,
+        "carbs": 21,
+        "sodiumMg": 0,
+        "calciumMg": 0
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "141:168",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:287:329",
+      "name": "麦当劳冰奶铁［小］",
+      "aliases": [
+        "冰奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 86,
+        "energyKj": 358,
+        "protein": 5,
+        "fat": 4,
+        "carbs": 8,
+        "sodiumMg": 44,
+        "calciumMg": 144
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "287:329",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:287:330",
+      "name": "麦当劳冰奶铁［中］",
+      "aliases": [
+        "冰奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 148,
+        "energyKj": 618,
+        "protein": 8,
+        "fat": 7,
+        "carbs": 13,
+        "sodiumMg": 77,
+        "calciumMg": 251
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "287:330",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:287:331",
+      "name": "麦当劳冰奶铁［大］",
+      "aliases": [
+        "冰奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 162,
+        "energyKj": 678,
+        "protein": 9,
+        "fat": 7,
+        "carbs": 15,
+        "sodiumMg": 85,
+        "calciumMg": 275
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "287:331",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:288:332",
+      "name": "麦当劳热奶铁［小］",
+      "aliases": [
+        "热奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 134,
+        "energyKj": 559,
+        "protein": 8,
+        "fat": 6,
+        "carbs": 12,
+        "sodiumMg": 72,
+        "calciumMg": 231
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "288:332",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:288:333",
+      "name": "麦当劳热奶铁［中］",
+      "aliases": [
+        "热奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 186,
+        "energyKj": 779,
+        "protein": 11,
+        "fat": 8,
+        "carbs": 17,
+        "sodiumMg": 99,
+        "calciumMg": 320
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "288:333",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:288:334",
+      "name": "麦当劳热奶铁［大］",
+      "aliases": [
+        "热奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 249,
+        "energyKj": 1040,
+        "protein": 14,
+        "fat": 11,
+        "carbs": 22,
+        "sodiumMg": 134,
+        "calciumMg": 431
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "288:334",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:289:335",
+      "name": "麦当劳冰燕麦奶铁［小］",
+      "aliases": [
+        "冰燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 77,
+        "energyKj": 322,
+        "protein": 2,
+        "fat": 3,
+        "carbs": 10,
+        "sodiumMg": 50,
+        "calciumMg": 155
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "289:335",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:289:336",
+      "name": "麦当劳冰燕麦奶铁［中］",
+      "aliases": [
+        "冰燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 132,
+        "energyKj": 554,
+        "protein": 3,
+        "fat": 5,
+        "carbs": 17,
+        "sodiumMg": 87,
+        "calciumMg": 270
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "289:336",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:289:337",
+      "name": "麦当劳冰燕麦奶铁［大］",
+      "aliases": [
+        "冰燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 145,
+        "energyKj": 608,
+        "protein": 4,
+        "fat": 5,
+        "carbs": 19,
+        "sodiumMg": 96,
+        "calciumMg": 296
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "289:337",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:290:338",
+      "name": "麦当劳热燕麦奶铁［小］",
+      "aliases": [
+        "热燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 120,
+        "energyKj": 500,
+        "protein": 3,
+        "fat": 5,
+        "carbs": 16,
+        "sodiumMg": 81,
+        "calciumMg": 248
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "290:338",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:290:339",
+      "name": "麦当劳热燕麦奶铁［中］",
+      "aliases": [
+        "热燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 167,
+        "energyKj": 697,
+        "protein": 4,
+        "fat": 6,
+        "carbs": 22,
+        "sodiumMg": 112,
+        "calciumMg": 345
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "290:339",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:290:340",
+      "name": "麦当劳热燕麦奶铁［大］",
+      "aliases": [
+        "热燕麦奶铁"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 222,
+        "energyKj": 929,
+        "protein": 5,
+        "fat": 8,
+        "carbs": 29,
+        "sodiumMg": 152,
+        "calciumMg": 464
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "290:340",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:293:353",
+      "name": "麦当劳冰美式［小］",
+      "aliases": [
+        "冰美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 10,
+        "energyKj": 41,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 1,
+        "sodiumMg": 0,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "293:353",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:293:354",
+      "name": "麦当劳冰美式［中］",
+      "aliases": [
+        "冰美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 13,
+        "energyKj": 54,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 2,
+        "sodiumMg": 0,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "293:354",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:293:355",
+      "name": "麦当劳冰美式［大］",
+      "aliases": [
+        "冰美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 14,
+        "energyKj": 60,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 2,
+        "sodiumMg": 0,
+        "calciumMg": 8
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "293:355",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:294:356",
+      "name": "麦当劳热美式［小］",
+      "aliases": [
+        "热美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 10,
+        "energyKj": 41,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 1,
+        "sodiumMg": 0,
+        "calciumMg": 6
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "294:356",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:294:357",
+      "name": "麦当劳热美式［中］",
+      "aliases": [
+        "热美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 13,
+        "energyKj": 54,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 2,
+        "sodiumMg": 0,
+        "calciumMg": 7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "294:357",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:294:358",
+      "name": "麦当劳热美式［大］",
+      "aliases": [
+        "热美式"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 14,
+        "energyKj": 60,
+        "protein": 1,
+        "fat": 0,
+        "carbs": 2,
+        "sodiumMg": 0,
+        "calciumMg": 8
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "294:358",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:295:406",
+      "name": "麦当劳冰焦糖玛奇朵［中］",
+      "aliases": [
+        "冰焦糖玛奇朵"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 148,
+        "energyKj": 618,
+        "protein": 8,
+        "fat": 7,
+        "carbs": 13,
+        "sodiumMg": 77,
+        "calciumMg": 251
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "295:406",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:298:408",
+      "name": "麦当劳热焦糖玛奇朵［中］",
+      "aliases": [
+        "热焦糖玛奇朵"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 167,
+        "energyKj": 698,
+        "protein": 9,
+        "fat": 7,
+        "carbs": 15,
+        "sodiumMg": 88,
+        "calciumMg": 284.7
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "298:408",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:299:359",
+      "name": "麦当劳卡布奇诺［中］",
+      "aliases": [
+        "卡布奇诺"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 167,
+        "energyKj": 698,
+        "protein": 9,
+        "fat": 7,
+        "carbs": 15,
+        "sodiumMg": 88,
+        "calciumMg": 285
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "299:359",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:299:360",
+      "name": "麦当劳卡布奇诺［大］",
+      "aliases": [
+        "卡布奇诺"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 223,
+        "energyKj": 932,
+        "protein": 13,
+        "fat": 10,
+        "carbs": 20,
+        "sodiumMg": 120,
+        "calciumMg": 385
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "299:360",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:303:367",
+      "name": "麦当劳冰浓浓燕麦黑巧［中］",
+      "aliases": [
+        "冰浓浓燕麦黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 120,
+        "energyKj": 500,
+        "protein": 2,
+        "fat": 5,
+        "carbs": 16,
+        "sodiumMg": 87,
+        "calciumMg": 263
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "303:367",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:303:368",
+      "name": "麦当劳冰浓浓燕麦黑巧［大］",
+      "aliases": [
+        "冰浓浓燕麦黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 131,
+        "energyKj": 547,
+        "protein": 3,
+        "fat": 5,
+        "carbs": 17,
+        "sodiumMg": 95,
+        "calciumMg": 388
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "303:368",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:314:372",
+      "name": "麦当劳热浓浓燕麦黑巧［中］",
+      "aliases": [
+        "热浓浓燕麦黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 157,
+        "energyKj": 655,
+        "protein": 3,
+        "fat": 6,
+        "carbs": 21,
+        "sodiumMg": 114,
+        "calciumMg": 344
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "314:372",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:314:373",
+      "name": "麦当劳热浓浓燕麦黑巧［大］",
+      "aliases": [
+        "热浓浓燕麦黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 213,
+        "energyKj": 893,
+        "protein": 4,
+        "fat": 8,
+        "carbs": 28,
+        "sodiumMg": 156,
+        "calciumMg": 469
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "314:373",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:306:378",
+      "name": "麦当劳冰浓浓抹茶牛奶［中］",
+      "aliases": [
+        "冰浓浓抹茶牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 196,
+        "energyKj": 821,
+        "protein": 8,
+        "fat": 6,
+        "carbs": 25,
+        "sodiumMg": 80,
+        "calciumMg": 275
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "306:378",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:306:379",
+      "name": "麦当劳冰浓浓抹茶牛奶［大］",
+      "aliases": [
+        "冰浓浓抹茶牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 240,
+        "energyKj": 1004,
+        "protein": 9,
+        "fat": 7,
+        "carbs": 33,
+        "sodiumMg": 89,
+        "calciumMg": 314
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "306:379",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:307:380",
+      "name": "麦当劳热浓浓抹茶牛奶［中］",
+      "aliases": [
+        "热浓浓抹茶牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 238,
+        "energyKj": 996,
+        "protein": 11,
+        "fat": 8,
+        "carbs": 29,
+        "sodiumMg": 104,
+        "calciumMg": 351
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "307:380",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:307:381",
+      "name": "麦当劳热浓浓抹茶牛奶［大］",
+      "aliases": [
+        "热浓浓抹茶牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 333,
+        "energyKj": 1393,
+        "protein": 14,
+        "fat": 12,
+        "carbs": 41,
+        "sodiumMg": 142,
+        "calciumMg": 482
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "307:381",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:304:369",
+      "name": "麦当劳冰燕麦奶［小］",
+      "aliases": [
+        "冰燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 131,
+        "energyKj": 547,
+        "protein": 3,
+        "fat": 5,
+        "carbs": 17,
+        "sodiumMg": 95,
+        "calciumMg": 288
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "304:369",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:304:370",
+      "name": "麦当劳冰燕麦奶［中］",
+      "aliases": [
+        "冰燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 199,
+        "energyKj": 833,
+        "protein": 4,
+        "fat": 8,
+        "carbs": 26,
+        "sodiumMg": 145,
+        "calciumMg": 438
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "304:370",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:304:371",
+      "name": "麦当劳冰燕麦奶［大］",
+      "aliases": [
+        "冰燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 239,
+        "energyKj": 1000,
+        "protein": 5,
+        "fat": 9,
+        "carbs": 32,
+        "sodiumMg": 174,
+        "calciumMg": 525
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "304:371",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:305:374",
+      "name": "麦当劳热燕麦奶［小］",
+      "aliases": [
+        "热燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 131,
+        "energyKj": 547,
+        "protein": 3,
+        "fat": 5,
+        "carbs": 17,
+        "sodiumMg": 95,
+        "calciumMg": 288
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "305:374",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:305:375",
+      "name": "麦当劳热燕麦奶［中］",
+      "aliases": [
+        "热燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 157,
+        "energyKj": 655,
+        "protein": 3,
+        "fat": 6,
+        "carbs": 21,
+        "sodiumMg": 114,
+        "calciumMg": 344
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "305:375",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:305:376",
+      "name": "麦当劳热燕麦奶［大］",
+      "aliases": [
+        "热燕麦奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 213,
+        "energyKj": 893,
+        "protein": 4,
+        "fat": 8,
+        "carbs": 28,
+        "sodiumMg": 156,
+        "calciumMg": 469
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "305:376",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:308:382",
+      "name": "麦当劳冰浓浓黑巧［中］",
+      "aliases": [
+        "冰浓浓黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 135,
+        "energyKj": 563,
+        "protein": 8,
+        "fat": 6,
+        "carbs": 12,
+        "sodiumMg": 77,
+        "calciumMg": 244
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "308:382",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:308:383",
+      "name": "麦当劳冰浓浓黑巧［大］",
+      "aliases": [
+        "冰浓浓黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 147,
+        "energyKj": 617,
+        "protein": 8,
+        "fat": 7,
+        "carbs": 13,
+        "sodiumMg": 84,
+        "calciumMg": 267
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "308:383",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:309:384",
+      "name": "麦当劳热浓浓黑巧［中］",
+      "aliases": [
+        "热浓浓黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 176,
+        "energyKj": 738,
+        "protein": 10,
+        "fat": 8,
+        "carbs": 15,
+        "sodiumMg": 101,
+        "calciumMg": 319
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "309:384",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:309:385",
+      "name": "麦当劳热浓浓黑巧［大］",
+      "aliases": [
+        "热浓浓黑巧"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 240,
+        "energyKj": 1006,
+        "protein": 13,
+        "fat": 11,
+        "carbs": 21,
+        "sodiumMg": 137,
+        "calciumMg": 435
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "309:385",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:277:388",
+      "name": "麦当劳冰牛奶［小］",
+      "aliases": [
+        "冰牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 147,
+        "energyKj": 617,
+        "protein": 8,
+        "fat": 7,
+        "carbs": 13,
+        "sodiumMg": 84,
+        "calciumMg": 267
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "277:388",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:277:323",
+      "name": "麦当劳冰牛奶［中］",
+      "aliases": [
+        "冰牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 224,
+        "energyKj": 939,
+        "protein": 13,
+        "fat": 11,
+        "carbs": 19,
+        "sodiumMg": 128,
+        "calciumMg": 406
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "277:323",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:277:324",
+      "name": "麦当劳冰牛奶［大］",
+      "aliases": [
+        "冰牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 269,
+        "energyKj": 1127,
+        "protein": 15,
+        "fat": 13,
+        "carbs": 23,
+        "sodiumMg": 154,
+        "calciumMg": 487
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "277:324",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:276:389",
+      "name": "麦当劳热牛奶［小］",
+      "aliases": [
+        "热牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "小",
+        "originalLabel": "小",
+        "kcal": 147,
+        "energyKj": 617,
+        "protein": 8,
+        "fat": 7,
+        "carbs": 13,
+        "sodiumMg": 84,
+        "calciumMg": 267
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "276:389",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:276:321",
+      "name": "麦当劳热牛奶［中］",
+      "aliases": [
+        "热牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 176,
+        "energyKj": 738,
+        "protein": 10,
+        "fat": 8,
+        "carbs": 15,
+        "sodiumMg": 101,
+        "calciumMg": 319
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "276:321",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:276:322",
+      "name": "麦当劳热牛奶［大］",
+      "aliases": [
+        "热牛奶"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 240,
+        "energyKj": 1006,
+        "protein": 13,
+        "fat": 11,
+        "carbs": 21,
+        "sodiumMg": 137,
+        "calciumMg": 435
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "276:322",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:271:391",
+      "name": "麦当劳浓浓抹茶雪冰［中］",
+      "aliases": [
+        "浓浓抹茶雪冰"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 289,
+        "energyKj": 1208,
+        "protein": 7,
+        "fat": 11,
+        "carbs": 39,
+        "sodiumMg": 181,
+        "calciumMg": 220
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "271:391",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:271:392",
+      "name": "麦当劳浓浓抹茶雪冰［大］",
+      "aliases": [
+        "浓浓抹茶雪冰"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 339,
+        "energyKj": 1418,
+        "protein": 8,
+        "fat": 12,
+        "carbs": 48,
+        "sodiumMg": 194,
+        "calciumMg": 270
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "271:392",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:269:315",
+      "name": "麦当劳浓浓黑巧雪冰［中］",
+      "aliases": [
+        "浓浓黑巧雪冰"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "中",
+        "originalLabel": "中",
+        "kcal": 359,
+        "energyKj": 1501,
+        "protein": 8,
+        "fat": 12,
+        "carbs": 51,
+        "sodiumMg": 224,
+        "calciumMg": 207
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "269:315",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:269:316",
+      "name": "麦当劳浓浓黑巧雪冰［大］",
+      "aliases": [
+        "浓浓黑巧雪冰"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大",
+        "originalLabel": "大",
+        "kcal": 444,
+        "energyKj": 1857,
+        "protein": 11,
+        "fat": 14,
+        "carbs": 65,
+        "sodiumMg": 258,
+        "calciumMg": 251
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "269:316",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:312:398",
+      "name": "麦当劳抹茶阿芙佳朵［一杯］",
+      "aliases": [
+        "抹茶阿芙佳朵"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "一杯",
+        "originalLabel": "一杯",
+        "kcal": 147,
+        "energyKj": 613,
+        "protein": 3,
+        "fat": 4,
+        "carbs": 23,
+        "sodiumMg": 50,
+        "calciumMg": 136
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "312:398",
+        "version": "2025-04（官网标注）"
+      }
+    },
+    {
+      "id": "mcd-cn:313:399",
+      "name": "麦当劳咖啡阿芙佳朵［一杯］",
+      "aliases": [
+        "咖啡阿芙佳朵"
+      ],
+      "category": "McCafé 饮品及其他",
+      "state": "中国大陆官方标准份",
+      "description": "官网单份规格；营养值更新于2025年4月，实际供应可能有差异。",
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "一杯",
+        "originalLabel": "一杯",
+        "kcal": 139,
+        "energyKj": 583,
+        "protein": 4,
+        "fat": 4,
+        "carbs": 21,
+        "sodiumMg": 49,
+        "calciumMg": 111
+      },
+      "source": {
+        "name": "麦当劳中国官网营养计算器",
+        "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+        "recordId": "313:399",
+        "version": "2025-04（官网标注）"
+      }
+    }
+  ]
+}

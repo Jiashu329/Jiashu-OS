@@ -36,7 +36,8 @@ function object(value: unknown, allowed: readonly string[]) {
 }
 function text(value: unknown, key: string, max: number, optional = false) {
   if (value === undefined && optional) return '';
-  if (typeof value !== 'string' || (key === 'note' ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/ : /[\u0000-\u001f\u007f]/).test(value) || value.trim().length > max || (!optional && !value.trim())) return fail(key, `请填写${optional ? '不超过' : '1–'}${max}字的${key === 'name' ? '名称' : key === 'note' ? '说明' : '份量'}。`);
+  const hasControl = (input: string) => { for (let index = 0; index < input.length; index++) { const code = input.charCodeAt(index); if ((code < 32 && !(key === 'note' && [9, 10, 13].includes(code))) || code === 127) return true; } return false; };
+  if (typeof value !== 'string' || hasControl(value) || value.trim().length > max || (!optional && !value.trim())) return fail(key, `请填写${optional ? '不超过' : '1–'}${max}字的${key === 'name' ? '名称' : key === 'note' ? '说明' : '份量'}。`);
   return value.trim();
 }
 function milli(value: unknown, path: string, nullable = false): bigint | null {
@@ -106,7 +107,7 @@ export function previewNutritionTemplate(template: NutritionTemplate, input: Nut
   const foods = new Map<string, FoodItem>();
   const scaled: NutritionTemplateRow[] = template.components.map((component) => {
     const grams = component.grams === null ? null : rounded(milli(component.grams, 'grams')!, numerator, denominator);
-    const portion = grams !== null ? decimalMilli(grams) + 'g' : `${component.portion || '基础份量'} × ${decimalMilli(numerator)} / ${baseAmount}`;
+    let portion = grams !== null ? decimalMilli(grams) + 'g' : `${component.portion || '基础份量'} × ${decimalMilli(numerator)} / ${baseAmount}`;
     const values = Object.fromEntries(NUTRIENT_KEYS.map((key) => [key, component[key] === null ? null : nutrientDecimal(rounded(tenth(component[key]!), numerator, denominator))]));
     let food: FoodSelection | undefined;
     const provenance = nutrientProvenance(component, numerator, denominator, portion);
@@ -118,6 +119,10 @@ export function previewNutritionTemplate(template: NutritionTemplate, input: Nut
       try { calculated = calculateFoodSelection(selection); }
       catch (error) { return fail('amount', error instanceof Error ? error.message : '食物库份量换算失败，请调整份量。'); }
       food = foodSelectionFromSnapshot(calculated);
+      // A catalog serving may have no published weight. Display its actual
+      // selected unit, keeping grams unknown rather than inventing a mass.
+      portion = String(calculated.amount) + calculated.unit;
+      for (const key of NUTRIENT_KEYS) if (provenance[key]) provenance[key] = { ...provenance[key]!, portion };
       const item = getFood(food.id, food.catalogRelease);
       if (item) foods.set(food.catalogRelease + ':' + food.id, item);
       // Catalog values follow the captured release and rounded three-decimal selection.

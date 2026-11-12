@@ -17,6 +17,7 @@ function fixture(foods: FoodItem[] = []) {
       calculations.push(selection);
       if (!['g', '克', '公克'].includes(selection.unit)) throw new Error('Unsupported portion');
       const food = foods.find((food) => food.id === selection.id)!;
+      if (typeof food.kcalPer100g !== 'number') throw new Error('This fixture accepts weighed food only');
       return { caloriesTenth: Math.round(food.kcalPer100g * selection.amount / 10), grams: selection.amount, estimated: false,
         ...Object.fromEntries((['carbs', 'protein', 'fat'] as const).filter((key) => food[`${key}Per100g`] !== undefined)
           .map((key) => [`${key}Tenth`, Math.round(food[`${key}Per100g`]! * selection.amount / 10)])) };

@@ -36,7 +36,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean; templates?: NutritionTemplate[] } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<Record<string, any>>; foodSources?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean; templates?: NutritionTemplate[] } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -93,7 +93,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
     }
     if(parsed.pathname.endsWith('/history'))return Response.json({entryId:ID,history:options.history??[]});
     if(parsed.pathname.endsWith('/restore')){const handler=nextRestore;nextRestore=undefined;if(handler)return handler();const current=entries.find(item=>item.id===ID)!;const target=options.history?.find(item=>item.revision===body.revision)?.after;if(!target)return Response.json({error:'找不到这个版本'},{status:404});Object.assign(current,target,{revision:current.revision+1});return Response.json({entry:current,replayed:false});}
-    if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: options.foods ?? [food] });
+    if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: options.foods ?? [food],...(options.foodSources?{sources:options.foodSources}:{}) });
     if (parsed.pathname.endsWith('/photo')) { const handler=nextPhoto;nextPhoto=undefined;if(handler)return handler();return Response.json({drafts:options.drafts??[draft({date:body.date,meal:body.meal})],warnings:[],provider:'MiniMax',model:'synthetic'}); }
     if (parsed.pathname.endsWith('/parse')) return Response.json({ drafts: options.drafts ?? [draft()], warnings: [], provider: 'MiniMax', model: 'synthetic' });
     if (parsed.pathname.endsWith('/batch')) {
@@ -888,4 +888,121 @@ test('count quantities without a food-specific unit weight require grams instead
   assert.match(f.el('batch-error').textContent ?? '', /份量/);
   assert.equal(f.requests.filter((request) => request.url.endsWith('/batch')).length, 0);
   assert.equal(f.el('batch-dialog').open, true);
+});
+
+
+const officialServingFood = {
+  id:'synthetic-mcd-cup',catalogRelease:'synthetic-official-serving-v1',name:'麦当劳测试饮品（中杯）',aliases:['麦当劳饮品'],category:'麦当劳',state:'中杯',
+  basis:'perServing',grams:null,kcalPer100g:null,portions:[],
+  serving:{unit:'份',label:'中杯',originalLabel:'Medium',kcal:201.1,energyKj:841.4,carbs:35.1,protein:0},
+  source:{name:'麦当劳中国官网（合成测试）',url:'https://www.mcdonalds.com.cn/nutrition',recordId:'fixture-cup-medium',version:'fixture-official'},
+};
+function officialServingSnapshot(amount=0.5) {
+  return {foodId:officialServingFood.id,foodName:officialServingFood.name,catalogRelease:officialServingFood.catalogRelease,
+    basis:'perServing',grams:null,kcalPer100g:null,serving:structuredClone(officialServingFood.serving),amount,unit:'份',
+    caloriesTenth:amount===0.5?1006:Math.round(2011*amount),carbsTenth:176,proteinTenth:0,source:officialServingFood.source,estimated:false};
+}
+
+test('official serving foods show each SKU basis, default to one serving and scale half/two servings without a gram option',async()=>{
+  const f=fixture({foods:[officialServingFood],foodSources:[
+    {name:'TFDA（测试）',description:'按每100g发布的原有食物',url:'https://example.test/tfda',licenseUrl:'https://example.test/license'},
+    {name:'麦当劳中国官网',description:'官方产品规格营养，未提供可靠克重；引用官网，不适用TFDA开放许可。',url:'https://www.mcdonalds.com.cn/nutrition'},
+  ]});await f.ready();f.click('add');f.input('food-search','麦当劳');f.click('food-search-button');
+  await settled(()=>!!f.el('food-results').querySelector('[data-food-id]'));
+  const result=f.el('food-results').querySelector('[data-food-id]')!;
+  assert.match(result.textContent??'',/中杯.*每份 201.1 kcal/);assert.ok(!result.textContent?.includes('null'));
+  assert.equal(f.el('food-results').querySelectorAll('a[href="https://example.test/license"]').length,1);
+  assert.match(f.el('food-results').textContent??'',/TFDA.*麦当劳中国官网/);
+  f.click(result);assert.equal(f.el('food-quantity').value,'1');
+  assert.deepEqual([...f.el('food-unit').querySelectorAll('option')].map((option)=>option.getAttribute('value')),['份']);
+  assert.equal(f.el('calories').value,'201.1');assert.equal(f.el('protein').value,'0.0');assert.equal(f.el('fat').value,'');
+  assert.match(f.el('food-source').textContent??'',/麦当劳.*每份.*中杯/);
+  f.input('food-quantity','0.5');assert.equal(f.el('calories').value,'100.6');assert.equal(f.el('carbs').value,'17.6');
+  assert.match(f.el('food-preview').textContent??'',/0.5 份（中杯）.*100.6 kcal/);assert.ok(!/100g|0g|nullg/.test(f.el('food-preview').textContent??''));
+  f.input('food-quantity','2');assert.equal(f.el('calories').value,'402.2');assert.equal(f.el('carbs').value,'70.2');
+  f.submit('form');await settled(()=>!f.el('dialog').open);
+  const sent=f.requests.find((request)=>request.method==='POST'&&request.url==='/api/health/nutrition')!.body;
+  assert.deepEqual(sent.food,{id:officialServingFood.id,amount:2,unit:'份',catalogRelease:officialServingFood.catalogRelease});
+  assert.equal(sent.portion,'2 份（中杯）');assert.equal(sent.fat,null);assert.equal(sent.protein,'0.0');
+});
+
+test('editing an official serving snapshot reconstructs its original release and never backfills unknown grams from a newer search result',async()=>{
+  const snapshot=officialServingSnapshot();
+  const saved=entry({name:officialServingFood.name,portion:'0.5 份（中杯）',calories:'100.6',carbs:'17.6',protein:'0.0',fat:null,food:snapshot});
+  const newer={...officialServingFood,catalogRelease:'synthetic-official-serving-v2',serving:{...officialServingFood.serving,kcal:999}};
+  const f=fixture({entries:[saved],foods:[newer]});await f.ready();f.click('add');f.input('food-search','麦当劳');f.click('food-search-button');
+  await settled(()=>!!f.el('food-results').querySelector('[data-food-id]'));f.click(f.el('food-results').querySelector('[data-food-id]')!);f.click('dialog-close');
+  f.click(f.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(f.el('food-quantity').value,'0.5');assert.equal(f.el('food-unit').value,'份');assert.equal(f.el('calories').value,'100.6');
+  assert.match(f.el('food-source').textContent??'',/每份 201.1 kcal/);assert.equal(f.el('fat').value,'');
+  f.input('food-quantity','2');assert.equal(f.el('calories').value,'402.2');f.submit('form');await settled(()=>!f.el('dialog').open);
+  const sent=f.requests.find((request)=>request.method==='PATCH'&&request.url.endsWith(ID))!.body;
+  assert.equal(sent.food.catalogRelease,snapshot.catalogRelease);assert.equal(sent.food.amount,2);assert.equal(sent.food.unit,'份');assert.equal(sent.calories,'402.2');
+  assert.equal(snapshot.grams,null);assert.equal(snapshot.kcalPer100g,null);
+});
+
+test('copying yesterday official serving snapshots keeps half-serving quantities and previews recalculation in a batch',async()=>{
+  const saved=entry({date:'2026-11-10',name:officialServingFood.name,portion:'0.5 份（中杯）',calories:'100.6',carbs:'17.6',protein:'0.0',fat:null,food:officialServingSnapshot()});
+  const f=fixture({yesterdayEntries:[saved]});await f.ready();f.click(f.el('list').querySelector('[data-nutrition-copy-meal="lunch"]')!);
+  await settled(()=>f.el('batch-dialog').open);
+  let row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;
+  assert.equal((row.querySelector('[data-draft-field="amount"]') as HTMLInputElement).value,'0.5');
+  assert.deepEqual([...row.querySelectorAll('[data-draft-field="unit"] option')].map((option)=>option.getAttribute('value')),['份']);
+  assert.match(row.querySelector('[data-draft-preview]')?.textContent??'',/每份 201.1 kcal（中杯）/);
+  f.input(row.querySelector('[data-draft-field="amount"]')!,'2');
+  row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;
+  assert.equal((row.querySelector('[data-draft-field="calories"]') as HTMLInputElement).value,'402.2');
+  assert.match(row.querySelector('[data-draft-preview]')?.textContent??'',/2 份（中杯）/);assert.ok(!/100g|0g|nullg/.test(row.querySelector('[data-draft-preview]')?.textContent??''));
+  f.submit('batch-form');await settled(()=>!f.el('batch-dialog').open);
+  const sent=f.requests.find((request)=>request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(sent.food.amount,2);assert.equal(sent.food.unit,'份');assert.equal(sent.food.catalogRelease,officialServingFood.catalogRelease);assert.equal(sent.fat,null);
+});
+
+test('selecting an official serving candidate replaces incompatible gram estimates with one explicit official serving',async()=>{
+  const f=fixture({drafts:[draft({name:'麦当劳饮料',portion:'200g',amount:200,unit:'g',calories:'800.0',calorieSource:'ai',candidates:[officialServingFood]})]});
+  await f.ready();await f.parse();f.input(f.el('batch-rows').querySelector('[data-draft-field="candidate"]')!,officialServingFood.catalogRelease+'|'+officialServingFood.id,'change');
+  let row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;
+  assert.equal((row.querySelector('[data-draft-field="amount"]') as HTMLInputElement).value,'1');assert.equal((row.querySelector('[data-draft-field="unit"]') as unknown as HTMLSelectElement).value,'份');
+  assert.equal((row.querySelector('[data-draft-field="calories"]') as HTMLInputElement).value,'201.1');
+  f.input(row.querySelector('[data-draft-field="amount"]')!,'0.5');
+  row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;assert.equal((row.querySelector('[data-draft-field="calories"]') as HTMLInputElement).value,'100.6');
+  f.submit('batch-form');await settled(()=>!f.el('batch-dialog').open);
+  const sent=f.requests.find((request)=>request.url.endsWith('/batch'))!.body.entries[0];assert.equal(sent.food.amount,0.5);assert.equal(sent.food.unit,'份');assert.equal(sent.calories,'100.6');
+});
+
+test('an uncertain official-serving batch retries its original selection bytes after reload',async()=>{
+  const body={entries:[{date:DAY,meal:'lunch',name:officialServingFood.name,portion:'0.5 份（中杯）',calories:'100.6',carbs:'17.6',protein:'0.0',fat:null,note:'',
+    food:{id:officialServingFood.id,amount:0.5,unit:'份',catalogRelease:officialServingFood.catalogRelease}}]};
+  const operation={key:'11111111-1111-4111-8111-111111111111',body};
+  const storage=new Map([['jiashu-nutrition-batch:test',JSON.stringify(operation)]]);const f=fixture({storage});await f.ready();f.click('resume-batch');
+  f.submit('batch-form');await settled(()=>!f.el('batch-dialog').open);
+  const sent=f.requests.find((request)=>request.url.endsWith('/batch'))!;assert.equal(sent.key,operation.key);assert.deepEqual(sent.body,body);
+});
+
+test('an already matched official serving AI draft keeps fractional servings and only exposes its official SKU unit',async()=>{
+  const f=fixture({drafts:[draft({name:officialServingFood.name,portion:'0.5 份（中杯）',amount:0.5,unit:'份',calories:'100.6',carbs:'17.6',protein:'0.0',fat:null,
+    food:{id:officialServingFood.id,amount:0.5,unit:'份',catalogRelease:officialServingFood.catalogRelease},candidates:[officialServingFood]})]});
+  await f.ready();await f.parse();let row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;
+  assert.equal((row.querySelector('[data-draft-field="amount"]') as HTMLInputElement).value,'0.5');
+  assert.deepEqual([...row.querySelectorAll('[data-draft-field="unit"] option')].map((option)=>option.getAttribute('value')),['份']);
+  assert.ok(!/100g|nullg/.test(row.querySelector('[data-draft-preview]')?.textContent??''));
+  f.input(row.querySelector('[data-draft-field="amount"]')!,'2');row=f.el('batch-rows').querySelector('[data-draft-index="0"]')!;
+  assert.equal((row.querySelector('[data-draft-field="calories"]') as HTMLInputElement).value,'402.2');
+  assert.equal((row.querySelector('[data-draft-field="fat"]') as HTMLInputElement).value,'');
+});
+
+test('restoring a historical official serving record retains null weight and the complete original serving metadata when reopened',async()=>{
+  const snapshot=officialServingSnapshot();Object.assign(snapshot.serving,{sodiumMg:140,calciumMg:12});
+  const old=entry({name:officialServingFood.name,portion:'0.5 份（中杯）',calories:'100.6',carbs:'17.6',protein:'0.0',fat:null,food:snapshot,revision:1});
+  const current=entry({...old,portion:'2 份（中杯）',calories:'402.2',food:{...snapshot,amount:2},revision:2});
+  const f=fixture({entries:[current],history:[{revision:1,action:'create',createdAt:'2026-11-11T01:00:00Z',before:null,after:old}]});
+  await f.ready();f.click(f.el('list').querySelector('[data-nutrition-history="'+ID+'"]')!);
+  await settled(()=>!!f.el('record-history-rows').querySelector('[data-restore-nutrition-revision="1"]'));
+  f.click(f.el('record-history-rows').querySelector('[data-restore-nutrition-revision="1"]')!);
+  await settled(()=>f.el('record-history-status').textContent?.includes('已恢复为所选内容')===true);f.click('record-history-close');
+  f.click(f.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(f.el('food-quantity').value,'0.5');assert.equal(f.el('food-unit').value,'份');assert.equal(f.el('calories').value,'100.6');
+  assert.match(f.el('food-source').textContent??'',/每份 201.1 kcal（中杯）/);assert.equal(f.el('fat').value,'');
+  const stored=f.entries[0].food;assert.equal(stored.grams,null);assert.equal(stored.kcalPer100g,null);
+  assert.deepEqual(stored.serving,snapshot.serving);
 });

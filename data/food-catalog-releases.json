@@ -1,5 +1,5 @@
 {
-  "active": "tfda-2024-03-29-cn2",
+  "active": "catalog-2026-11-12-mcd-cn-v1",
   "legacy": "tfda-2024-03-29",
   "releases": [
     {
@@ -16,6 +16,15 @@
       "sha256": "9b5faa7d2b5566ea00741a2801386cfb9092b49492df1c677233626bce42e094",
       "publishedAt": "2026-11-12",
       "label": "中文检索与称重参考第2版"
+    },
+    {
+      "id": "catalog-2026-11-12-mcd-cn-v1",
+      "parent": "tfda-2024-03-29-cn2",
+      "file": "data/food-catalog-releases/mcd-cn-2025-04-v1.json",
+      "sha256": "0036ec463f22125b8acd51e8054b30882739b06a9efefc71d01a1ad784663c13",
+      "publishedAt": "2026-11-12",
+      "label": "麦当劳中国官方标准份（官网2025年4月数据）",
+      "sourceFile": "data/food-catalog-sources/mcd-cn-2025-04.json"
     }
   ]
 }

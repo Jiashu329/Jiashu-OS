@@ -1,0 +1,123 @@
+{
+  "name": "麦当劳中国官网营养计算器",
+  "url": "https://www.mcdonalds.com.cn/nutrition_calculator",
+  "version": "2025-04（官网标注）",
+  "count": 137,
+  "description": "中国大陆官网常规菜单主要餐品的标准单份数据，不代表所有在售或季节商品。",
+  "snapshotDate": "2026-11-12",
+  "upstreamRelease": "2025-04",
+  "attribution": "麦当劳中国官网营养计算器；具体营养信息和免责声明请以官网为准。",
+  "rightsNotice": "官网公开页面；未提供开放数据许可，不套用其他食物来源的许可。",
+  "source": {
+    "requestedUrl": "https://www.mcdonalds.com.cn/nutrition_calculator",
+    "finalUrl": "https://www.mcdonalds.com.cn/nutrition_calculator",
+    "httpStatus": 200,
+    "fetchedAtUtc": "2026-11-12T09:05:33.603171+00:00",
+    "htmlSha256": "4f744c29fb6b5627c3c30225b6b00ea7e73c35ab960e0225a0426c3b74bdab7c",
+    "htmlBytes": 128814,
+    "extraction": "HTML内 var raw_data 的原始JSON；不执行网页脚本。",
+    "rawFile": "data/food-catalog-sources/mcd-cn-2025-04.raw.json",
+    "rawSha256": "a7aff9e2de3ac6e2713f6720fb4e620d25f39c07910252a750ed8b63075f09aa",
+    "rawBytes": 40946
+  },
+  "release": {
+    "id": "catalog-2026-11-12-mcd-cn-v1",
+    "file": "data/food-catalog-releases/mcd-cn-2025-04-v1.json",
+    "sha256": "0036ec463f22125b8acd51e8054b30882739b06a9efefc71d01a1ad784663c13"
+  },
+  "counts": {
+    "categories": 8,
+    "products": 93,
+    "specifications": 137,
+    "uniqueProductNames": 88,
+    "duplicateProductNames": {
+      "汉堡包": 2,
+      "优品豆浆": 2,
+      "纯牛奶（盒装）": 2,
+      "纯悦": 2,
+      "苹果片": 2
+    },
+    "categoryProducts": {
+      "汉堡和卷": 13,
+      "饮品": 12,
+      "小食": 8,
+      "甜品": 9,
+      "早餐": 17,
+      "500大卡套餐": 2,
+      "开心乐园餐": 9,
+      "McCafé 饮品及其他": 23
+    },
+    "specificationLabels": {
+      "1个": 35,
+      "小": 20,
+      "中": 29,
+      "大": 28,
+      "默认": 10,
+      "1盒": 1,
+      "迷你": 1,
+      "2块": 2,
+      "5块": 1,
+      "1份": 6,
+      "4块": 1,
+      "薯条（迷你）": 1,
+      "一杯": 2
+    },
+    "nullNutritionCells": 0,
+    "inequalityNutritionCells": 0
+  },
+  "servingBasis": "官网明确以单份餐品计量；每个ProductType为对应商品的一个原始规格，使用份数倍数。",
+  "nutritionIndexMapping": {
+    "1": {
+      "field": "serving.energyKj",
+      "unit": "kJ"
+    },
+    "2": {
+      "field": "serving.protein",
+      "unit": "g"
+    },
+    "3": {
+      "field": "serving.fat",
+      "unit": "g"
+    },
+    "4": {
+      "field": "serving.carbs",
+      "unit": "g"
+    },
+    "5": {
+      "field": "serving.sodiumMg",
+      "unit": "mg"
+    },
+    "13": {
+      "field": "serving.calciumMg",
+      "unit": "mg"
+    }
+  },
+  "unmappedNutritionIndices": [
+    0,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "unmappedReason": "当前官网可见表头未确认这些槽位的名称或单位；第0项不作为克数或毫升。",
+  "energyConversion": {
+    "sourceCodeExcerpt": "function formatKcal(kj) { var kcal = parseFloat(kj) / 4.184; return Math.round(kcal); }",
+    "formula": "kcal = Math.round(energyKj / 4.184)",
+    "explanation": "复现官网每份整数大卡；保留官方千焦原值，不由宏量营养素重算。源码return后5/10大卡分档代码不可达，不使用。"
+  },
+  "transformation": [
+    "仅映射当前官网可见的六项营养素；所有原始14槽数据保存在rawFile。",
+    "保留商品ID和规格ID组成recordId；不按同名商品或相同营养值去重。",
+    "原规格标题原样保存为originalLabel；默认的显示解释为1份（官网默认规格）。",
+    "grams、kcalPer100g为null，portions为空；不推算重量、杯容量或每100克值。",
+    "官网营养比较说明并非规格定义，不据此生成份量或别名。",
+    "缺值、非数、负数和小于号表示均拒绝；不以0补齐。此快照无此类单元格。"
+  ],
+  "disclaimer": {
+    "scopeAndUpdatedAt": "本营养计算器提供了麦当劳常规菜单中主要餐品的六种营养成分数据，供消费者参考。营养成分数据以单份餐品计量。六种营养成分包括能量、蛋白质、脂肪、碳水化合物、钠和钙。上述营养成分数据更新时间为2025年4月。",
+    "variabilityExcerpt": "您所购买的餐品，有可能因原料批次、产地和供应季节，生产加工工艺和餐厅烹制过程，实际供应份量的不同有所差异。此外，麦当劳会不定期更新产品配方，亦可能影响上述营养成分数据。"
+  }
+}

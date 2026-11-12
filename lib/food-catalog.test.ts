@@ -3,7 +3,7 @@ import test from 'node:test';
 import catalogData from '../data/food-catalog.json' with { type: 'json' };
 import { calculateFoodSelection, FOOD_CATALOG_SOURCE, getFood, searchFoods } from './food-catalog.ts';
 
-test('the offline catalog contains a bounded attributable snapshot with stable source identities and measured nutrients', () => {
+void test('the offline catalog contains a bounded attributable snapshot with stable source identities and measured nutrients', () => {
   assert.equal(catalogData.length, 2161);
   assert.equal(FOOD_CATALOG_SOURCE.count, catalogData.length);
   assert.equal(new Set(catalogData.map((food) => food.id)).size, catalogData.length);
@@ -28,7 +28,7 @@ test('the offline catalog contains a bounded attributable snapshot with stable s
   }
 });
 
-test('Chinese variants, everyday names and English aliases retrieve foods while preserving ambiguous food variants', () => {
+void test('Chinese variants, everyday names and English aliases retrieve foods while preserving ambiguous food variants', () => {
   const rice = searchFoods(' 米饭 ')[0];
   assert.equal(rice.name, '白饭'); assert.equal(rice.state, '熟制');
   assert.equal(searchFoods('白飯')[0].id, rice.id);
@@ -51,7 +51,7 @@ test('Chinese variants, everyday names and English aliases retrieve foods while 
   assert.throws(() => searchFoods('', 51), /50/);
 });
 
-test('gram and kilogram selections use catalog energy and exact decimal rounding rather than model calories', () => {
+void test('gram and kilogram selections use catalog energy and exact decimal rounding rather than model calories', () => {
   const rice = searchFoods('米饭')[0];
   // Pinned source A0550601 explicitly contains 183 kcal per 100g cooked rice.
   assert.equal(rice.source.recordId, 'A0550601'); assert.equal(rice.kcalPer100g, 183);
@@ -65,7 +65,7 @@ test('gram and kilogram selections use catalog energy and exact decimal rounding
   assert.equal(getFood('tfda:missing'), null);
 });
 
-test('serving macros are calculated independently from known source grams with stable decimal rounding', () => {
+void test('serving macros are calculated independently from known source grams with stable decimal rounding', () => {
   const rice = searchFoods('米饭', 1)[0];
   const serving = calculateFoodSelection({ id: rice.id, amount: 150, unit: 'g' });
   for (const key of ['carbs', 'protein', 'fat'] as const) {
@@ -80,7 +80,7 @@ test('serving macros are calculated independently from known source grams with s
   assert.equal(calculateFoodSelection({ id: zero.id, amount: 100, unit: 'g' }).fatTenth, 0);
 });
 
-test('a source unit weight is usable as an explicit estimate and never silently relabelled as pieces or bowls', () => {
+void test('a source unit weight is usable as an explicit estimate and never silently relabelled as pieces or bowls', () => {
   const egg = searchFoods('鸡蛋')[0];
   assert.ok(egg.portions.length);
   const portion = egg.portions[0];
@@ -92,7 +92,7 @@ test('a source unit weight is usable as an explicit estimate and never silently 
   }
 });
 
-test('invalid weights, precision, calorie overflow and unknown identities fail before persistence', () => {
+void test('invalid weights, precision, calorie overflow and unknown identities fail before persistence', () => {
   const rice = searchFoods('米饭')[0];
   for (const amount of [0, -1, NaN, Infinity, 0.0001, 20001]) {
     assert.throws(() => calculateFoodSelection({ id: rice.id, amount, unit: 'g' }));
