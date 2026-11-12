@@ -24,7 +24,7 @@ export const BACKUP_TABLES = {
   health_weight_plan_settings: { label: '体重计划', columns: ['baseline_weight','target_weight','start_date','deadline','enabled','created_at','updated_at','revision'], keys: [] },
   health_record_changes: { label: '健康修改历史', columns: ['change_id','record_key','request_hash','action','target_revision','before_state_json','after_state_json','reason','created_at'], keys: ['change_id'] },
   health_record_overrides: { label: '健康更正与屏蔽', columns: ['record_key','metric','day','override_json','deleted','revision','last_change_id','created_at','updated_at'], keys: ['record_key'] },
-  nutrition_entries: { label: '饮食记录（含已删除与食物来源）', columns: ['id','date','meal','name','portion','note','calories_tenth','food_json','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
+  nutrition_entries: { label: '饮食记录（含营养素、已删除与食物来源）', columns: ['id','date','meal','name','portion','note','calories_tenth','carbs_tenth','protein_tenth','fat_tenth','food_json','creation_hash','revision','created_at','updated_at','deleted_at'], keys: ['id'], globalId: true },
   nutrition_favorites: { label: '常用食物', columns: ['id','template_hash','template_json','created_at'], keys: ['template_hash'], globalId: true },
   nutrition_day_status: { label: '饮食记录完整度', columns: ['date','complete','meals_json','revision','updated_at'], keys: ['date'] },
   nutrition_batches: { label: '饮食批量提交回执', columns: ['id','request_hash','entry_ids_json','created_at'], keys: ['id'] },
@@ -61,8 +61,17 @@ function minor(value: unknown, positive = false) { if (typeof value !== 'string'
 function parsedJson(value: unknown) { text(value, 2 * 1024 * 1024, false); try { return JSON.parse(value as string) as unknown; } catch { return backupFail('备份内嵌 JSON 无效。'); } }
 function canonical(value: unknown): string { return JSON.stringify(value,(_key,item:unknown)=>item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))) : item); }
 const nutritionMeals = ['breakfast','lunch','dinner','snack'] as const;
+const macroNames = ['carbs', 'protein', 'fat'] as const;
+const macroSnapshotFields = macroNames.flatMap((key) => [key + 'Tenth', key + 'Per100g']);
+function nutritionBackupRow(value: unknown): Record<string, unknown> {
+  const raw = object(value);
+  // Both published backup versions predate optional macronutrient columns.
+  return { ...Object.fromEntries(macroNames.map((key) => [key + '_tenth', null])), ...raw };
+}
 function nutritionFoodSnapshot(value: unknown) {
-  const food = exact(value, ['foodId','foodName','amount','unit','grams','kcalPer100g','caloriesTenth','source','estimated']);
+  const raw = object(value);
+  const food = exact(raw, ['foodId','foodName','amount','unit','grams','kcalPer100g','caloriesTenth','source','estimated',
+    ...macroSnapshotFields.filter((key) => Object.hasOwn(raw, key))]);
   text(food.foodId, 100, false); text(food.foodName, 100, false); text(food.unit, 30, false);
   const source = exact(food.source, ['name','url','recordId','version']);
   for (const field of ['name','url','recordId','version']) text(source[field], 500, false);
@@ -71,13 +80,20 @@ function nutritionFoodSnapshot(value: unknown) {
   let trusted;
   try { trusted = calculateFoodSelection({ id: food.foodId as string, amount: food.amount, unit: food.unit as string }); }
   catch { return backupFail('备份食物的来源或份量无法核对，请先检查食物库版本。'); }
-  if (canonical(food) !== canonical(trusted)) backupFail('备份食物来源、克重或热量与可信食物库不一致。');
+  const base = (snapshot: object) => Object.fromEntries(Object.entries(snapshot).filter(([key]) => !macroSnapshotFields.includes(key)));
+  if (canonical(base(food)) !== canonical(base(trusted))) backupFail('备份食物来源、克重或热量与可信食物库不一致。');
+  for (const key of macroSnapshotFields) if (Object.hasOwn(food, key)) {
+    if (key.endsWith('Tenth')) integer(food[key], 0, 200000);
+    else if (typeof food[key] !== 'number' || !Number.isFinite(food[key]) || (food[key] as number) < 0 || (food[key] as number) > 20000) backupFail('备份食物营养素含量无效。');
+    if (food[key] !== (trusted as unknown as Record<string, unknown>)[key]) backupFail('备份食物营养素来源与可信食物库不一致。');
+  }
   return trusted;
 }
 function nutritionFavoriteTemplate(value: unknown, now: number) {
   const raw = object(value);
-  const template = exact(raw, ['name','portion','calories','note', ...(Object.hasOwn(raw,'food') ? ['food'] : [])]);
-  const parsed = parseNutritionCreate({ date: new Date(now).toISOString().slice(0,10), meal:'snack', name:template.name, portion:template.portion, note:template.note, calories:template.calories }, now);
+  const template = exact(raw, ['name','portion','calories','note', ...macroNames.filter((key) => Object.hasOwn(raw, key)), ...(Object.hasOwn(raw,'food') ? ['food'] : [])]);
+  const macros = Object.fromEntries(macroNames.filter((key) => Object.hasOwn(template, key)).map((key) => [key, template[key]]));
+  const parsed = parseNutritionCreate({ date: new Date(now).toISOString().slice(0,10), meal:'snack', name:template.name, portion:template.portion, note:template.note, calories:template.calories, ...macros }, now);
   if (Object.hasOwn(template,'food')) {
     const food = nutritionFoodSnapshot(template.food);
     if (parsed.name !== food.foodName || parsed.portion !== String(food.amount)+food.unit || parsed.caloriesTenth !== food.caloriesTenth) backupFail('常用食物的来源快照与名称、份量或热量不一致。');
@@ -174,7 +190,9 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
   }
   if (table === 'nutrition_entries') {
     id(r.id); hash(r.creation_hash); integer(r.revision, 1); if (r.calories_tenth !== null) integer(r.calories_tenth, 0, 200000);
-    parseNutritionCreate({ date:r.date, meal:r.meal, name:r.name, portion:r.portion, note:r.note, calories:r.calories_tenth === null ? null : (Number(r.calories_tenth) / 10).toFixed(1) }, now);
+    for (const key of macroNames) if (r[key + '_tenth'] !== null) integer(r[key + '_tenth'], 0, 200000);
+    const macros = Object.fromEntries(macroNames.map((key) => [key, r[key + '_tenth'] === null ? null : (Number(r[key + '_tenth']) / 10).toFixed(1)]));
+    parseNutritionCreate({ date:r.date, meal:r.meal, name:r.name, portion:r.portion, note:r.note, calories:r.calories_tenth === null ? null : (Number(r.calories_tenth) / 10).toFixed(1), ...macros }, now);
     if (r.food_json !== null) {
       const food = nutritionFoodSnapshot(parsedJson(r.food_json));
       if (r.name !== food.foodName || r.portion !== String(food.amount)+food.unit || r.calories_tenth !== food.caloriesTenth) backupFail('饮食记录的来源快照与名称、份量或热量不一致。');
@@ -222,7 +240,7 @@ export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
       const rows = sourceTables[table]; if (!Array.isArray(rows)) return backupFail('备份数据表应为数组。');
       return [table,rows.map((value) => {
         const columns = BACKUP_TABLES[table].columns.filter((key) => !(REVISION_SETTINGS.includes(table) && key === 'revision'));
-        const original=object(value); const compatible=table==='nutrition_entries'&&!Object.hasOwn(original,'food_json')?{...original,food_json:null}:original;
+        const original=table==='nutrition_entries'?nutritionBackupRow(value):object(value); const compatible=table==='nutrition_entries'&&!Object.hasOwn(original,'food_json')?{...original,food_json:null}:original;
         const row = exact(compatible,columns);
         return REVISION_SETTINGS.includes(table) ? { ...row,revision:0 } : { ...row };
       })];
@@ -235,7 +253,7 @@ export function parseDataBackup(input: unknown, now = Date.now()): DataBackup {
       const seen = new Set<string>(); const sequences = new Set<number>();
       const normalized: BackupRow[] = [];
       for (const value of rows) {
-        const row = exact(value, spec.columns) as BackupRow;
+        const row = exact(table === 'nutrition_entries' ? nutritionBackupRow(value) : value, spec.columns) as BackupRow;
         validateRow(table, row,now);
         const key = backupRowKey(table,row); if (seen.has(key)) backupFail('备份中含重复记录。'); seen.add(key);
         if (spec.sequence) { if (sequences.has(row.sequence as number)) backupFail('备份余额顺序重复。'); sequences.add(row.sequence as number); }

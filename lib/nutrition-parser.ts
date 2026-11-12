@@ -4,6 +4,8 @@ import { validAssistantText } from './health-assistant-chat.ts';
 import { shanghaiDay } from './health.ts';
 
 export type NutritionDraftMeal = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+export type NutritionDraftMacro = 'carbs' | 'protein' | 'fat';
+export type NutritionDraftSource = 'catalog' | 'ai' | null;
 export interface NutritionParserRequest {
   text: string;
   date: string;
@@ -19,6 +21,10 @@ export interface NutritionDraft {
   portion: string;
   calories: string | null;
   calorieSource: 'catalog' | 'ai' | null;
+  carbs: string | null;
+  protein: string | null;
+  fat: string | null;
+  macroSources: Record<NutritionDraftMacro, NutritionDraftSource>;
   note: string;
   food: { id: string; amount: number; unit: string } | null;
   candidates: FoodItem[];
@@ -115,15 +121,32 @@ function boundedText(raw: unknown, maximum: number): raw is string {
     && !/[\u0000-\u001f\u007f-\u009f]/.test(raw);
 }
 
-function calorieEstimate(raw: unknown): { calories: string; portion: string; basis: string } | null {
+const macroFields = ['carbs', 'protein', 'fat'] as const;
+const macroLabels = { carbs: '碳水化合物', protein: '蛋白质', fat: '脂肪' } as const;
+interface NutritionEstimate {
+  calories: string;
+  carbs: string | null;
+  protein: string | null;
+  fat: string | null;
+  portion: string;
+  basis: string;
+}
+function calorieEstimate(raw: unknown): NutritionEstimate | null {
   // Older model responses remain usable; estimates never supply catalog IDs.
   if (raw === undefined || raw === null) return null;
-  if (!object(raw) || Object.keys(raw).length !== 3
-    || Object.keys(raw).some((key) => !['calories', 'portion', 'basis'].includes(key))
+  if (!object(raw) || !['calories', 'portion', 'basis'].every((key) => Object.hasOwn(raw, key))
+    || Object.keys(raw).some((key) => !['calories', 'portion', 'basis', ...macroFields].includes(key))
     || typeof raw.calories !== 'number' || !Number.isFinite(raw.calories)
     || raw.calories < 0 || raw.calories > 20000
     || !boundedText(raw.portion, 100) || !boundedText(raw.basis, 200)) throw new NutritionParserError();
-  return { calories: raw.calories.toFixed(1), portion: raw.portion.trim(), basis: raw.basis.trim() };
+  const macros: Record<NutritionDraftMacro, string | null> = { carbs: null, protein: null, fat: null };
+  for (const key of macroFields) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 20000) throw new NutritionParserError();
+    macros[key] = value.toFixed(1);
+  }
+  return { calories: raw.calories.toFixed(1), ...macros, portion: raw.portion.trim(), basis: raw.basis.trim() };
 }
 
 /** Prefer catalog calculations; validated model estimates remain labeled, editable drafts. */
@@ -152,6 +175,8 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     const estimate = calorieEstimate(value.estimate);
     let food: NutritionDraft['food'] = null, calories: string | null = null, portion = amount === null ? '份量待补充' : String(amount) + (unit ?? '（单位待补充）');
     let calorieSource: NutritionDraft['calorieSource'] = null, note = '';
+    const macros: Record<NutritionDraftMacro, string | null> = { carbs: null, protein: null, fat: null };
+    const macroSources: NutritionDraft['macroSources'] = { carbs: null, protein: null, fat: null };
     if (!meal) warnings.push('请选择这项食物的餐次。');
     if (!candidates.length) warnings.push('食物库暂未找到匹配项，可搜索其他名称或核对下方估算。');
     else if (exact.length !== 1) warnings.push('食物或生熟、烹饪方式尚需核对，请从候选中选择。');
@@ -164,6 +189,13 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
         food = selection;
         calories = (calculated.caloriesTenth / 10).toFixed(1);
         calorieSource = 'catalog';
+        for (const key of macroFields) {
+          const tenth = calculated[`${key}Tenth`];
+          if (tenth !== undefined && tenth !== null && Number.isSafeInteger(tenth) && tenth >= 0 && tenth <= 200000) {
+            macros[key] = (tenth / 10).toFixed(1);
+            macroSources[key] = 'catalog';
+          }
+        }
         portion = String(amount) + unit + (unit === 'g' || unit === '克' || unit === '公克' ? '' : '（' + calculated.grams + 'g）');
         if (calculated.estimated) warnings.push('份量换算使用食物库参考重量，请核对实际份量。');
       } catch {
@@ -178,7 +210,22 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
       note = 'AI 估算：' + estimate.portion + '；' + estimate.basis + '。';
       warnings.push('热量为 AI 估算，受份量、配料和用油影响，请核对后保存。');
     } else if (calories === null) warnings.push('暂时无法估算热量，请补充食物、份量或包装信息后重新识别，也可手动填写。');
-    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, calorieSource, note, food, candidates, warnings };
+    for (const key of macroFields) {
+      if (macros[key] === null && estimate?.[key] !== undefined && estimate[key] !== null) {
+        macros[key] = estimate[key];
+        macroSources[key] = 'ai';
+      }
+    }
+    const estimatedMacros = macroFields.filter((key) => macroSources[key] === 'ai').map((key) => macroLabels[key]);
+    if (estimatedMacros.length && estimate) {
+      const names = estimatedMacros.join('、');
+      if (calorieSource === 'ai') note += names + '也为 AI 估算。';
+      else note = 'AI 营养估算：' + names + '；' + estimate.portion + '；' + estimate.basis + '。';
+      warnings.push(names + '为 AI 估算，单位为当前食用份量的合计克数，请核对后保存。');
+    }
+    const unknownMacros = macroFields.filter((key) => macros[key] === null).map((key) => macroLabels[key]);
+    if (unknownMacros.length) warnings.push(unknownMacros.join('、') + '暂未提供，可手动填写；未知不会按0计算。');
+    return { date, meal, name: food ? exact[0].name : name, amount, unit, portion, calories, calorieSource, ...macros, macroSources, note, food, candidates, warnings };
   });
   return { drafts, warnings: drafts.length ? ['以下是识别草稿，检查食物、生熟状态与份量后可批量保存。'] : ['未识别到明确吃过的食物，请描述实际吃了什么及份量。'] };
 }

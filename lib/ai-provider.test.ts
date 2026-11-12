@@ -563,6 +563,9 @@ test('nutrition extraction uses the same safe transport with a dedicated bounded
       assert.deepEqual(body.messages[0], { role: 'system', content: NUTRITION_PARSER_SYSTEM_PROMPT });
       assert.match(body.messages[0].content, /合计热量/);
       assert.match(body.messages[0].content, /"estimate"/);
+      for (const nutrient of ['carbs', 'protein', 'fat']) assert.ok(body.messages[0].content.includes('"' + nutrient + '":数字或null'));
+      assert.match(body.messages[0].content, /不是每100克含量/);
+      assert.match(body.messages[0].content, /不能用0代替未知/);
       assert.match(body.messages[0].content, /不能把假设填入 amount/);
       assert.match(body.messages[0].content, /最多20项/);
       assert.deepEqual(JSON.parse(body.messages[1].content), { text, selectedDate: '2026-11-10', today: '2026-11-11', timezone: 'Asia/Shanghai', selectedMeal: 'lunch' });

@@ -316,3 +316,73 @@ void test('old v1 nutrition inserts include trigger-created dates in final row c
   assert.equal(target.sqlite.prepare('SELECT count(*) n FROM nutrition_day_status').get()?.n,0);
   assert.equal(target.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,BACKUP_MAX_ROWS-1);
 });
+
+void test('macronutrients including real zero survive backups, favorites and restoration for a different owner',async(t)=>{
+  const source=fixture(t);
+  const input=parseNutritionCreate({date:'2026-11-09',meal:'lunch',name:'合成营养食物',portion:'1份',note:'标签已核对',
+    calories:'120',carbs:'15.2',protein:'0',fat:'4.5'},Date.parse(NOW));
+  await createNutritionEntry(source.db,'alice',input,A,NOW);
+  await addNutritionFavorite(source.db,'alice',A,NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  const row=backup.tables.nutrition_entries[0];
+  assert.deepEqual([row.carbs_tenth,row.protein_tenth,row.fat_tenth],[152,0,45]);
+  const template=JSON.parse(backup.tables.nutrition_favorites[0].template_json as string);
+  assert.deepEqual([template.carbs,template.protein,template.fat],['15.2','0.0','4.5']);
+  const target=fixture(t);const preview=await previewDataRestore(target.db,'restored-owner',backup);
+  await restoreDataBackup(target.db,'restored-owner',backup,preview.previewHash);
+  const saved=target.sqlite.prepare('SELECT carbs_tenth,protein_tenth,fat_tenth FROM nutrition_entries WHERE user_id=? AND id=?').get('restored-owner',A);
+  assert.deepEqual([saved?.carbs_tenth,saved?.protein_tenth,saved?.fat_tenth],[152,0,45]);
+  assert.deepEqual(semantic(await exportDataBackup(target.db,'restored-owner',NOW)),semantic(backup));
+});
+
+void test('published v1 and v2 nutrition backups without macro columns or source macros preserve unknown values',async(t)=>{
+  const source=fixture(t);await seedCatalogNutrition(source.db);
+  const current=await exportDataBackup(source.db,'alice',NOW);
+  for(const version of [1,2]){
+    const backup=structuredClone(current) as unknown as {version:number;tables:Record<string,Array<Record<string,unknown>>>};
+    backup.version=version;
+    if(version===1){for(const name of ['health_goal_versions','health_sync_attempts','nutrition_copy_operations'])delete backup.tables[name];}
+    for(const row of backup.tables.nutrition_entries){
+      for(const key of ['carbs_tenth','protein_tenth','fat_tenth'])delete row[key];
+      const food=JSON.parse(row.food_json as string);for(const key of ['carbsTenth','proteinTenth','fatTenth','carbsPer100g','proteinPer100g','fatPer100g'])delete food[key];row.food_json=JSON.stringify(food);
+    }
+    for(const row of backup.tables.nutrition_favorites){
+      const template=JSON.parse(row.template_json as string);
+      for(const key of ['carbs','protein','fat'])delete template[key];
+      for(const key of ['carbsTenth','proteinTenth','fatTenth','carbsPer100g','proteinPer100g','fatPer100g'])delete template.food[key];
+      row.template_json=JSON.stringify(template);row.template_hash=await backupDigest(template);
+    }
+    const parsed=parseDataBackup(backup);
+    assert.deepEqual(['carbs_tenth','protein_tenth','fat_tenth'].map((key)=>parsed.tables.nutrition_entries[0][key]),[null,null,null]);
+    const target=fixture(t);const preview=await previewDataRestore(target.db,'legacy-owner',backup);
+    await restoreDataBackup(target.db,'legacy-owner',backup,preview.previewHash);
+    const saved=target.sqlite.prepare('SELECT carbs_tenth,protein_tenth,fat_tenth FROM nutrition_entries WHERE id=?').get(A);
+    assert.deepEqual([saved?.carbs_tenth,saved?.protein_tenth,saved?.fat_tenth],[null,null,null]);
+  }
+});
+
+void test('source-backed favorites retain entered macro overrides while snapshots and compatible digests remain verifiable',async(t)=>{
+  const source=fixture(t);const food=searchFoods('米饭',1)[0];
+  const input=parseNutritionCreate({date:'2026-11-09',meal:'lunch',food:{id:food.id,amount:150,unit:'g'},
+    carbs:'30.5',protein:'0',fat:'1.2',note:'核对后的份量营养数据'},Date.parse(NOW));
+  await createNutritionEntry(source.db,'alice',input,A,NOW);await addNutritionFavorite(source.db,'alice',A,NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);const template=JSON.parse(backup.tables.nutrition_favorites[0].template_json as string);
+  assert.deepEqual([template.carbs,template.protein,template.fat],['30.5','0.0','1.2']);
+  assert.equal(typeof template.food.carbsPer100g,'number');
+  const target=fixture(t),preview=await previewDataRestore(target.db,'alice',backup);await restoreDataBackup(target.db,'alice',backup,preview.previewHash);
+  assert.deepEqual(semantic(await exportDataBackup(target.db,'alice',NOW)),semantic(backup));
+  const tampered=structuredClone(backup),favorite=tampered.tables.nutrition_favorites[0],modified=JSON.parse(favorite.template_json as string);
+  modified.protein='1.0';favorite.template_json=JSON.stringify(modified);
+  await assert.rejects(previewDataRestore(fixture(t).db,'alice',tampered),BackupValidationError);
+});
+
+void test('backup validation rejects malformed macro amounts and tampered catalog nutrient snapshots',async(t)=>{
+  const source=fixture(t);await seedCatalogNutrition(source.db);const original=await exportDataBackup(source.db,'alice',NOW);
+  for(const value of [-1,0.5,200001,'10',{}]){
+    const backup=structuredClone(original);(backup.tables.nutrition_entries[0] as Record<string,unknown>).carbs_tenth=value;
+    assert.throws(()=>parseDataBackup(backup),BackupValidationError);
+  }
+  const snapshot=structuredClone(original),row=snapshot.tables.nutrition_entries[0],food=JSON.parse(row.food_json as string);
+  food.carbsTenth=(food.carbsTenth??0)+1;row.food_json=JSON.stringify(food);
+  assert.throws(()=>parseDataBackup(snapshot),BackupValidationError);
+});

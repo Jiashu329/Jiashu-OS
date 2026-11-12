@@ -41,7 +41,16 @@ async function readTables(db: BackupDatabase, userId: string): Promise<Record<Ba
   return rows;
 }
 async function validateFavoriteDigests(backup: DataBackup) {
-  for (const row of backup.tables.nutrition_favorites) if (await backupDigest(JSON.parse(row.template_json as string)) !== row.template_hash) backupFail('常用食物的内容摘要与模板不一致。');
+  for (const row of backup.tables.nutrition_favorites) {
+    const template = JSON.parse(row.template_json as string);
+    if (await backupDigest(template) === row.template_hash) continue;
+    // Trusted snapshot enrichment must not change a preexisting favorite's
+    // identity. Actual entered macro amounts remain in this fingerprint.
+    const compatible = { ...template };
+    if (template.food) compatible.food = Object.fromEntries(Object.entries(template.food).filter(([key]) =>
+      !['carbsTenth','proteinTenth','fatTenth','carbsPer100g','proteinPer100g','fatPer100g'].includes(key)));
+    if (await backupDigest(compatible) !== row.template_hash) backupFail('常用食物的内容摘要与模板不一致。');
+  }
 }
 export async function exportDataBackup(db: BackupDatabase, userId: string, now = new Date().toISOString()): Promise<DataBackup> {
   const backup: DataBackup = { kind: 'jiashu-os-backup', version: 2, exportedAt: now, tables: await readTables(db,userId) };

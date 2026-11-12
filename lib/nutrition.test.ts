@@ -31,6 +31,34 @@ void test('calorie input rejects coercion, scientific notation, extra decimals, 
   }
 });
 
+void test('macronutrient grams preserve exact tenths, unknowns and zero without changing legacy inputs', () => {
+  const parsed = parseNutritionCreate(input({ carbs: '0012.3', protein: '0', fat: ' 4.5 ' }), NOW);
+  assert.equal(parsed.carbsTenth, 123); assert.equal(parsed.proteinTenth, 0); assert.equal(parsed.fatTenth, 45);
+  assert.equal(Object.hasOwn(parseNutritionCreate(input(), NOW), 'carbsTenth'), false);
+  for (const key of ['carbs', 'protein', 'fat'] as const) {
+    for (const value of [undefined, null, '', '  ']) assert.equal(parseNutritionCreate(input({ [key]: value }), NOW)[`${key}Tenth`], null);
+    assert.equal(parseNutritionCreate(input({ [key]: '20000.0' }), NOW)[`${key}Tenth`], 200000);
+    for (const value of [0, true, [], {}, '-1', '+1', '1e2', 'NaN', 'Infinity', '1.00', '20000.1', '10g', '1,234', '1\n']) {
+      assert.throws(() => parseNutritionCreate(input({ [key]: value }), NOW), NutritionValidationError, key + ': ' + String(value));
+    }
+  }
+  const view = presentNutritionEntry(entry({ carbsTenth: 123, proteinTenth: 0, fatTenth: null }));
+  assert.equal(view.carbs, '12.3'); assert.equal(view.protein, '0.0'); assert.equal(view.fat, null);
+  assert.equal(presentNutritionEntry(entry()).carbs, null);
+});
+
+void test('macro edits and batches accept complete nutrient values while preserving legacy edit compatibility', () => {
+  const patch = parseNutritionPatch({ ...input({ carbs: '20.1', protein: '10', fat: null }), expectedRevision: 1 }, NOW);
+  assert.equal(patch.kind, 'edit');
+  if (patch.kind === 'edit') {
+    assert.equal(patch.input.carbsTenth, 201); assert.equal(patch.input.proteinTenth, 100); assert.equal(patch.input.fatTenth, null);
+  }
+  const batch = parseNutritionBatch({ entries: [input({ carbs: '0' }), input({ protein: '12.4' })] }, NOW);
+  assert.equal(batch[0].carbsTenth, 0); assert.equal(batch[1].proteinTenth, 124);
+  assert.throws(() => parseNutritionBatch({ entries: [input(), input({ fat: '-1' })] }, NOW), NutritionValidationError);
+  assert.throws(() => parseNutritionPatch({ deleted: true, expectedRevision: 1, carbs: '10' }, NOW), NutritionValidationError);
+});
+
 void test('food descriptions and dates validate against strict limits, supported meals and the current Shanghai day', () => {
   assert.equal(parseNutritionCreate(input({ name: '食'.repeat(100), portion: '份'.repeat(100), note: '记'.repeat(500) }), NOW).name.length, 100);
   for (const patch of [
@@ -166,4 +194,19 @@ void test('catalog-backed input always recalculates food identity, portion and c
   assert.throws(() => parseNutritionCreate(input({ food: { ...selection, caloriesTenth: 0 } }), NOW), NutritionValidationError);
   assert.throws(() => parseNutritionCreate(input({ food: { ...selection, id: 'missing-source-record' } }), NOW), NutritionValidationError);
   assert.equal(Object.hasOwn(parseNutritionCreate(input({ food: null }), NOW), 'food'), false);
+});
+
+void test('explicit macro values override catalog totals while empty fields use the known serving calculation', () => {
+  const food = searchFoods('米饭', 1)[0];
+  const selection = { id: food.id, amount: 150, unit: 'g' };
+  const snapshot = calculateFoodSelection(selection);
+  const defaults = parseNutritionCreate(input({ food: selection, carbs: null, protein: '', fat: undefined }), NOW);
+  assert.equal(defaults.carbsTenth, snapshot.carbsTenth ?? null);
+  assert.equal(defaults.proteinTenth, snapshot.proteinTenth ?? null);
+  assert.equal(defaults.fatTenth, snapshot.fatTenth ?? null);
+  const corrected = parseNutritionCreate(input({ food: selection, carbs: '0', protein: '10.1', fat: '2.5' }), NOW);
+  assert.equal(corrected.carbsTenth, 0); assert.equal(corrected.proteinTenth, 101); assert.equal(corrected.fatTenth, 25);
+  assert.deepEqual(corrected.food, snapshot, 'Overrides must not rewrite source-derived provenance');
+  const legacy = parseNutritionCreate(input({ food: selection }), NOW);
+  assert.equal(Object.hasOwn(legacy, 'carbsTenth'), false, 'Old pending requests must keep their fingerprint');
 });

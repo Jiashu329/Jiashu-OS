@@ -6,7 +6,8 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { NutritionInput } from '../lib/nutrition.ts';
 import { createNutritionEntry, listNutritionEntries, NutritionConflictError, readNutritionEntry,
-  replaceNutritionEntry, setNutritionEntryDeleted, createNutritionBatch, readNutritionDayStatus, writeNutritionDayStatus, listNutritionDayStatuses, addNutritionFavorite, listNutritionFavorites, removeNutritionFavorite, recentNutritionFoods, readNutritionRangeSnapshot } from './nutrition-store.ts';
+  replaceNutritionEntry, setNutritionEntryDeleted, createNutritionBatch, readNutritionDayStatus, writeNutritionDayStatus, listNutritionDayStatuses, addNutritionFavorite, listNutritionFavorites, removeNutritionFavorite, recentNutritionFoods, readNutritionRangeSnapshot, creationFingerprint } from './nutrition-store.ts';
+import { calculateFoodSelection, searchFoods } from '../lib/food-catalog.ts';
 
 const NOW = '2026-11-10T04:00:00.000Z';
 const LATER = '2026-11-10T05:00:00.000Z';
@@ -59,6 +60,83 @@ void test('zero calories and unknown calories remain distinct through persistenc
   const unknown = await createNutritionEntry(f.db, 'alice', input({ caloriesTenth: null }), SECOND, NOW);
   assert.equal(zero.entry.caloriesTenth, 0); assert.equal(unknown.entry.caloriesTenth, null); assert.equal(zero.entry.revision, 1);
   const entries = await listNutritionEntries(f.db, 'alice', { from: '2026-11-10', to: '2026-11-10' }); assert.equal(entries.length, 2); assert.deepEqual(new Set(entries.map((entry) => entry.caloriesTenth)), new Set([0, null]));
+});
+
+void test('macros preserve unknown and true zero through create, replacement, deletion and restore', async (t) => {
+  const f = fixture(t);
+  const created = await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 275, proteinTenth: 0, fatTenth: null }), ID, NOW);
+  assert.equal(created.entry.carbsTenth, 275); assert.equal(created.entry.proteinTenth, 0); assert.equal(created.entry.fatTenth, null);
+  const known = await replaceNutritionEntry(f.db, 'alice', ID, input({ carbsTenth: null, proteinTenth: 123, fatTenth: 47 }), 1, LATER);
+  assert.ok(known); assert.equal(known.carbsTenth, null); assert.equal(known.proteinTenth, 123); assert.equal(known.fatTenth, 47);
+  const deleted = await setNutritionEntryDeleted(f.db, 'alice', ID, true, 2, LATER); assert.ok(deleted);
+  const restored = await setNutritionEntryDeleted(f.db, 'alice', ID, false, 3, LATER); assert.ok(restored);
+  assert.equal(restored.proteinTenth, 123); assert.equal(restored.fatTenth, 47);
+  assert.equal((await listNutritionEntries(f.db, 'alice', { from: '2026-11-10', to: '2026-11-10' }))[0].proteinTenth, 123);
+});
+
+void test('legacy edits omit macros without erasing them, while explicit null clears selected grams', async (t) => {
+  const f = fixture(t);
+  await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 250, proteinTenth: 45, fatTenth: 0 }), ID, NOW);
+  const legacyEdit = await replaceNutritionEntry(f.db, 'alice', ID, input({ note: 'old client edit' }), 1, LATER); assert.ok(legacyEdit);
+  assert.deepEqual([legacyEdit.carbsTenth, legacyEdit.proteinTenth, legacyEdit.fatTenth], [250, 45, 0]);
+  const partial = await replaceNutritionEntry(f.db, 'alice', ID, input({ carbsTenth: null, proteinTenth: 50 }), 2, LATER); assert.ok(partial);
+  assert.deepEqual([partial.carbsTenth, partial.proteinTenth, partial.fatTenth], [null, 50, 0]);
+  const cleared = await replaceNutritionEntry(f.db, 'alice', ID, input({ carbsTenth: null, proteinTenth: null, fatTenth: null }), 3, LATER); assert.ok(cleared);
+  assert.deepEqual([cleared.carbsTenth, cleared.proteinTenth, cleared.fatTenth], [null, null, null]);
+});
+
+void test('macro changes affect single and batch idempotency while unknown values retain legacy fingerprints', async (t) => {
+  const f = fixture(t); const original = input();
+  const legacy = JSON.stringify([original.date, original.meal, original.name, original.portion, original.note, original.caloriesTenth]);
+  const expected = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(legacy)))].map((value) => value.toString(16).padStart(2, '0')).join('');
+  assert.equal(await creationFingerprint(original), expected);
+  assert.equal(await creationFingerprint({ ...original, carbsTenth: null, proteinTenth: null, fatTenth: null }), expected);
+  const food = calculateFoodSelection({ id: searchFoods('米饭')[0].id, amount: 100, unit: 'g' });
+  const { carbsTenth: _carbs, proteinTenth: _protein, fatTenth: _fat, carbsPer100g: _carbsPer100g, proteinPer100g: _proteinPer100g, fatPer100g: _fatPer100g, ...oldFood } = food;
+  assert.equal(await creationFingerprint({ ...original, food }), await creationFingerprint({ ...original, food: oldFood }));
+  const first = await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 0, proteinTenth: 25, fatTenth: null }), ID, NOW);
+  assert.equal((await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 0, proteinTenth: 25 }), ID, LATER)).replayed, true);
+  await assert.rejects(createNutritionEntry(f.db, 'alice', input({ carbsTenth: 1, proteinTenth: 25 }), ID, LATER), NutritionConflictError);
+  assert.equal(first.entry.carbsTenth, 0);
+  const batch = [input({ carbsTenth: 120 }), input({ proteinTenth: 0, fatTenth: 35 })];
+  const result = await createNutritionBatch(f.db, 'alice', batch, SECOND, NOW);
+  assert.equal(result.entries[0].carbsTenth, 120); assert.equal(result.entries[1].proteinTenth, 0); assert.equal(result.entries[1].fatTenth, 35);
+  assert.equal((await createNutritionBatch(f.db, 'alice', batch, SECOND, LATER)).replayed, true);
+  await assert.rejects(createNutritionBatch(f.db, 'alice', [input({ carbsTenth: 121 }), batch[1]], SECOND, LATER), NutritionConflictError);
+});
+
+void test('favorites snapshot grams and recent foods distinguish different macro values', async (t) => {
+  const f = fixture(t);
+  await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 250, proteinTenth: 0, fatTenth: 15 }), ID, NOW);
+  await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 251, proteinTenth: 0, fatTenth: 15 }), SECOND, LATER);
+  const favorite = await addNutritionFavorite(f.db, 'alice', ID, NOW); assert.ok(favorite);
+  assert.deepEqual([favorite.carbs, favorite.protein, favorite.fat], ['25.0', '0.0', '1.5']);
+  await replaceNutritionEntry(f.db, 'alice', ID, input(), 1, LATER);
+  const saved = (await listNutritionFavorites(f.db, 'alice'))[0];
+  assert.deepEqual([saved.carbs, saved.protein, saved.fat], ['25.0', '0.0', '1.5']);
+  assert.equal((await recentNutritionFoods(f.db, 'alice', '2026-11-10')).length, 2);
+});
+
+void test('legacy food submissions and favorites replay after snapshots gain macro metadata', async (t) => {
+  const f = fixture(t);
+  const food = calculateFoodSelection({ id: searchFoods('米饭')[0].id, amount: 100, unit: 'g' });
+  const { carbsTenth: _carbs, proteinTenth: _protein, fatTenth: _fat, carbsPer100g: _carbsPer100g, proteinPer100g: _proteinPer100g, fatPer100g: _fatPer100g, ...oldFood } = food;
+  const original = input({ food });
+  const digest = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map((value) => value.toString(16).padStart(2, '0')).join('');
+  const oldHash = await digest(JSON.stringify([original.date, original.meal, original.name, original.portion, original.note, original.caloriesTenth, oldFood]));
+  f.sqlite.prepare(`INSERT INTO nutrition_entries(id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at,food_json)
+    VALUES (?,?,?,?,?,?,?,?,?,1,?,?,NULL,?)`).run(ID, 'alice', original.date, original.meal, original.name, original.portion, original.note, original.caloriesTenth, oldHash, NOW, NOW, JSON.stringify(oldFood));
+  const replay = await createNutritionEntry(f.db, 'alice', original, ID, LATER);
+  assert.equal(replay.replayed, true); assert.equal(f.count(), 1); assert.equal(replay.entry.carbsTenth, null);
+
+  // A source row can acquire richer metadata without changing its old favorite identity.
+  await replaceNutritionEntry(f.db, 'alice', ID, original, 1, LATER);
+  const oldTemplate = { name: original.name, portion: original.portion, calories: '123.4', note: original.note, food: oldFood };
+  f.sqlite.prepare('INSERT INTO nutrition_favorites(id,user_id,template_hash,template_json,created_at) VALUES (?,?,?,?,?)')
+    .run(SECOND, 'alice', await digest(JSON.stringify(oldTemplate)), JSON.stringify(oldTemplate), NOW);
+  const favorite = await addNutritionFavorite(f.db, 'alice', ID, LATER); assert.ok(favorite);
+  assert.equal(favorite.id, SECOND); assert.equal(favorite.carbs, null); assert.equal(favorite.protein, null);
+  assert.equal((await listNutritionFavorites(f.db, 'alice')).length, 1);
 });
 
 void test('same normalized creation content replays without duplicates or exposing internal fields', async (t) => {

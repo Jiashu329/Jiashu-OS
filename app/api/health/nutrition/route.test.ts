@@ -100,6 +100,22 @@ async function readList(response: Response): Promise<ListResponse> { return awai
 const input = (patch: Record<string, unknown> = {}) => ({ date: TODAY, meal: 'breakfast', name: 'Synthetic meal', portion: '1 serving', calories: '0', note: 'Synthetic test', ...patch });
 const edit = (entry: EntryView, patch: Record<string, unknown> = {}) => ({ date: entry.date, meal: entry.meal, name: entry.name, portion: entry.portion, calories: entry.calories, note: entry.note, expectedRevision: entry.revision, ...patch });
 
+void test('macro grams roundtrip through create, list, edit and deleted-record restoration without replacing unknown with zero', async (t) => {
+  const f = await fixture(t);
+  const response = await f.create(input({carbs:'30.5',protein:null,fat:'0'}));assert.equal(response.status,201);
+  let item = (await readMutation(response)).entry;
+  const values = (entry: EntryView) => [entry.carbs,entry.protein,entry.fat];
+  assert.deepEqual(values(item),['30.5',null,'0.0']);
+  assert.deepEqual(values((await readList(await f.list())).entries[0]),['30.5',null,'0.0']);
+  item = (await readMutation(await f.patch(item.id,edit(item,{carbs:'25',protein:'12.3',fat:null})))).entry;
+  assert.deepEqual(values(item),['25.0','12.3',null]);
+  item = (await readMutation(await f.patch(item.id,{deleted:true,expectedRevision:item.revision}))).entry;
+  item = (await readMutation(await f.patch(item.id,{deleted:false,expectedRevision:item.revision}))).entry;
+  assert.deepEqual(values(item),['25.0','12.3',null]);
+  assert.deepEqual(values((await readMutation(await f.get(item.id))).entry),['25.0','12.3',null]);
+  f.signIn('bob');assert.equal((await f.get(item.id)).status,404);
+});
+
 void test('nutrition endpoints require authentication, same-origin JSON and a valid creation identifier', async (t) => {
   const f = await fixture(t); const id = crypto.randomUUID(); f.signIn(null);
   for (const response of [await f.list(), await f.create(input()), await f.get(id), await f.patch(id, { deleted: true, expectedRevision: 1 })]) {

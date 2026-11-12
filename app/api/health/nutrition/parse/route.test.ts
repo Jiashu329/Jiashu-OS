@@ -135,12 +135,15 @@ test('a food absent from the catalog returns an estimated total with its assumpt
   const f = fixture();
   const text = '午餐吃了1份合成测试复合菜';
   f.setAnswer(JSON.stringify({ items: [{ name: '合成测试复合菜', amount: 1, unit: '份', meal: 'lunch',
-    dateText: null, sourceText: '1份合成测试复合菜', estimate: { calories: 360, portion: '1份（按250g估算）',
+    dateText: null, sourceText: '1份合成测试复合菜', estimate: { calories: 360, carbs: 45, protein: 18.5, fat: 12,
+      portion: '1份（按250g估算）',
       basis: '按普通份量、适量烹调油估算，实际配料未知' } }] }));
   const response = await f.post({ text, date: f.today }); assert.equal(response.status, 200);
   const result = await response.json() as { drafts: parser.NutritionDraft[] };
   assert.equal(result.drafts[0].calories, '360.0'); assert.equal(result.drafts[0].calorieSource, 'ai');
   assert.equal(result.drafts[0].food, null); assert.match(result.drafts[0].note, /AI 估算.*250g/);
+  assert.equal(result.drafts[0].carbs, '45.0'); assert.equal(result.drafts[0].protein, '18.5'); assert.equal(result.drafts[0].fat, '12.0');
+  assert.deepEqual(result.drafts[0].macroSources, { carbs: 'ai', protein: 'ai', fat: 'ai' });
   assert.equal(f.outgoing.length, 1); assert.deepEqual(f.quotaUsers, ['alice']);
 });
 

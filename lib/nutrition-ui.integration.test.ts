@@ -10,6 +10,7 @@ const DAY = '2026-11-11';
 const NOW = Date.parse(DAY + 'T04:00:00Z');
 const ID = 'ad0c5a3c-6105-4b6b-b065-1472594b5e03';
 const food = { id: 'synthetic-rice', name: '测试熟米饭', aliases: ['测试饭'], category: '谷物', state: '熟', kcalPer100g: 120,
+  carbsPer100g: 25.6, proteinPer100g: 2.3, fatPer100g: 0,
   source: { name: 'Synthetic fixture', url: 'https://example.test/food', recordId: 'test-1', version: 'test' },
   portions: [{ unit: '碗', grams: 150, estimated: true }] };
 const meals = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '加餐' };
@@ -32,7 +33,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>> } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>> } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -50,7 +51,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   }
   for (const form of document.querySelectorAll('form')) Object.assign(form, { reset() { for (const control of form.querySelectorAll('input,textarea,select')) { if (control.tagName === 'SELECT') { for (const item of control.querySelectorAll('option')) item.removeAttribute('selected'); control.querySelector('option')?.setAttribute('selected', ''); } else (control as unknown as HTMLInputElement).value = ''; } } });
   class FixedDate extends Date { constructor(value?: string | number) { super(value === undefined ? NOW : value); } static now() { return NOW; } }
-  const storage = new Map<string, string>();
+  const storage = options.storage ?? new Map<string, string>();
   const requests: RequestLog[] = [];
   const entries = [...(options.entries ?? [])];
   const favorites: Array<Record<string, any>> = [];
@@ -86,6 +87,11 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
       days: [{ date: DAY, knownCalories: null, entryCount: 0, knownCount: 0, unknownCount: 0, complete: false, meals: emptyMealStates() }],
       summary: { recordedDays: 0, completeDays: 0, comparableDays: 0, knownCalories: null, averageCompleteKcal: null, unknownCount: 0 }, meals: Object.entries(meals).map(([meal, label]) => ({ meal, label, knownCalories: null, entryCount: 0 })), limitations: ['未记录不表示未进食。'] });
     if (parsed.pathname === '/api/health/nutrition' && method === 'POST') { const created = entry(body); entries.push(created); return Response.json({ entry: created, replayed: false }); }
+    if (parsed.pathname === '/api/health/nutrition/' + ID) {
+      const current = entries.find((item) => item.id === ID)!;
+      if (method === 'PATCH') Object.assign(current, body, { revision: current.revision + 1 });
+      return Response.json({ entry: current });
+    }
     if (parsed.pathname === '/api/health/nutrition') return Response.json(baseData(parsed.searchParams.get('date') || DAY));
     throw new Error('Unexpected request: ' + method + ' ' + url);
   };
@@ -142,6 +148,74 @@ test('catalog selection previews sourced calories and submits a food selection f
   assert.equal(post.body.calories, '180.0');
 });
 
+test('manual nutrient grams preserve zero and blanks through draft restore, saving and editing older records', async () => {
+  const f = fixture(); await f.ready(); f.click('add');
+  f.input('meal', 'lunch', 'change'); f.input('name', '合成食物');
+  f.input('carbs', '0'); f.input('protein', '12.3'); f.input('fat', '');
+  f.click('dialog-close'); f.click('add');
+  assert.equal(f.el('carbs').value, '0'); assert.equal(f.el('protein').value, '12.3'); assert.equal(f.el('fat').value, '');
+  f.click('save-continue'); await settled(() => f.entries.length === 1 && f.el('name').value === '');
+  const created = f.requests.find((request) => request.method === 'POST')!.body;
+  assert.equal(created.carbs, '0.0'); assert.equal(created.protein, '12.3'); assert.equal(created.fat, null);
+  assert.equal(f.el('carbs').value, ''); assert.equal(f.el('protein').value, ''); assert.equal(f.el('fat').value, '');
+  assert.match(f.el('list').textContent ?? '', /碳水化合物 0.0g.*蛋白质 12.3g.*脂肪 未填/);
+  f.click('dialog-close');
+
+  const older = fixture({ entries: [entry()] }); await older.ready();
+  older.click(older.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(older.el('carbs').value, ''); assert.equal(older.el('protein').value, '');
+  older.input('carbs', '28.6'); older.input('protein', '7'); older.input('fat', '3.2');
+  older.submit('form'); await settled(() => !older.el('dialog').open);
+  const edit = older.requests.find((request) => request.method === 'PATCH' && request.url.endsWith(ID))!.body;
+  assert.equal(edit.expectedRevision, 1); assert.equal(edit.carbs, '28.6'); assert.equal(edit.protein, '7.0'); assert.equal(edit.fat, '3.2');
+});
+
+test('catalog portion changes recalculate nutrients while explicit manual gram corrections remain editable', async () => {
+  const f = fixture(); await f.ready(); f.click('add'); f.input('meal', 'lunch', 'change');
+  f.input('food-search', '测试饭'); f.click('food-search-button');
+  await settled(() => !!f.el('food-results').querySelector('[data-food-id]')); f.click(f.el('food-results').querySelector('[data-food-id]')!);
+  f.input('food-quantity', '200');
+  assert.equal(f.el('carbs').value, '51.2'); assert.equal(f.el('protein').value, '4.6'); assert.equal(f.el('fat').value, '0.0');
+  assert.equal(f.el('protein').disabled, false); f.input('protein', '8.5');
+  f.submit('form'); await settled(() => f.entries.length === 1 && !f.el('dialog').open);
+  const saved = f.requests.find((request) => request.method === 'POST')!.body;
+  assert.equal(saved.carbs, '51.2'); assert.equal(saved.protein, '8.5'); assert.equal(saved.fat, '0.0');
+  assert.deepEqual(saved.food, { id: food.id, amount: 200, unit: 'g' });
+});
+
+test('editing a saved catalog record preserves manual grams until a new quantity requires recalculation', async () => {
+  const snapshot = { foodId: food.id, foodName: food.name, kcalPer100g: food.kcalPer100g,
+    carbsPer100g: food.carbsPer100g, proteinPer100g: food.proteinPer100g, fatPer100g: food.fatPer100g,
+    carbsTenth: 8, proteinTenth: 1, fatTenth: 0, grams: 3, amount: 3, unit: 'g', source: food.source };
+  const f = fixture({ entries: [entry({ food: snapshot, carbs: '5.0', protein: '7.0', fat: '0.0' })] });
+  await f.ready(); f.click(f.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  assert.equal(f.el('carbs').value, '5.0'); assert.equal(f.el('protein').value, '7.0');
+  f.input('food-quantity', '200');
+  assert.equal(f.el('carbs').value, '51.2'); assert.equal(f.el('protein').value, '4.6');
+  f.submit('form'); await settled(() => !f.el('dialog').open);
+  const updated = f.requests.find((request) => request.method === 'PATCH' && request.url.endsWith(ID))!.body;
+  assert.equal(updated.carbs, '51.2'); assert.equal(updated.protein, '4.6');
+});
+
+test('catalog nutrient rounding uses decimal half-up instead of losing tenths to binary float error', async () => {
+  const fatty = { ...food, fatPer100g: 34.3 };
+  const f = fixture({ drafts: [draft({ name: fatty.name, food: { id: fatty.id, amount: 100, unit: 'g' }, candidates: [fatty] })] });
+  await f.ready(); await f.parse();
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="amount"]')!, '50');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="fat"]') as HTMLInputElement).value, '17.2');
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  assert.equal(f.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0].fat, '17.2');
+});
+
+test('invalid nutrient values are rejected locally without creating records', async () => {
+  const f = fixture(); await f.ready(); f.click('add'); f.input('meal', 'lunch', 'change'); f.input('name', '测试食物');
+  for (const value of ['-1', '1.23', '20000.1', '3g', '1e2', '1\n']) {
+    f.input('protein', value); f.submit('form'); await settled(() => !f.el('form-error').hidden);
+    assert.match(f.el('form-error').textContent ?? '', /蛋白质/);
+  }
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+});
+
 test('AI runs only after clicking identify, generates editable drafts, and waits for an explicit batch save', async () => {
   const f = fixture({ drafts: [draft({ meal: null, name: '<img src=x onerror=alert(1)>', warnings: ['<script>bad()</script>'] })] });
   await f.ready(); await f.parse();
@@ -174,6 +248,85 @@ test('AI estimated calories are visible, editable and saved with their serving a
   const saved = f.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0];
   assert.equal(saved.calories, '420.0'); assert.equal(saved.note, note); assert.equal(saved.food, undefined);
   assert.match(f.el('list').textContent ?? '', /AI 估算/);
+});
+
+test('AI grams stay editable and retry the exact original values and provenance after a lost confirmation', async () => {
+  const note = 'AI 估算：2个肉包子；按常见份量估算。碳水化合物、蛋白质、脂肪也为 AI 估算。';
+  const f = fixture({ drafts: [draft({ calories: '420.0', carbs: '54.2', protein: '18.5', fat: '15.0',
+    calorieSource: 'ai', macroSources: { carbs: 'ai', protein: 'ai', fat: 'ai' }, note })] });
+  await f.ready(); await f.parse();
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="protein"]') as HTMLInputElement).value, '18.5');
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="protein"]')!, '20');
+  f.nextBatch(async () => { throw new TypeError('Synthetic lost confirmation'); });
+  f.submit('batch-form'); await settled(() => !f.el('batch-error').hidden && !f.el('batch-save').disabled);
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="protein"]') as HTMLInputElement).disabled, true);
+  f.click(f.el('batch-dialog').querySelector('[data-nutrition-batch-close]')!); f.click('resume-batch');
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  const posts = f.requests.filter((request) => request.url.endsWith('/batch'));
+  assert.equal(posts.length, 2); assert.equal(posts[0].key, posts[1].key); assert.deepEqual(posts[0].body, posts[1].body);
+  assert.equal(posts[0].body.entries[0].carbs, '54.2'); assert.equal(posts[0].body.entries[0].protein, '20.0');
+  assert.equal(posts[0].body.entries[0].fat, '15.0'); assert.match(posts[0].body.entries[0].note, /蛋白质已手动调整/);
+});
+
+test('a reloaded page restores pending grams without changing the original batch or legacy absent fields', async () => {
+  const original = { key: 'bd0c5a3c-6105-4b6b-b065-1472594b5e09', body: { entries: [
+    { date: DAY, meal: 'lunch', name: '待确认食物', portion: '1份', calories: '200.0', carbs: '0.0', protein: '18.5', fat: null, note: '' },
+  ] } };
+  const storage = new Map([['jiashu-nutrition-batch:test', JSON.stringify(original)]]);
+  const f = fixture({ storage }); await f.ready(); f.click('resume-batch');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="carbs"]') as HTMLInputElement).value, '0.0');
+  f.submit('batch-form'); await settled(() => !f.el('batch-dialog').open);
+  const submitted = f.requests.find((request) => request.url.endsWith('/batch'))!;
+  assert.equal(submitted.key, original.key); assert.deepEqual(submitted.body, original.body);
+
+  const legacy = { key: original.key, body: { entries: [
+    { date: DAY, meal: 'lunch', name: '旧版待确认食物', portion: '1份', calories: null, note: '' },
+  ] } };
+  const old = fixture({ storage: new Map([['jiashu-nutrition-batch:test', JSON.stringify(legacy)]]) });
+  await old.ready(); old.click('resume-batch'); old.submit('batch-form');
+  await settled(() => !old.el('batch-dialog').open);
+  assert.deepEqual(old.requests.find((request) => request.url.endsWith('/batch'))!.body, legacy.body);
+});
+
+test('changing an AI serving clears its estimated macros, including when calories came from the catalog', async () => {
+  const f = fixture({ drafts: [draft({ calories: '180.0', carbs: '38.4', protein: '5.0', fat: '2.0',
+    calorieSource: 'catalog', macroSources: { carbs: 'catalog', protein: 'ai', fat: 'ai' },
+    note: 'AI 营养估算：蛋白质、脂肪；1份；按普通烹饪估算。' })] });
+  await f.ready(); await f.parse();
+  assert.match(f.el('batch-rows').querySelector('[data-draft-preview]')?.textContent ?? '', /营养素含 AI 估算/);
+  f.input(f.el('batch-rows').querySelector('[data-draft-field="portion"]')!, '半份');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="protein"]') as HTMLInputElement).value, '');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="fat"]') as HTMLInputElement).value, '');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="note"]') as HTMLInputElement).value, '');
+  assert.equal((f.el('batch-rows').querySelector('[data-draft-field="carbs"]') as HTMLInputElement).value, '38.4');
+});
+
+test('manual corrections keep their source after save and reopen while remaining AI grams expire on a serving change', async () => {
+  const note = 'AI 估算：1份食物；按普通份量估算。碳水化合物、蛋白质、脂肪也为 AI 估算。热量已手动调整。蛋白质已手动调整。';
+  const f = fixture({ entries: [entry({ calories: '380.0', carbs: '54.2', protein: '20.0', fat: '15.0', note })] });
+  await f.ready(); f.click(f.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  f.input('portion', '半份');
+  assert.equal(f.el('calories').value, '380.0'); assert.equal(f.el('protein').value, '20.0');
+  assert.equal(f.el('carbs').value, ''); assert.equal(f.el('fat').value, ''); assert.equal(f.el('note').value, '');
+});
+
+test('copied, recent and favorite foods keep gram values when reopened as editable records', async () => {
+  const macros = { carbs: '32.0', protein: '6.5', fat: '0.0' };
+  const copied = fixture({ yesterdayEntries: [entry({ date: '2026-11-10', ...macros })] });
+  await copied.ready(); copied.click(copied.el('list').querySelector('[data-nutrition-copy-meal="lunch"]')!);
+  await settled(() => copied.el('batch-dialog').open);
+  assert.equal((copied.el('batch-rows').querySelector('[data-draft-field="carbs"]') as HTMLInputElement).value, '32.0');
+  copied.submit('batch-form'); await settled(() => !copied.el('batch-dialog').open);
+  const body = copied.requests.find((request) => request.url.endsWith('/batch'))!.body.entries[0];
+  assert.equal(body.carbs, '32.0'); assert.equal(body.protein, '6.5'); assert.equal(body.fat, '0.0');
+
+  const reused = fixture({ entries: [entry(macros)] }); await reused.ready();
+  reused.click(reused.el('quick-list').querySelector('[data-recent-add]')!);
+  assert.equal(reused.el('carbs').value, '32.0'); assert.equal(reused.el('protein').value, '6.5');
+  reused.click('dialog-close'); reused.click(reused.el('list').querySelector('[data-nutrition-action="favorite"]')!);
+  await settled(() => !!reused.el('quick-list').querySelector('[data-favorite-add]'));
+  reused.click(reused.el('quick-list').querySelector('[data-favorite-add]')!);
+  assert.equal(reused.el('fat').value, '0.0'); assert.equal(reused.el('protein').value, '6.5');
 });
 
 test('changing estimated servings clears stale calories; catalog replacements calculate from the selected food', async () => {

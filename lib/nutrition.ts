@@ -15,6 +15,9 @@ export interface NutritionInput {
   portion: string;
   note: string;
   caloriesTenth: number | null;
+  carbsTenth?: number | null;
+  proteinTenth?: number | null;
+  fatTenth?: number | null;
   food?: FoodSnapshot;
 }
 export interface NutritionEntry extends NutritionInput {
@@ -24,7 +27,7 @@ export interface NutritionEntry extends NutritionInput {
   updatedAt: string;
   deletedAt: string | null;
 }
-export interface NutritionEntryView extends NutritionEntry { calories: string | null; deleted: boolean }
+export interface NutritionEntryView extends NutritionEntry { calories: string | null; carbs: string | null; protein: string | null; fat: string | null; deleted: boolean }
 export interface NutritionMealSummary {
   meal: NutritionMeal;
   label: string;
@@ -103,6 +106,20 @@ function calories(input: unknown): number | null {
   if (tenth > BigInt(200000)) return fail('calories', '单份食物热量不能超过 20000 kcal。');
   return Number(tenth);
 }
+const macroKeys = ['carbs', 'protein', 'fat'] as const;
+const macroLabels = { carbs: '碳水化合物', protein: '蛋白质', fat: '脂肪' } as const;
+function macroGrams(input: unknown, key: (typeof macroKeys)[number]): number | null {
+  if (input === undefined || input === null) return null;
+  const label = macroLabels[key];
+  if (typeof input !== 'string' || input.length > 128 || /[\u0000-\u001f\u007f]/.test(input)) return fail(key, label + '请填写普通数字，未知时留空。');
+  const value = input.trim();
+  if (!value) return null;
+  if (!/^\d+(?:\.\d)?$/.test(value)) return fail(key, label + '需为非负数字，最多保留 1 位小数，不附带单位。');
+  const [whole, fraction = '0'] = value.split('.');
+  const tenth = BigInt(whole + fraction);
+  if (tenth > BigInt(200000)) return fail(key, '单份食物的' + label + '不能超过 20000g。');
+  return Number(tenth);
+}
 function decimal(tenth: bigint) {
   const digits = tenth.toString().padStart(2, '0');
   return digits.slice(0, -1) + '.' + digits.slice(-1);
@@ -115,7 +132,7 @@ export function validNutritionId(input: unknown): input is string {
   return typeof input === 'string' && input.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input);
 }
 export function parseNutritionCreate(input: unknown, now: Date | number = Date.now()): NutritionInput {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'food']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food']);
   if (typeof raw.meal !== 'string' || !Object.hasOwn(NUTRITION_MEALS, raw.meal)) return fail('meal', '请选择早餐、午餐、晚餐或加餐。');
   let food: FoodSnapshot | undefined;
   if (raw.food !== undefined && raw.food !== null) {
@@ -125,16 +142,24 @@ export function parseNutritionCreate(input: unknown, now: Date | number = Date.n
     catch (error) { return fail('food', error instanceof Error ? error.message : '食物库记录已变化，请重新选择食物。'); }
     if (!Number.isSafeInteger(food.caloriesTenth) || food.caloriesTenth < 0 || food.caloriesTenth > 200000) return fail('food', '这份食物热量超出支持范围，请调整份量。');
   }
+  const macros: Pick<NutritionInput, 'carbsTenth' | 'proteinTenth' | 'fatTenth'> = {};
+  for (const key of macroKeys) {
+    // Omitted fields preserve old request fingerprints across a deployment.
+    if (!Object.hasOwn(raw, key)) continue;
+    const field = `${key}Tenth` as 'carbsTenth' | 'proteinTenth' | 'fatTenth';
+    macros[field] = macroGrams(raw[key], key) ?? food?.[field] ?? null;
+  }
   return {
     date: date(raw.date, shanghaiDay(new Date(now).toISOString())), meal: raw.meal as NutritionMeal,
     name: food ? text(food.foodName, 'name', 100) : text(raw.name, 'name', 100),
     portion: food ? text(String(food.amount) + food.unit, 'portion', 100) : text(raw.portion, 'portion', 100, true),
     note: text(raw.note, 'note', 500, true), caloriesTenth: food ? food.caloriesTenth : calories(raw.calories),
+    ...macros,
     ...(food ? { food } : {}),
   };
 }
 export function parseNutritionPatch(input: unknown, now: Date | number = Date.now()): NutritionPatch {
-  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'food', 'deleted', 'expectedRevision']);
+  const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'carbs', 'protein', 'fat', 'note', 'food', 'deleted', 'expectedRevision']);
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1) return fail('expectedRevision', '请先读取最新版本的饮食记录。');
   if (Object.hasOwn(raw, 'deleted')) {
     if (typeof raw.deleted !== 'boolean' || Object.keys(raw).some((key) => !['deleted', 'expectedRevision'].includes(key))) return fail('deleted', '删除或恢复操作仅提交状态和当前版本，不同时编辑食物。');
@@ -152,7 +177,8 @@ export function parseNutritionQuery(params: URLSearchParams, now: Date | number 
   return { date: selected, today, includeDeleted: params.get('includeDeleted') === '1', recentFrom: first < '1970-01-01' ? '1970-01-01' : first, recentTo: selected };
 }
 export function presentNutritionEntry(entry: NutritionEntry): NutritionEntryView {
-  return { ...entry, calories: entry.caloriesTenth === null ? null : decimal(BigInt(entry.caloriesTenth)), deleted: entry.deletedAt !== null };
+  const display = (value: number | null | undefined) => value === undefined || value === null ? null : decimal(BigInt(value));
+  return { ...entry, calories: display(entry.caloriesTenth), carbs: display(entry.carbsTenth), protein: display(entry.proteinTenth), fat: display(entry.fatTenth), deleted: entry.deletedAt !== null };
 }
 export function summarizeNutrition(entries: readonly NutritionEntry[]): NutritionSummary {
   const active = entries.filter((entry) => entry.deletedAt === null);

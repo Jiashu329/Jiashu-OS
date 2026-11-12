@@ -17,7 +17,9 @@ function fixture(foods: FoodItem[] = []) {
       calculations.push(selection);
       if (!['g', '克', '公克'].includes(selection.unit)) throw new Error('Unsupported portion');
       const food = foods.find((food) => food.id === selection.id)!;
-      return { caloriesTenth: Math.round(food.kcalPer100g * selection.amount / 10), grams: selection.amount, estimated: false };
+      return { caloriesTenth: Math.round(food.kcalPer100g * selection.amount / 10), grams: selection.amount, estimated: false,
+        ...Object.fromEntries((['carbs', 'protein', 'fat'] as const).filter((key) => food[`${key}Per100g`] !== undefined)
+          .map((key) => [`${key}Tenth`, Math.round(food[`${key}Per100g`]! * selection.amount / 10)])) };
     }, validAssistantText, shanghaiDay,
   ) as {
     parseNutritionParserRequest(raw: unknown, now?: number): NutritionParserRequest;
@@ -110,6 +112,49 @@ test('estimate boundaries preserve real zero and unknown while rejecting malform
   for (const value of [[], {}, { ...estimate, portion: '' }, { ...estimate, basis: 'x'.repeat(201) },
     { ...estimate, portion: '1\u0000份' }, { ...estimate, foodId: 'forged' }]) {
     assert.throws(() => f.buildNutritionDrafts(answer(item({ estimate: value })), base));
+  }
+});
+
+test('AI drafts expose total-portion carbohydrate, protein and fat grams with explicit source attribution', () => {
+  const estimate = { calories: 420, carbs: 50.5, protein: 22, fat: 14.3,
+    portion: '2个肉包子（每个约80g）', basis: '按常见面皮和肉馅估算，实际用油未知' };
+  const draft = fixture().buildNutritionDrafts(answer(item({ estimate })), base).drafts[0];
+  assert.equal(draft.carbs, '50.5'); assert.equal(draft.protein, '22.0'); assert.equal(draft.fat, '14.3');
+  assert.deepEqual(draft.macroSources, { carbs: 'ai', protein: 'ai', fat: 'ai' });
+  assert.equal(draft.calories, '420.0'); assert.equal(draft.calorieSource, 'ai');
+  assert.match(draft.note, /碳水化合物、蛋白质、脂肪也为 AI 估算/);
+  assert.match(draft.warnings.join(' '), /当前食用份量的合计克数/);
+});
+
+test('catalog macros override estimates individually while absent source fields retain labeled AI fallbacks', () => {
+  const estimate = { calories: 420, carbs: 999, protein: 18, fat: 999, portion: '150克熟米饭', basis: '按描述份量估算' };
+  const f = fixture([{ ...cooked, carbsPer100g: 24, fatPer100g: 0 }]);
+  const draft = f.buildNutritionDrafts(answer(item({ estimate })), base).drafts[0];
+  assert.equal(draft.carbs, '36.0'); assert.equal(draft.protein, '18.0'); assert.equal(draft.fat, '0.0');
+  assert.deepEqual(draft.macroSources, { carbs: 'catalog', protein: 'ai', fat: 'catalog' });
+  assert.equal(draft.calories, '150.0'); assert.equal(draft.calorieSource, 'catalog');
+  assert.match(draft.note, /^AI 营养估算：蛋白质；/);
+  assert.equal(draft.note.includes('碳水化合物'), false); assert.equal(draft.note.includes('脂肪'), false);
+  const catalogOnly = f.buildNutritionDrafts(answer(item()), base).drafts[0];
+  assert.equal(catalogOnly.protein, null); assert.equal(catalogOnly.macroSources.protein, null);
+  assert.equal(catalogOnly.note, '');
+});
+
+test('unknown macro fields remain null, real zeros survive and malformed gram estimates are rejected', () => {
+  const f = fixture();
+  const estimate = { calories: 0, carbs: 0, protein: null, fat: 20000, portion: '按原文份量', basis: '合成边界测试' };
+  const draft = f.buildNutritionDrafts(answer(item({ estimate })), base).drafts[0];
+  assert.equal(draft.carbs, '0.0'); assert.equal(draft.protein, null); assert.equal(draft.fat, '20000.0');
+  assert.equal(draft.macroSources.protein, null); assert.match(draft.warnings.join(' '), /蛋白质暂未提供/);
+  const legacy = f.buildNutritionDrafts(answer(item({ estimate: { calories: 120, portion: '150克', basis: '旧模型估算' } })), base).drafts[0];
+  assert.equal(legacy.carbs, null); assert.equal(legacy.protein, null); assert.equal(legacy.fat, null);
+  assert.deepEqual(legacy.macroSources, { carbs: null, protein: null, fat: null });
+  for (const key of ['carbs', 'protein', 'fat']) {
+    for (const value of [-0.1, 20000.1, '12', true, [], {}]) {
+      assert.throws(() => f.buildNutritionDrafts(answer(item({ estimate: { ...estimate, [key]: value } })), base), key + ':' + String(value));
+    }
+    const nonfinite = answer(item({ estimate: { ...estimate, [key]: 'NONFINITE' } })).replace('"NONFINITE"', '1e1000');
+    assert.throws(() => f.buildNutritionDrafts(nonfinite, base), key + ':infinity');
   }
 });
 

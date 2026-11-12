@@ -24,6 +24,13 @@ export interface FoodSnapshot {
   grams: number;
   kcalPer100g: number;
   caloriesTenth: number;
+  carbsPer100g?: number;
+  proteinPer100g?: number;
+  fatPer100g?: number;
+  /** Grams for this serving, rounded to tenths; missing means the source has no value. */
+  carbsTenth?: number;
+  proteinTenth?: number;
+  fatTenth?: number;
   source: FoodSource;
   estimated: boolean;
 }
@@ -90,6 +97,21 @@ export function calculateFoodSelection(input: { id: string; amount: number; unit
   // Integer half-up rounding keeps decimal portions stable at 0.1 kcal.
   const caloriesTenth = Number((numerator * BigInt(2) + denominator) / (denominator * BigInt(2)));
   if (!Number.isSafeInteger(caloriesTenth) || caloriesTenth > 200000) throw new Error('这份食物总热量不能超过20,000 kcal。');
+  const macroTenth = (per100g: number | undefined): number | undefined => {
+    if (per100g === undefined) return undefined;
+    if (!Number.isFinite(per100g) || per100g < 0) throw new Error('食物库营养数据格式不正确，请重新选择食物。');
+    const nutrient = fraction(per100g);
+    const numerator = gramsNumerator * nutrient.numerator * BigInt(10);
+    const denominator = gramsDenominator * nutrient.denominator * BigInt(100);
+    const result = Number((numerator * BigInt(2) + denominator) / (denominator * BigInt(2)));
+    if (!Number.isSafeInteger(result) || result > 200000) throw new Error('这份食物的营养素不能超过20,000g。');
+    return result;
+  };
+  const carbsTenth = macroTenth(food.carbsPer100g), proteinTenth = macroTenth(food.proteinPer100g), fatTenth = macroTenth(food.fatPer100g);
   return { foodId: food.id, foodName: food.name, amount: input.amount, unit: portion?.unit ?? unit,
-    grams, kcalPer100g: food.kcalPer100g, caloriesTenth, source: { ...food.source }, estimated: portion?.estimated ?? false };
+    grams, kcalPer100g: food.kcalPer100g, caloriesTenth,
+    ...(carbsTenth !== undefined ? { carbsPer100g: food.carbsPer100g, carbsTenth } : {}),
+    ...(proteinTenth !== undefined ? { proteinPer100g: food.proteinPer100g, proteinTenth } : {}),
+    ...(fatTenth !== undefined ? { fatPer100g: food.fatPer100g, fatTenth } : {}),
+    source: { ...food.source }, estimated: portion?.estimated ?? false };
 }

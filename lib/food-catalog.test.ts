@@ -65,6 +65,21 @@ test('gram and kilogram selections use catalog energy and exact decimal rounding
   assert.equal(getFood('tfda:missing'), null);
 });
 
+test('serving macros are calculated independently from known source grams with stable decimal rounding', () => {
+  const rice = searchFoods('米饭', 1)[0];
+  const serving = calculateFoodSelection({ id: rice.id, amount: 150, unit: 'g' });
+  for (const key of ['carbs', 'protein', 'fat'] as const) {
+    const source = rice[`${key}Per100g`];
+    assert.equal(serving[`${key}Tenth`], source === undefined ? undefined : Math.round(source * 15));
+    assert.equal(serving[`${key}Per100g`], source);
+  }
+  assert.deepEqual(calculateFoodSelection({ id: rice.id, amount: 0.15, unit: 'kg' }), { ...serving, amount: 0.15, unit: 'kg' });
+  const missing = catalogData.find((food) => food.proteinPer100g === undefined)!;
+  assert.equal(Object.hasOwn(calculateFoodSelection({ id: missing.id, amount: 100, unit: 'g' }), 'proteinTenth'), false);
+  const zero = catalogData.find((food) => food.fatPer100g === 0)!;
+  assert.equal(calculateFoodSelection({ id: zero.id, amount: 100, unit: 'g' }).fatTenth, 0);
+});
+
 test('a source unit weight is usable as an explicit estimate and never silently relabelled as pieces or bowls', () => {
   const egg = searchFoods('鸡蛋')[0];
   assert.ok(egg.portions.length);

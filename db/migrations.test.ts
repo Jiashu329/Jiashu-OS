@@ -56,3 +56,26 @@ test('second-batch schema preserves existing plans and starts their concurrency 
     }
   } finally { db.close(); }
 });
+
+test('macro columns preserve old nutrition data and completeness triggers while enforcing integer gram bounds', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const directory = new URL('../drizzle/', import.meta.url);
+    const migrations = readdirSync(directory).filter((name) => /^\d+.*\.sql$/.test(name)).sort();
+    const run = (name: string) => db.exec(readFileSync(new URL(name, directory), 'utf8'));
+    for (const name of migrations.filter((name) => name < '0015')) run(name);
+    const now = '2026-11-12T04:00:00.000Z';
+    db.prepare(`INSERT INTO nutrition_entries(id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,1,?,?,NULL)`).run('legacy-food', 'migration-user', '2026-11-12', 'lunch', '旧食物', '1份', '保留备注', 1234, 'legacy-hash', now, now);
+    const beforeTriggers = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='nutrition_entries' ORDER BY name").all();
+    for (const name of migrations.filter((name) => name >= '0015')) run(name);
+    const row = db.prepare('SELECT name,note,calories_tenth,creation_hash,carbs_tenth,protein_tenth,fat_tenth FROM nutrition_entries WHERE id=?').get('legacy-food');
+    assert.deepEqual({ ...row }, { name: '旧食物', note: '保留备注', calories_tenth: 1234, creation_hash: 'legacy-hash', carbs_tenth: null, protein_tenth: null, fat_tenth: null });
+    assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='nutrition_entries' ORDER BY name").all(), beforeTriggers);
+    for (const column of ['carbs_tenth', 'protein_tenth', 'fat_tenth']) {
+      db.prepare(`UPDATE nutrition_entries SET ${column}=? WHERE id=?`).run(0, 'legacy-food');
+      db.prepare(`UPDATE nutrition_entries SET ${column}=? WHERE id=?`).run(200000, 'legacy-food');
+      for (const value of [-1, 200001, 0.5, 'not-a-number']) assert.throws(() => db.prepare(`UPDATE nutrition_entries SET ${column}=? WHERE id=?`).run(value, 'legacy-food'));
+    }
+  } finally { db.close(); }
+});

@@ -1,4 +1,5 @@
-import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const healthMeasurements = sqliteTable('health_measurements', {
   userId: text('user_id').notNull(),
@@ -215,13 +216,20 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   portion: text('portion').notNull(),
   note: text('note').notNull(),
   caloriesTenth: integer('calories_tenth'),
+  carbsTenth: integer('carbs_tenth'),
+  proteinTenth: integer('protein_tenth'),
+  fatTenth: integer('fat_tenth'),
   foodJson: text('food_json'),
   creationHash: text('creation_hash').notNull(),
   revision: integer('revision').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
-}, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date)]);
+}, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date),
+  check('nutrition_entries_carbs_bounds', sql`${table.carbsTenth} IS NULL OR (typeof(${table.carbsTenth}) = 'integer' AND ${table.carbsTenth} BETWEEN 0 AND 200000)`),
+  check('nutrition_entries_protein_bounds', sql`${table.proteinTenth} IS NULL OR (typeof(${table.proteinTenth}) = 'integer' AND ${table.proteinTenth} BETWEEN 0 AND 200000)`),
+  check('nutrition_entries_fat_bounds', sql`${table.fatTenth} IS NULL OR (typeof(${table.fatTenth}) = 'integer' AND ${table.fatTenth} BETWEEN 0 AND 200000)`),
+]);
 
 export const nutritionCopyOperations = sqliteTable('nutrition_copy_operations', {
   id: text('id').primaryKey(), userId: text('user_id').notNull(), requestHash: text('request_hash').notNull(),

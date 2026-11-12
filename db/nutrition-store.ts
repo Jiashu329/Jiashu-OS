@@ -3,20 +3,30 @@ import { NUTRITION_MEALS, NutritionValidationError, presentNutritionEntry, type 
 export type NutritionDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 interface NutritionRow extends NutritionEntry { userId: string; creationHash: string; foodJson: string | null }
 export interface NutritionDateSelection { from: string; to: string; includeDeleted?: boolean }
-const columns = `id, user_id AS userId, date, meal, name, portion, note, calories_tenth AS caloriesTenth, food_json AS foodJson,
+const columns = `id, user_id AS userId, date, meal, name, portion, note, calories_tenth AS caloriesTenth, carbs_tenth AS carbsTenth, protein_tenth AS proteinTenth, fat_tenth AS fatTenth, food_json AS foodJson,
   creation_hash AS creationHash, revision, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt`;
 function entry(row: NutritionRow): NutritionEntry {
   return { id: row.id, date: row.date, meal: row.meal, name: row.name, portion: row.portion, note: row.note,
-    caloriesTenth: row.caloriesTenth, revision: row.revision, createdAt: row.createdAt, updatedAt: row.updatedAt, deletedAt: row.deletedAt, ...(row.foodJson ? { food: JSON.parse(row.foodJson) } : {}) };
+    caloriesTenth: row.caloriesTenth, carbsTenth: row.carbsTenth ?? null, proteinTenth: row.proteinTenth ?? null, fatTenth: row.fatTenth ?? null, revision: row.revision, createdAt: row.createdAt, updatedAt: row.updatedAt, deletedAt: row.deletedAt, ...(row.foodJson ? { food: JSON.parse(row.foodJson) } : {}) };
 }
 export class NutritionConflictError extends Error {
   readonly code = 'NUTRITION_CONFLICT';
   constructor(message = '这条饮食记录已更新，请刷新后检查再保存。') { super(message); this.name = 'NutritionConflictError'; }
 }
+function legacyFoodSnapshot(food: NonNullable<NutritionInput['food']>) {
+  const { carbsTenth: _carbs, proteinTenth: _protein, fatTenth: _fat,
+    carbsPer100g: _carbsPer100g, proteinPer100g: _proteinPer100g, fatPer100g: _fatPer100g, ...legacy } = food;
+  return legacy;
+}
 export async function creationFingerprint(input: NutritionInput) {
   // The parser normalizes whitespace and calorie tenths before persistence.
   const values: unknown[] = [input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth];
-  if (input.food) values.push(input.food);
+  if (input.food) {
+    // New snapshot nutrients do not change identities minted by the old API.
+    values.push(legacyFoodSnapshot(input.food));
+  }
+  const macros = [input.carbsTenth ?? null, input.proteinTenth ?? null, input.fatTenth ?? null];
+  if (macros.some((value) => value !== null)) values.push(macros);
   const canonical = JSON.stringify(values);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)));
   return [...digest].map((part) => part.toString(16).padStart(2, '0')).join('');
@@ -41,9 +51,9 @@ export async function createNutritionEntry(db: NutritionDatabase, userId: string
   const hash = await creationFingerprint(input);
   const result = await db.batch<NutritionRow>([
     db.prepare(`INSERT INTO nutrition_entries (id, user_id, date, meal, name, portion, note, calories_tenth,
-      creation_hash, revision, created_at, updated_at, deleted_at, food_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?) ON CONFLICT(id) DO NOTHING RETURNING id`)
-      .bind(key, userId, input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth, hash, now, now, input.food ? JSON.stringify(input.food) : null),
+      creation_hash, revision, created_at, updated_at, deleted_at, food_json, carbs_tenth, protein_tenth, fat_tenth)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING RETURNING id`)
+      .bind(key, userId, input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth, hash, now, now, input.food ? JSON.stringify(input.food) : null, input.carbsTenth ?? null, input.proteinTenth ?? null, input.fatTenth ?? null),
     db.prepare(`SELECT ${columns} FROM nutrition_entries WHERE id = ?`).bind(key),
   ]);
   const row = result[1].results[0];
@@ -59,9 +69,15 @@ async function missingOrConflict(db: NutritionDatabase, userId: string, id: stri
 /** Complete content replacement never changes owner, creation identity or deletion state. */
 export async function replaceNutritionEntry(db: NutritionDatabase, userId: string, id: string, input: NutritionInput, expectedRevision: number, now = new Date().toISOString()): Promise<NutritionEntry | null> {
   const row = await db.prepare(`UPDATE nutrition_entries SET date = ?, meal = ?, name = ?, portion = ?, note = ?,
-    calories_tenth = ?, food_json = ?, revision = revision + 1, updated_at = ?
+    calories_tenth = ?, food_json = ?,
+    carbs_tenth = CASE WHEN ?=1 THEN ? ELSE carbs_tenth END,
+    protein_tenth = CASE WHEN ?=1 THEN ? ELSE protein_tenth END,
+    fat_tenth = CASE WHEN ?=1 THEN ? ELSE fat_tenth END, revision = revision + 1, updated_at = ?
     WHERE user_id = ? AND id = ? AND revision = ? RETURNING ${columns}`)
-    .bind(input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth, input.food ? JSON.stringify(input.food) : null, now, userId, id.toLowerCase(), expectedRevision).first<NutritionRow>();
+    .bind(input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth, input.food ? JSON.stringify(input.food) : null,
+      Object.hasOwn(input, 'carbsTenth') ? 1 : 0, input.carbsTenth ?? null,
+      Object.hasOwn(input, 'proteinTenth') ? 1 : 0, input.proteinTenth ?? null,
+      Object.hasOwn(input, 'fatTenth') ? 1 : 0, input.fatTenth ?? null, now, userId, id.toLowerCase(), expectedRevision).first<NutritionRow>();
   return row ? entry(row) : missingOrConflict(db, userId, id);
 }
 export async function setNutritionEntryDeleted(db: NutritionDatabase, userId: string, id: string, deleted: boolean, expectedRevision: number, now = new Date().toISOString()): Promise<NutritionEntry | null> {
@@ -89,12 +105,12 @@ export async function createNutritionBatch(db: NutritionDatabase, userId: string
     SELECT ?,?,?,?,? WHERE ${noCollisions} ON CONFLICT(user_id,id) DO NOTHING RETURNING id`)
     .bind(userId, key, requestHash, JSON.stringify(ids), now, ...collisionValues)];
   for (const [index, input] of inputs.entries()) commands.push(db.prepare(`INSERT INTO nutrition_entries
-    (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at,food_json)
-    SELECT ?,?,?,?,?,?,?,?,?,1,?,?,NULL,? WHERE EXISTS
+    (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at,food_json,carbs_tenth,protein_tenth,fat_tenth)
+    SELECT ?,?,?,?,?,?,?,?,?,1,?,?,NULL,?,?,?,? WHERE EXISTS
       (SELECT 1 FROM nutrition_batches WHERE user_id=? AND id=? AND request_hash=?)
     ON CONFLICT(id) DO NOTHING`)
     .bind(ids[index], userId, input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth,
-      hashes[index], now, now, input.food ? JSON.stringify(input.food) : null, userId, key, requestHash));
+      hashes[index], now, now, input.food ? JSON.stringify(input.food) : null, input.carbsTenth ?? null, input.proteinTenth ?? null, input.fatTenth ?? null, userId, key, requestHash));
   commands.push(db.prepare('SELECT request_hash AS requestHash FROM nutrition_batches WHERE user_id=? AND id=?').bind(userId, key));
   for (const entryId of ids) commands.push(db.prepare(`SELECT ${columns} FROM nutrition_entries WHERE user_id=? AND id=?`).bind(userId, entryId));
   const result = await db.batch<NutritionRow & { requestHash: string }>(commands);
@@ -154,9 +170,15 @@ export async function writeNutritionDayStatus(db: NutritionDatabase, userId: str
   return { date: row.date, complete: row.complete === 1, meals: input.meals, revision: row.revision };
 }
 
-export interface NutritionFavorite { id: string; name: string; portion: string; calories: string | null; note: string; food?: NutritionInput['food'] }
+export interface NutritionFavorite { id: string; name: string; portion: string; calories: string | null; carbs: string | null; protein: string | null; fat: string | null; note: string; food?: NutritionInput['food'] }
 interface FavoriteRow { id: string; templateJson: string }
-function favorite(row: FavoriteRow): NutritionFavorite { return { id: row.id, ...JSON.parse(row.templateJson) }; }
+function favorite(row: FavoriteRow): NutritionFavorite { const template = JSON.parse(row.templateJson); return { id: row.id, ...template, carbs: template.carbs ?? null, protein: template.protein ?? null, fat: template.fat ?? null }; }
+export function nutritionFavoriteTemplate(item: NutritionEntry, forFingerprint = false) {
+  const view = presentNutritionEntry(item);
+  const macros = [view.carbs, view.protein, view.fat];
+  return { name: item.name, portion: item.portion, calories: view.calories, note: item.note, ...(item.food ? { food: forFingerprint ? legacyFoodSnapshot(item.food) : item.food } : {}),
+    ...(macros.some((value) => value !== null) ? { carbs: view.carbs, protein: view.protein, fat: view.fat } : {}) };
+}
 export async function listNutritionFavorites(db: NutritionDatabase, userId: string): Promise<NutritionFavorite[]> {
   const rows = await db.prepare('SELECT id,template_json AS templateJson FROM nutrition_favorites WHERE user_id=? ORDER BY created_at DESC,id DESC').bind(userId).all<FavoriteRow>();
   return rows.results.map(favorite);
@@ -164,10 +186,10 @@ export async function listNutritionFavorites(db: NutritionDatabase, userId: stri
 export async function addNutritionFavorite(db: NutritionDatabase, userId: string, entryId: string, now = new Date().toISOString()): Promise<NutritionFavorite | null> {
   const item = await readNutritionEntry(db, userId, entryId);
   if (!item || item.deletedAt !== null) return null;
-  const view = presentNutritionEntry(item);
-  const template = { name: item.name, portion: item.portion, calories: view.calories, note: item.note, ...(item.food ? { food: item.food } : {}) };
+  const template = nutritionFavoriteTemplate(item);
   const json = JSON.stringify(template);
-  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json)))].map((part) => part.toString(16).padStart(2, '0')).join('');
+  const canonical = JSON.stringify(nutritionFavoriteTemplate(item, true));
+  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)))].map((part) => part.toString(16).padStart(2, '0')).join('');
   const id = crypto.randomUUID();
   const result = await db.batch<FavoriteRow>([
     db.prepare(`INSERT INTO nutrition_favorites (id,user_id,template_hash,template_json,created_at)
@@ -188,7 +210,7 @@ export async function recentNutritionFoods(db: NutritionDatabase, userId: string
   const items = await listNutritionEntries(db, userId, { from: from < '1970-01-01' ? '1970-01-01' : from, to: selected });
   const seen = new Set<string>();
   return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id)).filter((item) => {
-    const key = JSON.stringify([item.name, item.portion, item.caloriesTenth, item.food?.foodId]);
+    const key = JSON.stringify([item.name, item.portion, item.caloriesTenth, item.food?.foodId, item.carbsTenth ?? null, item.proteinTenth ?? null, item.fatTenth ?? null]);
     if (seen.has(key)) return false; seen.add(key); return true;
   }).slice(0, 12).map(presentNutritionEntry);
 }
