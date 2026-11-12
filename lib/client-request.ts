@@ -9,7 +9,8 @@ async function requestJSON(url,options={}){
   const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{timedOut=true;controller.abort();try{response?.body?.cancel()?.catch(()=>{});}catch{}const error=new Error('等待响应超时，请检查网络后重试。');error.name='TimeoutError';error.code='REQUEST_TIMEOUT';reject(error);},duration);});
   const operation=(async()=>{
     try{
-      response=await fetch(url,{credentials:'same-origin',cache:'no-store',...init,signal:controller.signal,headers:{Accept:'application/json',...init.headers}});
+      const transport=typeof window!=='undefined'&&window.JiashuAccountSession?.request?window.JiashuAccountSession.request:fetch;
+      response=await transport(url,{credentials:'same-origin',cache:'no-store',...init,signal:controller.signal,headers:{Accept:'application/json',...init.headers}});
       const text=await response.text();let data;
       try{data=JSON.parse(text);}catch{const error=new Error(response.status===401||response.status===403?'请刷新页面并重新登录。':'服务返回内容暂时无法读取，请稍后重试。');error.status=response.status;error.code='INVALID_RESPONSE';throw error;}
       if(!response.ok){const message=typeof data?.error==='string'?data.error:typeof data?.message==='string'?data.message:data?.error?.message;const extra=Array.isArray(data?.issues)?data.issues.slice(0,2).map((item)=>item.message).filter(Boolean).join('；'):'';const diagnosticId=/^[a-f0-9]{32}$/.test(data?.diagnosticId)?data.diagnosticId:null;const error=new Error((message||'操作未完成，请检查数据后重试。')+(extra?' '+extra:'')+(diagnosticId?' 诊断编号：'+diagnosticId:''));error.status=response.status;error.code=data?.code;error.diagnosticId=diagnosticId;const retryAfter=response.status===429?response.headers?.get?.('Retry-After'):null;if(typeof retryAfter==='string'&&/^\d{1,5}$/.test(retryAfter)&&Number(retryAfter)>=1&&Number(retryAfter)<=86400)error.retryAfter=Number(retryAfter);throw error;}

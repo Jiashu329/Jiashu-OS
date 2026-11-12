@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../../lib/page-account';
 import { requireChatGPTUser } from '../../chatgpt-auth';
 import { renderFinanceGoalsPage } from '../../../finance-goals-page';
 import { CURRENCIES } from '../../../lib/finance';
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
   const query = new URLSearchParams({ ledger, currency });
   if (source.get('includeArchived') === '1') query.set('includeArchived', '1');
   const user = await requireChatGPTUser('/finance/goals?' + query);
-  return new Response(renderFinanceGoalsPage(user.userId), { headers: {
+  return new Response(withPageAccount(renderFinanceGoalsPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

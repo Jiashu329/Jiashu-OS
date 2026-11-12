@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../../lib/page-account';
 import { requireChatGPTUser } from '../../chatgpt-auth';
 import { renderHealthRecordsPage } from '../../../health-records-page';
 
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
   if (source.get('compose') === '1') query.set('compose', '1');
   const suffix = query.size ? '?' + query : '';
   const user = await requireChatGPTUser('/health/records' + suffix);
-  return new Response(renderHealthRecordsPage(user.userId), { headers: {
+  return new Response(withPageAccount(renderHealthRecordsPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../lib/page-account';
 import { requireChatGPTUser } from '../chatgpt-auth';
 import { renderFinanceApp } from '../../finance-ui';
 import { CURRENCIES } from '../../lib/finance';
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   const currency = source.get('currency');
   if (currency && Object.hasOwn(CURRENCIES, currency)) query.set('currency', currency);
   const user = await requireChatGPTUser('/finance?' + query);
-  return new Response(renderFinanceApp(user.userId), { headers: {
+  return new Response(withPageAccount(renderFinanceApp(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

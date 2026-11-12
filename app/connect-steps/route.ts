@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../lib/page-account';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from '../../lib/app-sidebar';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
@@ -9,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   const isEnergy = new URL(request.url).searchParams.get('metric') === 'active_energy';
-  await requireChatGPTUser(isEnergy ? '/connect-steps?metric=active_energy' : '/connect-steps');
+  const pageUser = await requireChatGPTUser(isEnergy ? '/connect-steps?metric=active_energy' : '/connect-steps');
   const html = String.raw`<!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>同步${isEnergy ? '活动能量' : '步数'} · Jiashu OS</title><style>
 ${APP_THEME_CSS}
@@ -82,7 +83,7 @@ $('copy-address').addEventListener('click',async()=>{if(!deviceToken)return;cons
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这段文字。';}));
 updateSource();showStep(0,false);
 </script></body></html>`;
-  return new Response(withShortcutInstallCard(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), isEnergy ? 'active_energy' : 'steps'), { headers: {
+  return new Response(withPageAccount(withShortcutInstallCard(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), isEnergy ? 'active_energy' : 'steps'), pageUser.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

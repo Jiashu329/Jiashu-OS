@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../../lib/page-account';
 import { requireChatGPTUser } from '../../chatgpt-auth';
 import { renderFinanceReviewPage } from '../../../finance-review-page';
 import { CURRENCIES, todayShanghai } from '../../../lib/finance';
@@ -12,8 +13,8 @@ export async function GET(request: Request) {
   const query = new URLSearchParams({ ledger, currency });
   const month = source.get('month');
   if (month && /^\d{4}-(0[1-9]|1[0-2])$/.test(month) && month >= '1970-01' && month <= todayShanghai().slice(0, 7)) query.set('month', month);
-  await requireChatGPTUser('/finance/review?' + query);
-  return new Response(renderFinanceReviewPage(), { headers: {
+  const pageUser = await requireChatGPTUser('/finance/review?' + query);
+  return new Response(withPageAccount(renderFinanceReviewPage(), pageUser.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

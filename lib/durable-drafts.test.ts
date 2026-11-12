@@ -37,8 +37,8 @@ test('recovery starts without network and explicit owner bootstrap only sends a 
 test('drafts survive reopening but are only listed and read for their signed-in owner',()=>{
   const local=storage();const first=fixture({local,owner:'alice'});first.manager.save('meal','饮食草稿',{name:'alice-only'});
   const second=fixture({local,owner:'bob'});assert.equal(second.manager.get('meal'),null);assert.equal(second.manager.list().length,0);
-  second.manager.setOwner('alice');assert.equal((second.manager.get('meal')?.data as {name:string}).name,'alice-only');
-  assert.equal(second.manager.get('meal')?.kind,'draft');
+  assert.equal(second.manager.setOwner('alice'),false);assert.equal(second.manager.owner,'bob');assert.equal(second.manager.get('meal'),null);
+  const reopened=fixture({local,owner:'alice'});assert.equal((reopened.manager.get('meal')?.data as {name:string}).name,'alice-only');assert.equal(reopened.manager.get('meal')?.kind,'draft');
 });
 
 test('a delayed identity response cannot replace an owner explicitly initialized by the current signed-in page',async()=>{
@@ -65,8 +65,8 @@ test('pending storage preserves exact original bytes across browser sessions, re
   first.manager.storage('alice').setItem(key,raw);assert.equal(first.manager.remove('pending:'+key),false);
   const reopened=fixture({local,owner:'alice'});assert.equal(reopened.manager.storage('alice').getItem(key),raw);assert.equal(reopened.requests.length,0);
   assert.throws(()=>reopened.manager.storage('alice').setItem(key,JSON.stringify({key:'other',body:{}})),/待确认/);
-  reopened.manager.setOwner('bob');assert.equal(reopened.manager.storage('bob').getItem('jiashu-nutrition-batch:bob'),null);
-  reopened.manager.storage('alice').removeItem(key);assert.equal(reopened.manager.get('pending:'+key),null);
+  assert.equal(reopened.manager.setOwner('bob'),false);assert.throws(()=>reopened.manager.storage('bob'),/重新登录/);
+  const confirmed=fixture({local,owner:'alice'});confirmed.manager.storage('alice').removeItem(key);assert.equal(confirmed.manager.get('pending:'+key),null);
 });
 
 test('an old owner-scoped session submission migrates without regenerating identifiers or fields',()=>{
@@ -134,4 +134,19 @@ test('a malformed recovery store is not silently overwritten by a new draft or c
   const local=storage(),raw='{incomplete-recovery-data';local.setItem('jiashu-work:v1:alice',raw);const f=fixture({local,owner:'alice'});
   assert.equal(f.manager.get('anything'),null);assert.equal(f.manager.save('new','新草稿',{name:'one'}),false);assert.equal(f.manager.clearConfirmed('old'),false);
   assert.equal(local.getItem('jiashu-work:v1:alice'),raw);
+});
+
+
+test('account-change blocks viewing and deleting original drafts while retaining exact pending bytes for the original account',async()=>{
+  const local=storage(),session=storage(),f=fixture({local,session,owner:'alice'}),key='jiashu-nutrition-create:alice';
+  const original=JSON.stringify({key:'original-operation',body:{name:'alice private meal'}}),store=f.manager.storage('alice');
+  store.setItem(key,original);f.manager.save('draft','原草稿',{name:'alice draft'});
+  const beforeLocal=[...local.values.entries()],beforeSession=[...session.values.entries()];
+  f.document.dispatchEvent(new f.window.Event('jiashu-account-changed'));
+  assert.equal(await f.manager.ready(),null);assert.equal(f.manager.list().length,0);assert.equal(f.manager.get('draft'),null);
+  assert.equal(f.manager.save('new','新草稿',{name:'must not become bob'}),false);assert.equal(f.manager.clearConfirmed('pending:'+key),false);
+  assert.throws(()=>store.removeItem(key),/原账号/);assert.throws(()=>store.setItem(key,original),/重新登录/);
+  assert.deepEqual([...local.values.entries()],beforeLocal);assert.deepEqual([...session.values.entries()],beforeSession);
+  const reopened=fixture({local,owner:'alice'});assert.equal(reopened.manager.storage('alice').getItem(key),original);
+  assert.equal((reopened.manager.get('draft')?.data as {name:string}).name,'alice draft');
 });

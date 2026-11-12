@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../../lib/page-account';
 import { requireChatGPTUser } from '../../chatgpt-auth';
 import { renderFinanceRunwayPage } from '../../../finance-runway-page';
 import { CURRENCIES } from '../../../lib/finance';
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   const currency = Object.hasOwn(CURRENCIES, rawCurrency) ? rawCurrency : 'CNY';
   const query = new URLSearchParams({ ledger, currency });
   const user = await requireChatGPTUser('/finance/runway?' + query);
-  return new Response(renderFinanceRunwayPage(user.userId), { headers: {
+  return new Response(withPageAccount(renderFinanceRunwayPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

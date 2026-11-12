@@ -395,3 +395,30 @@ export const financeMonthCloses = sqliteTable('finance_month_closes', {
   primaryKey({ columns: [table.userId, table.ledger, table.currency, table.month, table.version] }),
   uniqueIndex('finance_month_closes_owner_operation_idx').on(table.userId, table.operationId),
 ]);
+
+// Authorization records are intentionally excluded from portable business backups.
+export const appOwnerIdentity = sqliteTable('app_owner_identity', {
+  id: text('id').primaryKey().notNull(),
+  userId: text('user_id').notNull().unique(),
+  email: text('email').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [check('app_owner_identity_singleton', sql`${table.id} = 'owner'`)]);
+
+export const appAccessGrants = sqliteTable('app_access_grants', {
+  id: text('id').primaryKey().notNull(),
+  email: text('email').notNull().unique(),
+  boundUserId: text('bound_user_id').unique(),
+  status: text('status').notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastLoginAt: text('last_login_at'),
+});
+
+export const appAccessOperations = sqliteTable('app_access_operations', {
+  operationId: text('operation_id').primaryKey().notNull(),
+  actorUserId: text('actor_user_id').notNull(),
+  requestHash: text('request_hash').notNull(),
+  grantId: text('grant_id').notNull(),
+  createdAt: text('created_at').notNull(),
+});

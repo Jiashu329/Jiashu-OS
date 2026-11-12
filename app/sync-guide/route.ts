@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../lib/page-account';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from '../../lib/app-sidebar';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
@@ -6,10 +7,10 @@ import { requireChatGPTUser } from '../chatgpt-auth';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-  await requireChatGPTUser('/sync-guide');
+  const pageUser = await requireChatGPTUser('/sync-guide');
   const openSleepGuide = new URL(request.url).searchParams.get('sleep') === '1';
   const origin = new URL(request.url).origin.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-  return new Response(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>健康同步指南 · Jiashu OS</title><style>
+  return new Response(withPageAccount(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>健康同步指南 · Jiashu OS</title><style>
 ${APP_THEME_CSS}
 :root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6;background:var(--bg);color:var(--ink)}
 *{box-sizing:border-box}body{margin:0}button,input,select{font:inherit;color:inherit}a{color:var(--primary-hover)}button,a{touch-action:manipulation;-webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.55}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}[hidden]{display:none!important}
@@ -42,5 +43,5 @@ const range=document.getElementById('sleep-days');
 if(['#sleep-files','#sleep-file-import'].includes(location.hash)){document.querySelector('.advanced-reference').open=true;document.querySelector(location.hash)?.scrollIntoView();}
 function updateSleepRange(){const days=Number(range.value);document.querySelectorAll('[data-sleep-days]').forEach((node)=>{node.textContent=String(days);});document.querySelectorAll('[data-sleep-query-days]').forEach((node)=>{node.textContent=String(days+1);});}
 range.addEventListener('change',updateSleepRange);updateSleepRange();
-</script></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
+</script></body></html>`, pageUser.userId), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
 }

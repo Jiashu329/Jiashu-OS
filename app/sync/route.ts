@@ -1,11 +1,12 @@
+import { withPageAccount } from '../../lib/page-account';
 import { requireChatGPTUser } from '../chatgpt-auth';
 import { renderApp } from '../../ui';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  await requireChatGPTUser('/sync');
-  return new Response(renderApp(), { headers: {
+  const pageUser = await requireChatGPTUser('/sync');
+  return new Response(withPageAccount(renderApp(), pageUser.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

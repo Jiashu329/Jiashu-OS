@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../lib/page-account';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from '../../lib/app-sidebar';
 import { APP_THEME_CSS } from '../../lib/app-theme';
 import { APP_BRAND_HEAD } from '../../lib/branding';
@@ -7,8 +8,8 @@ import { renderShortcutInstallCard } from '../../lib/shortcut-templates';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  await requireChatGPTUser('/connect-sleep');
-  return new Response(String.raw`<!doctype html>
+  const pageUser = await requireChatGPTUser('/connect-sleep');
+  return new Response(withPageAccount(String.raw`<!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><title>同步睡眠 · Jiashu OS</title><style>
 ${APP_THEME_CSS}
 :root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6;background:var(--bg);color:var(--ink)}
@@ -90,7 +91,7 @@ async function copyText(text,field){try{if(!navigator.clipboard?.writeText)throw
 $('copy-address').addEventListener('click',async()=>{if(!deviceToken||!$('address').value)return;const copied=await copyText($('address').value,$('address'));addressStatus(copied?'地址已复制。先粘贴到“文本”开头，再依次加入四个变量。':'地址已选中，请长按输入框“全选 → 复制”。',!copied);});
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这个名称。';}));
 updateSource();showStep(0,false);
-</script></body></html>`, { headers: {
+</script></body></html>`, pageUser.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

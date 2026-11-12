@@ -1,3 +1,4 @@
+import { withPageAccount } from '../../../lib/page-account';
 import { requireChatGPTUser } from '../../chatgpt-auth';
 import { renderBalanceCheckPage } from '../../../finance-balance-check-page';
 import { CURRENCIES } from '../../../lib/finance';
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   const currency = requestedCurrency === 'all' || Object.hasOwn(CURRENCIES, requestedCurrency) ? requestedCurrency : 'all';
   const query = new URLSearchParams({ ledger, currency });
   const user = await requireChatGPTUser('/finance/balances?' + query);
-  return new Response(renderBalanceCheckPage(user.userId), { headers: {
+  return new Response(withPageAccount(renderBalanceCheckPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',
