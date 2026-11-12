@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { register } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
+import ts from 'typescript';
 import { buildHomeOverview } from './home-overview.ts';
 import { buildHealthSummary } from './health.ts';
 import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
@@ -17,19 +19,55 @@ import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
 const directory = resolve(import.meta.dirname, '../dist/server/_next/static');
 const hasBuild = existsSync(directory);
+// Node 22.13 supports asynchronous ESM loader registration; registerHooks is
+// deliberately avoided so the release gate uses the supported Node baseline.
+register(new URL('../scripts/worker-renderer-loader.mjs', import.meta.url), import.meta.url);
 const htmlCache = new Map<string, Promise<string>>();
+function rendererModule(original: string, path: string, marker: string): string | null {
+  const tree = ts.createSourceFile(path, original, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const functions = new Map<string, ts.Node>();
+  const responseBodies: ts.Expression[] = [];
+  const replacements: Array<{ start: number; end: number; value: string }> = [];
+  function visit(node: ts.Node) {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) functions.set(node.name.text, node.body);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) functions.set(node.name.text, node.initializer.body);
+    if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'Response' && node.arguments?.[0]) responseBodies.push(node.arguments[0]);
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)
+      && node.moduleSpecifier.text.startsWith('.')) replacements.push({ start: node.moduleSpecifier.getStart(tree), end: node.moduleSpecifier.end,
+        value: JSON.stringify(new URL(node.moduleSpecifier.text, pathToFileURL(path)).href) });
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  const renderers = new Set<string>();
+  for (const body of responseBodies) {
+    // Response(withPageAccount(renderPage(owner), owner), options): follow the
+    // HTML argument through wrappers and expose only the actual local renderer.
+    // Looking at AST calls avoids matching serialized browser code in strings.
+    let current = body;
+    while (ts.isCallExpression(current)) {
+      if (ts.isIdentifier(current.expression)) {
+        const name = current.expression.text;
+        if (functions.get(name)?.getText(tree).includes(marker)) renderers.add(name);
+      }
+      if (!current.arguments[0]) break;
+      current = current.arguments[0];
+    }
+  }
+  if (!renderers.size) return null;
+  // Resolve only real module specifiers. Renderer bodies and the browser source
+  // inside their template literals remain byte-for-byte as built.
+  let source = original;
+  for (const change of replacements.sort((a, b) => b.start - a.start)) source = source.slice(0, change.start) + change.value + source.slice(change.end);
+  return source + '\nexport {' + [...renderers].map((name, index) => name + ' as __renderer' + index).join(',') + '};';
+}
 function productionHtml(marker: string) {
   if (!htmlCache.has(marker)) htmlCache.set(marker, (async () => {
     const candidates = readdirSync(directory).filter((name) => name.endsWith('.js') && readFileSync(resolve(directory, name), 'utf8').includes(marker));
     for (const name of candidates) {
       const path = resolve(directory, name), original = readFileSync(path, 'utf8');
-      // Vinext inlines these private renderers into route chunks. Expose the
-      // exact function passed to Response without executing the authenticated
-      // GET handler or changing any renderer/client bytes.
-      const renderers = [...original.matchAll(/new Response\(([$A-Z_a-z][$\w]*)\([^)]*\),/g)].map((match) => match[1]);
-      if (!renderers.length) continue;
-      const source = original.replace(/\bfrom\s*(["'`])(\.[^"'`]+)\1/g, (_match, _quote: string, specifier: string) => 'from ' + JSON.stringify(new URL(specifier, pathToFileURL(path)).href))
-        + '\nexport {' + [...new Set(renderers)].map((name, index) => name + ' as __renderer' + index).join(',') + '};';
+      const source = rendererModule(original, path, marker);
+      if (!source) continue;
       const module = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64')) as Record<string, unknown>;
       for (const [name, value] of Object.entries(module)) {
         if (!name.startsWith('__renderer') || typeof value !== 'function') continue;
@@ -83,15 +121,23 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const localStorage = storage();
   Object.defineProperty(window, 'localStorage', { value: localStorage, configurable: true });
   const requests: Array<{ path: string; method: string }> = [];
+  const identityRequests: Array<{ path: string; method: string }> = [];
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] }, nutrition: { entries: [], statuses: [], goals: EMPTY_NUTRITION_GOALS } });
   const fetch = async (url: string | URL, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
-    requests.push({ path, method });
     // Initializing any page must remain read-only, even when session storage
     // contains another signed-in owner's original pending requests.
     if (method !== 'GET') throw new Error('Unexpected automatic production write: ' + method + ' ' + path);
-    if (path === '/api/session') return Response.json({ userId: 'synthetic-production-owner' });
+    // The account chrome now performs an independent identity read. Preserve
+    // the business-call assertions below while also enforcing its read-only,
+    // payload-free contract instead of counting it as a data/model operation.
+    if (path === '/api/session') {
+      assert.equal(options?.body, undefined, 'identity checks cannot send cached form or draft contents');
+      identityRequests.push({ path, method });
+      return Response.json({ userId: 'synthetic-production-owner', displayName: 'Synthetic account', email: 'synthetic@example.invalid', isOwner: false });
+    }
+    requests.push({ path, method });
     if (path === '/api/overview') return Response.json(overview);
     if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
     if (path === '/api/ai/settings') return Response.json({ settings: { configured: false, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
@@ -121,7 +167,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     runInNewContext(script.textContent, context, { timeout: 2000, filename: 'built-app-inline-' + index + '.js' });
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
-  return { window, document, requests, html, sessionStorage };
+  assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
+  return { window, document, requests, identityRequests, html, sessionStorage };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
