@@ -5,6 +5,7 @@ import { parseHTML } from 'linkedom';
 import { renderHealthAssistantWidget } from './health-assistant-widget.ts';
 import { renderHealthAssistantWidgetScript } from './health-assistant-widget-ui.ts';
 import { renderAssistantMarkdown } from './assistant-markdown.ts';
+import {resolveDateRange} from './date-range.ts';
 
 const answer = '## 先看睡眠\n\n**已有记录**支持这个观察 [H1]。\n\n| 指标 | 覆盖 |\n| --- | --- |\n| 睡眠 | 5 天 |';
 const metadata = (days = 7) => ({
@@ -40,9 +41,14 @@ function fixture({ reducedMotion = true, nutrients = false } = {}) {
     requests.push({ url, method, body });
     if (method === 'POST') {
       const handler = nextPost; nextPost = undefined;
-      return handler ? handler() : Response.json(completion(body?.days as number));
+      if(handler)return handler();
+      if(body?.from){const range=resolveDateRange({from:body.from,to:body.to});return Response.json({...completion(range.days),range});}
+      return Response.json(completion(body?.days as number));
     }
-    const preview=metadata(Number(new URL(url,location.origin).searchParams.get('days')));
+    const query=new URL(url,location.origin).searchParams;
+    const custom=query.has('from')?resolveDateRange({from:query.get('from'),to:query.get('to')}):null;
+    const preview=metadata(custom?.days??Number(query.get('days')));
+    if(custom){preview.context.range=custom;preview.context.health[0].recordedDays=Math.min(5,custom.days);preview.context.nutrition.recordedDays=Math.min(3,custom.days);}
     return Response.json(nutrients?{...preview,context:{...preview.context,nutrition:{recordedDays:3,days:[{nutrients:{carbs:{total:'0.0',knownCount:1,unknownCount:0},protein:{total:'12.3',knownCount:1,unknownCount:1},fat:{total:null,knownCount:0,unknownCount:2}}}]},goals:{targets:[],nutritionTargets:[{nutrient:'protein',value:'80.0',unit:'g'}],weightPlan:null,notes:[]}}}:preview);
   };
   const source = renderHealthAssistantWidgetScript().replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
@@ -111,6 +117,19 @@ test('scope changes clear history and reread only the explicitly selected source
   const body=f.requests.filter((r)=>r.method==='POST').at(-1)!.body!;
   assert.deepEqual(body.history,[]);assert.equal((body.scope as {includeNutrition:boolean}).includeNutrition,false);
   assert.ok(typeof body.historyScope==='string');
+});
+
+test('custom chart dates stay exact in preview, explicit send and conversation identity without automatic AI',async()=>{
+  const f=fixture();f.window.dispatchEvent(f.event('health-assistant-open',{detail:{metric:'sleep',days:3,from:'2024-02-28',to:'2024-03-01',question:'解释这三天'}}));
+  await settled(()=>!f.el('context').hidden);
+  const query=new URL(f.requests[0].url,f.location.origin).searchParams;
+  assert.equal(query.get('from'),'2024-02-28');assert.equal(query.get('to'),'2024-03-01');assert.equal(query.has('days'),false);
+  assert.equal(f.requests.filter((request)=>request.method==='POST').length,0);
+  assert.match(f.el('context-range').textContent!,/2024-02-28.*2024-03-01/);assert.doesNotMatch(f.el('context-range').textContent!,/包含今天/);
+  await f.sendText('解释所选日期');const body=f.requests.find((request)=>request.method==='POST')!.body!;
+  assert.equal(body.from,'2024-02-28');assert.equal(body.to,'2024-03-01');assert.equal(body.days,undefined);assert.match(String(body.historyScope),/2024-02-28.*2024-03-01/);
+  f.el('range-from').value='2024-02-30';f.el('range-to').value='2024-03-01';f.el('range-form').dispatchEvent(f.event('submit'));
+  assert.equal(f.el('range-error').hidden,false);assert.equal(f.requests.filter((request)=>request.method==='POST').length,1);
 });
 
 test('waiting remains observable while minimized and a 429 preserves the question until an active retry',async()=>{

@@ -1,4 +1,4 @@
-import { FOOD_CATALOG_SOURCE, searchFoods } from '../../../../../lib/food-catalog';
+import { FOOD_CATALOG_RELEASES, FOOD_CATALOG_SOURCE, searchFoods } from '../../../../../lib/food-catalog';
 import { apiUser, json, unauthenticated } from '../../../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -12,5 +12,5 @@ export async function GET(request: Request) {
   }
   const query = params.get('q') ?? '';
   if (query.length > 100) return json({ error: '食物关键词最多100个字符。', code: 'INVALID_FOOD_SEARCH' }, 400);
-  return json({ foods: searchFoods(query), source: FOOD_CATALOG_SOURCE });
+  return json({ foods: searchFoods(query), source: FOOD_CATALOG_SOURCE, releases: FOOD_CATALOG_RELEASES });
 }

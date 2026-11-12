@@ -5,6 +5,8 @@ Only this build-time importer needs OpenCC:
   python -m venv /tmp/food-catalog-venv
   /tmp/food-catalog-venv/bin/pip install opencc-python-reimplemented==0.1.7
   /tmp/food-catalog-venv/bin/python scripts/import-food-catalog.py [--input nutrition.csv]
+  # After reviewing a new upstream pin, use a NEW immutable release identity:
+  /tmp/food-catalog-venv/bin/python scripts/import-food-catalog.py --release-id tfda-YYYY-MM-DD
 
 The generated JSON is committed; running the website needs no Python/OpenCC,
 external food service, API key, or user data upload.
@@ -27,6 +29,7 @@ RAW_URL = f'https://raw.githubusercontent.com/liao961120/Taiwan-FDA-nutrition/{C
 RAW_SHA256 = '4670ababc656e1136a8f10faff7e0a59c7700ff988e95ec471870132ea7c6d64'
 OFFICIAL_URL = 'https://data.gov.tw/dataset/8543'
 VERSION = '2024-03-29 镜像快照；原始发布版本未注明'
+LEGACY_RELEASE = 'tfda-2024-03-29'
 ROOT = Path(__file__).resolve().parents[1]
 convert = OpenCC('t2s').convert
 
@@ -159,14 +162,17 @@ def build(data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, help='The pinned made/nutrition.csv file; otherwise download from GitHub')
+    parser.add_argument('--release-id', default=LEGACY_RELEASE,
+                        help='Immutable release identity. Existing different content is never overwritten; register each new release in food-catalog-releases.json and the runtime registry.')
     args = parser.parse_args()
+    if not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)+', args.release_id) or len(args.release_id) > 100:
+        raise ValueError('Use a bounded lowercase release identity, for example tfda-2024-03-29')
     data = args.input.read_bytes() if args.input else urllib.request.urlopen(RAW_URL, timeout=60).read()
     if hashlib.sha256(data).hexdigest() != RAW_SHA256:
         raise ValueError('Pinned source SHA-256 mismatch; review provenance before updating the importer')
     foods = build(data)
     target = ROOT / 'data'
     target.mkdir(exist_ok=True)
-    (target / 'food-catalog.json').write_text(json.dumps(foods, ensure_ascii=False, separators=(',', ':')) + '\n')
     metadata = {
         'name': '台湾食品药物管理署食品营养成分资料集',
         'url': OFFICIAL_URL,
@@ -184,7 +190,23 @@ def main():
         'transformation': {'script': 'scripts/import-food-catalog.py',
                            'simplifiedChinese': 'OpenCC t2s / opencc-python-reimplemented 0.1.7'},
     }
-    (target / 'food-catalog-source.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
+    if args.release_id == LEGACY_RELEASE:
+        catalog_path, source_path = target / 'food-catalog.json', target / 'food-catalog-source.json'
+    else:
+        target = target / 'food-catalog-releases'
+        target.mkdir(exist_ok=True)
+        catalog_path, source_path = target / (args.release_id + '.json'), target / (args.release_id + '.source.json')
+        metadata['catalogRelease'] = args.release_id
+    outputs = {catalog_path: json.dumps(foods, ensure_ascii=False, separators=(',', ':')) + '\n',
+               source_path: json.dumps(metadata, ensure_ascii=False, indent=2) + '\n'}
+    # Validate both destinations before writing either one. Old records, pending
+    # operations and backups depend on these released values remaining unchanged.
+    for path, content in outputs.items():
+        if path.exists() and path.read_bytes() != content.encode('utf-8'):
+            raise ValueError(f'Immutable release already exists: {path.name}; choose a new --release-id')
+    for path, content in outputs.items():
+        if not path.exists():
+            path.write_text(content)
     print(f'Generated {len(foods)} foods from the verified pinned TFDA mirror')
 
 

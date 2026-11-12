@@ -1,10 +1,11 @@
-import { BACKUP_MAX_BYTES, BackupValidationError, BackupCapacityError } from './data-backup.ts';
+import { VOLUME_BACKUP_LIMITS, BackupValidationError, BackupCapacityError } from './data-backup.ts';
+import { splitBackupVolumes } from './backup-volumes.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from '../db/data-backup-store.ts';
 import type { BackupDatabase } from '../db/data-backup-store.ts';
 
 interface Dependencies { user(): Promise<{ userId: string } | null>; database(): BackupDatabase; json(value: unknown, status?: number, headers?: Record<string,string>): Response; unavailable(): Response }
 async function body(request: Request) {
-  const limit = BACKUP_MAX_BYTES + 1024;
+  const limit = VOLUME_BACKUP_LIMITS.maxBytes + 128 * 1024;
   const size = Number(request.headers.get('content-length'));
   if (Number.isFinite(size) && size > limit) throw new RangeError();
   if (!request.body) throw new SyntaxError();
@@ -13,20 +14,32 @@ async function body(request: Request) {
   finally { reader.releaseLock(); }
 }
 export function createDataBackupHandlers(deps: Dependencies) {
+  const ownerChanged=(request:Request|undefined,userId:string)=>{
+    const owner=request?.headers.get('X-Page-Owner');
+    return owner&&owner!==userId?deps.json({error:'登录账号已变化，请刷新数据备份页面后继续。',code:'BACKUP_OWNER_CHANGED'},409):null;
+  };
   const errorResponse = (error: unknown) => {
     if (error instanceof BackupValidationError || error instanceof BackupConflictError) return deps.json({ error:error.message,code:error.code },error.status);
-    if (error instanceof RangeError) return deps.json({ error:error instanceof BackupCapacityError ? error.message : '备份上限为 8 MiB、20,000 行；当前版本不支持分卷。未写入数据。',code:'BACKUP_TOO_LARGE' },413);
+    if (error instanceof RangeError) return deps.json({ error:error instanceof BackupCapacityError ? error.message : '单文件上限 8 MiB、20,000 行；完整分卷组上限 16 MiB、40,000 行。未写入数据。',code:'BACKUP_TOO_LARGE' },413);
     if (error instanceof SyntaxError) return deps.json({ error:'备份 JSON 格式不正确。',code:'INVALID_DATA_BACKUP' },400);
     return deps.unavailable();
   };
   return {
-    async GET() {
+    async GET(request?: Request) {
       const user = await deps.user(); if (!user) return deps.json({ error:'请先登录网站，再导出完整备份。',code:'SIGN_IN_REQUIRED' },401);
-      try { const backup = await exportDataBackup(deps.database(),user.userId); return deps.json(backup,200,{ 'Content-Disposition':`attachment; filename="jiashu-os-backup-${backup.exportedAt.slice(0,10)}.json"` }); }
+      const changed=ownerChanged(request,user.userId);if(changed)return changed;
+      try {
+        const format=request?new URL(request.url).searchParams.get('format'):null;
+        if(format!==null&&format!=='volumes')return deps.json({error:'不支持的备份格式。',code:'INVALID_DATA_BACKUP'},400);
+        const backup = await exportDataBackup(deps.database(),user.userId,new Date().toISOString(),format==='volumes'?VOLUME_BACKUP_LIMITS:undefined);
+        if(format==='volumes')return deps.json(await splitBackupVolumes(backup));
+        return deps.json(backup,200,{ 'Content-Disposition':`attachment; filename="jiashu-os-backup-${backup.exportedAt.slice(0,10)}.json"` });
+      }
       catch (error) { return errorResponse(error); }
     },
     async POST(request: Request) {
       const user = await deps.user(); if (!user) return deps.json({ error:'请先登录网站，再恢复备份。',code:'SIGN_IN_REQUIRED' },401);
+      const changed=ownerChanged(request,user.userId);if(changed)return changed;
       if (request.headers.get('origin') !== new URL(request.url).origin) return deps.json({ error:'请从已登录的网站页面恢复备份。',code:'INVALID_ORIGIN' },403);
       if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return deps.json({ error:'请上传 JSON 完整备份。' },415);
       try {

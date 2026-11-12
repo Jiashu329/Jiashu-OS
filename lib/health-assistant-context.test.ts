@@ -38,6 +38,16 @@ void test('scope filtering happens before validating or projecting unshared nutr
   assert.ok(!JSON.stringify(result.context).includes('12345'));
 });
 
+void test('a custom historical range keeps both endpoint days and excludes later health and nutrition records',()=>{
+  const result=buildHealthAssistantContext({measurements:[daily('steps','2024-02-28',1),daily('steps','2024-02-29',2),daily('steps','2024-03-01',3),daily('steps','2024-03-02',999)],
+    nutrition:[food('2024-02-28',0),food('2024-03-01',10),food('2024-03-02',999)],days:3,from:'2024-02-28',to:'2024-03-01',now:NOW});
+  assert.deepEqual(result.context.range,{days:3,from:'2024-02-28',to:'2024-03-01',today:'2026-11-11'});
+  assert.deepEqual(result.context.health.find((row)=>row.metric==='steps')!.points.map((row)=>row.value),[1,2,3]);
+  assert.equal(result.context.nutrition.recordedDays,2);assert.ok(result.sources.every((source)=>source.to<='2024-03-01'));
+  assert.equal(result.context.limitations.some((note)=>note.includes('今日尚未结束')),false);
+  assert.throws(()=>buildHealthAssistantContext({measurements:[],nutrition:[],days:3,from:'2024-02-30',to:'2024-03-01',now:NOW}),HealthAssistantContextError);
+});
+
 void test('360-day summaries cover the actual full range within provider budget with explicit group semantics', () => {
   const measurements:HealthMeasurement[]=[];const nutrition:NutritionEntry[]=[];
   for(let index=1;index<360;index++){const date=shift('2026-11-11',-index);measurements.push(daily('steps',date,1000+index),daily('sleep',date,7),daily('active_energy',date,200),mass('weight',date,70),mass('lean_body_mass',date,55));nutrition.push({...food(date,1234),carbsTenth:2000,proteinTenth:800,fatTenth:600});}

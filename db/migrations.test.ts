@@ -81,3 +81,21 @@ test('macro columns preserve old nutrition data and completeness triggers while 
     }
   } finally { db.close(); }
 });
+
+test('P2 migration preserves legacy plans and request hashes while recording an explicit finance baseline',()=>{
+  const db=new DatabaseSync(':memory:');
+  try{
+    const directory=new URL('../drizzle/',import.meta.url),files=readdirSync(directory).filter((file)=>/^\d.*\.sql$/.test(file)).sort();
+    for(const file of files.filter((file)=>file<'0017'))db.exec(readFileSync(new URL(file,directory),'utf8'));
+    const now='2026-11-10T04:00:00.000Z';
+    db.prepare('INSERT INTO health_weight_plan_settings(user_id,baseline_weight,target_weight,start_date,deadline,enabled,created_at,updated_at,revision) VALUES (?,?,?,?,?,?,?,?,?)').run('legacy',75,70,'2026-11-01','2026-12-01',1,now,now,0);
+    for(const [id,type,archived]of [['bank','bank',null],['investment','investment',null],['property','property',now]] as const)db.prepare('INSERT INTO finance_accounts(id,user_id,ledger,name,type,currency,creation_hash,note,created_at,updated_at,archived_at,metadata_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id,'legacy','personal',id,type,'CNY','original-hash','',now,now,archived,7);
+    for(const file of files.filter((file)=>file>='0017'))db.exec(readFileSync(new URL(file,directory),'utf8'));
+    assert.deepEqual({...db.prepare('SELECT cycle_id,archived_at,revision,target_weight FROM health_weight_plan_settings').get()},{cycle_id:'legacy',archived_at:null,revision:0,target_weight:70});
+    assert.equal(db.prepare('SELECT count(*) AS n FROM health_weight_plan_cycles').get()?.n,0);
+    assert.deepEqual(db.prepare('SELECT liquidity_kind,usable_bps FROM finance_accounts ORDER BY id').all().map((row)=>({...row})),[{liquidity_kind:'liquid',usable_bps:10000},{liquidity_kind:'unreviewed',usable_bps:0},{liquidity_kind:'illiquid',usable_bps:0}]);
+    const history=db.prepare('SELECT revision,effective_from,origin,archived FROM finance_account_classifications ORDER BY account_id').all();
+    assert.equal(history.length,3);assert.ok(history.every((row)=>row.revision===7&&row.effective_from==='1970-01-01'&&row.origin==='baseline'));assert.equal(history[2].archived,1);
+    assert.ok(db.prepare('SELECT creation_hash,metadata_revision FROM finance_accounts').all().every((row)=>row.creation_hash==='original-hash'&&row.metadata_revision===7));
+  }finally{db.close();}
+});

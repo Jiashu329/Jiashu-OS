@@ -1,5 +1,5 @@
 import { searchFoods, calculateFoodSelection } from './food-catalog.ts';
-import type { FoodItem } from './food-catalog.ts';
+import type { FoodItem, FoodSelection } from './food-catalog.ts';
 import { validAssistantText } from './health-assistant-chat.ts';
 import { shanghaiDay } from './health.ts';
 import type { NutritionProvenance } from './nutrition.ts';
@@ -28,7 +28,7 @@ export interface NutritionDraft {
   macroSources: Record<NutritionDraftMacro, NutritionDraftSource>;
   provenance: NutritionProvenance;
   note: string;
-  food: { id: string; amount: number; unit: string } | null;
+  food: FoodSelection | null;
   candidates: FoodItem[];
   warnings: string[];
 }
@@ -185,7 +185,8 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     if (amount === null || unit === null) warnings.push('份量或单位不明确，请补充实际重量或数量。');
     else if (exact.length === 1) {
       try {
-        const selection = { id: exact[0].id, amount, unit };
+        const selection = { id: exact[0].id, amount, unit,
+          ...(exact[0].catalogRelease ? { catalogRelease: exact[0].catalogRelease } : {}) };
         const calculated = calculateFoodSelection(selection);
         if (!Number.isSafeInteger(calculated.caloriesTenth) || calculated.caloriesTenth < 0 || calculated.caloriesTenth > 200000) throw new Error('Invalid calorie amount');
         food = selection;

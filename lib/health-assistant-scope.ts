@@ -1,4 +1,5 @@
 import type { HealthMetric } from './health.ts';
+import { resolveDateRange, type DateRange } from './date-range.ts';
 
 export const ASSISTANT_DAYS = [7, 30, 90, 180, 360] as const;
 export type AssistantDays = typeof ASSISTANT_DAYS[number];
@@ -21,4 +22,7 @@ export function parseAssistantScope(value?: unknown): AssistantScope {
   if (!metrics.length && !input.includeNutrition) throw new AssistantScopeError('请至少选择一项健康指标或饮食摘要。');
   return { metrics, includeNutrition: input.includeNutrition, includeGoals: input.includeGoals };
 }
-export function assistantScopeKey(days: AssistantDays, scope: AssistantScope): string { return JSON.stringify([days, scope.metrics, scope.includeNutrition, scope.includeGoals]); }
+export function parseAssistantRange(input:{days?:unknown;from?:unknown;to?:unknown},now=Date.now()):DateRange {
+  try{return resolveDateRange(input,now,7);}catch(error){throw new AssistantScopeError(error instanceof Error?error.message:undefined);}
+}
+export function assistantScopeKey(days: number, scope: AssistantScope,range?:{from:string;to:string}): string { return JSON.stringify([days, scope.metrics, scope.includeNutrition, scope.includeGoals,...(range?[range.from,range.to]:[])]); }

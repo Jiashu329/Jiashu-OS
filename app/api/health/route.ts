@@ -1,4 +1,5 @@
-import { readHealth } from '../../../db/health-repository';
+import { readHealthRange } from '../../../db/health-repository';
+import { parseDateRangeQuery, DateRangeError } from '../../../lib/date-range';
 import { apiUser, json, unauthenticated, unavailable } from '../_shared';
 import { readWithDeadline } from '../../../lib/read-deadline';
 
@@ -7,8 +8,11 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   const user = await apiUser();
   if (!user) return unauthenticated();
-  const days = Number(new URL(request.url).searchParams.get('days') ?? '90');
-  if (![7, 30, 90, 180, 360].includes(days)) return json({ error: '请选择 7、30、90、180 或 360 天范围。' }, 400);
-  try { return json(await readWithDeadline(readHealth(user.userId, days))); }
-  catch (error) { return unavailable(error instanceof Error && error.message === 'READ_DEADLINE_EXCEEDED' ? 'read_timeout' : 'storage_failure'); }
+  try {
+    const range=parseDateRangeQuery(new URL(request.url).searchParams);
+    return json({...await readWithDeadline(readHealthRange(user.userId,range.from,range.to)),range});
+  } catch (error) {
+    if(error instanceof DateRangeError)return json({error:error.message,code:'INVALID_DATE_RANGE'},400);
+    return unavailable(error instanceof Error && error.message === 'READ_DEADLINE_EXCEEDED' ? 'read_timeout' : 'storage_failure');
+  }
 }

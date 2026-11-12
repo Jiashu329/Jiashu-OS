@@ -16,7 +16,7 @@ export async function writeWeightPlanSettings(db: WeightPlanDatabase, userId: st
     SELECT ?,?,?,?,?,?,?,?,? WHERE COALESCE((SELECT revision FROM health_weight_plan_settings WHERE user_id=?),0)=?
     ON CONFLICT(user_id) DO UPDATE SET baseline_weight=excluded.baseline_weight,target_weight=excluded.target_weight,
       start_date=excluded.start_date,deadline=excluded.deadline,enabled=excluded.enabled,revision=excluded.revision,updated_at=excluded.updated_at
-    WHERE health_weight_plan_settings.revision=? RETURNING ${columns}`)
+    WHERE health_weight_plan_settings.revision=? AND health_weight_plan_settings.archived_at IS NULL RETURNING ${columns}`)
     .bind(userId,input.baselineWeight,input.targetWeight,input.startDate,input.deadline,input.enabled?1:0,expectedRevision+1,now,now,userId,expectedRevision,expectedRevision).first<WeightPlanRow>();
   if (!row) throw new WeightPlanConflictError();
   return settings(row);

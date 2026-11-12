@@ -143,9 +143,15 @@ export function parseNutritionCreate(input: unknown, now: Date | number = Date.n
   if (typeof raw.meal !== 'string' || !Object.hasOwn(NUTRITION_MEALS, raw.meal)) return fail('meal', '请选择早餐、午餐、晚餐或加餐。');
   let food: FoodSnapshot | undefined;
   if (raw.food !== undefined && raw.food !== null) {
-    const selection = fields(raw.food, ['id', 'amount', 'unit']);
+    const selection = fields(raw.food, ['id', 'amount', 'unit', 'catalogRelease']);
     if (typeof selection.id !== 'string' || typeof selection.amount !== 'number' || typeof selection.unit !== 'string') return fail('food', '请选择食物库中的食物并填写有效份量。');
-    try { food = calculateFoodSelection({ id: selection.id, amount: selection.amount, unit: selection.unit }); }
+    if (Object.hasOwn(selection, 'catalogRelease') && (typeof selection.catalogRelease !== 'string' || !selection.catalogRelease || selection.catalogRelease.length > 100)) return fail('food', '请选择有效的食物库版本。');
+    try {
+      food = calculateFoodSelection({ id: selection.id, amount: selection.amount, unit: selection.unit,
+        ...(Object.hasOwn(selection, 'catalogRelease') ? { catalogRelease: selection.catalogRelease as string } : {}) });
+      // Preserve pre-versioning request fingerprints and uncertain queued writes.
+      if (!Object.hasOwn(selection, 'catalogRelease')) delete food.catalogRelease;
+    }
     catch (error) { return fail('food', error instanceof Error ? error.message : '食物库记录已变化，请重新选择食物。'); }
     if (!Number.isSafeInteger(food.caloriesTenth) || food.caloriesTenth < 0 || food.caloriesTenth > 200000) return fail('food', '这份食物热量超出支持范围，请调整份量。');
   }

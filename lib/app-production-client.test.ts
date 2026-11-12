@@ -104,6 +104,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     }
     if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:[]});
     if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
+    if (parsed.pathname === '/api/health/nutrition/templates') return Response.json({ templates: [] });
     if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
     if (parsed.pathname === '/api/health/nutrition/favorites') return Response.json({favorites:[]});
     if (parsed.pathname === '/api/health/nutrition/status') return Response.json({dayStatus:{date:parsed.searchParams.get('date') ?? today,complete:false,revision:0,meals:emptyMealStates}});
@@ -172,7 +173,7 @@ test('390px production backup page initializes every inline script and gates res
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:700px\)/);
   assert.equal(f.document.querySelectorAll('.nav-link').length, 5);
-  assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择 Jiashu OS 完整备份（v1 或 v2）');
+  assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择完整备份，或清单与全部分卷');
   const file = f.document.getElementById('backup-file')! as HTMLInputElement;
   const preview = f.document.getElementById('backup-preview')! as HTMLButtonElement;
   const restore = f.document.getElementById('backup-restore')! as HTMLButtonElement;
@@ -189,6 +190,9 @@ test('390px production backup page initializes every inline script and gates res
   assert.equal(download.tagName, 'BUTTON');
   assert.equal(download.disabled, false);
   assert.equal(download.textContent, '下载完整备份 JSON');
+  assert.equal(f.document.getElementById('backup-file')?.hasAttribute('multiple'), true);
+  assert.ok(f.document.getElementById('backup-export-volumes'));
+  assert.equal((f.document.getElementById('backup-saved') as HTMLButtonElement).disabled, true);
   assert.equal(f.document.querySelector('.backup-table-wrap th[scope="col"]')?.textContent, '数据范围');
   assert.equal(f.document.querySelectorAll('.backup-table-wrap th[scope="col"]').length, 5);
   // No data is read or restored just by opening the page. Even synthetic click
@@ -200,6 +204,19 @@ test('390px production backup page initializes every inline script and gates res
   assert.equal(restore.disabled, true);
   assert.equal(f.requests.length, 0);
   assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'), 'true');
+});
+
+test('minified personal food templates open their lazy list and typed source fields without writing or parsing AI',async()=>{
+  const f=await fixture('id="nutrition-page"','/health/nutrition',390);
+  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false');
+  const panel=f.document.getElementById('nutrition-templates')!;
+  panel.setAttribute('open','');Object.assign(panel,{open:true});panel.dispatchEvent(new f.window.Event('toggle'));
+  await settle(()=>f.document.getElementById('nutrition-templates-status')?.textContent?.includes('还没有模板')===true);
+  f.document.getElementById('nutrition-template-new')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(f.document.getElementById('nutrition-template-dialog')?.hasAttribute('open'),true);
+  assert.ok(f.document.getElementById('nutrition-template-components')?.querySelector('[data-template-field="calories"]'));
+  assert.ok(f.requests.some((request)=>request.path==='/api/health/nutrition/templates'));
+  assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')));
 });
 
 test('production shortcut installation page waits for user action before taking a server-clock baseline', async () => {

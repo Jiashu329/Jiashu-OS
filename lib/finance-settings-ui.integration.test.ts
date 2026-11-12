@@ -90,3 +90,12 @@ test('goal edit conflicts retain input and require explicit latest-version ackno
   f.submit();await settle(()=>writes.length===2&&!f.el('dialog').hasAttribute('open'));
   assert.equal(writes[1].name,'保留我的填写');assert.equal(writes[1].expectedRevision,2);
 });
+
+test('runway UI exposes nominal versus usable money and unreviewed/stale evidence without saving settings',async()=>{
+ let writes=0;
+ const accounts=[{...account,liquidityKind:'liquid',usableBps:10000},{...account,id:'22222222-2222-4222-8222-222222222222',name:'尚未核对投资',type:'investment',liquidityKind:'unreviewed',usableBps:0,balanceMinor:'200000',asOfDate:'2026-09-01'},{...account,id:'33333333-3333-4333-8333-333333333333',name:'房产',type:'property',liquidityKind:'illiquid',usableBps:0,balanceMinor:'500000'}];
+ const data={ledger:'personal',currency:'CNY',revision:1,accounts,settings:{monthlyExpenseAmount:'100.00',monthlyExpenseMinor:'10000',targetMonths:6,accountIds:accounts.map(a=>a.id),revision:1},progress:{currentMinor:'100000',nominalMinor:'800000',excludedMinor:'700000',unreviewedMinor:'200000',unreviewedAccountCount:1,usableAccountCount:1,staleAccountCount:1,runwayMonths:'10.00',runwayWholeMonths:'10',runwayRemainderMinor:'0',targetMinor:'60000',gapMinor:'0',percent:100,status:'covered',matchedAccountCount:3,missingCount:0,oldestBalanceDate:'2026-09-01',latestBalanceDate:'2026-11-09'}};
+ const f=fixture(renderFinanceRunwayPage('alice'),'runway','/finance/runway?ledger=personal&currency=CNY',async(_path,options)=>{if(options?.method==='PUT')writes++;return Response.json(data);});
+ await settle(()=>f.el('summary').textContent!.includes('所选名义金额'));
+ assert.match(f.el('summary').textContent!,/8,000\.00.*未计入.*7,000\.00/);assert.match(f.el('estimate').textContent!,/尚未核对.*2,000\.00/);assert.match(f.el('estimate').textContent!,/超过30天/);assert.match(f.el('accounts').textContent!,/房产.*可动用 CNY 0\.00/);assert.equal(f.el('accounts').querySelectorAll('input[checked]').length,3);assert.equal(writes,0);assert.equal((f.el('target-months') as HTMLInputElement).value,'6');
+});

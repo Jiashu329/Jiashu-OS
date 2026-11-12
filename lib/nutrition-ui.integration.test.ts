@@ -6,6 +6,8 @@ import { parseHTML } from 'linkedom';
 import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderNutritionScript } from './nutrition-ui.ts';
 import { parseNutritionCreate } from './nutrition.ts';
+import { parseNutritionTemplate, parseNutritionTemplatePreview, previewNutritionTemplate, type NutritionTemplate } from './nutrition-templates.ts';
+import { calculateFoodSelection, searchFoods } from './food-catalog.ts';
 
 const DAY = '2026-11-11';
 const NOW = Date.parse(DAY + 'T04:00:00Z');
@@ -34,7 +36,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean; templates?: NutritionTemplate[] } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -59,6 +61,9 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   let nextBatch: (() => Promise<Response>) | undefined;
   let nextGoal: (() => Promise<Response>) | undefined;
   let nextRestore: (() => Promise<Response>) | undefined;
+  let nextTemplate: (() => Promise<Response>) | undefined;
+  const templates = structuredClone(options.templates ?? []);
+  const templateReceipts = new Map<string, { serialized: string; template: NutritionTemplate }>();
   let goals={calories:null,carbs:null,protein:null,fat:null,revision:0,createdAt:null,updatedAt:null,...options.goals};
   let dayStatus = { date: DAY, complete: false, meals: emptyMealStates(), revision: 0 };
   const baseData = (date: string) => {
@@ -72,13 +77,22 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const headers = new Headers(init?.headers);
     requests.push({ url, method, body, key: headers.get('Idempotency-Key') });
+    if (parsed.pathname.startsWith('/api/health/nutrition/templates')) {
+      const parts=parsed.pathname.split('/');const id=parts[5];
+      if(parts[6]==='preview'){const item=templates.find(row=>row.id===id);if(!item)return Response.json({error:'模板不存在'},{status:404});if(item.revision!==body.expectedRevision)return Response.json({error:'模板版本已经变化'},{status:409});try{return Response.json({preview:previewNutritionTemplate(item,parseNutritionTemplatePreview(body))});}catch(error){return Response.json({error:(error as Error).message},{status:400});}}
+      if(method==='GET')return id?Response.json({template:templates.find(item=>item.id===id)}):Response.json({templates:templates.filter(item=>parsed.searchParams.get('includeArchived')==='1'||!item.archivedAt)});
+      const handler=nextTemplate;nextTemplate=undefined;if(handler)return handler();
+      const key=headers.get('Idempotency-Key')!,serialized=JSON.stringify({method,id,body}),receipt=templateReceipts.get(key);
+      if(receipt)return receipt.serialized===serialized?Response.json({template:receipt.template,replayed:true}):Response.json({error:'原请求内容不可变化'},{status:409});
+      try{let saved:NutritionTemplate;if(method==='POST'){saved={...parseNutritionTemplate(body),id:key,revision:1,createdAt:DAY,updatedAt:DAY,archivedAt:null};templates.push(saved);}else{const item=templates.find(row=>row.id===id);if(!item)return Response.json({error:'模板不存在'},{status:404});if(body.expectedRevision!==item.revision)return Response.json({error:'模板已经更新'},{status:409});if(method==='DELETE'){Object.assign(item,{revision:item.revision+1,archivedAt:DAY});}else{const{expectedRevision:_,...definition}=body;Object.assign(item,parseNutritionTemplate(definition),{revision:item.revision+1});}saved=item;}templateReceipts.set(key,{serialized,template:structuredClone(saved)});return Response.json({template:saved,replayed:false});}catch(error){return Response.json({error:(error as Error).message},{status:400});}
+    }
     if (parsed.pathname.endsWith('/goals')) {
       if(method==='PUT'){const handler=nextGoal;nextGoal=undefined;if(handler)return handler();if(body.expectedRevision!==goals.revision)return Response.json({error:'目标已经更新',code:'NUTRITION_CONFLICT'},{status:409});goals={...goals,...body,revision:goals.revision+1};}
       return Response.json({goals,weightPlan:null});
     }
     if(parsed.pathname.endsWith('/history'))return Response.json({entryId:ID,history:options.history??[]});
     if(parsed.pathname.endsWith('/restore')){const handler=nextRestore;nextRestore=undefined;if(handler)return handler();const current=entries.find(item=>item.id===ID)!;const target=options.history?.find(item=>item.revision===body.revision)?.after;if(!target)return Response.json({error:'找不到这个版本'},{status:404});Object.assign(current,target,{revision:current.revision+1});return Response.json({entry:current,replayed:false});}
-    if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: [food] });
+    if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: options.foods ?? [food] });
     if (parsed.pathname.endsWith('/parse')) return Response.json({ drafts: options.drafts ?? [draft()], warnings: [], provider: 'MiniMax', model: 'synthetic' });
     if (parsed.pathname.endsWith('/batch')) {
       const handler = nextBatch; nextBatch = undefined;
@@ -118,16 +132,105 @@ function fixture(options: { entries?: Array<Record<string, any>>; storageFails?:
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click', { button: 0 }));
   const input = (target: string | Element, value: string, kind = 'input') => { const node = typeof target === 'string' ? el(target) : target as unknown as typeof el extends (...args: any[]) => infer R ? R : never; (node as any).value = value; node.dispatchEvent(event(kind)); };
   const submit = (id: string) => el(id).dispatchEvent(event('submit'));
-  return { window, document, requests, entries, favorites, storage, el, click, input, submit, event, get focused() { return focused; },
+  return { window, document, requests, entries, favorites, templates, storage, el, click, input, submit, event, get focused() { return focused; },
     nextBatch(handler: () => Promise<Response>) { nextBatch = handler; },
     nextGoal(handler: () => Promise<Response>) { nextGoal = handler; },
     nextRestore(handler: () => Promise<Response>) { nextRestore = handler; },
+    nextTemplate(handler: () => Promise<Response>) { nextTemplate = handler; },
     setGoals(value: Record<string,any>) { goals={...goals,...value}; },
     async ready() { await settled(() => !el('content').hidden); },
     async history() { el('history').open = true; el('history').setAttribute('open', ''); el('history').dispatchEvent(event('toggle')); await settled(() => el('review-status').textContent?.includes('已记录部分') === true); },
     async parse() { input('ai-text', '午餐吃了测试食物'); click('ai-parse'); await settled(() => el('batch-dialog').open); },
   };
 }
+
+function personalTemplate(patch: Partial<NutritionTemplate> = {}): NutritionTemplate {
+  return { id:'ad0c5a3c-6105-4b6b-b065-1472594b5e20',kind:'meal',name:'测试整餐',note:'准备后分装',baseServings:'2',totalWeight:'300',
+    components:[{name:'燕麦',portion:'100克',grams:'100',calories:'100.0',carbs:'20.0',protein:'2.0',fat:'0.0',provenance:{calories:{source:'label',basis:'包装每100g'},carbs:{source:'label'},protein:{source:'label'},fat:{source:'label'}}},
+      {name:'酸奶',portion:'200克',grams:'200',calories:'50.0',carbs:null,protein:'4.0',fat:'1.0',provenance:{calories:{source:'manual'},carbs:{source:'unknown'},protein:{source:'manual'},fat:{source:'manual'}}}],
+    revision:1,createdAt:DAY,updatedAt:DAY,archivedAt:null,...patch };
+}
+async function openTemplates(app:ReturnType<typeof fixture>) {
+  app.click(app.document.querySelector('[data-entry-method="quick"]')!);
+  app.el('templates').open=true;app.el('templates').setAttribute('open','');app.el('templates').dispatchEvent(app.event('toggle'));
+  await settled(()=>app.el('templates-status').textContent?.includes('选择模板')===true||app.el('templates-status').textContent?.includes('还没有模板')===true);
+}
+
+test('personal foods stay behind quick-entry disclosure and save four nullable values with packaging sources',async()=>{
+  const app=fixture();await app.ready();assert.equal(app.requests.some(row=>row.url.includes('/templates')),false);await openTemplates(app);
+  app.click('template-new');app.input('template-name','我的盒装牛奶');
+  const component=app.el('template-components').querySelector('[data-template-component="0"]')!;
+  app.input(component.querySelector('[data-template-field="name"]')!,'盒装牛奶');
+  app.input(component.querySelector('[data-template-field="portion"]')!,'1盒');
+  app.input(component.querySelector('[data-template-field="calories"]')!,'120');
+  app.input(component.querySelector('[data-template-field="protein"]')!,'8');
+  app.input(component.querySelector('[data-template-field="fat"]')!,'0');
+  app.input(component.querySelector('[data-template-source="calories"]')!,'label','change');
+  app.input(component.querySelector('[data-template-basis="calories"]')!,'包装标签，每盒120kcal');
+  app.submit('template-form');await settled(()=>app.templates.length===1&&!app.el('template-dialog').open);
+  assert.equal(app.templates[0].kind,'food');assert.equal(app.templates[0].components[0].calories,'120.0');assert.equal(app.templates[0].components[0].carbs,null);assert.equal(app.templates[0].components[0].fat,'0.0');
+  assert.equal(app.templates[0].components[0].provenance.calories?.source,'label');assert.equal(app.templates[0].components[0].provenance.calories?.basis,'包装标签，每盒120kcal');
+  assert.equal(app.requests.some(row=>row.method==='POST'&&row.url==='/api/health/nutrition'),false);assert.equal(app.entries.length,0);
+});
+
+test('composed recipe preview keeps unknowns, scales once and requires existing batch confirmation before recording',async()=>{
+  const app=fixture({templates:[personalTemplate({kind:'recipe',name:'酸奶燕麦杯'})]});await app.ready();await openTemplates(app);
+  app.click(app.el('template-list').querySelector('[data-template-use]')!);app.input('template-scale-amount','1');app.click('template-preview');
+  await settled(()=>!app.el('template-confirm').disabled);assert.match(app.el('template-use-status').textContent!,/碳水化合物 10\.0 g（1 项未知）/);assert.match(app.el('template-preview-rows').textContent!,/碳水化合物 未填/);assert.equal(app.entries.length,0);
+  app.click('template-confirm');assert.equal(app.el('batch-dialog').open,true);assert.equal(app.entries.length,0);assert.equal(app.requests.some(row=>row.url.endsWith('/batch')),false);
+  app.submit('batch-form');await settled(()=>app.entries.length===1);const saved=app.entries[0];assert.equal(saved.name,'酸奶燕麦杯');assert.equal(saved.calories,'75.0');assert.equal(saved.carbs,null);assert.equal(saved.protein,'3.0');assert.equal(saved.fat,'0.5');assert.match(saved.provenance.carbs.basis,/1项未知/);parseNutritionCreate(app.requests.find(row=>row.url.endsWith('/batch'))!.body.entries[0]);
+});
+
+test('whole-meal weight preview retains separate foods and cannot replace an existing unconfirmed batch',async()=>{
+  const app=fixture({templates:[personalTemplate()],drafts:[draft({name:'当前草稿'})]});await app.ready();await app.parse();app.click(app.el('batch-dialog').querySelector('[data-nutrition-batch-close]')!);await openTemplates(app);
+  app.click(app.el('template-list').querySelector('[data-template-use]')!);app.input('template-scale-mode','weight','change');app.input('template-scale-amount','75');app.click('template-preview');await settled(()=>!app.el('template-confirm').disabled);
+  assert.equal(app.el('template-preview-rows').querySelectorAll('li').length,2);assert.match(app.el('template-preview-rows').textContent!,/25g/);assert.match(app.el('template-preview-rows').textContent!,/50g/);
+  app.click('template-confirm');assert.equal(app.el('template-use-dialog').open,true);assert.match(app.el('template-use-status').textContent!,/先处理原记录/);app.click('resume-batch');assert.match(app.el('batch-rows').textContent!,/当前草稿/);assert.equal(app.entries.length,0);
+});
+
+test('template writes retain their exact original key and body across a lost response and device draft recovery',async()=>{
+  const durable=new Map<string,any>(),first=fixture({durable});await first.ready();await openTemplates(first);first.click('template-new');first.input('template-name','原模板');first.input(first.el('template-components').querySelector('[data-template-field="name"]')!,'原食物');first.nextTemplate(async()=>{throw new TypeError('Synthetic lost response');});first.submit('template-form');await settled(()=>first.el('template-pending').hidden===false&&!first.el('template-resume').disabled);
+  const original=first.requests.find(row=>row.url==='/api/health/nutrition/templates'&&row.method==='POST')!;assert.equal(first.el('template-name').disabled,true);assert.equal(durable.get('nutrition-template-operation').kind,'pending');
+  const recovered=fixture({durable});await recovered.ready();assert.equal(recovered.requests.some(row=>row.method!=='GET'&&row.url.includes('/templates')),false);assert.equal(recovered.el('template-pending').hidden,false);recovered.click('template-resume');await settled(()=>recovered.templates.length===1&&recovered.el('template-pending').hidden);
+  const retry=recovered.requests.find(row=>row.url==='/api/health/nutrition/templates'&&row.method==='POST')!;assert.equal(retry.key,original.key);assert.deepEqual(retry.body,original.body);assert.equal(durable.has('nutrition-template-operation'),false);assert.equal(recovered.templates[0].name,'原模板');
+});
+
+test('template revision conflicts preserve writing and expose current server composition before another save',async()=>{
+  const app=fixture({templates:[personalTemplate()]});await app.ready();await openTemplates(app);app.click(app.el('template-list').querySelector('[data-template-edit]')!);app.input('template-name','我的修改');app.templates[0].revision=2;app.templates[0].components[0].protein='9.0';app.templates[0].name='其他页面的新名称';app.submit('template-form');await settled(()=>app.el('template-editor-reload').hidden===false);
+  assert.equal(app.el('template-name').value,'我的修改');assert.equal(app.el('template-save').disabled,true);assert.equal(app.el('template-pending').hidden,true);app.click('template-editor-reload');await settled(()=>!app.el('template-save').disabled);assert.equal(app.el('template-name').value,'我的修改');assert.match(app.el('template-latest').textContent!,/其他页面的新名称/);assert.match(app.el('template-latest').textContent!,/蛋白质 9\.0 g/);
+  app.submit('template-form');await settled(()=>app.templates[0].revision===3);assert.equal(app.templates[0].name,'我的修改');
+});
+
+test('template archive is explicit, keeps historical content and remains inspectable in the archived list',async()=>{
+  const app=fixture({templates:[personalTemplate()],entries:[entry()]});await app.ready();await openTemplates(app);app.click(app.el('template-list').querySelector('[data-template-archive]')!);assert.equal(app.templates[0].archivedAt,null);assert.equal(app.el('template-archive-dialog').open,true);app.click('template-archive-confirm');await settled(()=>Boolean(app.templates[0].archivedAt)&&!app.el('template-archive-dialog').open);assert.equal(app.entries.length,1);assert.equal(app.el('template-list').querySelectorAll('[data-template-use]').length,0);
+  app.el('templates-archived').checked=true;app.el('templates-archived').dispatchEvent(app.event('change'));await settled(()=>app.el('template-list').querySelectorAll('[data-template-use]').length===1);assert.equal((app.el('template-list').querySelector('[data-template-use]') as HTMLButtonElement).disabled,true);assert.match(app.el('template-list').textContent!,/已归档/);
+});
+
+test('a recovered template editor draft is never applied or submitted automatically',async()=>{
+  const saved=personalTemplate();const durable=new Map<string,any>([['nutrition-template-editor',{id:'nutrition-template-editor',label:'模板草稿',data:saved,updatedAt:NOW,kind:'draft'}]]),app=fixture({durable});await app.ready();assert.equal(app.el('template-dialog').open,false);assert.equal(app.el('template-recovery').hidden,false);assert.equal(app.requests.some(row=>row.url.includes('/templates')&&row.method!=='GET'),false);app.click('template-recover');assert.equal(app.el('template-dialog').open,true);assert.equal(app.el('template-name').value,'测试整餐');assert.equal(app.requests.some(row=>row.url.includes('/templates')&&row.method!=='GET'),false);
+});
+
+test('template catalog rows resolve their pinned release in a fresh session and retain valid sources through batch save',async()=>{
+  const selected=searchFoods('米饭')[0];assert.ok(selected);const selection={id:selected.id,amount:100.125,unit:'g',catalogRelease:selected.catalogRelease},snapshot=calculateFoodSelection(selection);
+  const values={calories:(snapshot.caloriesTenth/10).toFixed(1),carbs:snapshot.carbsTenth==null?null:(snapshot.carbsTenth/10).toFixed(1),protein:snapshot.proteinTenth==null?null:(snapshot.proteinTenth/10).toFixed(1),fat:snapshot.fatTenth==null?null:(snapshot.fatTenth/10).toFixed(1)};
+  const definition=parseNutritionTemplate({kind:'meal',name:'食物库整餐',note:'',baseServings:'2',totalWeight:'100.125',components:[{name:selected.name,portion:'100.125g',grams:'100.125',...values,food:selection,provenance:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{source:value===null?'unknown':'catalog'}]))}]});
+  const app=fixture({templates:[personalTemplate(definition)]});await app.ready();await openTemplates(app);app.click(app.el('template-list').querySelector('[data-template-use]')!);app.input('template-scale-amount','0.333');app.click('template-preview');await settled(()=>!app.el('template-confirm').disabled);app.click('template-confirm');app.submit('batch-form');await settled(()=>app.entries.length===1);
+  const body=app.requests.find(row=>row.url.endsWith('/batch'))!.body.entries[0],parsed=parseNutritionCreate(body);assert.equal(body.food.catalogRelease,selected.catalogRelease);assert.equal(parsed.food?.catalogRelease,selected.catalogRelease);assert.equal(body.provenance.calories.source,'catalog');assert.equal(body.food.amount,16.671);
+});
+
+test('a new template save cannot erase an unrelated older protected template draft',async()=>{
+  const old=personalTemplate({name:'旧草稿'}),durable=new Map<string,any>([['nutrition-template-editor',{id:'nutrition-template-editor',label:'旧模板草稿',data:old,updatedAt:NOW,kind:'draft'}]]),app=fixture({durable});await app.ready();await openTemplates(app);app.click('template-new');app.input('template-name','新模板');app.input(app.el('template-components').querySelector('[data-template-field="name"]')!,'新食物');app.submit('template-form');await settled(()=>app.templates.length===1&&!app.el('template-dialog').open&&app.el('template-pending').hidden);assert.equal(durable.get('nutrition-template-editor').data.name,'旧草稿');assert.equal(app.el('template-recovery').hidden,false);app.click('template-recover');assert.equal(app.el('template-name').value,'旧草稿');
+});
+
+test('a refused original edit after page reload restores the exact editable body for conflict resolution',async()=>{
+  const original=personalTemplate(),body={kind:original.kind,name:'离线时的修改',note:original.note,baseServings:original.baseServings,totalWeight:original.totalWeight,components:original.components,expectedRevision:1},operation={action:'edit',key:'ad0c5a3c-6105-4b6b-b065-1472594b5e29',id:original.id,body},durable=new Map<string,any>([['nutrition-template-operation',{id:'nutrition-template-operation',data:operation,kind:'pending',updatedAt:NOW}]]),app=fixture({durable,templates:[personalTemplate({revision:2,name:'服务器新版本'})]});await app.ready();assert.equal(app.el('template-dialog').open,false);app.click('template-resume');await settled(()=>app.el('template-dialog').open&&app.el('template-editor-reload').hidden===false);assert.equal(app.el('template-name').value,'离线时的修改');assert.equal(durable.has('nutrition-template-operation'),false);assert.equal(app.el('template-save').disabled,true);app.click('template-editor-reload');await settled(()=>!app.el('template-save').disabled);assert.equal(app.el('template-name').value,'离线时的修改');assert.match(app.el('template-latest').textContent!,/服务器新版本/);
+});
+
+test('a confirmed template operation remains resumable if its durable receipt cannot be cleared locally',async()=>{
+  const durable=new Map<string,any>(),app=fixture({durable});await app.ready();await openTemplates(app);app.click('template-new');app.input('template-name','本地清理失败测试');
+  const manager=(app.window as unknown as {JiashuDrafts:{clearConfirmed:(id:string)=>boolean}}).JiashuDrafts;manager.clearConfirmed=()=>false;app.submit('template-form');await settled(()=>app.templates.length===1&&!app.el('template-resume').disabled);assert.equal(app.el('template-pending').hidden,false);assert.equal(app.el('template-save').disabled,true);assert.equal(durable.has('nutrition-template-operation'),true);
+  manager.clearConfirmed=(id)=>durable.delete(id);app.click('template-resume');await settled(()=>app.el('template-pending').hidden);assert.equal(app.templates.length,1);const writes=app.requests.filter(row=>row.url==='/api/health/nutrition/templates'&&row.method==='POST');assert.equal(writes.length,2);assert.equal(writes[0].key,writes[1].key);assert.deepEqual(writes[0].body,writes[1].body);
+});
 
 test('opening nutrition keeps history closed and only requests the review when the user expands it', async () => {
   const f = fixture(); await f.ready();
@@ -427,6 +530,38 @@ test('catalog portion changes recalculate nutrients while explicit manual gram c
   const saved = f.requests.find((request) => request.method === 'POST')!.body;
   assert.equal(saved.carbs, '51.2'); assert.equal(saved.protein, '8.5'); assert.equal(saved.fat, '0.0');
   assert.deepEqual(saved.food, { id: food.id, amount: 200, unit: 'g' });
+});
+
+test('a current search result cannot replace the cached nutrition of an older release with the same food ID', async () => {
+  const oldRelease = 'tfda-2024-03-29', currentRelease = 'tfda-2024-03-29-cn2';
+  const newer = { ...food, catalogRelease: currentRelease, kcalPer100g: 240 };
+  const snapshot = { foodId: food.id, catalogRelease: oldRelease, foodName: food.name, amount: 150, unit: 'g',
+    grams: 150, caloriesTenth: 1500, kcalPer100g: 100, source: food.source, estimated: false };
+  const f = fixture({ foods: [newer], entries: [entry({ name: food.name, calories: '150.0', food: snapshot })] });
+  await f.ready(); f.click('add'); f.input('food-search', '测试饭'); f.click('food-search-button');
+  await settled(() => !!f.el('food-results').querySelector('[data-food-id]'));
+  f.click(f.el('food-results').querySelector('[data-food-id]')!);
+  assert.equal(f.el('calories').value, '240.0'); f.click('dialog-close');
+  f.click(f.el('list').querySelector('[data-nutrition-action="edit"]')!);
+  assert.match(f.el('food-source').textContent ?? '', /每100g 100 kcal/);
+  f.input('food-quantity', '200'); assert.equal(f.el('calories').value, '200.0');
+  f.submit('form'); await settled(() => !f.el('dialog').open);
+  const update = f.requests.find((request) => request.method === 'PATCH')!;
+  assert.equal(update.body.food.catalogRelease, oldRelease);
+  assert.equal(update.body.calories, '200.0');
+});
+
+test('a persisted uncertain catalog submission retries its captured release without adding one to a legacy body', async () => {
+  for (const release of [undefined, 'tfda-2024-03-29-cn2']) {
+    const selection = { id: food.id, amount: 100, unit: 'g', ...(release ? { catalogRelease: release } : {}) };
+    const body = { date: DAY, meal: 'lunch', name: food.name, portion: '100g', calories: '120.0', note: '', food: selection };
+    const storage = new Map([['jiashu-nutrition-create:test', JSON.stringify({ key: ID, body })]]);
+    const f = fixture({ storage }); await f.ready(); f.click('add'); f.submit('form');
+    await settled(() => f.entries.length === 1);
+    const submitted = f.requests.find((request) => request.method === 'POST')!;
+    assert.deepEqual(submitted.body, body);
+    assert.equal(Object.hasOwn(submitted.body.food, 'catalogRelease'), Boolean(release));
+  }
 });
 
 test('editing a saved catalog record preserves manual grams until a new quantity requires recalculation', async () => {

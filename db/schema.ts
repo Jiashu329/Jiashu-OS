@@ -100,11 +100,19 @@ export const financeAccounts = sqliteTable('finance_accounts', {
   creationHash: text('creation_hash'),
   balanceRevision: integer('balance_revision').notNull().default(0),
   metadataRevision: integer('metadata_revision').notNull().default(1),
+  liquidityKind: text('liquidity_kind').notNull().default('unreviewed'),
+  usableBps: integer('usable_bps').notNull().default(0),
   note: text('note').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   archivedAt: text('archived_at'),
 }, (table) => [index('finance_accounts_owner_ledger_idx').on(table.userId, table.ledger)]);
+
+export const financeAccountClassifications = sqliteTable('finance_account_classifications', {
+  userId: text('user_id').notNull(), accountId: text('account_id').notNull(), revision: integer('revision').notNull(),
+  effectiveFrom: text('effective_from').notNull(), type: text('type').notNull(), archived: integer('archived').notNull(),
+  origin: text('origin').notNull(), recordedAt: text('recorded_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.accountId, table.revision] }), index('finance_classifications_owner_date_idx').on(table.userId, table.accountId, table.effectiveFrom, table.revision)]);
 
 export const financeBalanceEntries = sqliteTable('finance_balance_entries', {
   sequence: integer('sequence').primaryKey({ autoIncrement: true }),
@@ -175,7 +183,29 @@ export const weightPlanSettings = sqliteTable('health_weight_plan_settings', {
   revision: integer('revision').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  cycleId: text('cycle_id').notNull().default('legacy'),
+  archivedAt: text('archived_at'),
 });
+
+// A cycle is copied here only when the user archives it. Saved summaries never
+// change when measurements are subsequently corrected or a new cycle begins.
+export const weightPlanCycles = sqliteTable('health_weight_plan_cycles', {
+  userId: text('user_id').notNull(),
+  id: text('id').notNull(),
+  settingsJson: text('settings_json').notNull(),
+  summaryJson: text('summary_json').notNull(),
+  startedAt: text('started_at').notNull(),
+  archivedAt: text('archived_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.id] }), index('weight_plan_cycles_owner_archived_idx').on(table.userId, table.archivedAt)]);
+
+export const weightPlanOperations = sqliteTable('health_weight_plan_operations', {
+  userId: text('user_id').notNull(),
+  id: text('id').notNull(),
+  action: text('action').notNull(),
+  requestHash: text('request_hash').notNull(),
+  cycleId: text('cycle_id').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.id] })]);
 
 export const healthRecordOverrides = sqliteTable('health_record_overrides', {
   userId: text('user_id').notNull(),
@@ -298,6 +328,25 @@ export const nutritionFavorites = sqliteTable('nutrition_favorites', {
   templateJson: text('template_json').notNull(),
   createdAt: text('created_at').notNull(),
 }, (table) => [uniqueIndex('nutrition_favorites_owner_hash_idx').on(table.userId, table.templateHash)]);
+
+// Named personal foods, composed recipes and whole-meal templates are independent
+// of favorites so historical favorite hashes and operation receipts stay stable.
+export const nutritionTemplates = sqliteTable('nutrition_templates', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), kind: text('kind').notNull(),
+  name: text('name').notNull(), templateJson: text('template_json').notNull(), creationHash: text('creation_hash').notNull(),
+  revision: integer('revision').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), archivedAt: text('archived_at'),
+}, (table) => [
+  index('nutrition_templates_owner_archive_updated_idx').on(table.userId, table.archivedAt, table.updatedAt),
+  check('nutrition_templates_kind', sql`${table.kind} IN ('food','recipe','meal')`),
+]);
+
+export const nutritionTemplateOperations = sqliteTable('nutrition_template_operations', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), templateId: text('template_id').notNull(),
+  action: text('action').notNull(), requestHash: text('request_hash').notNull(), resultJson: text('result_json').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('nutrition_template_operations_owner_created_idx').on(table.userId, table.createdAt),
+  check('nutrition_template_operations_action', sql`${table.action} IN ('create','edit','archive')`),
+]);
 
 export const nutritionDayStatus = sqliteTable('nutrition_day_status', {
   userId: text('user_id').notNull(),

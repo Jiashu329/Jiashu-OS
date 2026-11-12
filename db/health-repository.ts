@@ -102,8 +102,8 @@ export async function revokeSyncDevice(userId: string, deviceId: string): Promis
   return revokeSyncConnection(database(), userId, deviceId);
 }
 
-export async function exportHealth(userId: string): Promise<HealthSyncPayload> {
-  const data = await readHealth(userId, 90);
+export async function exportHealth(userId: string,range?:{from:string;to:string}): Promise<HealthSyncPayload> {
+  const data = range?await readHealthRange(userId,range.from,range.to):await readHealth(userId, 90);
   return {
     version: 1,
     source: 'apple-health-shortcuts',

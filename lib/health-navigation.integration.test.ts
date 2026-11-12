@@ -81,6 +81,34 @@ test('chart question entry shares the selected metric and range as a draft and c
   f.click('[data-metric="body_fat"]');f.click('#ask-health-chart');assert.equal(details.length,1);
 });
 
+test('historical custom dates drive chart filtering, export, assistant draft and browser history together',async()=>{
+  const rows=['2024-02-27','2024-02-28','2024-02-29','2024-03-01','2024-03-02'].map((day,index)=>({metric:'steps',value:1000+index,day,startDate:day+'T00:00:00+08:00',endDate:day+'T23:00:00+08:00',source:'synthetic'}));
+  const f=fixture('/health?metric=steps&from=2024-02-28&to=2024-03-01',rows);await f.ready();
+  assert.equal(f.requests[0].url,'/api/health?from=2024-02-28&to=2024-03-01');
+  assert.equal(f.el('record-count').textContent,'3 条记录');assert.match(f.el('record-rows').textContent!,/2024-02-28/);assert.doesNotMatch(f.el('record-rows').textContent!,/2024-03-02|2024-02-27/);
+  assert.equal(f.el('health-export').getAttribute('href'),'/api/health/export?from=2024-02-28&to=2024-03-01');
+  assert.equal(f.document.querySelectorAll('[data-days][aria-pressed="true"]').length,0);
+  const details:Array<{from:string;to:string;days:number}>=[];f.window.addEventListener('health-assistant-open',(event)=>details.push((event as unknown as CustomEvent).detail));f.click('#ask-health-chart');
+  assert.equal(details[0].from,'2024-02-28');assert.equal(details[0].to,'2024-03-01');assert.equal(details[0].days,3);
+  f.el('health-range-from').value='2024-02-30';f.el('health-range-to').value='2024-03-01';f.el('health-range-form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+  assert.equal(f.el('health-range-error').hidden,false);assert.equal(f.requests.length,1);assert.match(f.location.search,/from=2024-02-28/);
+  f.click('[data-days="7"]');await f.ready();assert.equal(f.location.search,'?metric=steps&days=7');
+  f.history.back();await f.ready();assert.equal(f.location.search,'?metric=steps&from=2024-02-28&to=2024-03-01');assert.equal(f.el('record-count').textContent,'3 条记录');
+  assert.equal(f.requests.some((request)=>request.method==='POST'),false);
+});
+
+test('sleep schedule analysis follows the selected historical range and keeps duration-only records unknown',async()=>{
+  const rows=[{metric:'sleep',value:8,day:'2024-02-29',startDate:'2024-02-28T12:00:00+08:00',endDate:'2024-02-29T12:00:00+08:00',source:'synthetic',
+    sleepTiming:{onset:'2024-02-28T23:00:00+08:00',wake:'2024-02-29T07:00:00+08:00',clipped:false,method:'longest-sleep-group-v1'}},
+    {metric:'sleep',value:7,day:'2024-03-01',startDate:'2024-02-29T12:00:00+08:00',endDate:'2024-03-01T12:00:00+08:00',source:'synthetic'},
+    {metric:'sleep',value:8,day:'2024-03-02',startDate:'2024-03-01T12:00:00+08:00',endDate:'2024-03-02T12:00:00+08:00',source:'synthetic',
+      sleepTiming:{onset:'2024-03-01T21:00:00+08:00',wake:'2024-03-02T05:00:00+08:00',clipped:false,method:'longest-sleep-group-v1'}}];
+  const f=fixture('/health?metric=sleep&from=2024-02-29&to=2024-03-01',rows);await f.ready();
+  assert.equal(f.el('sleep-analysis').hidden,false);assert.match(f.el('sleep-analysis').textContent!,/23:00/);assert.match(f.el('sleep-analysis').textContent!,/07:00/);
+  assert.match(f.el('sleep-analysis').textContent!,/睡眠记录 2 天.*完整时刻 1 天/);assert.match(f.el('sleep-analysis').textContent!,/仅有总时长/);assert.doesNotMatch(f.el('sleep-analysis').textContent!,/21:00|05:00/);
+  f.click('[data-metric="steps"]');assert.equal(f.el('sleep-analysis').hidden,true);
+});
+
 test('health and sync navigation create reversible entries and goals links expand the calendar', async () => {
   const f = fixture('/health?metric=active_energy&days=90#goals'); await f.ready();
   assert.equal(f.el('health-goals-disclosure').open, true);

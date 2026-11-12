@@ -188,7 +188,7 @@ void test('completion requires explicit meal states and never treats an unrecord
 
 void test('catalog-backed input always recalculates food identity, portion and calories from the source record', () => {
   const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0]; assert.ok(food);
-  const selection = { id: food.id, amount: 150, unit: 'g' };
+  const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
   const expected = calculateFoodSelection(selection);
   const parsed = parseNutritionCreate(input({ name: 'forged name', portion: 'forged portion', calories: '0', food: selection }), NOW);
   assert.equal(parsed.name, food.name); assert.equal(parsed.portion, '150g'); assert.equal(parsed.caloriesTenth, expected.caloriesTenth);
@@ -200,7 +200,7 @@ void test('catalog-backed input always recalculates food identity, portion and c
 
 void test('explicit macro values override catalog totals while empty fields use the known serving calculation', () => {
   const food = searchFoods('米饭', 1)[0];
-  const selection = { id: food.id, amount: 150, unit: 'g' };
+  const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
   const snapshot = calculateFoodSelection(selection);
   const defaults = parseNutritionCreate(input({ food: selection, carbs: null, protein: '', fat: undefined }), NOW);
   assert.equal(defaults.carbsTenth, snapshot.carbsTenth ?? null);

@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { readHealth } from '../../../../db/health-repository';
 import { readWeightPlanSettings, WeightPlanConflictError, writeWeightPlanSettings } from '../../../../db/weight-plan-store';
+import { readWeightCycleState } from '../../../../db/weight-cycles-store';
 import { buildWeightPlanReview, parseWeightPlanInput, WeightPlanValidationError } from '../../../../lib/weight-plan';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated, unavailable } from '../../_shared';
 
@@ -43,7 +44,7 @@ export async function GET() {
   if (!user) return unauthenticated();
   try {
     const [settings, health] = await Promise.all([readWeightPlanSettings(database(), user.userId), readHealth(user.userId, 360)]);
-    return json(buildWeightPlanReview(settings, health.measurements));
+    return json({ ...buildWeightPlanReview(settings, health.measurements), ...await readWeightCycleState(database(),user.userId) });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -61,6 +62,6 @@ export async function PUT(request: Request) {
     const input = parseWeightPlanInput(fields, now);
     const settings = await writeWeightPlanSettings(database(), user.userId, input, Number(expectedRevision));
     const health = await readHealth(user.userId, 360);
-    return json(buildWeightPlanReview(settings, health.measurements, now));
+    return json({ ...buildWeightPlanReview(settings, health.measurements, now), ...await readWeightCycleState(database(),user.userId) });
   } catch (error) { return errorResponse(error); }
 }

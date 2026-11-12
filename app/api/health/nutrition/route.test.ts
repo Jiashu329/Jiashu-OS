@@ -297,7 +297,7 @@ void test('day completion uses revisions and reopens automatically when food rec
 
 void test('catalog source snapshots survive saving and forged client calories never override the food library', async (t) => {
   const f = await fixture(t); const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0];
-  const selection = { id: food.id, amount: 125.5, unit: 'g' };
+  const selection = { id: food.id, amount: 125.5, unit: 'g', catalogRelease: food.catalogRelease };
   const expected = calculateFoodSelection(selection);
   const response = await f.create(input({ name: 'forged', portion: 'forged', calories: '0', food: selection }));
   assert.equal(response.status, 201); const saved = (await readMutation(response)).entry;

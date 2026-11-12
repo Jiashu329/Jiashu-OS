@@ -105,6 +105,19 @@ void test('health assistant requires login and same-origin JSON before reading h
   assert.equal(f.reads.length, 0); assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0); assert.equal(f.configReads.length, 0); assert.equal(f.settingsReads.length, 0);
 });
 
+void test('custom assistant dates read exact inclusive owner ranges and bind history to both dates',async()=>{
+  const f=fixture();const from=new Date(Date.parse(f.today+'T12:00:00Z')-2*86400000).toISOString().slice(0,10),to=f.today;
+  const preview=await f.get('?from='+from+'&to='+to+'&metrics=steps&nutrition=0');assert.equal(preview.status,200);
+  assert.ok(f.reads.every((read)=>read.from===from&&read.to===to&&read.user==='alice'));assert.equal(f.outgoing.length,0);
+  const scope=scopeRules.parseAssistantScope({metrics:['steps'],includeNutrition:false,includeGoals:false});
+  const key=scopeRules.assistantScopeKey(3,scope,{from,to});
+  assert.equal((await f.post({question:'解释这三天',from,to,scope,shareHealthData:true,historyScope:key})).status,200);
+  assert.equal(f.outgoing[0].context.range.days,3);assert.equal(f.outgoing[0].context.range.from,from);assert.equal(f.outgoing[0].context.range.to,to);
+  const stale=fixture();assert.equal((await stale.post({question:'x',from,to,scope,shareHealthData:true,historyScope:scopeRules.assistantScopeKey(3,scope,{from:'2024-02-28',to:'2024-03-01'})})).status,400);
+  assert.equal(stale.reads.length,0);assert.equal(stale.outgoing.length,0);
+  const invalid=fixture();assert.equal((await invalid.get('?from=2024-02-30&to=2024-03-01')).status,400);assert.equal(invalid.reads.length,0);
+});
+
 void test('selected scope controls database reads and provider projection, including explicit opt-in targets',async()=>{
   const f=fixture();const scope={metrics:['steps'],includeNutrition:false,includeGoals:false};
   f.setNutritionStatus('alice',[{date:f.today,complete:true,revision:1,meals:{breakfast:'skipped',lunch:'skipped',dinner:'skipped',snack:'unrecorded'}}]);

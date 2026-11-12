@@ -5,11 +5,12 @@ import type { NutritionDayStatus, NutritionEntry, NutritionMeal, NutritionMealSt
 import { nutritionDayCompleteness } from './nutrition-review.ts';
 import { NUTRIENT_KEYS, summarizeNutrients, type NutritionNutrients } from './nutrition-nutrients.ts';
 import { ASSISTANT_METRICS, parseAssistantScope } from './health-assistant-scope.ts';
-import type { AssistantDays, AssistantScope } from './health-assistant-scope.ts';
+import type { AssistantScope } from './health-assistant-scope.ts';
+import { resolveDateRange } from './date-range.ts';
 
 export const MAX_HEALTH_ASSISTANT_CONTEXT_BYTES = 50 * 1024;
 
-export interface HealthAssistantRange { days: AssistantDays; from: string; to: string; today: string }
+export interface HealthAssistantRange { days: number; from: string; to: string; today: string }
 export interface HealthAssistantPoint { date: string; value: number; sourceRef: string; sleepStages?: SleepStages; from?: string; to?: string; recordedDays?: number; aggregation?: 'last-recorded-day' | 'available-days-mean' }
 export interface HealthAssistantMetric {
   metric: HealthMetric; label: string; unit: HealthUnit; recordedDays: number; points: HealthAssistantPoint[];
@@ -45,7 +46,9 @@ export interface HealthAssistantContextInput {
   measurements: readonly HealthMeasurement[];
   nutrition: readonly NutritionEntry[];
   nutritionStatuses?: readonly NutritionDayStatus[];
-  days: AssistantDays;
+  days: number;
+  from?:string;
+  to?:string;
   now: number;
   scope?: AssistantScope;
   goals?: { targets: { steps: number | null; sleep: number | null; active_energy: number | null }; effectiveFrom?: string | null };
@@ -66,15 +69,8 @@ const sourceIds: Record<HealthMetric, string> = { weight: 'H1', lean_body_mass: 
 const stageKeys = ['unspecified', 'core', 'deep', 'rem', 'awake', 'inBed'] as const;
 const tolerance = 1e-8;
 
-export function assistantRange(days: AssistantDays, now: number): HealthAssistantRange {
-  if (![7, 30, 90, 180, 360].includes(days) || !Number.isFinite(now)) {
-    throw new HealthAssistantContextError('健康助手支持最近7、30、90、180或360天，请使用有效的当前时间。');
-  }
-  let today: string;
-  try { today = shanghaiDay(new Date(now).toISOString()); }
-  catch { throw new HealthAssistantContextError('健康助手的当前日期不在支持范围内。'); }
-  const from = new Date(Date.parse(today + 'T12:00:00Z') - (days - 1) * 86400000).toISOString().slice(0, 10);
-  return { days, from, to: today, today };
+export function assistantRange(days: number, now: number, custom?:{from:string;to:string}): HealthAssistantRange {
+  try{return resolveDateRange(custom??{days},now);}catch(error){throw new HealthAssistantContextError(error instanceof Error?error.message:'健康助手日期范围无效。');}
 }
 
 function checkedStages(raw: unknown, total: number, windowHours: number): SleepStages | undefined {
@@ -123,13 +119,13 @@ function eligibleMeasurement(row: HealthMeasurement, range: HealthAssistantRange
  * this pure projection cannot authorize ownership from untrusted client data.
  */
 export function buildHealthAssistantContext(input: HealthAssistantContextInput): HealthAssistantContextResult {
-  const range = assistantRange(input.days, input.now);
+  const range = assistantRange(input.days, input.now, input.from!==undefined||input.to!==undefined?{from:input.from!,to:input.to!}:undefined);
   const scope = parseAssistantScope(input.scope);
   const eligible = input.measurements.filter((row) => scope.metrics.includes(row.metric)).map((row) => eligibleMeasurement(row, range, input.now))
     .filter((row): row is HealthMeasurement => row !== null);
   const summary = buildHealthSummary(eligible);
   const sources: HealthAssistantSource[] = [];
-  const width = input.days > 180 ? 14 : input.days > 30 ? 7 : 1;
+  const width = range.days > 180 ? 14 : range.days > 30 ? 7 : 1;
   const groupKey = (date: string) => Math.floor((Date.parse(date + 'T12:00:00Z') - Date.parse(range.from + 'T12:00:00Z')) / (width * 86400000));
   const health = metrics.filter((metric) => scope.metrics.includes(metric)).map((metric): HealthAssistantMetric => {
     const definition = METRIC_INFO[metric];
@@ -203,7 +199,7 @@ export function buildHealthAssistantContext(input: HealthAssistantContextInput):
       ...(width > 1 ? ['本次长期范围按连续'+width+'日分组：步数、活动能量、睡眠为有记录日期的均值，体重与去脂体重为组内最后记录；饮食为组内已记录合计。分组不是完整周，不能推测组内单日数值。长期范围不提供分期细节。'] : []),
       '体重与去脂体重分别采用各日最后一次记录，未作为同次测量配对，不据此计算体脂率。',
       '睡眠归属于窗口结束的上海日期；清醒、卧床单列，不加入睡眠时长。缺失或与总时长矛盾的分期不提供。',
-      '今日尚未结束，当日步数、活动能量、睡眠及饮食记录可能不完整，不能当作完整一天评价。',
+      ...(range.to===range.today?['今日尚未结束，当日步数、活动能量、睡眠及饮食记录可能不完整，不能当作完整一天评价。']:[]),
       '饮食热量只汇总已记录且已填写热量的食物，并非全天真实总摄入；未知热量不按0计算，未记录不能解释为未进食。',
       'nutrients 分别给出已记录热量（kcal）及碳水化合物、蛋白质、脂肪（g）的合计和逐项已知／未知数量；某项缺失不能用其他营养素推算或补0。',
       '当天记完和未进食是用户标记的记录状态，不保证实际份量、热量或全天摄入准确；比较日均值时仅使用已记完且食物热量无缺失的日期，并说明天数。',

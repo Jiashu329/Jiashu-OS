@@ -16,7 +16,11 @@ npm run test:browser
 
 GitHub 的独立 **Browser acceptance / synthetic-browser-acceptance** 任务在推送与 PR 上运行，保存截图、失败 trace 和 HTML 报告到 `synthetic-browser-evidence` 工件。截图是实际 Chromium 绘制结果，390px 项目属于移动视口模拟，不是 iOS Safari 真机。初次加入的截图作为可检查证据，不能将其称为已经人工批准的视觉基准。
 
+P2 新增自建食物／食谱／整餐模板与份量缩放、历史与重量预览、模板幂等重试；健康自定义日期在图表、询问入口及下载之间保持一致；睡眠真实时刻与旧版总时长分别展示；财务可动用比例、未核对资产排除及历史分类调整；体重周期显式归档和开始；分卷备份下载、本机保存确认与冲突字段对照。当前套件共 42 个场景实例（桌面和手机各 21 个），可用 `npx playwright test --list` 检查实际清单。脚本渲染后的语法另由普通 Node 测试检查，防止字符串插值产生非法内联脚本。
+
 套件的夹具服务明确拒绝 `SITES_MANAGED_LINUX_CONTAINER=1`。托管 Sites 环境仍须使用 `sites-preview` 与共享浏览器，不能用夹具或其他服务器绕开预览设施。本次托管环境尝试 `sites-preview` 启动超时且未返回可用 URL，现有浏览器的 New Tab 内容观察受 URL 策略限制；没有通过替代端口、原始 CDP 或改动应用来规避。这里不宣称本次托管浏览器实测通过；应以对应提交的 CI 任务结果及工件为验收证据。
+
+P2 再次通过受支持的 `sites-preview start` 重试，仍在应用打印本地地址后由管理 CLI 报启动超时，未得到可打开的管理预览 URL；网络状态仍为受限的包管理器预设。新增场景的夹具与用例发现检查通过，不等同于实际 Chromium 执行通过。
 
 ## iPhone 快捷指令验收
 

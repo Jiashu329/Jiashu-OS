@@ -1,3 +1,5 @@
+import { DATE_RANGE_CLIENT_SCRIPT } from './date-range.ts';
+import { ASSISTANT_RANGE_UI_SCRIPT } from './assistant-range-ui.ts';
 import { AI_DIAGNOSTICS_HELPERS } from './ai-diagnostics-ui.ts';
 
 /** Kept separately so the conversation budget can be exercised without a browser. */
@@ -13,9 +15,11 @@ if(!root||root.dataset.initialized==='true')return;
 root.dataset.initialized='true';
 ${AI_DIAGNOSTICS_HELPERS}
 ${HEALTH_CHAT_HISTORY_HELPERS}
+${DATE_RANGE_CLIENT_SCRIPT}
 const el=(id)=>root.querySelector('#health-chat-'+id);
 const metricNames={weight:'体重',lean_body_mass:'去脂体重',steps:'步数',active_energy:'活动能量',sleep:'睡眠'};
-const state={scope:{metrics:Object.keys(metricNames),includeNutrition:true,includeGoals:false},remainingToday:null,cooldownUntil:0,waitStarted:0,clockTimer:null,open:false,days:7,data:null,loading:false,sending:false,typing:false,history:[],sequence:0,session:0,loadController:null,sendController:null,opener:null};
+const state={scope:{metrics:Object.keys(metricNames),includeNutrition:true,includeGoals:false},remainingToday:null,cooldownUntil:0,waitStarted:0,clockTimer:null,open:false,days:7,customRange:null,data:null,loading:false,sending:false,typing:false,history:[],sequence:0,session:0,loadController:null,sendController:null,opener:null};
+${ASSISTANT_RANGE_UI_SCRIPT}
 const sourcePaths=new Set(['/health','/health/records','/health/review','/health/nutrition','/health/weight-plan']);
 const dateTime=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 function validDay(value){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;const time=Date.parse(value+'T12:00:00Z');return Number.isFinite(time)&&new Date(time).toISOString().slice(0,10)===value;}
@@ -23,7 +27,7 @@ function safeSourceHref(value){if(typeof value!=='string'||!value.startsWith('/'
 function add(parent,tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;parent.append(node);return node;}
 function scrollBottom(){el('scroll').scrollTop=el('scroll').scrollHeight;}
 function nearBottom(){const scroll=el('scroll');return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<64;}
-function scopeKey(){return JSON.stringify([state.days,state.scope.metrics,state.scope.includeNutrition,state.scope.includeGoals]);}
+function scopeKey(){return JSON.stringify([state.days,state.scope.metrics,state.scope.includeNutrition,state.scope.includeGoals,...(state.customRange?[state.customRange.from,state.customRange.to]:[])]);}
 function setScope(scope){state.scope=scope;root.querySelectorAll('[data-health-chat-metric]').forEach((field)=>field.checked=scope.metrics.includes(field.dataset.healthChatMetric));el('include-nutrition').checked=scope.includeNutrition;el('include-goals').checked=scope.includeGoals;}
 function usage(data){const value=data?.usage;if(Number.isInteger(value?.remainingToday)&&value.remainingToday>=0&&value.remainingToday<=20)state.remainingToday=value.remainingToday;if(Number.isFinite(value?.retryAfter)&&value.retryAfter>0){state.cooldownUntil=Date.now()+Math.min(value.retryAfter,86400)*1000;clockTick();}}
 function clockTick(){clearTimeout(state.clockTimer);state.clockTimer=null;const waiting=root.querySelector('.hc-pending-time');if(waiting&&state.waitStarted)waiting.textContent='已等待 '+Math.max(0,Math.floor((Date.now()-state.waitStarted)/1000))+' 秒 · 最小化可继续等候';controls();if(state.waitStarted||state.cooldownUntil>Date.now())state.clockTimer=setTimeout(clockTick,1000);}
@@ -37,7 +41,8 @@ function controls(){
   el('send').setAttribute('aria-label',state.typing?'正在输出回复':state.sending?'正在等待回复':'发送消息');
   el('question').disabled=state.sending;
   el('new').disabled=busy;el('retry').disabled=busy;
-  root.querySelectorAll('[data-health-chat-days]').forEach((button)=>{button.disabled=busy;button.setAttribute('aria-pressed',String(Number(button.dataset.healthChatDays)===state.days));});
+  root.querySelectorAll('[data-health-chat-days]').forEach((button)=>{button.disabled=busy;button.setAttribute('aria-pressed',String(!state.customRange&&Number(button.dataset.healthChatDays)===state.days));});
+  root.querySelectorAll('#health-chat-range-from,#health-chat-range-to,#health-chat-range-apply').forEach((field)=>field.disabled=busy);
   root.querySelectorAll('[data-health-chat-question]').forEach((button)=>button.disabled=state.sending);root.querySelectorAll('[data-health-chat-metric],#health-chat-include-nutrition,#health-chat-include-goals').forEach((field)=>field.disabled=busy);
   const remaining=Math.max(0,Math.ceil((state.cooldownUntil-Date.now())/1000));el('usage').textContent=(state.remainingToday===null?'应用今日剩余次数待读取':'应用今日剩余 '+state.remainingToday+' / 20 次')+'（与 Token Plan 余额不同）'+(remaining?' · '+remaining+' 秒后可重试':'');
   el('count').textContent=[...el('question').value].length+' / 1000';
@@ -57,13 +62,13 @@ function sourceList(target,sources){
     if(bits.length)add(li,'small',bits.join(' · '));if(Array.isArray(source.dates)&&source.dates.length>1&&href?.startsWith('/health/nutrition?')){const dates=add(li,'span');for(const day of source.dates.filter(validDay)){const link=add(dates,'a',day+' ');link.href='/health/nutrition?'+new URLSearchParams({date:day});link.target='_blank';link.rel='noopener noreferrer';}}target.append(li);
   }
 }
-function checkContext(data,days){const context=data?.context,range=context?.range;return typeof data?.configuration?.ready==='boolean'&&data.configuration.provider==='MiniMax'&&typeof data.configuration.model==='string'&&context?.version===1&&context.timezone==='Asia/Shanghai'&&range?.days===days&&validDay(range.from)&&validDay(range.to)&&validDay(range.today)&&range.from<=range.to&&Array.isArray(context.health)&&context.health.every((metric)=>metric&&typeof metric.label==='string'&&Number.isInteger(metric.recordedDays)&&metric.recordedDays>=0&&metric.recordedDays<=days)&&context.nutrition&&Number.isInteger(context.nutrition.recordedDays)&&context.nutrition.recordedDays>=0&&context.nutrition.recordedDays<=days&&Array.isArray(context.limitations)&&Array.isArray(data.sources)&&typeof data.hasData==='boolean';}
+function checkContext(data,days){const context=data?.context,range=context?.range;return typeof data?.configuration?.ready==='boolean'&&data.configuration.provider==='MiniMax'&&typeof data.configuration.model==='string'&&context?.version===1&&context.timezone==='Asia/Shanghai'&&range?.days===days&&assistantRangeMatches(range)&&validDay(range.from)&&validDay(range.to)&&validDay(range.today)&&range.from<=range.to&&Array.isArray(context.health)&&context.health.every((metric)=>metric&&typeof metric.label==='string'&&Number.isInteger(metric.recordedDays)&&metric.recordedDays>=0&&metric.recordedDays<=days)&&context.nutrition&&Number.isInteger(context.nutrition.recordedDays)&&context.nutrition.recordedDays>=0&&context.nutrition.recordedDays<=days&&Array.isArray(context.limitations)&&Array.isArray(data.sources)&&typeof data.hasData==='boolean';}
 function renderContext(data){
   const range=data.context.range;
   el('provider').textContent='MiniMax · '+data.configuration.model;
-  el('scope-label').textContent='近 '+state.days+' 天 · '+state.scope.metrics.map((key)=>metricNames[key]).join('、')+(state.scope.includeNutrition?'、饮食':'')+(state.scope.includeGoals?' · 用户自定目标':'');
+  el('scope-label').textContent=range.from+' — '+range.to+' · '+state.scope.metrics.map((key)=>metricNames[key]).join('、')+(state.scope.includeNutrition?'、饮食':'')+(state.scope.includeGoals?' · 用户自定目标':'');
   el('context').hidden=false;el('context-summary').textContent='查看本次健康摘要与来源';
-  el('context-range').textContent=range.from+' — '+range.to+'（北京时间，包含今天）';
+  el('context-range').textContent=range.from+' — '+range.to+'（北京时间，包含起止日期）';
   el('coverage').replaceChildren();
   for(const metric of data.context.health){const item=document.createElement('div');add(item,'dt',metric.label);add(item,'dd',metric.recordedDays+' / '+range.days+' 天');el('coverage').append(item);}
   if(state.scope.includeNutrition){const nutrition=document.createElement('div');add(nutrition,'dt','饮食与营养');add(nutrition,'dd',data.context.nutrition.recordedDays+' / '+range.days+' 天'+(Number.isInteger(data.context.nutrition.completeDays)?'；用户标记记完 '+data.context.nutrition.completeDays+' 天，可比较 '+data.context.nutrition.comparableDays+' 天':''));el('coverage').append(nutrition);for(const [key,label]of Object.entries({carbs:'碳水化合物',protein:'蛋白质',fat:'脂肪'})){const fields=(data.context.nutrition.days||[]).map((day)=>day.nutrients?.[key]).filter(Boolean);if(!fields.length)continue;const item=document.createElement('div');add(item,'dt',label+'（g）');add(item,'dd','已填 '+fields.reduce((sum,row)=>sum+row.knownCount,0)+' 项，未填 '+fields.reduce((sum,row)=>sum+row.unknownCount,0)+' 项');el('coverage').append(item);}}if(state.scope.includeGoals){const goals=data.context.goals;const note=document.createElement('div');add(note,'dt','用户自定目标');add(note,'dd',goals?goals.targets.map((t)=>metricNames[t.metric]+' '+t.value).concat((goals.nutritionTargets||[]).map((target)=>({calories:'热量',carbs:'碳水化合物',protein:'蛋白质',fat:'脂肪'}[target.nutrient]||'营养目标')+' '+target.value+' '+target.unit)).join('；')+(goals.weightPlan?'；体重计划 '+goals.weightPlan.targetWeight+' kg（'+goals.weightPlan.deadline+'）':'；无当前启用的体重计划')+(Array.isArray(goals.notes)?' '+goals.notes.join(' '):''):'当前无可参考的目标');el('coverage').append(note);}
@@ -83,9 +88,9 @@ async function readPreview(url,controller,valid){let timer;try{return await Prom
 async function load(){
   if(state.sending)return;
   const sequence=++state.sequence;state.loadController?.abort();const controller=new AbortController();state.loadController=controller;
-  state.loading=true;clearContext();formError('');status('正在读取近 '+state.days+' 天的健康摘要…');controls();
+  state.loading=true;clearContext();formError('');status('正在读取所选 '+state.days+' 天的健康摘要…');syncAssistantDateControls();controls();
   const days=state.days;const scope=state.scope;
-  try{const data=await readPreview('/api/health/assistant?'+new URLSearchParams({days:String(days),metrics:scope.metrics.join(','),nutrition:scope.includeNutrition?'1':'0',goals:scope.includeGoals?'1':'0'}),controller,()=>sequence===state.sequence);if(sequence!==state.sequence)return;if(!checkContext(data,days))throw new Error('健康摘要暂时无法核对，请重新读取。');state.data=data;status('');renderContext(data);}
+  try{const data=await readPreview('/api/health/assistant?'+new URLSearchParams({...Object.fromEntries(Object.entries(assistantRangeSelection()).map(([key,value])=>[key,String(value)])),metrics:scope.metrics.join(','),nutrition:scope.includeNutrition?'1':'0',goals:scope.includeGoals?'1':'0'}),controller,()=>sequence===state.sequence);if(sequence!==state.sequence)return;if(!checkContext(data,days))throw new Error('健康摘要暂时无法核对，请重新读取。');state.data=data;status('');renderContext(data);}
   catch(error){if(sequence!==state.sequence||error?.name==='AbortError')return;state.data=null;const auth=error?.status===401||error?.code==='SIGN_IN_REQUIRED';if(auth)clearConversation();status(error?.message||'健康摘要暂时无法读取，请重试。',true,auth);}
   finally{if(sequence===state.sequence){state.loading=false;state.loadController=null;controls();}}
 }
@@ -142,7 +147,7 @@ async function appendAnswer(data,signal,follow){
   if(data.sources.length){const details=add(article,'details',undefined,'hc-message-sources');add(details,'summary','本次数据来源');sourceList(add(details,'ul',undefined,'hc-source-list'),data.sources);}
   const revealing=revealAnswer(bubble,article,skip,copy,signal);if(follow&&state.open)scrollBottom();await revealing;
 }
-function checkAnswer(data){const range=data?.range;return typeof data?.answer==='string'&&data.answer.trim()&&data.answer.length<=10000&&data.provider==='MiniMax'&&typeof data.model==='string'&&range?.days===state.days&&validDay(range.from)&&validDay(range.to)&&Array.isArray(data.sources);}
+function checkAnswer(data){const range=data?.range;return typeof data?.answer==='string'&&data.answer.trim()&&data.answer.length<=10000&&data.provider==='MiniMax'&&typeof data.model==='string'&&assistantRangeMatches(range)&&validDay(range.from)&&validDay(range.to)&&Array.isArray(data.sources);}
 async function submit(event){
   event?.preventDefault();if(state.loading||state.sending)return;formError('');const question=el('question').value.trim();
   if(!question||[...question].length>1000){formError('请填写 1–1000 个字符的问题。');el('question').focus();return;}
@@ -153,7 +158,7 @@ async function submit(event){
   el('welcome').hidden=true;state.sending=true;state.waitStarted=Date.now();status('');clockTick();controls();scrollBottom();
   const controller=new AbortController();state.sendController=controller;let timedOut=false;const timer=setTimeout(()=>{timedOut=true;controller.abort();},65000);
   try{
-    const response=await fetch('/api/health/assistant',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json','Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify({question,days:state.days,shareHealthData:true,history,scope:state.scope,historyScope:scopeKey()})});
+    const response=await fetch('/api/health/assistant',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json','Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify({question,...assistantRangeSelection(),shareHealthData:true,history,scope:state.scope,historyScope:scopeKey()})});
     const data=await readResponse(response,()=>session===state.session);if(session!==state.session)return;if(!checkAnswer(data))throw new Error('助手返回的回答不完整，请稍后重试。');
     clearTimeout(timer);stopWaiting();const follow=nearBottom();waiting.remove();await appendAnswer(data,controller.signal,follow);if(session!==state.session)return;
     state.history=boundedHistory([...history,{role:'user',content:question},{role:'assistant',content:data.answer}]);el('question').value='';resizeInput();
@@ -171,9 +176,9 @@ el('question').addEventListener('input',()=>{formError('');resizeInput();control
 el('question').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&event.keyCode!==229){event.preventDefault();if(!el('send').disabled)submit();}});
 el('retry').addEventListener('click',()=>{if(!state.loading&&!state.sending)load();});
 root.querySelectorAll('[data-health-chat-question]').forEach((button)=>button.addEventListener('click',()=>{if(state.sending)return;el('question').value=button.dataset.healthChatQuestion;formError('');resizeInput();controls();el('question').focus();}));
-root.querySelectorAll('[data-health-chat-days]').forEach((button)=>button.addEventListener('click',()=>{if(state.loading||state.sending)return;const days=Number(button.dataset.healthChatDays);if(![7,30,90,180,360].includes(days)||days===state.days)return;state.days=days;clearConversation();load();}));
+root.querySelectorAll('[data-health-chat-days]').forEach((button)=>button.addEventListener('click',()=>{if(state.loading||state.sending)return;const days=Number(button.dataset.healthChatDays);if(![7,30,90,180,360].includes(days)||(!state.customRange&&days===state.days))return;state.days=days;state.customRange=null;clearConversation();load();}));
 root.querySelectorAll('[data-health-chat-metric],#health-chat-include-nutrition,#health-chat-include-goals').forEach((field)=>field.addEventListener('change',()=>{if(state.loading||state.sending){setScope(state.scope);return;}const scope={metrics:[...root.querySelectorAll('[data-health-chat-metric]')].filter((input)=>input.checked).map((input)=>input.dataset.healthChatMetric),includeNutrition:el('include-nutrition').checked,includeGoals:el('include-goals').checked};if(!scope.metrics.length&&!scope.includeNutrition){setScope(state.scope);formError('请至少选择一项健康指标或饮食摘要。');return;}setScope(scope);clearConversation();load();}));
-window.addEventListener('health-assistant-open',(event)=>{const detail=event.detail;if(state.sending){open(el('launcher'));formError('请先等待本轮回复完成，再分析其他图表。');return;}if(!detail||!Object.hasOwn(metricNames,detail.metric)||![7,30,90,180,360].includes(detail.days)){open(el('launcher'));formError('该图表资料尚不支持直接分析，请在助手内选择有效范围。');return;}state.days=detail.days;setScope({metrics:[detail.metric],includeNutrition:false,includeGoals:false});clearConversation();state.data=null;state.sequence++;state.loadController?.abort();state.loading=false;el('question').value=typeof detail.question==='string'?detail.question.slice(0,1000):'请分析这段'+metricNames[detail.metric]+'趋势，并说明实际日期与缺失记录。';resizeInput();open(el('launcher'));});
+window.addEventListener('health-assistant-open',(event)=>{const detail=event.detail;if(state.sending){open(el('launcher'));formError('请先等待本轮回复完成，再分析其他图表。');return;}let selected;try{if(!detail||!Object.hasOwn(metricNames,detail.metric))throw new Error();selected=resolveDateRange(detail.from!==undefined||detail.to!==undefined?{from:detail.from,to:detail.to}:{days:detail.days});if(selected.days!==detail.days)throw new Error();}catch{open(el('launcher'));formError('该图表资料尚不支持直接分析，请在助手内选择有效范围。');return;}state.days=selected.days;state.customRange=detail.from!==undefined?{from:selected.from,to:selected.to}:null;setScope({metrics:[detail.metric],includeNutrition:false,includeGoals:false});clearConversation();state.data=null;state.sequence++;state.loadController?.abort();state.loading=false;el('question').value=typeof detail.question==='string'?detail.question.slice(0,1000):'请分析这段'+metricNames[detail.metric]+'趋势，并说明实际日期与缺失记录。';resizeInput();open(el('launcher'));});
 document.addEventListener('click',(event)=>{if(event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.altKey||event.shiftKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.target==='_blank')return;let url;try{url=new URL(anchor.href,location.origin);}catch{return;}if(url.origin===location.origin&&url.pathname==='/health/assistant'){event.preventDefault();open(anchor);}});
 document.addEventListener('keydown',(event)=>{if(event.key==='Escape'&&state.open&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){event.preventDefault();close();}});
 window.addEventListener('pagehide',()=>{state.waitStarted=0;state.cooldownUntil=0;clearTimeout(state.clockTimer);state.clockTimer=null;state.session++;state.sequence++;state.loadController?.abort();state.sendController?.abort();state.loadController=null;state.sendController=null;state.sending=false;state.typing=false;state.loading=false;clearContext();clearConversation();status('');});

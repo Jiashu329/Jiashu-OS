@@ -12,6 +12,6 @@ export async function GET(request: Request) {
     const selection = parseFinanceReviewQuery(new URL(request.url).searchParams);
     if (!env.DB) throw new Error('Finance database unavailable');
     const snapshot = await readFinanceReviewSnapshot(env.DB, user.userId, selection.ledger, selection.cutoffDay);
-    return json(buildFinanceReview(snapshot.accounts, snapshot.balances, selection));
+    return json(buildFinanceReview(snapshot.accounts, snapshot.balances, selection, snapshot.classifications));
   } catch (error) { return financeError(error); }
 }

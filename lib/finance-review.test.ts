@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FinanceValidationError } from './finance.ts';
 import { buildFinanceReview, parseFinanceReviewQuery } from './finance-review.ts';
-import type { ReviewAccountRow, ReviewBalanceRow } from './finance-review.ts';
+import type { AccountClassification, ReviewAccountRow, ReviewBalanceRow } from './finance-review.ts';
 
 const NOW = new Date('2026-11-09T08:00:00.000Z');
 function selection(query = '') { return parseFinanceReviewQuery(new URLSearchParams(query), NOW); }
@@ -36,7 +36,7 @@ void test('missing history remains null while an explicitly recorded zero is a r
     assetsMinor: null, liabilitiesMinor: null, netMinor: null, accountCount: 0,
     oldestBalanceDate: null, latestBalanceDate: null, carriedAccountCount: 0,
   });
-  assert.deepEqual(missing.change, { assetsMinor: null, liabilitiesMinor: null, netMinor: null, comparableNetMinor: null, newNetMinor: null });
+  assert.deepEqual(missing.change, { assetsMinor: null, liabilitiesMinor: null, netMinor: null, comparableNetMinor: null, newNetMinor: null, reclassificationNetMinor: null, membershipNetMinor: null });
   assert.deepEqual(missing.accounts, []);
   assert.ok(missing.trend.every((point) => point.netMinor === null));
   const zero = buildFinanceReview(accounts, [balance('zero', '0', '2026-11-02')], selection());
@@ -66,6 +66,7 @@ void test('balances carry across missing months with source dates rather than fi
     accountId: 'bank', name: 'bank', type: 'bank', side: 'asset', kind: 'existing',
     previousMinor: '9007199254740993', currentMinor: '9007199254740993', netChangeMinor: '0',
     currentAsOfDate: '2026-09-18', previousAsOfDate: '2026-09-18', carried: true,
+    previousType:'bank',classificationChanged:false,membershipChanged:false,archived:false,balanceChangeMinor:'0',classificationChangeMinor:'0',membershipChangeMinor:'0',
   });
   assert.equal(result.trend.length, 12);
   assert.equal(result.trend[0].month, '2025-12');
@@ -128,7 +129,7 @@ void test('new assets and debts are first inclusion, not comparative account ret
   assert.ok(result.accounts.filter((row) => row.kind === 'new').every((row) => row.netChangeMinor === null));
 });
 
-void test('current ledger, currency, type and archive status define historical inclusion', () => {
+void test('legacy accounts retain an explicit unknown-history fallback scoped by current ledger and currency', () => {
   const accounts = [
     account('cny'), account('usd', { currency: 'USD' }), account('hkd', { currency: 'HKD' }),
     account('family', { ledger: 'family' }), account('archived', { currency: 'EUR', archivedAt: '2026-11-09T00:00:00Z' }),
@@ -136,7 +137,7 @@ void test('current ledger, currency, type and archive status define historical i
   ];
   const records = accounts.map((row) => balance(row.accountId, '100', '2026-10-01'));
   const personal = buildFinanceReview(accounts, records, selection());
-  assert.deepEqual(personal.availableCurrencies, ['CNY', 'HKD', 'USD']);
+  assert.deepEqual(personal.availableCurrencies, ['CNY', 'EUR', 'HKD', 'USD']);
   assert.equal(personal.snapshot.assetsMinor, '100');
   assert.equal(personal.snapshot.liabilitiesMinor, '100');
   assert.equal(personal.snapshot.netMinor, '0');
@@ -184,4 +185,28 @@ void test('existing accounts sort by exact absolute net change, with stable name
   const result = buildFinanceReview(accounts, records, selection());
   assert.deepEqual(result.accounts.map((row) => row.accountId), ['b', 'c', 'a', 'new']);
   assert.deepEqual(buildFinanceReview(accounts.toReversed(), records.toReversed(), selection()), result);
+});
+
+function classification(accountId:string,revision:number,effectiveFrom:string,type:ReviewAccountRow['type']='bank',archived=0,origin:AccountClassification['origin']='change'):AccountClassification{return{accountId,revision,effectiveFrom,type,archived,origin,recordedAt:effectiveFrom==='1970-01-01'?'2026-08-01T02:00:00Z':effectiveFrom+'T02:00:00Z'};}
+void test('classification uses each cutoff rather than current type or carried balance date, and separates its effect',()=>{
+ const a=account('a',{type:'loan'}),rows=[balance('a','10000','2026-09-30'),balance('a','12000','2026-10-31',2)];
+ const versions=[classification('a',1,'1970-01-01','bank',0,'opening'),classification('a',2,'2026-11-05','loan')];
+ const october=buildFinanceReview([a],rows,selection('month=2026-10'),versions);assert.equal(october.snapshot.netMinor,'12000');assert.equal(october.previous.netMinor,'10000');
+ const november=buildFinanceReview([a],rows,selection(),versions);assert.equal(november.previous.netMinor,'12000');assert.equal(november.snapshot.netMinor,'-12000');assert.equal(november.change.comparableNetMinor,'0');assert.equal(november.change.reclassificationNetMinor,'-24000');assert.equal(november.change.netMinor,'-24000');assert.equal(november.accounts[0].previousType,'bank');assert.equal(november.accounts[0].classificationChanged,true);
+ assert.equal(november.trend.find((point)=>point.month==='2026-10')!.netMinor,'12000');assert.deepEqual(november.historicalAssumptions,[]);
+});
+void test('archive and restore membership preserve earlier months and reconcile the final-account empty book',()=>{
+ const a=account('a',{archivedAt:'2026-11-05T02:00:00Z'}),rows=[balance('a','12000','2026-09-30')];
+ const versions=[classification('a',1,'1970-01-01','bank',0,'opening'),classification('a',2,'2026-11-05','bank',1)];
+ const october=buildFinanceReview([a],rows,selection('month=2026-10'),versions);assert.equal(october.snapshot.netMinor,'12000');
+ const november=buildFinanceReview([a],rows,selection(),versions);assert.equal(november.snapshot.netMinor,'0');assert.equal(november.change.membershipNetMinor,'-12000');assert.equal(november.change.comparableNetMinor,'0');assert.equal(november.change.netMinor,'-12000');assert.equal(november.accounts[0].archived,true);
+ const restored=buildFinanceReview([{...a,archivedAt:null}],rows,selection(),[...versions,classification('a',3,'2026-11-06','bank',0)]);assert.equal(restored.snapshot.netMinor,'12000');assert.equal(restored.change.netMinor,'0');
+ const archivedEarlier=buildFinanceReview([a],rows,selection(),[versions[0],classification('a',2,'2026-10-05','bank',1)]);assert.equal(archivedEarlier.previous.netMinor,'0');assert.equal(archivedEarlier.snapshot.netMinor,'0');
+});
+void test('same-day changes resolve by revision and legacy baselines explicitly mark assumed prehistory',()=>{
+ const a=account('a'),rows=[balance('a','123','2026-10-01')];
+ const versions=[classification('a',7,'1970-01-01','bank',0,'baseline'),classification('a',8,'2026-11-05','loan'),classification('a',10,'2026-11-05','cash')];
+ versions[0].recordedAt='2026-11-01T03:00:00Z';
+ const result=buildFinanceReview([a],rows,selection(),versions.toReversed());assert.equal(result.snapshot.assetsMinor,'123');assert.equal(result.accounts[0].type,'cash');assert.deepEqual(result.historicalAssumptions,[{accountId:'a',name:'a',knownFrom:'2026-11-01'}]);
+ assert.deepEqual(buildFinanceReview([a],rows,selection(),versions),result);
 });

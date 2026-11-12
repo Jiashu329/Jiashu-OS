@@ -2,6 +2,6 @@ import { requireChatGPTUser } from '../chatgpt-auth';
 import { renderDataBackupPage } from '../../data-backup-page';
 export const dynamic = 'force-dynamic';
 export async function GET() {
-  await requireChatGPTUser('/data');
-  return new Response(renderDataBackupPage(),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
+  const user=await requireChatGPTUser('/data');
+  return new Response(renderDataBackupPage(user.userId),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
 }

@@ -8,14 +8,24 @@ import { renderHealthRecordsPage } from '../health-records-page.ts';
 import { renderFinanceApp } from '../finance-ui.ts';
 import { renderFinanceGoalsPage } from '../finance-goals-page.ts';
 import { renderShortcutTemplatesPage } from '../shortcut-templates-page.ts';
+import { renderApp } from '../ui.ts';
+import { renderWeightPlanPage } from '../weight-plan-page.ts';
+import { renderFinanceRunwayPage } from '../finance-runway-page.ts';
+import { renderFinanceReviewPage } from '../finance-review-page.ts';
+import { renderDataBackupPage } from '../data-backup-page.ts';
 
 export const BROWSER_FIXTURE_OWNER = 'browser-acceptance-synthetic-owner';
 export function renderBrowserFixture(pathname) {
   if (pathname === '/') return renderHomeApp();
   if (pathname === '/health/nutrition') return renderNutritionPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/health') return renderApp();
+  if (pathname === '/health/weight-plan') return renderWeightPlanPage();
   if (pathname === '/finance') return renderFinanceApp(BROWSER_FIXTURE_OWNER);
   if (pathname === '/finance/goals') return renderFinanceGoalsPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/finance/runway') return renderFinanceRunwayPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/finance/review') return renderFinanceReviewPage();
+  if (pathname === '/data/backup') return renderDataBackupPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/sync/templates') return renderShortcutTemplatesPage('weight');
   return null;
 }

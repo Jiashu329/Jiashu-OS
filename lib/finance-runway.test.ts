@@ -92,3 +92,13 @@ void test('only selected same-scope active assets contribute, zero remains zero,
   const output = buildFinanceRunwayView(settings(), [account(A, '0')]);
   assert.equal(Object.hasOwn(output.settings!, 'userId'), false);
 });
+
+void test('usable contribution is exact per-account with conservative defaults and explicit stale/unreviewed amounts',()=>{
+ const c=crypto.randomUUID(),d=crypto.randomUUID(),e=crypto.randomUUID();
+ const s=settings({accountIds:[A,B,c,d,e],monthlyExpenseMinor:'100',targetMonths:6});
+ const accounts=[account(A,'9007199254740993',{type:'investment',liquidityKind:'restricted',usableBps:3333,asOfDate:'2026-10-01'}),account(B,'500',{type:'bank'}),account(c,'999999999999999999',{type:'property'}),account(d,'1000',{type:'investment'}),account(e,'2000',{type:'receivable'})];
+ const p=buildFinanceRunwayView(s,accounts,'2026-11-12').progress!;const expected=BigInt('9007199254740993')*BigInt(3333)/BigInt(10000)+BigInt(500);
+ assert.equal(p.currentMinor,expected.toString());assert.equal(p.nominalMinor,accounts.reduce((sum,a)=>sum+BigInt(a.balanceMinor),BigInt(0)).toString());assert.equal(p.excludedMinor,(BigInt(p.nominalMinor)-expected).toString());assert.equal(p.unreviewedMinor,'3000');assert.equal(p.unreviewedAccountCount,2);assert.equal(p.usableAccountCount,2);assert.equal(p.staleAccountCount,1);
+ assert.equal(p.accounts.find((a)=>a.accountId===c)!.usableMinor,'0');assert.equal(s.targetMonths,6);assert.equal(s.accountIds.length,5);
+ const invalid=buildFinanceRunwayView(settings(),[account(A,'10000',{liquidityKind:'unreviewed',usableBps:10000})],'2026-11-12').progress!;assert.equal(invalid.currentMinor,'0');assert.equal(invalid.unreviewedMinor,'10000');
+});

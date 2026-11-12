@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_V1_TABLE_NAMES, BackupCapacityError, BackupValidationError, backupDigest, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_TABLES, BACKUP_V1_TABLE_NAMES, VOLUME_BACKUP_LIMITS, BackupCapacityError, BackupValidationError, backupDigest, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import { splitBackupVolumes } from '../lib/backup-volumes.ts';
+import { parseNutritionTemplate } from '../lib/nutrition-templates.ts';
+import { createNutritionTemplate, replaceNutritionTemplate, archiveNutritionTemplate } from './nutrition-templates-store.ts';
+import { readWeightCycleState, writeWeightCycle } from './weight-cycles-store.ts';
+import { patchFinanceAccount } from './finance-store.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from './data-backup-store.ts';
 import { previewHealthImport, writeHealthImport } from './health-import-store.ts';
 import { parseSyncPayload } from '../lib/health.ts';
@@ -40,6 +45,7 @@ async function seed(db:D1Database,sqlite:DatabaseSync,owner='alice') {
   await writeWeightPlanSettings(db,owner,{baselineWeight:70,targetWeight:68,startDate:'2026-11-01',deadline:'2026-12-31',enabled:true},0,NOW);
   sqlite.prepare('INSERT INTO nutrition_entries (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(B,owner,'2026-11-09','breakfast','synthetic oats','one bowl','',null,HASH,1,NOW,NOW,NOW);
   sqlite.prepare('INSERT INTO finance_accounts (id,user_id,ledger,name,type,currency,creation_hash,note,created_at,updated_at,archived_at,balance_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(C,owner,'personal','synthetic cash','bank','CNY',HASH,'',NOW,NOW,null,1);
+  sqlite.prepare('INSERT INTO finance_account_classifications (user_id,account_id,revision,effective_from,type,archived,origin,recorded_at) VALUES (?,?,?,?,?,?,?,?)').run(owner,C,1,'1970-01-01','bank',0,'baseline',NOW);
   sqlite.prepare('INSERT INTO finance_balance_entries (sequence,id,user_id,account_id,amount_minor,as_of_date,note,created_at) VALUES (?,?,?,?,?,?,?,?)').run(20,'initial:'+C,owner,C,'9007199254740993','2026-11-08','initial',NOW);
   sqlite.prepare('INSERT INTO finance_balance_entries (sequence,id,user_id,account_id,amount_minor,as_of_date,note,created_at) VALUES (?,?,?,?,?,?,?,?)').run(50,D,owner,C,'9007199254740994','2026-11-08','later',NOW);
   sqlite.prepare('INSERT INTO finance_balance_changes (sequence,id,user_id,account_id,entry_id,revision,action,amount_minor,as_of_date,note,reason,request_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(30,E,owner,C,D,1,'correct','9007199254740995','2026-11-07','','synthetic correction',HASH,NOW);
@@ -59,7 +65,7 @@ function semantic(backup:DataBackup){return Object.fromEntries(BACKUP_TABLE_NAME
 void test('complete backup roundtrips old records, real import receipts, edits, deleted nutrition and exact ordered finance history',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);
   assert.equal(backup.tables.health_measurements[0].day,'2024-01-01');assert.equal(backup.tables.health_import_batches.length,2);assert.equal(JSON.parse(backup.tables.health_import_batches[1].receipt_json as string).imported,0);
-  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,22);
+  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,27);
   for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations','nutrition_batches','nutrition_day_status'] as const) assert.ok(backup.tables[table].length>0);
   assert.equal(JSON.stringify(backup).includes('user_id'),false);assert.equal(JSON.stringify(backup).includes('synthetic-token-hash'),false);
   const target=fixture(t);let preview=await previewDataRestore(target.db,'restored-owner',backup);assert.equal(preview.canRestore,true);assert.ok(preview.total.added>0);
@@ -166,10 +172,11 @@ void test('future facts, orphan accounts, all-void balances and inconsistent aud
   for(const mutate of mutations){const backup=structuredClone(original);mutate(backup);await assert.rejects(previewDataRestore(target.db,'alice',backup),BackupValidationError);}
   for(const table of BACKUP_TABLE_NAMES)assert.equal(target.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get()?.n,0);
 });
-void test('export refuses an oversized restore-query budget rather than offering a silently unrestorable file',async(t)=>{
+void test('bounded larger query chunks make a dense archive restorable without truncating its records',async(t)=>{
   const f=fixture(t);const insert=f.sqlite.prepare('INSERT INTO health_measurements VALUES (?,?,?,?,?,?,?)');
   f.sqlite.exec('BEGIN');for(let i=0;i<8000;i++){const id='x'+String(i).padStart(5,'0')+'a'.repeat(154);const measurement={id,metric:'weight',value:70,unit:'kg',startDate:OLD,source:'s'.repeat(120),aggregation:'sample'};insert.run('alice','weight:'+id,'weight','2024-01-01',JSON.stringify(measurement),NOW,NOW);}f.sqlite.exec('COMMIT');
-  await assert.rejects(exportDataBackup(f.db,'alice',NOW),(error:unknown)=>error instanceof RangeError && /查询预算/.test(error.message));
+  const backup=await exportDataBackup(f.db,'alice',NOW);assert.equal(backup.tables.health_measurements.length,8000);
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);await restoreDataBackup(target.db,'restored',backup,preview.previewHash);assert.equal(target.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,8000);
   assert.equal(f.sqlite.prepare('SELECT count(*) n FROM health_measurements').get()?.n,8000);
 });
 void test('restoring missing finance history invalidates old account previews and remains idempotent',async(t)=>{
@@ -342,7 +349,7 @@ void test('published v1 and v2 nutrition backups without macro columns or source
   for(const version of [1,2]){
     const backup=structuredClone(current) as unknown as {version:number;tables:Record<string,Array<Record<string,unknown>>>};
     backup.version=version;
-    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations'])delete backup.tables[name];
+    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations','health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications'])delete backup.tables[name];
     if(version===1){for(const name of ['health_goal_versions','health_sync_attempts','nutrition_copy_operations'])delete backup.tables[name];}
     for(const row of backup.tables.nutrition_entries){
       for(const key of ['carbs_tenth','protein_tenth','fat_tenth'])delete row[key];
@@ -418,4 +425,74 @@ void test('nutrition targets, structured sources and immutable restore receipts 
   const migrated=structuredClone(backup);migrated.tables.nutrition_restore_operations=[];migrated.tables.nutrition_entry_history=migrated.tables.nutrition_entry_history.filter((row)=>row.revision!==1);
   const baseline=migrated.tables.nutrition_entry_history.find((row)=>row.revision===2)!;baseline.action='baseline';baseline.before_json=null;
   assert.doesNotThrow(()=>parseDataBackup(migrated),'Migrated baselines may begin after revision one');
+});
+
+void test('P2 templates, cycle archives and dated finance classifications roundtrip with their original retry receipts',async(t)=>{
+  const source=fixture(t);await seed(source.db,source.sqlite);
+  const definition=parseNutritionTemplate({kind:'recipe',name:'合成鸡胸饭',note:'配方说明',baseServings:'2',totalWeight:'400',components:[{name:'合成原料',portion:'400g',grams:'400',calories:'400',carbs:'40',protein:'30',fat:null}]});
+  await createNutritionTemplate(source.db,'alice',definition,A,NOW);
+  await replaceNutritionTemplate(source.db,'alice',A,{...definition,name:'修改后的合成鸡胸饭'},1,B,NOW);
+  await archiveNutritionTemplate(source.db,'alice',A,2,C,NOW);
+  await writeWeightCycle(source.db,'alice',{action:'archive',expectedRevision:1},D,[],NOW);
+  const nextPlan={baselineWeight:70,targetWeight:67,startDate:'2026-11-10',deadline:'2026-12-31',enabled:true};
+  await writeWeightCycle(source.db,'alice',{action:'start',expectedRevision:2,plan:nextPlan},E,[],NOW);
+  await patchFinanceAccount(source.db,'alice',C,{type:'loan',expectedRevision:1},NOW);
+  await patchFinanceAccount(source.db,'alice',C,{archived:true,expectedRevision:2},NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(backup.tables.nutrition_template_operations.length,3);assert.equal(backup.tables.health_weight_plan_cycles.length,1);assert.equal(backup.tables.finance_account_classifications.length,3);
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);assert.equal(preview.canRestore,true);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  assert.deepEqual(semantic(await exportDataBackup(target.db,'restored',NOW)),semantic(backup));
+  assert.equal((await createNutritionTemplate(target.db,'restored',definition,A,NOW)).replayed,true);
+  assert.equal((await replaceNutritionTemplate(target.db,'restored',A,{...definition,name:'修改后的合成鸡胸饭'},1,B,NOW))?.replayed,true);
+  assert.equal((await writeWeightCycle(target.db,'restored',{action:'archive',expectedRevision:1},D,[],NOW)).replayed,true);
+  assert.equal((await readWeightCycleState(target.db,'restored')).cycles[0].settings.targetWeight,68);
+  const forged=structuredClone(backup);forged.tables.nutrition_template_operations[0].request_hash='f'.repeat(64);
+  await assert.rejects(previewDataRestore(fixture(t).db,'restored',forged),BackupValidationError);
+  const orphan=structuredClone(backup);orphan.tables.health_weight_plan_cycles=[];assert.throws(()=>parseDataBackup(orphan),BackupValidationError);
+  const contradictory=structuredClone(backup);contradictory.tables.finance_account_classifications.at(-1)!.type='bank';assert.throws(()=>parseDataBackup(contradictory),BackupValidationError);
+});
+
+void test('a complete volume set restores beyond the old row limit in one atomic operation and refuses incomplete sets',async(t)=>{
+  const source=fixture(t);const rows=Array.from({length:20001},(_,index)=>{
+    const id='large-'+index,measurement={id,metric:'weight',value:70,unit:'kg',startDate:OLD,source:'synthetic',aggregation:'sample'};
+    return{record_key:'weight:'+id,metric:'weight',day:'2024-01-01',measurement_json:JSON.stringify(measurement),exported_at:NOW,received_at:NOW};
+  });
+  source.sqlite.prepare(`INSERT INTO health_measurements (user_id,record_key,metric,day,measurement_json,exported_at,received_at) SELECT ?,json_extract(value,'$.record_key'),json_extract(value,'$.metric'),json_extract(value,'$.day'),json_extract(value,'$.measurement_json'),json_extract(value,'$.exported_at'),json_extract(value,'$.received_at') FROM json_each(?)`).run('alice',JSON.stringify(rows));
+  await assert.rejects(exportDataBackup(source.db,'alice',NOW),BackupCapacityError);
+  const backup=await exportDataBackup(source.db,'alice',NOW,VOLUME_BACKUP_LIMITS),set=await splitBackupVolumes(backup),target=fixture(t);
+  await assert.rejects(previewDataRestore(target.db,'restored',{...set,volumes:set.volumes.slice(0,1)}),BackupValidationError);
+  assert.equal(target.sqlite.prepare('SELECT count(*) AS n FROM health_measurements').get()?.n,0);
+  const preview=await previewDataRestore(target.db,'restored',set);assert.equal(preview.total.added,20001);
+  await restoreDataBackup(target.db,'restored',set,preview.previewHash);
+  assert.equal(target.sqlite.prepare('SELECT count(*) AS n FROM health_measurements').get()?.n,20001);
+  assert.equal((await previewDataRestore(target.db,'restored',set)).total.added,0);
+});
+
+void test('JSON escaping cannot make an oversized single history binding pass preview or export',async(t)=>{
+  const snapshots=Array.from({length:1000},(_,index)=>{
+    const id='synthetic-'+String(index).padStart(5,'0')+'x'.repeat(45),measurement={id,metric:'weight',value:70,unit:'kg',startDate:OLD,source:'\\'.repeat(120),aggregation:'sample'};
+    return{recordKey:'weight:'+id,metric:'weight',day:'2024-01-01',measurementJson:JSON.stringify(measurement),exportedAt:NOW,receivedAt:NOW};
+  });
+  const row={batch_id:HASH,payload_hash:HASH,operation_id:A,before_json:JSON.stringify(snapshots.map((item)=>({recordKey:item.recordKey,base:item}))),after_json:JSON.stringify(snapshots),receipt_json:JSON.stringify({ok:true,batchId:HASH,imported:1000,skipped:0,lastSync:NOW,summary:{from:'2024-01-01',to:'2024-01-01',metrics:['体重'],sourceChanges:0,manualOverrides:0},canRevert:true}),created_at:NOW,reverted_at:null,revert_reason:null,revert_id:null};
+  const backup:DataBackup={kind:'jiashu-os-backup',version:2,exportedAt:NOW,tables:Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]])) as unknown as DataBackup['tables']};
+  backup.tables.health_import_batches=[row];backup.tables.health_syncs=[{payload_hash:HASH,exported_at:NOW,received_at:NOW,measurement_count:1000}];
+  assert.doesNotThrow(()=>parseDataBackup(backup));assert.ok(new TextEncoder().encode(JSON.stringify([row])).byteLength>2*1024*1024);
+  const target=fixture(t);await assert.rejects(previewDataRestore(target.db,'alice',backup),BackupCapacityError);assert.equal(target.sqlite.prepare('SELECT count(*) AS n FROM health_import_batches').get()?.n,0);
+  const source=fixture(t),spec=BACKUP_TABLES.health_import_batches;
+  source.sqlite.prepare(`INSERT INTO health_import_batches (user_id,${spec.columns.join(',')}) VALUES (?,${spec.columns.map(()=>'?').join(',')})`).run('alice',...spec.columns.map((column)=>row[column as keyof typeof row]));
+  source.sqlite.prepare('INSERT INTO health_syncs VALUES (?,?,?,?,?)').run('alice',HASH,NOW,NOW,1000);
+  await assert.rejects(exportDataBackup(source.db,'alice',NOW),BackupCapacityError);
+});
+
+void test('old backups reuse an existing finance baseline without resetting its recorded boundary or edit epoch',async(t)=>{
+  const source=fixture(t);await seed(source.db,source.sqlite);source.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='liquid',usable_bps=10000").run();
+  const current=await exportDataBackup(source.db,'alice',NOW),target=fixture(t),first=await previewDataRestore(target.db,'restored',current);await restoreDataBackup(target.db,'restored',current,first.previewHash);
+  const boundary='2026-11-11T04:00:00.000Z';target.sqlite.prepare('UPDATE finance_account_classifications SET recorded_at=?').run(boundary);target.sqlite.prepare('UPDATE finance_accounts SET metadata_revision=9').run();
+  const legacy=structuredClone(current) as unknown as {tables:Record<string,Array<Record<string,unknown>>>};
+  for(const table of ['health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications'])delete legacy.tables[table];
+  for(const row of legacy.tables.finance_accounts){delete row.liquidity_kind;delete row.usable_bps;}
+  for(const row of legacy.tables.health_weight_plan_settings){delete row.cycle_id;delete row.archived_at;}
+  const preview=await previewDataRestore(target.db,'restored',legacy);assert.equal(preview.canRestore,true);assert.equal(preview.total.added,0);
+  await restoreDataBackup(target.db,'restored',legacy,preview.previewHash);assert.equal(target.sqlite.prepare('SELECT recorded_at FROM finance_account_classifications').get()?.recorded_at,boundary);assert.equal(target.sqlite.prepare('SELECT metadata_revision FROM finance_accounts').get()?.metadata_revision,9);
 });

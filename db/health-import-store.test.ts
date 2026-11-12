@@ -4,6 +4,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { measurementKey, parseSyncPayload, type HealthSyncPayload } from '../lib/health.ts';
 import { HealthImportConflictError, listHealthImports, previewHealthImport, revertHealthImport, writeHealthImport, type HealthImportDatabase } from './health-import-store.ts';
+import {parseMobileSyncPayload} from '../lib/mobile-sync.ts';
 
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
@@ -72,6 +73,14 @@ test('same-source device refresh remains automatic and identical payload replays
   const newer = await writeHealthImport(f.db, 'alice', payload(6000, 'selected-watch', '2026-11-09T11:00:00.000Z'), 'device');
   assert.equal(newer.imported, 1);
   assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).value, 6000);
+});
+
+test('additive sleep timing preserves pre-upgrade receipts and explicit rollback for an identical original report',async(t)=>{
+  const f=fixture(t),raw={version:1,source:'apple-health-shortcuts',timezone:'Asia/Shanghai',exportedAt:'2026-11-09T05:00:00Z',measurements:[],sleepReport:{day:'2026-11-09',source:'synthetic-watch',segments:[{state:'core',startDate:'2026-11-08T23:00:00+08:00',endDate:'2026-11-09T07:00:00+08:00'}]}};
+  const upgraded=parseMobileSyncPayload(raw),legacy={...upgraded,measurements:upgraded.measurements.map((measurement)=>{const {sleepTiming:_timing,...rest}=measurement;return rest;})};
+  const first=await manual(f.db,legacy),replay=await manual(f.db,upgraded);assert.equal(replay.replayed,true);assert.equal(replay.batchId,first.batchId);assert.equal((await listHealthImports(f.db,'alice')).length,1);assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).sleepTiming,undefined);
+  await revertHealthImport(f.db,'alice',first.batchId,'synthetic rollback');const rolled=await manual(f.db,upgraded);assert.equal(rolled.replayed,true);assert.equal(rolled.reverted,true);assert.equal(current(f.sqlite).length,0);
+  const fresh=parseMobileSyncPayload({...raw,exportedAt:'2026-11-09T06:00:00Z'}),next=await manual(f.db,fresh);assert.equal(next.replayed,false);assert.notEqual(next.batchId,first.batchId);assert.ok(JSON.parse(String(current(f.sqlite)[0].measurement_json)).sleepTiming);
 });
 
 test('source changes block automatic import until explicit preview confirmation', async (t) => {

@@ -27,7 +27,7 @@ async function present(userId: string, ledger: LedgerKind, currency: CurrencyCod
     && Object.hasOwn(ACCOUNT_TYPES, account.type) && ACCOUNT_TYPES[account.type as AccountType].side === 'asset');
   return {
     ledger, currency, today: todayShanghai(), revision: settings?.revision ?? 0, ...buildFinanceRunwayView(settings, accounts),
-    accounts: accounts.map(({ id, name, type, currency, ledger, balanceMinor, asOfDate }) => ({ id, name, type, currency, ledger, balanceMinor, asOfDate })),
+    accounts: accounts.map(({ id, name, type, currency, ledger, balanceMinor, asOfDate, liquidityKind, usableBps, metadataRevision }) => ({ id, name, type, currency, ledger, balanceMinor, asOfDate, liquidityKind, usableBps, metadataRevision })),
     meta: { currencies: CURRENCIES },
   };
 }

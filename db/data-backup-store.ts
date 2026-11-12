@@ -1,12 +1,17 @@
-import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_TABLES, BackupCapacityError, backupDigest, backupFail, backupRowKey, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
-import type { BackupRow, BackupTable, DataBackup } from '../lib/data-backup.ts';
+import { BACKUP_TABLE_NAMES, BACKUP_TABLES, SINGLE_BACKUP_LIMITS, BackupCapacityError, backupDigest, backupFail, backupRowKey, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import type { BackupLimits, BackupRow, BackupTable, DataBackup } from '../lib/data-backup.ts';
+import { parseBackupInput } from '../lib/backup-volumes.ts';
 
 export type BackupDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export class BackupConflictError extends Error { readonly code = 'BACKUP_CONFLICT'; readonly status = 409; constructor(message = '备份与当前数据有差异，未写入任何记录。请重新预览并处理冲突。') { super(message); this.name = 'BackupConflictError'; } }
-export interface BackupTablePreview { table: BackupTable; label: string; incoming: number; added: number; skipped: number; conflicts: number; conflictExamples: Array<{ record:string;reason:string }> }
+export interface BackupFieldDifference { field: string; current: string; incoming: string }
+export interface BackupTablePreview { table: BackupTable; label: string; incoming: number; added: number; skipped: number; conflicts: number; conflictExamples: Array<{ record:string;reason:string; differences?: BackupFieldDifference[] }> }
 export interface BackupPreview { previewHash: string; backupHash: string; canRestore: boolean; generatedGoalHistoryRows: number; total: { incoming: number; added: number; skipped: number; conflicts: number }; tables: BackupTablePreview[] }
 interface Plan { preview: BackupPreview; current: Record<BackupTable, BackupRow[]>; additions: Record<BackupTable, BackupRow[]> }
 const MAX_RESTORE_QUERIES = 48;
+// D1 bounds an individual string binding/result cell to 2 MiB. JSON escaping
+// can be larger than the original column text, so check encoded arrays too.
+const MAX_RESTORE_BIND_BYTES = 2 * 1024 * 1024 - 4096;
 function existingFinanceAffected(current: Record<BackupTable,BackupRow[]>, additions: Record<BackupTable,BackupRow[]>) {
   const existing = new Set(current.finance_accounts.map((row)=>row.id));
   return [...new Set([...additions.finance_balance_entries,...additions.finance_balance_changes].map((row)=>String(row.account_id)).filter((accountId)=>existing.has(accountId)))];
@@ -29,14 +34,20 @@ function finalRestoredTables(current: Record<BackupTable,BackupRow[]>, added: Re
   rows.finance_accounts=rows.finance_accounts.map((row)=>affected.has(String(row.id))?{...row,balance_revision:Number(row.balance_revision)+1}:row);
   return rows;
 }
-async function readTables(db: BackupDatabase, userId: string): Promise<Record<BackupTable, BackupRow[]>> {
+async function readTables(db: BackupDatabase, userId: string, limits: BackupLimits): Promise<Record<BackupTable, BackupRow[]>> {
   // One read snapshot, one query regardless of the number of business tables.
   // Each row is its own JSON value, avoiding a large json_group_array cell.
-  const union = BACKUP_TABLE_NAMES.map((table) => `SELECT '${table}' AS tableName,json_object(${BACKUP_TABLES[table].columns.map((column)=>`'${column}',${column}`).join(',')}) AS rowJson FROM ${table} WHERE user_id=?`).join(' UNION ALL ');
-  const result = await db.prepare(union+' LIMIT ?').bind(...BACKUP_TABLE_NAMES.map(()=>userId),BACKUP_MAX_ROWS+1).all<{tableName:BackupTable;rowJson:string}>();
-  if (result.results.length > BACKUP_MAX_ROWS) throw new BackupCapacityError('完整备份最多 20,000 行；当前版本不支持分卷恢复。');
+  const union = BACKUP_TABLE_NAMES.map((table) => {
+    const row=`json_object(${BACKUP_TABLES[table].columns.map((column)=>`'${column}',${column}`).join(',')})`;
+    return `SELECT '${table}' AS tableName,CASE WHEN length(CAST(${row} AS BLOB))>${MAX_RESTORE_BIND_BYTES-2} THEN NULL ELSE ${row} END AS rowJson FROM ${table} WHERE user_id=?`;
+  }).join(' UNION ALL ');
+  const result = await db.prepare(union+' LIMIT ?').bind(...BACKUP_TABLE_NAMES.map(()=>userId),limits.maxRows+1).all<{tableName:BackupTable;rowJson:string|null}>();
+  if (result.results.length > limits.maxRows) throw new BackupCapacityError('完整备份超过当前格式行数上限，请选择分卷格式；整组最多 40,000 行。');
   const rows = Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]])) as unknown as Record<BackupTable,BackupRow[]>;
-  for (const row of result.results) rows[row.tableName].push(JSON.parse(row.rowJson) as BackupRow);
+  for (const row of result.results) {
+    if(row.rowJson===null)throw new BackupCapacityError('单条历史记录经 JSON 编码后超过数据库安全容量，未截断导出。请联系维护者处理这条历史记录。');
+    rows[row.tableName].push(JSON.parse(row.rowJson) as BackupRow);
+  }
   for (const table of BACKUP_TABLE_NAMES) rows[table].sort((a,b) => 'sequence' in BACKUP_TABLES[table] ? Number(a.sequence)-Number(b.sequence) : backupRowKey(table,a).localeCompare(backupRowKey(table,b)));
   return rows;
 }
@@ -55,41 +66,63 @@ async function validateFavoriteDigests(backup: DataBackup) {
     }))delete compatible.provenance;
     if (await backupDigest(compatible) !== row.template_hash) backupFail('常用食物的内容摘要与模板不一致。');
   }
+  const directHash=async(value:unknown)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value))))].map((byte)=>byte.toString(16).padStart(2,'0')).join('');
+  for(const row of backup.tables.nutrition_template_operations){
+    const saved=JSON.parse(row.result_json as string);const{id,revision,createdAt:_createdAt,updatedAt:_updatedAt,archivedAt:_archivedAt,...definition}=saved;
+    const expected=row.action==='create'?['create',definition]:[row.action,id,revision-1,row.action==='archive'?null:definition];
+    if(await directHash(expected)!==row.request_hash)backupFail('食物模板操作回执摘要不一致。');
+  }
 }
-export async function exportDataBackup(db: BackupDatabase, userId: string, now = new Date().toISOString()): Promise<DataBackup> {
-  const backup: DataBackup = { kind: 'jiashu-os-backup', version: 2, exportedAt: now, tables: await readTables(db,userId) };
-  if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('完整备份超过 8 MiB；当前版本不支持分卷导出，请联系维护者扩容。');
+export async function exportDataBackup(db: BackupDatabase, userId: string, now = new Date().toISOString(), limits: BackupLimits = SINGLE_BACKUP_LIMITS): Promise<DataBackup> {
+  const backup: DataBackup = { kind: 'jiashu-os-backup', version: 2, exportedAt: now, tables: await readTables(db,userId,limits) };
+  if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > limits.maxBytes) throw new BackupCapacityError('完整备份超过当前格式容量，请选择分卷格式；整组最多 16 MiB。');
   const empty = Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,[]])) as unknown as Record<BackupTable,BackupRow[]>;
   const prepared=restorationRows(empty,backup.tables);
   const restoredTables=finalRestoredTables(empty,prepared.rows);
-  if (Object.values(restoredTables).reduce((sum,list)=>sum+list.length,0)>BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({...backup,tables:restoredTables})).byteLength>BACKUP_MAX_BYTES) throw new BackupCapacityError('备份包含恢复基线和饮食状态生成记录后将超过恢复容量；未截断记录。');
-  if (queryBudget(empty,prepared.rows) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('备份过大，超过安全恢复的查询预算；未截断记录。当前版本暂不支持分卷，请联系维护者扩容。');
+  if (Object.values(restoredTables).reduce((sum,list)=>sum+list.length,0)>limits.maxRows || new TextEncoder().encode(JSON.stringify({...backup,tables:restoredTables})).byteLength>limits.maxBytes) throw new BackupCapacityError('备份包含恢复基线和饮食状态生成记录后将超过恢复容量；未截断记录。');
+  if (queryBudget(empty,prepared.rows) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('备份过大，超过安全恢复的查询预算；未截断记录。');
   // Export and restore use exactly the same validator; never offer an unrestorable download.
-  const parsed = parseDataBackup(backup);
+  const parsed = parseDataBackup(backup,Date.now(),limits);
   await validateFavoriteDigests(parsed);
   return parsed;
 }
-async function planRestore(db: BackupDatabase, userId: string, backup: DataBackup): Promise<Plan> {
+async function planRestore(db: BackupDatabase, userId: string, backup: DataBackup, limits: BackupLimits): Promise<Plan> {
   await validateFavoriteDigests(backup);
-  const current = await readTables(db,userId);
+  const current = await readTables(db,userId,limits);
   const additions = Object.fromEntries(BACKUP_TABLE_NAMES.map((table) => [table,[]])) as unknown as Record<BackupTable, BackupRow[]>;
   const summaries: BackupTablePreview[] = [];
   for (const table of BACKUP_TABLE_NAMES) {
     const incoming = backup.tables[table]; const existing = new Map(current[table].map((row) => [backupRowKey(table,row),row]));
     let skipped = 0; let conflicts = 0;
     const conflictExamples: BackupTablePreview['conflictExamples'] = [];
-    const describe = (row: BackupRow, reason: string) => { if (conflictExamples.length < 5) conflictExamples.push({record:String(row.name ?? row.record_key ?? row.date ?? row.as_of_date ?? row.id ?? (row.ledger ? String(row.ledger)+' / '+row.currency : spec.label)),reason}); };
+    const describe = (row: BackupRow, reason: string) => {
+      if (conflictExamples.length >= 5) return;
+      const example: BackupTablePreview['conflictExamples'][number] = {record:String(row.name ?? row.record_key ?? row.date ?? row.as_of_date ?? row.id ?? (row.ledger ? String(row.ledger)+' / '+row.currency : spec.label)),reason};
+      conflictExamples.push(example);return example;
+    };
     const spec = BACKUP_TABLES[table];
     const candidates: BackupRow[] = [];
     for (const row of incoming) {
       const prior = existing.get(backupRowKey(table,row));
       if (!prior) candidates.push(row);
       else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row)) skipped++;
-      else { conflicts++; describe(row,'已有记录内容不同，需要先核对当前记录。'); }
+      else {
+        conflicts++;const example=describe(row,'已有记录内容不同，需要先核对当前记录。');
+        if(example) {
+          const display=(value:unknown)=>value===null?'未填写':String(value).slice(0,240)+(String(value).length>240?'…':'');
+          example.differences=spec.columns.filter((field)=>field!=='sequence'&&prior[field]!==row[field]).slice(0,8).map((field)=>({field,current:display(prior[field]),incoming:display(row[field])}));
+        }
+      }
     }
     if (table === 'health_goal_versions' && current.health_goal_settings.length && candidates.length) {
       for (const row of candidates) { conflicts++; describe(row,'已有健康目标的历史不能直接补写，请先核对完整版本。'); }
       candidates.length=0;
+    }
+    if(table==='finance_account_classifications'&&candidates.length){
+      const currentAccounts=new Set(current.finance_accounts.map((row)=>row.id));
+      for(let index=candidates.length-1;index>=0;index--)if(currentAccounts.has(candidates[index].account_id)){
+        conflicts++;describe(candidates[index],'已有账户的分类与归档历史不能补写，以免改变过去月份的口径。');candidates.splice(index,1);
+      }
     }
     // Global UUID columns can collide with another user's data. Inspect only IDs,
     // never return somebody else's fields to a preview or overwrite their rows.
@@ -102,7 +135,8 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     // when a partial merge contains existing records interleaved with additions.
     if ('sequence' in spec && incoming.some((r) => existing.has(backupRowKey(table,r)))) {
       const expected = incoming.map((r) => String(r.id));
-      const actual = [...current[table].filter((r) => expected.includes(String(r.id))),...additions[table]].map((r) => String(r.id));
+      const expectedIds = new Set(expected);
+      const actual = [...current[table].filter((r) => expectedIds.has(String(r.id))),...additions[table]].map((r) => String(r.id));
       if (expected.join('\n') !== actual.join('\n') && additions[table].length) { conflicts += additions[table].length; for (const row of additions[table]) describe(row,'历史记录顺序不同，无法安全合并。'); additions[table] = []; }
     }
     summaries.push({ table,label:spec.label,incoming:incoming.length,added:additions[table].length,skipped,conflicts,conflictExamples });
@@ -111,8 +145,8 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
   const prepared = restorationRows(current,additions);
   const restoredTables=finalRestoredTables(current,prepared.rows);
   if(restoredTables.nutrition_favorites.length>100)throw new BackupCapacityError('恢复后的常用食物将超过100项，未写入数据。请先整理常用食物后重新预览。');
-  if (Object.values(restoredTables).reduce((sum,list) => sum+list.length,0) > BACKUP_MAX_ROWS || new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables})).byteLength > BACKUP_MAX_BYTES) throw new BackupCapacityError('恢复后的数据将超过完整备份容量，未写入数据。');
-  if (!total.conflicts) parseDataBackup({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables});
+  if (Object.values(restoredTables).reduce((sum,list) => sum+list.length,0) > limits.maxRows || new TextEncoder().encode(JSON.stringify({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables})).byteLength > limits.maxBytes) throw new BackupCapacityError('恢复后的数据将超过完整备份容量，未写入数据。');
+  if (!total.conflicts) parseDataBackup({kind:'jiashu-os-backup',version:2,exportedAt:backup.exportedAt,tables:restoredTables},Date.now(),limits);
   if (total.added && queryBudget(current,prepared.rows) > MAX_RESTORE_QUERIES) throw new BackupCapacityError('当前数据与备份合并超过安全恢复的查询预算；未写入数据。请联系维护者扩容。');
   const backupHash = await backupDigest(backup);
   const previewHash = await backupDigest([userId,backupHash,current]);
@@ -130,15 +164,20 @@ function restorationRows(current: Record<BackupTable,BackupRow[]>, additions: Re
   }
   return {rows,syntheticRows};
 }
-export async function previewDataRestore(db: BackupDatabase, userId: string, input: unknown): Promise<BackupPreview> { return (await planRestore(db,userId,parseDataBackup(input))).preview; }
+export async function previewDataRestore(db: BackupDatabase, userId: string, input: unknown): Promise<BackupPreview> { const {backup,limits}=await parseBackupInput(input);return (await planRestore(db,userId,backup,limits)).preview; }
 function chunks(rows: BackupRow[]) {
-  const groups: BackupRow[][] = []; let group: BackupRow[] = []; let bytes = 0;
-  for (const row of rows) { const size = new TextEncoder().encode(JSON.stringify(row)).byteLength; if (group.length && bytes+size > 128*1024) { groups.push(group); group=[]; bytes=0; } group.push(row); bytes+=size; }
+  const groups: BackupRow[][] = []; let group: BackupRow[] = []; let bytes = 2;
+  for (const row of rows) {
+    const size = new TextEncoder().encode(JSON.stringify(row)).byteLength;
+    if(size+2>MAX_RESTORE_BIND_BYTES)throw new BackupCapacityError('单条历史记录经 JSON 编码后超过数据库安全容量，未写入数据。');
+    if (group.length && bytes+size+1 > 1024*1024) { groups.push(group); group=[]; bytes=2; }
+    bytes+=size+(group.length?1:0);group.push(row);
+  }
   if (group.length) groups.push(group); return groups;
 }
 function guard(db: BackupDatabase, sql: string, values: unknown[]) { return db.prepare(`SELECT CASE WHEN (${sql}) THEN 1 ELSE abs(-9223372036854775808) END AS restore_guard`).bind(...values); }
 export async function restoreDataBackup(db: BackupDatabase, userId: string, input: unknown, previewHash: string) {
-  const backup = parseDataBackup(input); const plan = await planRestore(db,userId,backup);
+  const {backup,limits} = await parseBackupInput(input); const plan = await planRestore(db,userId,backup,limits);
   if (previewHash !== plan.preview.previewHash) throw new BackupConflictError('预览后数据已变化，未写入记录。请重新预览。');
   if (!plan.preview.canRestore) throw new BackupConflictError();
   if (!plan.preview.total.added) return { ok:true, added:0, generatedGoalHistoryRows:0, skipped:plan.preview.total.skipped, tables:plan.preview.tables };

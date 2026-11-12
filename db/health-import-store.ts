@@ -33,7 +33,14 @@ async function snapshots(db: HealthImportDatabase, userId: string, keys: string[
     revision: row.revision, overrideJson: row.overrideJson, deleted: row.deleted }));
 }
 async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload) {
-  const hash = await digest(payload);
+  let hash = await digest(payload);
+  // The mobile adapter now retains source sleep timing. Retrying a report that
+  // was already acknowledged before that additive metadata existed must keep
+  // its original receipt, including a prior explicit batch rollback.
+  if(payload.measurements.some((measurement)=>measurement.sleepTiming)){
+    const legacyHash=await digest({...payload,measurements:payload.measurements.map((measurement)=>{const {sleepTiming: _timing,...legacy}=measurement;return legacy;})});
+    if(await batchRow(db,userId,legacyHash))hash=legacyHash;
+  }
   const state = await snapshots(db, userId, payload.measurements.map(measurementKey));
   const byKey = new Map(state.map((row) => [row.recordKey, row]));
   const days = payload.measurements.map(measurementDay).sort();

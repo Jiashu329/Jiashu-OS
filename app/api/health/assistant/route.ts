@@ -5,13 +5,13 @@ import { consumeAIQuota, readAIQuota } from '../../../../db/ai-usage-store';
 import { AIProviderError, callHealthAssistant } from '../../../../lib/ai-provider';
 import { AISettingsConflictError, readAISettings, resolveUserAIConfiguration } from '../../../../db/ai-settings-store';
 import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto';
-import { assistantRange, buildHealthAssistantContext, HealthAssistantContextError } from '../../../../lib/health-assistant-context';
+import { buildHealthAssistantContext, HealthAssistantContextError } from '../../../../lib/health-assistant-context';
 import { HealthAssistantChatError, MAX_ASSISTANT_REQUEST_BYTES, parseAssistantHistory, validAssistantText } from '../../../../lib/health-assistant-chat';
 import { readGoalSettings } from '../../../../db/health-goals-store';
 import { readWeightPlanSettings } from '../../../../db/weight-plan-store';
 import { readNutritionGoals } from '../../../../db/nutrition-goals-store';
-import { ASSISTANT_DAYS, assistantScopeKey, AssistantScopeError, parseAssistantDays, parseAssistantScope } from '../../../../lib/health-assistant-scope';
-import type { AssistantDays, AssistantScope } from '../../../../lib/health-assistant-scope';
+import { assistantScopeKey, AssistantScopeError, parseAssistantDays, parseAssistantScope, parseAssistantRange } from '../../../../lib/health-assistant-scope';
+import type { AssistantScope } from '../../../../lib/health-assistant-scope';
 import type { AIQuotaResult } from '../../../../db/ai-usage-store';
 import { renderAssistantMarkdown } from '../../../../lib/assistant-markdown';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated } from '../../_shared';
@@ -25,9 +25,9 @@ async function configuration(userId: string, expectedRevision?: number) {
 
 class AssistantRequestError extends Error {}
 
-async function contextFor(userId: string, period: AssistantDays, scope: AssistantScope, now: number) {
+async function contextFor(userId: string, period: {days:number;from:string;to:string}, scope: AssistantScope, now: number) {
   if (!env.DB) throw new Error('Health storage unavailable');
-  const range = assistantRange(period, now);
+  const range = period;
   const [health, nutritionSnapshot, goals, weightPlan, nutritionGoals] = await Promise.all([
     scope.metrics.length ? readHealthRange(userId, range.from, range.to, scope.metrics) : Promise.resolve({measurements:[]}),
     scope.includeNutrition ? readNutritionRangeSnapshot(env.DB, userId, { from: range.from, to: range.to }) : Promise.resolve({entries:[],statuses:[]}),
@@ -36,7 +36,7 @@ async function contextFor(userId: string, period: AssistantDays, scope: Assistan
     scope.includeGoals && scope.includeNutrition ? readNutritionGoals(env.DB,userId) : Promise.resolve(undefined),
   ]);
   return buildHealthAssistantContext({ measurements: health.measurements, nutrition: nutritionSnapshot.entries,
-    nutritionStatuses: scope.includeNutrition ? nutritionSnapshot.statuses : undefined, days: period, scope, goals, weightPlan, nutritionGoals, now });
+    nutritionStatuses: scope.includeNutrition ? nutritionSnapshot.statuses : undefined, days: period.days, from:period.from, to:period.to, scope, goals, weightPlan, nutritionGoals, now });
 }
 
 function failure(error: unknown, quota?: AIQuotaResult): Response {
@@ -58,17 +58,16 @@ export async function GET(request: Request) {
   if (!user) return unauthenticated();
   try {
     const query = new URL(request.url).searchParams;
-    if ([...query.keys()].some((key) => !['days','metrics','nutrition','goals'].includes(key)) || [...query.keys()].some((key) => query.getAll(key).length > 1)) throw new AssistantRequestError('请选择一个有效的时间范围。');
-    const value = query.get('days') ?? '7';
-    if (!(ASSISTANT_DAYS as readonly number[]).some((day) => String(day) === value)) throw new AssistantScopeError();
-    const period = parseAssistantDays(Number(value));
+    if ([...query.keys()].some((key) => !['days','from','to','metrics','nutrition','goals'].includes(key)) || [...query.keys()].some((key) => query.getAll(key).length > 1)) throw new AssistantRequestError('请选择一个有效的时间范围。');
+    const now = Date.now();
+    const period = parseAssistantRange(Object.fromEntries(['days','from','to'].filter((key)=>query.has(key)).map((key)=>[key,query.get(key)])),now);
+    const custom=query.has('from')||query.has('to');
     if (['nutrition','goals'].some((key) => query.has(key) && !['0','1'].includes(query.get(key)!))) throw new AssistantScopeError();
     const scope = parseAssistantScope({metrics:query.has('metrics') ? (query.get('metrics') ? query.get('metrics')!.split(',') : []) : [...parseAssistantScope().metrics], includeNutrition:query.get('nutrition') !== '0', includeGoals:query.get('goals') === '1'});
-    const now = Date.now();
     const selected = await contextFor(user.userId, period, scope, now);
     const config = await configuration(user.userId);
     const usage = await readAIQuota(env.DB, user.userId, now);
-    return json({ usage, scopeKey:assistantScopeKey(period,scope), configuration: { ready: config.ready, provider: config.providerLabel, model: config.model, message: config.message }, ...selected });
+    return json({ usage, scopeKey:assistantScopeKey(period.days,scope,custom?period:undefined), configuration: { ready: config.ready, provider: config.providerLabel, model: config.model, message: config.message }, ...selected });
   } catch (error) { return failure(error); }
 }
 
@@ -104,20 +103,22 @@ export async function POST(request: Request) {
     const raw = await body(request);
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AssistantRequestError('请填写问题并选择时间范围。');
     const input = raw as Record<string, unknown>;
-    if (Object.keys(input).some((key) => !['question', 'days', 'shareHealthData', 'history', 'scope', 'historyScope'].includes(key))) throw new AssistantRequestError('本次提交包含不支持的字段。');
-    const period = parseAssistantDays(input.days);
+    if (Object.keys(input).some((key) => !['question', 'days', 'from', 'to', 'shareHealthData', 'history', 'scope', 'historyScope'].includes(key))) throw new AssistantRequestError('本次提交包含不支持的字段。');
+    const now=Date.now();
+    if(!Object.hasOwn(input,'from')&&!Object.hasOwn(input,'to'))parseAssistantDays(input.days);
+    const period = parseAssistantRange(Object.fromEntries(['days','from','to'].filter((key)=>Object.hasOwn(input,key)).map((key)=>[key,input[key]])),now);
+    const custom=Object.hasOwn(input,'from')||Object.hasOwn(input,'to');
     const scope = parseAssistantScope(input.scope);
     if (input.shareHealthData !== true) return json({ error: '请先确认将所选范围的健康摘要与问题发送至 MiniMax。', code: 'HEALTH_DATA_CONSENT_REQUIRED' }, 400);
     if (!validAssistantText(input.question, 1000)) {
       throw new AssistantRequestError('请填写 1–1000 个字符的问题。');
     }
     const history = parseAssistantHistory(input.history);
-    if (input.historyScope !== undefined && (typeof input.historyScope !== 'string' || input.historyScope !== assistantScopeKey(period,scope))) throw new AssistantRequestError('资料范围已变化，请开始新对话后再提问。');
+    if (input.historyScope !== undefined && (typeof input.historyScope !== 'string' || input.historyScope !== assistantScopeKey(period.days,scope,custom?period:undefined))) throw new AssistantRequestError('资料范围已变化，请开始新对话后再提问。');
     if (!env.DB) throw new Error('AI settings storage unavailable');
     const savedSettings = await readAISettings(env.DB, user.userId);
     const config = await configuration(user.userId, savedSettings.revision);
     if (!config.ready) return json({ error: config.message, code: 'AI_NOT_CONFIGURED' }, 503);
-    const now = Date.now();
     const selected = await contextFor(user.userId, period, scope, now);
     if (!selected.hasData) return json({ error: '这个时间范围没有健康或饮食记录，请先同步或补录数据。', code: 'HEALTH_ASSISTANT_NO_DATA' }, 400);
     quota = await consumeAIQuota(env.DB, user.userId, now);
@@ -127,6 +128,6 @@ export async function POST(request: Request) {
     const activeConfig = await configuration(user.userId, savedSettings.revision);
     const result = await callHealthAssistant(activeConfig, { question: input.question.trim(), context: selected.context,
       ...(history.length ? { history } : {}) });
-    return json({ ...result, answerHtml: renderAssistantMarkdown(result.answer, selected.sources), usage: {remainingToday:quota.remainingToday,retryAfter:0}, scopeKey:assistantScopeKey(period,scope), generatedAt: new Date().toISOString(), range: selected.context.range, sources: selected.sources });
+    return json({ ...result, answerHtml: renderAssistantMarkdown(result.answer, selected.sources), usage: {remainingToday:quota.remainingToday,retryAfter:0}, scopeKey:assistantScopeKey(period.days,scope,custom?period:undefined), generatedAt: new Date().toISOString(), range: selected.context.range, sources: selected.sources });
   } catch (error) { return failure(error, quota); }
 }

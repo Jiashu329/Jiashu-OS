@@ -5,6 +5,8 @@ import { buildNutritionReview, parseNutritionQuery, parseNutritionCreate, presen
 import { buildNutritionInsight, parseNutritionInsightQuery } from '../../lib/nutrition-review.ts';
 import { parseNutritionGoals } from '../../lib/nutrition-goals.ts';
 import { BROWSER_FIXTURE_OWNER } from '../../scripts/browser-fixture.mjs';
+import { handleSyntheticP2 } from './p2-api.mjs';
+import { handleSyntheticNutritionTemplates } from './nutrition-templates-api.mjs';
 
 export const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
 export const DAY = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
@@ -22,7 +24,7 @@ export function syntheticState() {
     goals: { calories: null, carbs: null, protein: null, fat: null, revision: 0, createdAt: null, updatedAt: null },
     accounts: [{ id: ACCOUNT_ID, name: '合成验收账户', type: 'bank', ledger: 'personal', currency: 'CNY',
       note: '', amount: '100.00', balanceMinor: '10000', asOfDate: DAY, archived: false, archivedAt: null,
-      metadataRevision: 1, balanceRevision: 1, createdAt: stamp(), updatedAt: stamp() }],
+      metadataRevision: 1, balanceRevision: 1, liquidityKind: 'liquid', usableBps: 10000, createdAt: stamp(), updatedAt: stamp() }],
     rejectNextAccountEdit: false, rejectNextGoalEdit: false, rejectNextNutritionSave: false, loseNextBatchReply: false, nutritionReplays: new Map(),
   };
 }
@@ -33,10 +35,12 @@ export async function interceptSyntheticAPI(context, state) {
     if (url.origin !== 'http://127.0.0.1:4175') { state.externalRequests.push(url.origin); await route.abort('blockedbyclient'); return; }
     if (!url.pathname.startsWith('/api/')) { await route.continue(); return; }
     const method = request.method(), body = request.postDataJSON() ?? null;
-    state.requests.push({ path: url.pathname, method, body, key: request.headers()['idempotency-key'] ?? null });
+    state.requests.push({ path: url.pathname, search: url.search, method, body, key: request.headers()['idempotency-key'] ?? null });
     const send = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Cache-Control': 'no-store' }, body: JSON.stringify(value) });
     const fail = (message, code, status = 409) => send({ error: message, code }, status);
     if (url.pathname === '/api/session') return send({ userId: state.owner });
+    if (await handleSyntheticNutritionTemplates({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
+    if (await handleSyntheticP2({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
     if (url.pathname === '/api/overview') {
       const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null },
         personal: { accounts: state.accounts }, family: { accounts: [] },

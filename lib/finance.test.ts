@@ -233,3 +233,8 @@ test('account write commands require an explicit positive read revision without 
   for(const expectedRevision of [undefined,null,0,-1,1.5,'1',Number.MAX_SAFE_INTEGER+1])invalid(()=>parseAccountPatchCommand({name:'旧页面',expectedRevision}),'expectedRevision');
   invalid(()=>parseAccountPatchCommand({expectedRevision:1}));
 });
+
+test('account liquidity patches require a reviewed degree and an exact bounded integer percentage',()=>{
+ assert.deepEqual(parseAccountPatchCommand({liquidityKind:'restricted',usableBps:3333,expectedRevision:1}),{liquidityKind:'restricted',usableBps:3333,expectedRevision:1});
+ for(const patch of [{liquidityKind:'unknown',usableBps:0},{liquidityKind:'restricted',usableBps:10001},{liquidityKind:'restricted',usableBps:33.33},{liquidityKind:'restricted',usableBps:'3333'},{liquidityKind:'unreviewed',usableBps:10000},{liquidityKind:'illiquid',usableBps:1},{usableBps:100},{liquidityKind:'liquid'}])assert.throws(()=>parseAccountPatchCommand({...patch,expectedRevision:1}),FinanceValidationError);
+});

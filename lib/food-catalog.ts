@@ -1,11 +1,17 @@
 import catalogData from '../data/food-catalog.json' with { type: 'json' };
 import sourceData from '../data/food-catalog-source.json' with { type: 'json' };
+import releaseManifest from '../data/food-catalog-releases.json' with { type: 'json' };
+import chineseRelease from '../data/food-catalog-releases/tfda-2024-03-29-cn2.json' with { type: 'json' };
 
 export interface FoodSource { name: string; url: string; recordId: string; version: string }
 export interface FoodItem {
+  /** Immutable application catalog release, distinct from the upstream source version. */
+  catalogRelease?: string;
   id: string;
   name: string;
   aliases: string[];
+  /** Broader discovery terms never used for automatic AI identity matching. */
+  searchAliases?: string[];
   category: string;
   state: string;
   description?: string;
@@ -17,6 +23,8 @@ export interface FoodItem {
   portions: Array<{ unit: string; grams: number; label?: string; estimated: boolean }>;
 }
 export interface FoodSnapshot {
+  /** Missing on pre-versioning snapshots, which always belong to LEGACY_FOOD_CATALOG_RELEASE. */
+  catalogRelease?: string;
   foodId: string;
   foodName: string;
   amount: number;
@@ -35,12 +43,34 @@ export interface FoodSnapshot {
   estimated: boolean;
 }
 
-export const FOOD_CATALOG_SOURCE = Object.freeze(sourceData);
-const catalog = catalogData as FoodItem[];
-const byId = new Map(catalog.map((food) => [food.id.toLowerCase(), food]));
+export interface FoodSelection { id: string; amount: number; unit: string; catalogRelease?: string }
+export const LEGACY_FOOD_CATALOG_RELEASE = releaseManifest.legacy;
+export const ACTIVE_FOOD_CATALOG_RELEASE = releaseManifest.active;
+export const FOOD_CATALOG_RELEASES = Object.freeze(releaseManifest.releases.map((release) => Object.freeze({ ...release,
+  sourceVersion: sourceData.version, sourceSnapshotDate: sourceData.snapshotDate,
+  active: release.id === ACTIVE_FOOD_CATALOG_RELEASE })));
+export const FOOD_CATALOG_SOURCE = Object.freeze({ ...sourceData, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE,
+  catalogVersion: chineseRelease.label, catalogUpdatedAt: chineseRelease.publishedAt,
+  description: sourceData.description + chineseRelease.description });
+function freezeFood(food: FoodItem): FoodItem {
+  return Object.freeze({ ...food, source: Object.freeze({ ...food.source }),
+    aliases: Object.freeze([...food.aliases]) as unknown as string[],
+    ...(food.searchAliases ? { searchAliases: Object.freeze([...food.searchAliases]) as unknown as string[] } : {}),
+    portions: Object.freeze(food.portions.map((portion) => Object.freeze({ ...portion }))) as unknown as FoodItem['portions'] });
+}
+const baseline = (catalogData as FoodItem[]).map((food) => freezeFood({ ...food, catalogRelease: LEGACY_FOOD_CATALOG_RELEASE }));
+const additions = chineseRelease.aliases as Record<string, string[]>;
+const referenceFoods = new Set(chineseRelease.referencePortionFoodIds);
+const catalog: FoodItem[] = baseline.map((food) => freezeFood({ ...food, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE,
+  searchAliases: additions[food.id] ?? [],
+  portions: [...food.portions, ...(referenceFoods.has(food.id) ? chineseRelease.referencePortions : [])] }));
+const releases = new Map<string, Map<string, FoodItem>>([
+  [LEGACY_FOOD_CATALOG_RELEASE, new Map(baseline.map((food) => [food.id.toLowerCase(), food]))],
+  [ACTIVE_FOOD_CATALOG_RELEASE, new Map(catalog.map((food) => [food.id.toLowerCase(), food]))],
+]);
 const normalize = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase('en').replace(/\s+/g, '');
 const searchable = catalog.map((food) => ({ food, name: normalize(food.name),
-  aliases: food.aliases.map(normalize), category: normalize(food.category), description: normalize(food.description ?? '') }));
+  aliases: [...food.aliases, ...(food.searchAliases ?? [])].map(normalize), category: normalize(food.category), description: normalize(food.description ?? '') }));
 const commonFoods = ['白饭', '鸡蛋(白壳)', '全脂鲜乳平均值', '香蕉', '富士苹果', '传统豆腐', '青花菜', '鸡胸肉', '燕麦片'];
 
 /** Bounded, offline lookup; food states remain separate records. */
@@ -64,8 +94,8 @@ export function searchFoods(query: string, limit = 20): FoodItem[] {
     .slice(0, limit).map((item) => item.food);
 }
 
-export function getFood(id: string): FoodItem | null {
-  return typeof id === 'string' ? byId.get(id.trim().toLowerCase()) ?? null : null;
+export function getFood(id: string, catalogRelease = ACTIVE_FOOD_CATALOG_RELEASE): FoodItem | null {
+  return typeof id === 'string' ? releases.get(catalogRelease)?.get(id.trim().toLowerCase()) ?? null : null;
 }
 
 function fraction(value: number): { numerator: bigint; denominator: bigint } {
@@ -76,8 +106,12 @@ function fraction(value: number): { numerator: bigint; denominator: bigint } {
 }
 
 /** Calculate from the selected record, never from a model-supplied calorie. */
-export function calculateFoodSelection(input: { id: string; amount: number; unit: string }): FoodSnapshot {
-  const food = getFood(input?.id);
+export function calculateFoodSelection(input: FoodSelection): FoodSnapshot {
+  // Old queued request bodies must keep the same source forever. New search and
+  // parser selections always send their explicit application catalog release.
+  const catalogRelease = input?.catalogRelease ?? LEGACY_FOOD_CATALOG_RELEASE;
+  if (typeof catalogRelease !== 'string' || !releases.has(catalogRelease)) throw new Error('找不到这版食物库，请保留原始来源或重新选择当前食物。');
+  const food = getFood(input?.id, catalogRelease);
   if (!food) throw new Error('找不到这项食物，请重新从食物库选择。');
   if (typeof input.amount !== 'number' || !Number.isFinite(input.amount) || input.amount <= 0
     || !/^\d+(?:\.\d{1,3})?$/.test(input.amount.toString())) throw new Error('数量需大于0，最多保留3位小数。');
@@ -108,10 +142,42 @@ export function calculateFoodSelection(input: { id: string; amount: number; unit
     return result;
   };
   const carbsTenth = macroTenth(food.carbsPer100g), proteinTenth = macroTenth(food.proteinPer100g), fatTenth = macroTenth(food.fatPer100g);
-  return { foodId: food.id, foodName: food.name, amount: input.amount, unit: portion?.unit ?? unit,
+  return { catalogRelease, foodId: food.id, foodName: food.name, amount: input.amount, unit: portion?.unit ?? unit,
     grams, kcalPer100g: food.kcalPer100g, caloriesTenth,
     ...(carbsTenth !== undefined ? { carbsPer100g: food.carbsPer100g, carbsTenth } : {}),
     ...(proteinTenth !== undefined ? { proteinPer100g: food.proteinPer100g, proteinTenth } : {}),
     ...(fatTenth !== undefined ? { fatPer100g: food.fatPer100g, fatTenth } : {}),
     source: { ...food.source }, estimated: portion?.estimated ?? false };
+}
+
+/** A persisted snapshot can only claim values present in its immutable release.
+ * Old snapshots may omit macros added later, but supplied values must match.
+ * Return the original shape: adding fields would change historical fingerprints.
+ */
+export function validateFoodSnapshot(value: unknown): FoodSnapshot {
+  const fail = (): never => { throw new Error('食物来源、版本、克重或营养值与可信食物库不一致。'); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
+  const raw = value as Record<string, unknown>;
+  const required = ['foodId', 'foodName', 'amount', 'unit', 'grams', 'kcalPer100g', 'caloriesTenth', 'source', 'estimated'];
+  const optional = ['catalogRelease', 'carbsPer100g', 'proteinPer100g', 'fatPer100g', 'carbsTenth', 'proteinTenth', 'fatTenth'];
+  if (required.some((key) => !Object.hasOwn(raw, key)) || Object.keys(raw).some((key) => !required.includes(key) && !optional.includes(key))) return fail();
+  if (typeof raw.foodId !== 'string' || typeof raw.amount !== 'number' || typeof raw.unit !== 'string'
+    || (Object.hasOwn(raw, 'catalogRelease') && (typeof raw.catalogRelease !== 'string' || raw.catalogRelease.length > 100))) return fail();
+  const trusted = calculateFoodSelection({ id: raw.foodId, amount: raw.amount, unit: raw.unit,
+    ...(Object.hasOwn(raw, 'catalogRelease') ? { catalogRelease: raw.catalogRelease as string } : {}) });
+  for (const key of [...required.filter((key) => key !== 'source'), ...optional.filter((key) => Object.hasOwn(raw, key))]) {
+    if (raw[key] !== (trusted as unknown as Record<string, unknown>)[key]) return fail();
+  }
+  if (!raw.source || typeof raw.source !== 'object' || Array.isArray(raw.source)) return fail();
+  const source = raw.source as Record<string, unknown>;
+  const sourceKeys = ['name', 'url', 'recordId', 'version'] as const;
+  if (Object.keys(source).length !== sourceKeys.length || sourceKeys.some((key) => source[key] !== trusted.source[key])) return fail();
+  return { ...raw, source: { ...trusted.source } } as unknown as FoodSnapshot;
+}
+
+/** Rescaling an old entry retains its original source; selecting a search result is an explicit refresh. */
+export function foodSelectionFromSnapshot(value: FoodSnapshot): FoodSelection {
+  const snapshot = validateFoodSnapshot(value);
+  return { id: snapshot.foodId, amount: snapshot.amount, unit: snapshot.unit,
+    catalogRelease: snapshot.catalogRelease ?? LEGACY_FOOD_CATALOG_RELEASE };
 }

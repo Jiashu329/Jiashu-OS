@@ -191,3 +191,11 @@ test('account archive conflicts require reading latest and a fresh explicit conf
   f.click(f.el('archive-submit')); await settled(() => service.writes.length === 2 && !f.el('archive-dialog').hasAttribute('open'));
   assert.equal(service.writes[1].body.expectedRevision, 2); assert.equal(service.accounts.get(initialId)!.archived, true);
 });
+
+test('editing usable percentage sends exact basis points under metadata CAS without changing balance input',async()=>{
+ const service=server(true),f=fixture('owner-A',sessionStorage(),service);await settled(()=>f.el('status-banner').hidden);f.click(f.document.querySelector('[data-action="edit"]')!);
+ f.el('account-liquidity').innerHTML='<option value="restricted" selected>部分可动用</option>';f.value('account-usable','33.33');f.submit('account-form');
+ await settled(()=>service.writes.length===1&&!f.el('account-dialog').hasAttribute('open'));
+ assert.equal(service.writes[0].body.usableBps,3333);assert.equal(service.writes[0].body.liquidityKind,'restricted');assert.equal(service.writes[0].body.expectedRevision,1);assert.equal(Object.hasOwn(service.writes[0].body,'amount'),false);assert.equal(service.accounts.get(initialId)!.balanceMinor,'10000');
+ f.click(f.document.querySelector('[data-action="edit"]')!);f.value('account-usable','33.333');f.submit('account-form');assert.equal(service.writes.length,1);assert.match(f.el('account-error').textContent!,/最多两位小数/);
+});

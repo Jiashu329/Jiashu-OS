@@ -148,3 +148,11 @@ test('reserve settings remain independent for every owner, ledger and currency',
   const bob = await readRunway(await f.get()); assert.ok(bob.settings); assert.equal(bob.settings.monthlyExpenseMinor, '7000'); assert.deepEqual(bob.accounts.map((account) => account.id), [ids.bob]); f.signIn('alice');
   const personal = await readRunway(await f.get()); assert.ok(personal.settings); assert.equal(personal.settings.monthlyExpenseMinor, '10000'); const family = await readRunway(await f.get('ledger=family&currency=CNY')); assert.ok(family.settings); assert.equal(family.settings.monthlyExpenseMinor, '500'); assert.equal(f.count(), 4);
 });
+
+test('runway returns exact reviewed liquidity contributions without rewriting saved selection or targets',async(t)=>{
+ const f=await fixture(t);const initial=await readRunway(await f.put(input({accountIds:[ids.cny]})));assert.equal(initial.settings!.targetMonths,6);
+ f.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='restricted',usable_bps=3333 WHERE id=?").run(ids.cny);
+ const reviewed=await readRunway(await f.get());assert.equal(reviewed.progress!.nominalMinor,'9007199254740993');assert.equal(reviewed.progress!.currentMinor,(BigInt('9007199254740993')*BigInt(3333)/BigInt(10000)).toString());
+ f.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='unreviewed',usable_bps=0 WHERE id=?").run(ids.cny);
+ const unreviewed=await readRunway(await f.get());assert.equal(unreviewed.progress!.currentMinor,'0');assert.equal(unreviewed.progress!.unreviewedMinor,'9007199254740993');assert.equal(unreviewed.progress!.excludedMinor,'9007199254740993');assert.equal(unreviewed.settings!.revision,initial.settings!.revision);assert.deepEqual(unreviewed.settings!.accountIds,[ids.cny]);assert.equal(unreviewed.settings!.monthlyExpenseMinor,'10000');assert.equal(unreviewed.settings!.targetMonths,6);
+});

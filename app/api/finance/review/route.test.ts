@@ -256,3 +256,11 @@ test('missing storage fails explicitly rather than presenting an empty monthly l
   assert.equal((await readError(response)).code, 'FINANCE_UNAVAILABLE');
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
 });
+
+test('review API keeps pre-change bank assets after later debt reclassification and archive',async(t)=>{
+ const f=fixture(t);f.account({id:'a',type:'loan',archivedAt:'2026-11-06T02:00:00Z'});f.balance('a','10000','2026-10-15');
+ for(const [revision,effective,type,archived,origin]of [[1,'1970-01-01','bank',0,'opening'],[2,'2026-11-05','loan',0,'change'],[3,'2026-11-06','loan',1,'change']] as const)f.sqlite.prepare('INSERT INTO finance_account_classifications(user_id,account_id,revision,effective_from,type,archived,origin,recorded_at)VALUES(?,?,?,?,?,?,?,?)').run('alice','a',revision,effective,type,archived,origin,'2026-11-06T02:00:00Z');
+ const october=await readReview(await f.get('month=2026-10'));assert.equal(october.snapshot.assetsMinor,'10000');assert.equal(october.snapshot.netMinor,'10000');
+ const november=await readReview(await f.get());assert.equal(november.previous.netMinor,'10000');assert.equal(november.snapshot.netMinor,'0');assert.equal(november.change.membershipNetMinor,'-10000');assert.equal(november.trend.find(p=>p.month==='2026-10')!.netMinor,'10000');
+ f.signIn('bob');const foreign=await readReview(await f.get());assert.equal(foreign.snapshot.netMinor,null);assert.deepEqual(foreign.historicalAssumptions,[]);
+});

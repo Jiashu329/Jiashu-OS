@@ -10,12 +10,18 @@ export interface WeightPlanInput {
 }
 export interface WeightPlanSettings extends WeightPlanInput { createdAt: string; updatedAt: string; revision?: number }
 export interface WeightPlanPoint { day: string; value: number }
+export interface WeightChangeRate {
+  from: string | null; to: string | null; recordedDays: number; daysBetween: number;
+  changeKg: number | null; kgPerWeek: number | null;
+}
 export interface WeightObservations {
   latestWeight: number | null;
   latestDate: string | null;
   average7: number | null;
   recordedDays7: number;
   points: WeightPlanPoint[];
+  rate7: WeightChangeRate;
+  rate30: WeightChangeRate;
 }
 export interface WeightPlanProgress {
   direction: 'loss' | 'gain' | 'maintain';
@@ -25,6 +31,7 @@ export interface WeightPlanProgress {
   referencePoints: WeightPlanPoint[];
   remainingDays: number;
   status: 'active' | 'achieved' | 'ended' | 'missing';
+  sustained: { requiredDays: 7; recordedDays: number; qualifyingDays: number; achieved: boolean };
 }
 export interface WeightPlanReview {
   today: string;
@@ -53,6 +60,14 @@ function shiftDay(day: string, offset: number) {
 }
 function calendarDifference(later: string, earlier: string) {
   return Math.round((Date.parse(later + 'T12:00:00Z') - Date.parse(earlier + 'T12:00:00Z')) / 86400000);
+}
+
+/** Uses two actual daily last values, exposing their span instead of inventing a missing anchor. */
+export function weightChangeRate(points: readonly WeightPlanPoint[], today: string, days: 7 | 30): WeightChangeRate {
+  const observed=points.filter((point)=>point.day>=shiftDay(today,1-days)&&point.day<=today).sort((a,b)=>a.day.localeCompare(b.day));
+  const first=observed[0],last=observed.at(-1),span=first&&last?calendarDifference(last.day,first.day):0;
+  const change=span>0?last!.value-first!.value:null;
+  return {from:first?.day??null,to:last?.day??null,recordedDays:observed.length,daysBetween:span,changeKg:change,kgPerWeek:change===null?null:change/span*7};
 }
 
 /** User-provided settings are required in full; no weight or target is inferred. */
@@ -90,7 +105,7 @@ export function buildWeightPlanReview(settings: WeightPlanSettings | null, measu
   const latest = points.at(-1);
   const observations: WeightObservations = {
     latestWeight: latest?.value ?? null, latestDate: latest?.day ?? null,
-    average7, recordedDays7: recent.length, points,
+    average7, recordedDays7: recent.length, points,rate7:weightChangeRate(points,today,7),rate30:weightChangeRate(points,today,30),
   };
   let progress: WeightPlanProgress | null = null;
   if (settings?.enabled) {
@@ -105,11 +120,14 @@ export function buildWeightPlanReview(settings: WeightPlanSettings | null, measu
       : direction === 'gain' ? Math.max(0, settings.targetWeight - average7) : Math.abs(average7 - settings.targetWeight);
     const progressPercent = average7 === null || direction === 'maintain' ? null
       : Math.max(0, Math.min(100, (average7 - settings.baselineWeight) / distance * 100));
+    const cycleRecent=recent.filter((point)=>point.day>=settings.startDate);
+    const qualifyingDays=cycleRecent.filter((point)=>direction==='loss'?point.value<=settings.targetWeight:direction==='gain'?point.value>=settings.targetWeight:false).length;
     progress = {
       direction, gapKg, progressPercent, referenceWeight,
       referencePoints: [{ day: settings.startDate, value: settings.baselineWeight }, { day: settings.deadline, value: settings.targetWeight }],
       remainingDays: Math.max(0, calendarDifference(settings.deadline, today)),
       status: achieved ? 'achieved' : settings.deadline < today ? 'ended' : average7 === null ? 'missing' : 'active',
+      sustained:{requiredDays:7,recordedDays:cycleRecent.length,qualifyingDays,achieved:direction!=='maintain'&&cycleRecent.length===7&&qualifyingDays===7},
     };
   }
   return { today, timezone: HEALTH_TIMEZONE, settings: settings ? { ...settings } : null, observations, progress };

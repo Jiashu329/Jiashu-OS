@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
 import { assertBrowserFixtureEnvironment, renderBrowserFixture } from './browser-fixture.mjs';
 
 test('browser acceptance fixture refuses managed preview substitution and exposes only known synthetic pages', () => {
@@ -9,4 +10,14 @@ test('browser acceptance fixture refuses managed preview substitution and expose
   assert.equal(renderBrowserFixture('/unknown'), null);
   assert.match(renderBrowserFixture('/health/nutrition'), /browser-acceptance-synthetic-owner/);
   assert.match(renderBrowserFixture('/health/records'), /id="records-dialog"/);
+});
+
+test('all synthetic fixture pages emit parseable inline scripts', () => {
+  for (const pathname of ['/', '/health', '/health/nutrition', '/health/records', '/health/weight-plan', '/finance', '/finance/goals', '/finance/runway', '/finance/review', '/data/backup', '/sync/templates']) {
+    const html = renderBrowserFixture(pathname);
+    assert.ok(html, pathname);
+    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter(([, attributes]) => !/type=["']application\//.test(attributes));
+    assert.ok(scripts.length, pathname);
+    for (const [, , source] of scripts) assert.doesNotThrow(() => new vm.Script(source, { filename: pathname + '.inline.js' }));
+  }
 });

@@ -21,6 +21,14 @@ test('sync restores only a complete valid filter snapshot and never copies arbit
   assert.deepEqual(readInitialHealthView('/health', '?metric=weight&days=7', { healthView: { metric: 'sleep', days: 180 } }), { metric: 'weight', days: 7 });
 });
 
+test('custom dates persist exact bounds through page and sync history without changing legacy days links',()=>{
+  const view=readHealthView('?metric=sleep&from=2024-02-28&to=2024-03-01');
+  assert.deepEqual(view,{metric:'sleep',days:3,from:'2024-02-28',to:'2024-03-01'});
+  assert.equal(healthViewPath(view.metric,view.days,false,view),'/health?metric=sleep&from=2024-02-28&to=2024-03-01');
+  assert.deepEqual(readInitialHealthView('/sync','',{healthView:view}),view);
+  assert.match(readHealthView('?metric=sleep&from=2024-02-30&to=2024-03-01').rangeError!,/有效/);
+});
+
 test('literal browser navigation stays equivalent to typed helpers without captured server names', () => {
   const browser = runInNewContext(HEALTH_NAVIGATION_SCRIPT + '\n({readHealthView,healthViewPath,readInitialHealthView})', { URLSearchParams }) as {
     readHealthView: typeof readHealthView; healthViewPath: typeof healthViewPath; readInitialHealthView: typeof readInitialHealthView;

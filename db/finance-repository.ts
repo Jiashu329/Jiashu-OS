@@ -47,7 +47,7 @@ export async function financeAccountDetails(userId: string, accountId: string) {
   const account = presentAccount(row);
   const balances = snapshot.balances.map((entry) => presentBalance(entry, account.currency));
   const changes = await financeBalanceChangeHistory(database(), userId, accountId);
-  return { account, balances, history: balances, changes };
+  return { account, balances, history: balances, changes, classifications: snapshot.classifications };
 }
 
 export async function previewBalanceChange(userId: string, accountId: string, entryId: string, input: FinanceBalanceChangeInput) {
@@ -80,5 +80,5 @@ export async function financeExport(userId: string, ledger: Ledger) {
   const accounts = snapshot.accounts.map(presentAccount);
   const currencies = new Map(accounts.map((row) => [row.id, row.currency]));
   const balances = snapshot.balances.map((row) => presentBalance(row, currencies.get(row.accountId)!));
-  return { version: 1, kind: 'jiashu-finance-backup', ledger, exportedAt: new Date().toISOString(), accounts, balances };
+  return { version: 1, kind: 'jiashu-finance-backup', ledger, exportedAt: new Date().toISOString(), accounts, balances, classifications: snapshot.classifications };
 }

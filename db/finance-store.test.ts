@@ -421,3 +421,41 @@ test('account details keep current balance and history in one snapshot during a 
   assert.equal(unauthorized.account, null);
   assert.deepEqual(unauthorized.balances, []);
 });
+
+test('classification changes append effective daily history atomically while metadata-only changes and retries keep it stable', async(t)=>{
+  const {db,sqlite}=fixture(t),key=crypto.randomUUID();
+  const id=await createFinanceAccount(db,'alice',initial,'2026-09-01T02:00:00Z',key);
+  assert.deepEqual(sqlite.prepare('SELECT revision,effective_from,type,archived,origin FROM finance_account_classifications').all().map(row=>({...row})),[{revision:1,effective_from:'1970-01-01',type:'bank',archived:0,origin:'opening'}]);
+  await patchFinanceAccount(db,'alice',id,{name:'renamed',expectedRevision:1},'2026-10-01T02:00:00Z');
+  await patchFinanceAccount(db,'alice',id,{type:'loan',expectedRevision:2},'2026-11-04T16:30:00Z');
+  await patchFinanceAccount(db,'alice',id,{archived:true,expectedRevision:3},'2026-11-05T03:00:00Z');
+  await patchFinanceAccount(db,'alice',id,{archived:false,expectedRevision:4},'2026-11-05T04:00:00Z');
+  const rows=sqlite.prepare('SELECT revision,effective_from,type,archived,origin FROM finance_account_classifications ORDER BY revision').all().map(row=>({...row}));
+  assert.deepEqual(rows,[{revision:1,effective_from:'1970-01-01',type:'bank',archived:0,origin:'opening'},{revision:3,effective_from:'2026-11-05',type:'loan',archived:0,origin:'change'},{revision:4,effective_from:'2026-11-05',type:'loan',archived:1,origin:'change'},{revision:5,effective_from:'2026-11-05',type:'loan',archived:0,origin:'change'}]);
+  await assert.rejects(patchFinanceAccount(db,'alice',id,{type:'cash',expectedRevision:2}),FinanceMetadataConflictError);
+  assert.equal(await patchFinanceAccount(db,'bob',id,{type:'cash',expectedRevision:5}),false);
+  await createFinanceAccount(db,'alice',initial,'2026-12-01T02:00:00Z',key);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM finance_account_classifications').get()!.count,4);
+  assert.deepEqual((await findFinanceAccountSnapshot(db,'bob',id)).classifications,[]);
+  sqlite.exec("CREATE TRIGGER reject_classification BEFORE INSERT ON finance_account_classifications WHEN NEW.origin='change' BEGIN SELECT RAISE(ABORT,'synthetic history failure'); END");
+  await assert.rejects(patchFinanceAccount(db,'alice',id,{type:'cash',expectedRevision:5}));
+  assert.equal((await findFinanceAccount(db,'alice',id))!.type,'loan');assert.equal((await findFinanceAccount(db,'alice',id))!.metadataRevision,5);
+});
+
+test('liquidity defaults are conservative and reviewed ratios change independently of balances and historical classification',async(t)=>{
+ const {db,sqlite}=fixture(t);for(const type of ['bank','cash','investment','receivable','other_asset','property','loan']){
+  const id=await createFinanceAccount(db,'alice',{...initial,type},sameTime),a=(await findFinanceAccount(db,'alice',id))!;
+  assert.equal(a.usableBps,['bank','cash'].includes(type)?10000:0);assert.equal(a.liquidityKind,['bank','cash'].includes(type)?'liquid':['property','loan'].includes(type)?'illiquid':'unreviewed');
+  const fingerprint=sqlite.prepare('SELECT creation_hash AS hash FROM finance_accounts WHERE id=?').get(id)!.hash;
+  await patchFinanceAccount(db,'alice',id,{liquidityKind:'restricted',usableBps:2525,expectedRevision:1});const edited=(await findFinanceAccount(db,'alice',id))!;
+  assert.equal(edited.usableBps,2525);assert.equal(edited.balanceMinor,a.balanceMinor);assert.equal(edited.balanceRevision,a.balanceRevision);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM finance_account_classifications WHERE account_id=?').get(id)!.count,1);assert.equal(sqlite.prepare('SELECT creation_hash AS hash FROM finance_accounts WHERE id=?').get(id)!.hash,fingerprint);
+ }
+});
+
+test('racing classification edits produce one CAS winner and exactly one new history row',async(t)=>{
+ const {db,sqlite}=fixture(t),id=await createFinanceAccount(db,'alice',initial,sameTime);
+ const results=await Promise.allSettled([patchFinanceAccount(db,'alice',id,{type:'loan',expectedRevision:1},sameTime),patchFinanceAccount(db,'alice',id,{type:'property',expectedRevision:1},sameTime)]);
+ assert.equal(results.filter(r=>r.status==='fulfilled').length,1);const failed=results.find(r=>r.status==='rejected') as PromiseRejectedResult;assert.ok(failed.reason instanceof FinanceMetadataConflictError);
+ const history=sqlite.prepare('SELECT revision,type FROM finance_account_classifications WHERE account_id=? ORDER BY revision').all(id);assert.equal(history.length,2);assert.equal(history[1].revision,2);assert.equal(history[1].type,(await findFinanceAccount(db,'alice',id))!.type);
+});
