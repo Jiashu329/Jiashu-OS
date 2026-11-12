@@ -8,6 +8,7 @@ import * as composition from '../../../../lib/body-composition.ts';
 import * as recordStore from '../../../../db/health-records-store.ts';
 import * as planRules from '../../../../lib/weight-plan.ts';
 import * as planStore from '../../../../db/weight-plan-store.ts';
+import { syncDiagnosticStatements } from '../../../../db/sync-diagnostics-store.ts';
 
 const ORIGIN = 'https://synthetic-weight-plan.example';
 const NOW = new Date();
@@ -62,7 +63,7 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
-  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore }, ['readHealth', 'importHealth']);
+  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore, syncDiagnosticStatements }, ['readHealth', 'importHealth']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, ...repository, ...planRules, ...planStore, env,
     parseWeightPlanInput: (input: unknown) => planRules.parseWeightPlanInput(input, NOW),

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { NutritionEntry } from './nutrition.ts';
 import { emptyGoalSettings } from './health-goals.ts';
 import type { GoalSettings } from './health-goals.ts';
 import type { HealthMeasurement } from './health.ts';
@@ -189,4 +190,38 @@ void test('empty periods have null averages and deltas, with zero observations r
   assert.equal(oneSide.currentAverage, 0);
   assert.equal(oneSide.previousAverage, null);
   assert.equal(oneSide.delta, null);
+});
+
+void test('nutrition compares equal weekday windows and preserves unknown heat and absent dates', () => {
+  const food = (date: string, caloriesTenth: number | null, deletedAt: string | null = null): NutritionEntry => ({
+    id: date + String(caloriesTenth), date, caloriesTenth, deletedAt, meal: 'lunch', name: 'synthetic', portion: '', note: '',
+    revision: 1, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+  });
+  const data = buildHealthWeeklyReview([], goals, selection(), NOW, { nutrition: [
+    food('2026-11-09', 0), food('2026-11-09', null), food('2026-11-10', 1234),
+    food('2026-11-11', 1000, NOW.toISOString()), food('2026-11-02', null),
+    food('2026-11-05', 99999), food('2026-11-12', 99999),
+  ] });
+  assert.equal(data.nutrition.current.knownCalories, '123.4');
+  assert.equal(data.nutrition.current.recordedDays, 2);
+  assert.equal(data.nutrition.current.unknownCount, 1);
+  assert.equal(data.nutrition.current.points[0].knownCalories, '0.0');
+  assert.equal(data.nutrition.current.points[2].knownCalories, null);
+  assert.equal(data.nutrition.current.points[2].entryCount, 0);
+  assert.equal(data.nutrition.previous.knownCalories, null);
+  assert.equal(data.nutrition.previous.recordedDays, 1);
+  assert.equal(data.nutrition.previous.unknownCount, 1);
+});
+
+void test('historical plan progress never includes later samples or a plan beginning after the cutoff', () => {
+  const settings = { baselineWeight: 80, targetWeight: 70, startDate: '2026-10-01', deadline: '2026-12-01', enabled: true,
+    createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-11-11T00:00:00Z' };
+  const historical = selection('2026-10-28');
+  const measurements = [weight('then', '2026-11-01T08:00:00+08:00', 78), weight('later', '2026-11-02T08:00:00+08:00', 65)];
+  const data = buildHealthWeeklyReview(measurements, goals, historical, NOW, { weightPlan: settings });
+  assert.equal(data.weightPlan.review.today, '2026-11-01');
+  assert.equal(data.weightPlan.review.observations.average7, 78);
+  assert.equal(data.weightPlan.review.progress?.progressPercent, 20);
+  assert.equal(data.weightPlan.review.progress?.status, 'active');
+  assert.equal(buildHealthWeeklyReview(measurements, goals, historical, NOW, { weightPlan: { ...settings, startDate: '2026-11-02' } }).weightPlan.review.settings, null);
 });

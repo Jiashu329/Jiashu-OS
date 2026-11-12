@@ -1,5 +1,5 @@
 import { createNutritionEntry, listNutritionEntries } from '../../../../db/nutrition-store';
-import { buildNutritionReview, parseNutritionCreate, parseNutritionQuery, presentNutritionEntry } from '../../../../lib/nutrition';
+import { buildNutritionReview, nutritionQuickFrom, parseNutritionCreate, parseNutritionQuery, presentNutritionEntry } from '../../../../lib/nutrition';
 import { apiUser, json, unauthenticated } from '../../_shared';
 import { invalidNutritionRequestId, nutritionBody, nutritionDatabase, nutritionError, nutritionGuard, nutritionRequestId } from './_shared';
 
@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   if (!user) return unauthenticated();
   try {
     const selection = parseNutritionQuery(new URL(request.url).searchParams);
-    const entries = await listNutritionEntries(nutritionDatabase(), user.userId, { from: selection.recentFrom, to: selection.recentTo, includeDeleted: true });
+    const entries = await listNutritionEntries(nutritionDatabase(), user.userId, { from: nutritionQuickFrom(selection.date), to: selection.recentTo, includeDeleted: true });
     return json(buildNutritionReview(entries, selection));
   } catch (error) { return nutritionError(error); }
 }

@@ -1,4 +1,5 @@
-import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const healthMeasurements = sqliteTable('health_measurements', {
   userId: text('user_id').notNull(),
@@ -153,3 +154,47 @@ export const nutritionEntries = sqliteTable('nutrition_entries', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 }, (table) => [index('nutrition_entries_owner_date_idx').on(table.userId, table.date)]);
+
+export const healthSyncDiagnostics = sqliteTable('health_sync_diagnostics', {
+  userId: text('user_id').notNull(),
+  scope: text('scope').notNull(),
+  receivedAt: text('received_at').notNull(),
+  exportedAt: text('exported_at').notNull(),
+  submittedCount: integer('submitted_count').notNull(),
+  importedCount: integer('imported_count'),
+  skippedCount: integer('skipped_count'),
+  firstDay: text('first_day'),
+  lastDay: text('last_day'),
+}, (table) => [primaryKey({ columns: [table.userId, table.scope] })]);
+
+export const healthWeeklyActions = sqliteTable('health_weekly_actions', {
+  userId: text('user_id').notNull(),
+  weekStart: text('week_start').notNull(),
+  text: text('text').notNull(),
+  status: text('status').notNull(),
+  feedback: text('feedback').notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.weekStart] })]);
+
+export const financeMonthCloses = sqliteTable('finance_month_closes', {
+  userId: text('user_id').notNull(),
+  ledger: text('ledger').notNull(),
+  currency: text('currency').notNull(),
+  month: text('month').notNull(),
+  version: integer('version').notNull(),
+  operationId: text('operation_id').notNull(),
+  requestHash: text('request_hash').notNull(),
+  snapshotJson: text('snapshot_json').notNull(),
+  reason: text('reason').notNull(),
+  closedAt: text('closed_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.ledger, table.currency, table.month, table.version] }),
+  uniqueIndex('finance_month_closes_owner_operation_idx').on(table.userId, table.operationId),
+]);
+
+export const backupRestoreGuards = sqliteTable('backup_restore_guards', {
+  userId: text('user_id').primaryKey().notNull(),
+  valid: integer('valid').notNull(),
+}, (table) => [check('backup_restore_valid', sql`${table.valid} = 1`)]);

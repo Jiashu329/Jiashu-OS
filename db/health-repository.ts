@@ -1,6 +1,8 @@
 import { env } from 'cloudflare:workers';
 import { buildBodyComposition } from '../lib/body-composition';
 import { readEffectiveHealthMeasurements } from './health-records-store';
+import { readSyncImportDiagnostics, syncDiagnosticStatements } from './sync-diagnostics-store';
+import { buildSyncDiagnostics } from '../lib/sync-diagnostics';
 import {
   createSyncConnection,
   findSyncConnection,
@@ -93,6 +95,7 @@ export async function importHealth(userId: string, payload: HealthSyncPayload, d
       received_at = excluded.received_at
     WHERE excluded.exported_at > health_measurements.exported_at
   `).bind(userId, payload.exportedAt, receivedAt, JSON.stringify(records), deviceId, deviceId, userId)];
+  commands.push(...syncDiagnosticStatements(db, userId, payload, receivedAt, deviceId));
   commands.push(db.prepare(`
     INSERT INTO health_syncs (user_id, payload_hash, exported_at, received_at, measurement_count)
     SELECT ?, ?, ?, ?, ? WHERE
@@ -106,9 +109,19 @@ export async function importHealth(userId: string, payload: HealthSyncPayload, d
       .bind(receivedAt, deviceId, userId));
   }
   const result = await db.batch(commands);
-  if (deviceId && result[2].meta.changes !== 1) throw new SyncDeviceInvalidError();
+  if (deviceId && result.at(-1)?.meta.changes !== 1) throw new SyncDeviceInvalidError();
   const imported = result[0].meta.changes ?? 0;
   return { ok: true, imported, skipped: payload.measurements.length - imported, lastSync: receivedAt };
+}
+
+export async function readSyncStatus(userId: string) {
+  const db = database();
+  const now = new Date().toISOString();
+  const [measurements, imports] = await Promise.all([
+    readEffectiveHealthMeasurements(db, userId, '0001-01-01', shanghaiDay(now)),
+    readSyncImportDiagnostics(db, userId),
+  ]);
+  return buildSyncDiagnostics(measurements, imports, now);
 }
 
 export type { SyncDeviceMetadata } from './sync-connections';

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
+import { compileFunction } from 'node:vm';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { readGoalSettings, writeGoalSettings } from '../../../../db/health-goals-store.ts';
@@ -9,6 +10,10 @@ import { buildHealthSummary, measurementDay, measurementKey, type HealthMeasurem
 import { buildBodyComposition } from '../../../../lib/body-composition.ts';
 import * as weekly from '../../../../lib/health-weekly.ts';
 import * as recordsStore from '../../../../db/health-records-store.ts';
+import { readWeightPlanSettings, writeWeightPlanSettings } from '../../../../db/weight-plan-store.ts';
+import { listNutritionEntries } from '../../../../db/nutrition-store.ts';
+import { readWeeklyActions, writeWeeklyAction } from '../../../../db/health-weekly-actions-store.ts';
+import { shiftWeekDay } from '../../../../lib/health-weekly-actions.ts';
 
 const NOW = new Date('2026-11-12T08:00:00.000Z');
 const ORIGIN = 'https://synthetic-weekly.example';
@@ -19,7 +24,7 @@ async function readError(response: Response): Promise<ApiError> { return await r
 function loadExports(path: URL, bindings: Record<string, unknown>, names: string[]): Record<string, unknown> {
   const source = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export\s+\{[^}]*\};?\s*$/gm, '').replace(/^export /gm, '');
-  return new Function(...Object.keys(bindings), source + '\nreturn {' + names.join(',') + '};')(...Object.values(bindings));
+  return compileFunction(source + '\nreturn {' + names.join(',') + '};', Object.keys(bindings))(...Object.values(bindings));
 }
 
 function fixture(t: TestContext) {
@@ -48,9 +53,9 @@ function fixture(t: TestContext) {
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable']);
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
-    ...shared, ...repository, ...weekly, env, readGoalSettings,
+    ...shared, ...repository, ...weekly, env, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay,
     parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, NOW),
-    buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], NOW),
+    buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], NOW, args[4]),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
   function record(owner: string, measurement: HealthMeasurement) {
     sqlite.prepare(`INSERT OR REPLACE INTO health_measurements
@@ -58,7 +63,7 @@ function fixture(t: TestContext) {
       .run(owner, measurementKey(measurement), measurement.metric, measurementDay(measurement), JSON.stringify(measurement), NOW.toISOString(), NOW.toISOString());
   }
   return {
-    env, queries, record,
+    env, queries, record, sqlite, db,
     signIn(owner: string | null) { userId = owner; },
     setGoals(owner: string, targets: GoalTargets) { return writeGoalSettings(db, owner, targets, NOW.toISOString()); },
     get(query = '') { return route.GET(new Request(ORIGIN + '/api/health/review?' + query)); },
@@ -76,7 +81,7 @@ function weight(id: string, startDate: string, value: number): HealthMeasurement
   return { id, metric: 'weight', value, unit: 'kg', startDate, source: 'synthetic-scale', aggregation: 'sample' };
 }
 
-test('weekly reviews require sign-in and return private no-store responses', async (t) => {
+void test('weekly reviews require sign-in and return private no-store responses', async (t) => {
   const f = fixture(t);
   f.signIn(null);
   const response = await f.get();
@@ -87,7 +92,7 @@ test('weekly reviews require sign-in and return private no-store responses', asy
   assert.deepEqual(f.queries, []);
 });
 
-test('invalid calendar inputs and future weeks fail before reading health records', async (t) => {
+void test('invalid calendar inputs and future weeks fail before reading health records', async (t) => {
   const f = fixture(t);
   for (const week of ['2026-02-30', '2026-11-16', '2026-W46', '2026-1-02', 'invalid', '2026-11-02T00:00:00Z']) {
     const response = await f.get('week=' + encodeURIComponent(week));
@@ -97,7 +102,7 @@ test('invalid calendar inputs and future weeks fail before reading health record
   assert.deepEqual(f.queries, []);
 });
 
-test('the partial current week compares equal weekday windows and averages observed days without adding sources', async (t) => {
+void test('the partial current week compares equal weekday windows and averages observed days without adding sources', async (t) => {
   const f = fixture(t);
   await f.setGoals('alice', { steps: 8000, sleep: 7.5, active_energy: 500 });
   for (const [day, value] of [['2026-11-09', 0], ['2026-11-10', 8000], ['2026-11-12', 16000], ['2026-11-02', 4000], ['2026-11-03', 6000], ['2026-11-05', 10000], ['2026-11-06', 99999]] as const) f.record('alice', daily('steps', day, value));
@@ -129,7 +134,7 @@ test('the partial current week compares equal weekday windows and averages obser
   assert.equal(energy.currentRecordedDays, 1);
 });
 
-test('weight uses the last sample of each recorded day and sleep follows its ending date', async (t) => {
+void test('weight uses the last sample of each recorded day and sleep follows its ending date', async (t) => {
   const f = fixture(t);
   f.record('alice', weight('morning', '2026-11-09T07:00:00+08:00', 70));
   f.record('alice', weight('evening', '2026-11-09T20:00:00+08:00', 71));
@@ -154,7 +159,7 @@ test('weight uses the last sample of each recorded day and sleep follows its end
   assert.equal(sleep.delta, 1);
 });
 
-test('a date within a historical week normalizes to Monday and includes both full Sundays', async (t) => {
+void test('a date within a historical week normalizes to Monday and includes both full Sundays', async (t) => {
   const f = fixture(t);
   f.record('alice', daily('steps', '2026-11-01', 7000));
   f.record('alice', daily('steps', '2026-10-25', 5000));
@@ -172,7 +177,7 @@ test('a date within a historical week normalizes to Monday and includes both ful
   assert.equal(steps.delta, 2000);
 });
 
-test('weekly health records and goals remain scoped to the signed-in user', async (t) => {
+void test('weekly health records and goals remain scoped to the signed-in user', async (t) => {
   const f = fixture(t);
   await f.setGoals('alice', { steps: 2000, sleep: null, active_energy: null });
   await f.setGoals('bob', { steps: 100, sleep: null, active_energy: null });
@@ -190,7 +195,7 @@ test('weekly health records and goals remain scoped to the signed-in user', asyn
   assert.equal(bob.metrics[0].currentAchievedDays, 1);
 });
 
-test('an empty review keeps unrecorded days and unset goals empty', async (t) => {
+void test('an empty review keeps unrecorded days and unset goals empty', async (t) => {
   const f = fixture(t);
   const data = await readReview(await f.get());
   assert.equal(data.metrics.length, 4);
@@ -205,11 +210,44 @@ test('an empty review keeps unrecorded days and unset goals empty', async (t) =>
   }
 });
 
-test('unavailable storage returns an error rather than an empty health review', async (t) => {
+void test('unavailable storage returns an error rather than an empty health review', async (t) => {
   const f = fixture(t);
   delete f.env.DB;
   const response = await f.get();
   assert.equal(response.status, 503);
   assert.equal((await readError(response)).code, 'HEALTH_STORAGE_UNAVAILABLE');
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
+});
+
+
+void test('reviews combine same-period nutrition, cutoff-only weight progress, and owner-scoped actions', async (t) => {
+  const f = fixture(t);
+  for (const [owner,id,date,calories,deleted] of [
+    ['alice','food-a','2026-11-09',1000,null], ['alice','food-b','2026-11-09',null,null],
+    ['alice','food-c','2026-11-12',0,null], ['alice','food-d','2026-11-02',2000,null],
+    ['alice','outside','2026-11-06',9999,null], ['alice','deleted','2026-11-10',9999,NOW.toISOString()],
+    ['bob','private','2026-11-09',88888,null],
+  ] as const) f.sqlite.prepare(`INSERT INTO nutrition_entries
+    (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at)
+    VALUES (?,?,?,'lunch','synthetic','','',?,'hash',1,?,?,?)`).run(id,owner,date,calories,NOW.toISOString(),NOW.toISOString(),deleted);
+  await writeWeightPlanSettings(f.db,'alice',{baselineWeight:80,targetWeight:70,startDate:'2026-10-01',deadline:'2026-12-01',enabled:true});
+  f.record('alice',weight('old-weight','2026-11-01T08:00:00+08:00',78));
+  f.record('alice',weight('later-weight','2026-11-09T08:00:00+08:00',70));
+  await writeWeeklyAction(f.db,'alice',{weekStart:'2026-11-09',text:'午饭后散步',status:'planned',feedback:'',expectedRevision:0});
+  await writeWeeklyAction(f.db,'alice',{weekStart:'2026-11-16',text:'按时睡觉',status:'planned',feedback:'',expectedRevision:0});
+  await writeWeeklyAction(f.db,'bob',{weekStart:'2026-11-09',text:'bob private action',status:'planned',feedback:'',expectedRevision:0});
+  const current=await readReview(await f.get());
+  assert.equal(current.nutrition.current.recordedDays,2);
+  assert.equal(current.nutrition.current.knownCalories,'100.0');
+  assert.equal(current.nutrition.current.unknownCount,1);
+  assert.equal(current.nutrition.previous.knownCalories,'200.0');
+  assert.equal(current.nutrition.previous.points.length,4);
+  assert.equal(current.actions.current?.text,'午饭后散步');
+  assert.equal(current.actions.next?.weekStart,'2026-11-16');
+  assert.ok(!JSON.stringify(current).includes('bob private'));
+  const history=await readReview(await f.get('week=2026-10-28'));
+  assert.equal(history.weightPlan.asOfDay,'2026-11-01');
+  assert.equal(history.weightPlan.review.observations.average7,78);
+  assert.equal(history.weightPlan.review.progress?.progressPercent,20);
+  assert.equal(history.weightPlan.usesCurrentSettings,true);
 });

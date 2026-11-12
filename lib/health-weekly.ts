@@ -1,6 +1,11 @@
 import { buildHealthSummary, shanghaiDay } from './health.ts';
 import type { HealthMeasurement } from './health.ts';
 import type { GoalSettings } from './health-goals.ts';
+import { summarizeNutrition } from './nutrition.ts';
+import type { NutritionEntry } from './nutrition.ts';
+import { buildWeightPlanReview } from './weight-plan.ts';
+import type { WeightPlanReview, WeightPlanSettings } from './weight-plan.ts';
+import type { WeeklyAction } from './health-weekly-actions.ts';
 
 export const WEEKLY_METRICS = ['steps', 'sleep', 'active_energy', 'weight'] as const;
 export type WeeklyMetric = typeof WEEKLY_METRICS[number];
@@ -35,6 +40,22 @@ export interface WeeklyMetricReview {
 export interface HealthWeeklyReview extends HealthWeekSelection {
   targetsUpdatedAt: string | null;
   metrics: WeeklyMetricReview[];
+  nutrition: { current: WeeklyNutritionPeriod; previous: WeeklyNutritionPeriod };
+  weightPlan: { asOfDay: string; usesCurrentSettings: true; review: WeightPlanReview };
+  actions: { previous: WeeklyAction | null; current: WeeklyAction | null; next: WeeklyAction | null };
+}
+export interface WeeklyNutritionPeriod {
+  recordedDays: number;
+  entryCount: number;
+  knownCount: number;
+  unknownCount: number;
+  knownCalories: string | null;
+  points: Array<{ day: string; entryCount: number; knownCalories: string | null; unknownCount: number }>;
+}
+export interface WeeklyReviewContext {
+  nutrition?: readonly NutritionEntry[];
+  weightPlan?: WeightPlanSettings | null;
+  actions?: HealthWeeklyReview['actions'];
 }
 
 export class HealthWeekValidationError extends Error {
@@ -80,7 +101,7 @@ export function parseHealthWeekQuery(params: URLSearchParams, now: Date | number
 }
 
 /** Exclude future instants before choosing the last body-mass sample of each day. */
-export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement[], settings: GoalSettings, selection: HealthWeekSelection, now: Date | number = Date.now()): HealthWeeklyReview {
+export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement[], settings: GoalSettings, selection: HealthWeekSelection, now: Date | number = Date.now(), context: WeeklyReviewContext = {}): HealthWeeklyReview {
   const instant = new Date(now).getTime();
   const eligible = measurements.filter((measurement) => {
     const start = Date.parse(measurement.startDate);
@@ -115,5 +136,24 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
       previousAchievedDays: target === null ? null : previous.filter((point) => point.value >= target).length,
     };
   });
-  return { ...selection, targetsUpdatedAt: settings.updatedAt, metrics };
+  const nutritionPeriod = (from: string, to: string): WeeklyNutritionPeriod => {
+    const entries = (context.nutrition ?? []).filter((entry) => entry.date >= from && entry.date <= to && entry.deletedAt === null);
+    const total = summarizeNutrition(entries);
+    const points = Array.from({ length: selection.comparisonDays }, (_, index) => {
+      const day = shiftDay(from, index);
+      const daily = summarizeNutrition(entries.filter((entry) => entry.date === day));
+      return { day, entryCount: daily.entryCount, knownCalories: daily.knownCalories, unknownCount: daily.unknownCount };
+    });
+    return { recordedDays: points.filter((point) => point.entryCount > 0).length, entryCount: total.entryCount,
+      knownCount: total.knownCount, unknownCount: total.unknownCount, knownCalories: total.knownCalories, points };
+  };
+  // A historical review stops at the selected Sunday, including the rolling
+  // seven-day observation window; later samples must never enter its progress.
+  const asOf = Math.min(instant, Date.parse(selection.cutoffDay + 'T23:59:59.999+08:00'));
+  const plan = context.weightPlan && context.weightPlan.startDate <= selection.cutoffDay ? context.weightPlan : null;
+  return { ...selection, targetsUpdatedAt: settings.updatedAt, metrics,
+    nutrition: { current: nutritionPeriod(selection.weekStart, selection.cutoffDay), previous: nutritionPeriod(selection.previousStart, selection.previousCutoffDay) },
+    weightPlan: { asOfDay: selection.cutoffDay, usesCurrentSettings: true, review: buildWeightPlanReview(plan, measurements, asOf) },
+    actions: context.actions ?? { previous: null, current: null, next: null },
+  };
 }

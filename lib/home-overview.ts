@@ -1,14 +1,25 @@
 import type { HealthMetric, HealthSummary } from './health.ts';
 import { shanghaiDay } from './health.ts';
-import { buildFinanceSummary, type FinanceSummaryAccount, type LedgerKind } from './finance.ts';
+import { buildFinanceSummary, formatMoney, type CurrencyCode, type FinanceSummaryAccount, type LedgerKind } from './finance.ts';
+import { isCheckedThisMonth } from './finance-balance-check.ts';
 import type { BodyComposition } from './body-composition.ts';
 
 export interface HomeHealthInput { summary: HealthSummary; lastSync: string | null; bodyComposition?: BodyComposition }
 export interface HomeFinanceInput { accounts: readonly (FinanceSummaryAccount & { asOfDate: string })[] }
+export interface HomeActionsInput {
+  nutrition: { entryCountToday: number; recordedDays7: number } | null;
+  weekly: { weekStart: string; previousWeekStart: string; previousHasRecords: boolean; reviewed: boolean } | null;
+  decisions: readonly {
+    ledger: LedgerKind; currency: CurrencyCode;
+    goals: readonly { id: string; name: string; status: string; gapMinor: string; deadline: string }[];
+    runway: { gapMinor: string; status: string; runwayMonths: string; missingCount: number } | null;
+  }[] | null;
+}
 export interface HomeOverviewSources {
   health: HomeHealthInput | null;
   personal: HomeFinanceInput | null;
   family: HomeFinanceInput | null;
+  actions?: HomeActionsInput | null;
 }
 export type HomeMetric = HealthMetric | 'body_fat';
 export interface HomeHealthMetric {
@@ -32,10 +43,11 @@ export interface HomeFinance {
   oldestBalanceDate: string | null;
   latestBalanceDate: string | null;
   staleAccountCount: number;
+  pendingBalanceCount: number;
 }
 export interface HomePriority {
   id: string;
-  tone: 'attention' | 'setup' | 'neutral';
+  tone: 'attention' | 'action' | 'setup' | 'neutral';
   title: string;
   detail: string;
   href: string;
@@ -52,6 +64,7 @@ export interface HomeOverview {
   };
   finance: Record<LedgerKind, HomeFinance>;
   priorities: HomePriority[];
+  actionsStatus: 'ready' | 'partial' | 'unavailable' | 'not-requested';
 }
 
 const metricDefinitions: { metric: HomeMetric; label: string; unit: string }[] = [
@@ -91,7 +104,7 @@ function healthOverview(input: HomeHealthInput | null, today: string): HomeOverv
 }
 
 function financeOverview(input: HomeFinanceInput | null, ledger: LedgerKind, today: string): HomeFinance {
-  if (!input) return { status: 'unavailable', accountCount: 0, currencies: [], oldestBalanceDate: null, latestBalanceDate: null, staleAccountCount: 0 };
+  if (!input) return { status: 'unavailable', accountCount: 0, currencies: [], oldestBalanceDate: null, latestBalanceDate: null, staleAccountCount: 0, pendingBalanceCount: 0 };
   const accounts = input.accounts.filter((account) => account.ledger === ledger && account.archived !== true);
   const summary = buildFinanceSummary(accounts, ledger);
   const dates = accounts.map((account) => account.asOfDate).sort();
@@ -102,6 +115,7 @@ function financeOverview(input: HomeFinanceInput | null, ledger: LedgerKind, tod
     })),
     oldestBalanceDate: dates[0] ?? null, latestBalanceDate: dates.at(-1) ?? null,
     staleAccountCount: accounts.filter((account) => account.asOfDate < daysBefore(today, 30)).length,
+    pendingBalanceCount: accounts.filter((account) => !isCheckedThisMonth(account.asOfDate, today)).length,
   };
 }
 
@@ -144,7 +158,7 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     if (book.staleAccountCount) priorities.push({
       id: ledger + '-stale', tone: 'attention', title: '更新' + label + '的余额',
       detail: book.staleAccountCount + '个账户的余额日期已超过30天；最早为' + book.oldestBalanceDate + '。',
-      href: '/finance?ledger=' + ledger, actionLabel: '更新余额',
+      href: '/finance/balances?ledger=' + ledger, actionLabel: '核对余额',
     });
     else if (!book.accountCount) priorities.push({
       id: ledger + '-setup', tone: 'setup', title: '建立' + label,
@@ -158,7 +172,53 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     detail: weight.day ? '最近记录：' + weight.day + '。运行体重同步快捷指令更新。' : '近90天暂无体重记录，可同步苹果健康中的测量数据。',
     href: '/connect-weight', actionLabel: '接入体重与去脂体重',
   });
-  const toneOrder = { attention: 0, setup: 1, neutral: 2 } as const;
+  const actions = sources.actions;
+  if (actions) {
+    for (const decision of actions.decisions ?? []) {
+      const label = decision.ledger === 'family' ? '家庭账本' : '个人账本';
+      const scope = '?ledger=' + decision.ledger + '&currency=' + decision.currency;
+      const due = decision.goals.filter((goal) => goal.status !== 'achieved' && BigInt(goal.gapMinor) > BigInt(0)
+        && goal.deadline <= daysBefore(today, -30)).sort((a, b) => a.deadline.localeCompare(b.deadline));
+      if (due.length) priorities.push({
+        id: 'goals-' + decision.ledger + '-' + decision.currency, tone: 'action',
+        title: due[0].status === 'overdue' ? '处理已到期的财务目标' : '查看近期到期的财务目标',
+        detail: label + ' · ' + due[0].name + '，截止 ' + due[0].deadline + '，缺口 ' + formatMoney(due[0].gapMinor, decision.currency)
+          + (due.length > 1 ? '；另有 ' + (due.length - 1) + ' 项。' : '。'),
+        href: '/finance/goals' + scope, actionLabel: '查看目标',
+      });
+      if (decision.runway?.missingCount) priorities.push({
+        id: 'runway-links-' + decision.ledger + '-' + decision.currency, tone: 'action', title: '核对应急资金的关联账户',
+        detail: label + ' · ' + decision.currency + '，有 ' + decision.runway.missingCount + ' 个关联账户已失效。',
+        href: '/finance/runway' + scope, actionLabel: '调整关联',
+      });
+      else if (decision.runway?.status === 'short') priorities.push({
+        id: 'runway-' + decision.ledger + '-' + decision.currency, tone: 'action', title: '查看应急资金缺口',
+        detail: label + ' · 当前可覆盖 ' + decision.runway.runwayMonths + ' 个月，距自设目标还差 ' + formatMoney(decision.runway.gapMinor, decision.currency) + '。',
+        href: '/finance/runway' + scope, actionLabel: '查看资金安排',
+      });
+    }
+    for (const ledger of ['personal', 'family'] as const) {
+      const book = finance[ledger];
+      if (book.status === 'ready' && book.pendingBalanceCount && !book.staleAccountCount) priorities.push({
+        id: ledger + '-monthly-check', tone: 'action', title: '完成本月余额核对',
+        detail: (ledger === 'family' ? '家庭账本' : '个人账本') + ' · 待核对 ' + book.pendingBalanceCount + ' / ' + book.accountCount + ' 个账户。',
+        href: '/finance/balances?ledger=' + ledger, actionLabel: '核对余额',
+      });
+    }
+    if (actions.weekly?.previousHasRecords && !actions.weekly.reviewed) priorities.push({
+      id: 'weekly-review', tone: 'action', title: '完成上周健康复盘',
+      detail: '查看 ' + actions.weekly.previousWeekStart + ' 起这一周的记录，并为本周选一项行动。',
+      href: '/health/review?week=' + actions.weekly.previousWeekStart, actionLabel: '复盘并安排本周',
+    });
+    if (actions.nutrition && actions.nutrition.recordedDays7 > 0 && !actions.nutrition.entryCountToday) priorities.push({
+      id: 'nutrition-today', tone: 'action', title: '记录今天的饮食',
+      detail: '今天还没有饮食记录，可复用最近食物或复制前一天的一餐。',
+      href: '/health/nutrition', actionLabel: '记一餐',
+    });
+  }
+  const actionsStatus = actions === undefined ? 'not-requested' : actions === null ? 'unavailable'
+    : [actions.nutrition, actions.weekly, actions.decisions].some((part) => part === null) ? 'partial' : 'ready';
+  const toneOrder = { attention: 0, action: 1, setup: 2, neutral: 3 } as const;
   priorities.sort((left, right) => toneOrder[left.tone] - toneOrder[right.tone]);
-  return { asOf, today, health, finance, priorities: priorities.slice(0, 3) };
+  return { asOf, today, health, finance, actionsStatus, priorities: priorities.slice(0, 3) };
 }

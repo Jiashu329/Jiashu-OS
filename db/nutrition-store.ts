@@ -1,4 +1,5 @@
 import type { NutritionEntry, NutritionInput } from '../lib/nutrition.ts';
+import { MAX_NUTRITION_MEAL_ENTRIES } from '../lib/nutrition.ts';
 
 export type NutritionDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 interface NutritionRow extends NutritionEntry { userId: string; creationHash: string }
@@ -18,6 +19,42 @@ async function creationFingerprint(input: NutritionInput) {
   const canonical = JSON.stringify([input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth]);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)));
   return [...digest].map((part) => part.toString(16).padStart(2, '0')).join('');
+}
+async function digest(value: string) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map((part) => part.toString(16).padStart(2, '0')).join('');
+}
+/** Owner-scoped deterministic v4-shaped IDs let one atomic meal safely retry after a lost reply. */
+async function mealEntryId(userId: string, requestId: string, index: number) {
+  const hash = await digest(JSON.stringify(['nutrition-meal-v1', userId, requestId.toLowerCase(), index]));
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+export async function createNutritionMeal(db: NutritionDatabase, userId: string, inputs: readonly NutritionInput[], requestId: string, now = new Date().toISOString()) {
+  if (!inputs.length || inputs.length > MAX_NUTRITION_MEAL_ENTRIES) throw new RangeError('A meal requires 1–40 entries');
+  const canonical = inputs.map((input) => [input.date, input.meal, input.name, input.portion, input.note, input.caloriesTenth]);
+  const batchHash = await digest(JSON.stringify(canonical));
+  const rows = await Promise.all(inputs.map(async (input, index) => ({ ...input, id: await mealEntryId(userId, requestId, index), hash: 'meal:' + batchHash })));
+  const serialized = JSON.stringify(rows);
+  // Any identifier conflict suppresses the entire INSERT. The read belongs to the same
+  // transaction, and validates both ownership and the immutable whole-meal fingerprint.
+  const result = await db.batch<NutritionRow>([
+    db.prepare(`INSERT INTO nutrition_entries (id, user_id, date, meal, name, portion, note, calories_tenth,
+      creation_hash, revision, created_at, updated_at, deleted_at)
+      SELECT json_extract(incoming.value, '$.id'), ?, json_extract(incoming.value, '$.date'),
+        json_extract(incoming.value, '$.meal'), json_extract(incoming.value, '$.name'),
+        json_extract(incoming.value, '$.portion'), json_extract(incoming.value, '$.note'),
+        json_extract(incoming.value, '$.caloriesTenth'), json_extract(incoming.value, '$.hash'), 1, ?, ?, NULL
+      FROM json_each(?) AS incoming WHERE NOT EXISTS (
+        SELECT 1 FROM nutrition_entries AS existing JOIN json_each(?) AS proposed
+          ON existing.id = json_extract(proposed.value, '$.id')
+        WHERE existing.user_id <> ? OR existing.creation_hash <> json_extract(proposed.value, '$.hash')
+      ) ON CONFLICT(id) DO NOTHING`).bind(userId, now, now, serialized, serialized, userId),
+    db.prepare(`SELECT ${columns} FROM nutrition_entries
+      WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`).bind(serialized),
+  ]);
+  const byId = new Map(result[1].results.map((row) => [row.id, row]));
+  const saved = rows.map((row) => byId.get(row.id));
+  if (saved.some((row) => !row || row.userId !== userId || row.creationHash !== 'meal:' + batchHash)) throw new NutritionConflictError('这次整餐提交标识已用于不同内容，请核对记录后重新复制。');
+  return { entries: saved.map((row) => entry(row!)), replayed: result[0].meta.changes === 0 };
 }
 export async function readNutritionEntry(db: NutritionDatabase, userId: string, id: string): Promise<NutritionEntry | null> {
   const row = await db.prepare(`SELECT ${columns} FROM nutrition_entries WHERE user_id = ? AND id = ?`)

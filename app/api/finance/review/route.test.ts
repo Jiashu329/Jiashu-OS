@@ -5,13 +5,19 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { FinanceIdempotencyConflictError } from '../../../../db/finance-store.ts';
 import { readFinanceReviewSnapshot } from '../../../../db/finance-review-store.ts';
+import { readFinanceDecisionSummary } from '../../../../db/finance-decision-summary.ts';
+import { readFinanceMonthCloseBundle, readFinanceMonthCloseOperation, writeFinanceMonthClose } from '../../../../db/finance-month-close-store.ts';
+import { financeReviewHash, FinanceCloseConflictError, parseFinanceCloseInput } from '../../../../lib/finance-review-close.ts';
 import { FinanceValidationError, LEDGERS, type AccountType, type CurrencyCode, type LedgerKind } from '../../../../lib/finance.ts';
 import { buildFinanceReview, parseFinanceReviewQuery, type FinanceReview } from '../../../../lib/finance-review.ts';
 
 const ORIGIN = 'https://synthetic-review.example';
 const NOW = new Date('2026-11-09T08:00:00.000Z');
 interface ApiError { code: string; error: string }
-async function readReview(response: Response): Promise<FinanceReview> { return await response.json() as FinanceReview; }
+interface ReviewResponse extends FinanceReview {
+  close: { state: 'draft' | 'closed'; version: number; latestVersion: number; previewHash: string | null; versions: { version: number }[] };
+}
+async function readReview(response: Response): Promise<ReviewResponse> { return await response.json() as ReviewResponse; }
 async function readError(response: Response): Promise<ApiError> { return await response.json() as ApiError; }
 
 // Evaluate the actual route with only Worker globals and request identity
@@ -39,7 +45,7 @@ interface AccountInput {
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   const migrations = new URL('../../../../drizzle/', import.meta.url);
-  for (const name of readdirSync(migrations).filter((name) => /^000[23]_.*\.sql$/.test(name)).sort()) {
+  for (const name of readdirSync(migrations).filter((name) => /^\d+_.*\.sql$/.test(name)).sort()) {
     sqlite.exec(readFileSync(new URL(name, migrations), 'utf8'));
   }
   t.after(() => sqlite.close());
@@ -77,11 +83,17 @@ function fixture(t: TestContext) {
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
     ...shared, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError,
-  }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated']);
+  }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'financeIdempotencyKey', 'guardFinanceWrite', 'invalidFinanceIdempotencyKey']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
-    ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview,
+    ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview, FinanceValidationError,
+    readFinanceMonthCloseBundle, financeReviewHash, readFinanceDecisionSummary,
     parseFinanceReviewQuery: (params: URLSearchParams) => parseFinanceReviewQuery(params, NOW),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
+  const closeRoute = loadExports(new URL('./close/route.ts', import.meta.url), {
+    ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview, readFinanceMonthCloseOperation, writeFinanceMonthClose, FinanceValidationError,
+    financeReviewHash, FinanceCloseConflictError,
+    parseFinanceCloseInput: (input: unknown) => parseFinanceCloseInput(input, NOW),
+  }, ['POST']) as { POST(request: Request): Promise<Response> };
   const accountOwners = new Map<string, string>();
   function account(input: AccountInput) {
     const userId = input.owner ?? 'alice';
@@ -103,6 +115,11 @@ function fixture(t: TestContext) {
     signIn(userId: string | null) { owner = userId; },
     get(query = 'ledger=personal&currency=CNY&month=2026-11') {
       return route.GET(new Request(ORIGIN + '/api/finance/review?' + query));
+    },
+    close(body: unknown, key = crypto.randomUUID(), origin = ORIGIN) {
+      return closeRoute.POST(new Request(ORIGIN + '/api/finance/review/close', {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body),
+      }));
     },
   };
 }
@@ -254,4 +271,65 @@ test('missing storage fails explicitly rather than presenting an empty monthly l
   assert.equal(response.status, 503);
   assert.equal((await readError(response)).code, 'FINANCE_UNAVAILABLE');
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
+});
+
+void test('confirmed reports remain fixed through account archive, reclassification and later corrections; reclose keeps earlier versions', async (t) => {
+  const f = fixture(t);
+  f.account({ id: 'bank' }); f.balance('bank', '10000', '2026-10-20');
+  const query = 'ledger=personal&currency=CNY&month=2026-10';
+  const preview = await readReview(await f.get(query));
+  const body = { ledger: 'personal', currency: 'CNY', month: '2026-10', expectedVersion: 0, previewHash: preview.close.previewHash, reason: '' };
+  const key = crypto.randomUUID();
+  assert.equal((await f.close(body, key)).status, 201);
+  f.sqlite.prepare("UPDATE finance_accounts SET archived_at = ?, type = 'loan' WHERE id = 'bank'").run(NOW.toISOString());
+  f.balance('bank', '99900', '2026-10-30');
+  const fixed = await readReview(await f.get(query));
+  assert.equal(fixed.close.state, 'closed'); assert.equal(fixed.close.version, 1);
+  assert.equal(fixed.snapshot.netMinor, '10000'); assert.equal(fixed.accounts[0].type, 'bank');
+  assert.equal((await f.close(body, key)).status, 200, 'a lost-response retry returns the original result after source changes');
+  const live = await readReview(await f.get(query + '&draft=1'));
+  assert.equal(live.close.state, 'draft'); assert.equal(live.snapshot.netMinor, null);
+  f.sqlite.prepare("UPDATE finance_accounts SET archived_at = NULL WHERE id = 'bank'").run();
+  const newPreview = await readReview(await f.get(query + '&draft=1'));
+  const reclose = { ...body, expectedVersion: 1, previewHash: newPreview.close.previewHash, reason: '分类与余额已重新核对' };
+  assert.equal((await f.close({ ...reclose, reason: '' })).status, 400);
+  assert.equal((await f.close(reclose)).status, 201);
+  const latest = await readReview(await f.get(query));
+  assert.equal(latest.close.version, 2); assert.equal(latest.snapshot.netMinor, '-99900');
+  assert.deepEqual(latest.close.versions.map((row) => row.version), [2, 1]);
+  const original = await readReview(await f.get(query + '&version=1'));
+  assert.equal(original.snapshot.netMinor, '10000'); assert.equal(original.accounts[0].type, 'bank');
+  assert.equal((await f.get(query + '&version=99')).status, 404);
+});
+
+void test('month-close requires ended month, same-origin identity, matching preview and current expected version', async (t) => {
+  const f = fixture(t); f.account({ id: 'bank' }); f.balance('bank', '10000', '2026-10-20');
+  const preview = await readReview(await f.get('ledger=personal&currency=CNY&month=2026-10'));
+  const body = { ledger: 'personal', currency: 'CNY', month: '2026-10', expectedVersion: 0, previewHash: preview.close.previewHash, reason: '' };
+  assert.equal((await f.close(body, crypto.randomUUID(), 'https://other.example')).status, 403);
+  assert.equal((await f.close({ ...body, month: '2026-11' })).status, 400);
+  assert.equal((await f.close({ ...body, previewHash: '0'.repeat(64) })).status, 409);
+  f.balance('bank', '12000', '2026-10-25');
+  assert.equal((await f.close(body)).status, 409);
+  const fresh = await readReview(await f.get('ledger=personal&currency=CNY&month=2026-10'));
+  const current = { ...body, previewHash: fresh.close.previewHash };
+  const results = await Promise.all([f.close(current), f.close(current)]);
+  assert.deepEqual(results.map((response) => response.status).sort((a, b) => a - b), [201, 409]);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS total FROM finance_month_closes').get()!.total, 1);
+  f.signIn(null); assert.equal((await f.close(body)).status, 401);
+});
+
+void test('closed versions are isolated by owner, ledger and currency and invalid version selectors fail', async (t) => {
+  const f = fixture(t); f.account({ id: 'bank' }); f.balance('bank', '10000', '2026-10-20');
+  const query = 'ledger=personal&currency=CNY&month=2026-10';
+  const preview = await readReview(await f.get(query));
+  const body = { ledger: 'personal', currency: 'CNY', month: '2026-10', expectedVersion: 0, previewHash: preview.close.previewHash, reason: '' };
+  const key = crypto.randomUUID(); assert.equal((await f.close(body, key)).status, 201);
+  assert.equal((await f.close({ ...body, reason: 'changed' }, key)).status, 409);
+  assert.equal((await f.get(query + '&version=1&draft=1')).status, 400);
+  assert.equal((await f.get(query + '&version=0')).status, 400);
+  assert.equal((await f.get('ledger=family&currency=CNY&month=2026-10&version=1')).status, 404);
+  assert.equal((await f.get('ledger=personal&currency=USD&month=2026-10&version=1')).status, 404);
+  f.signIn('bob'); assert.equal((await f.get(query + '&version=1')).status, 404);
+  assert.equal((await readReview(await f.get(query))).close.state, 'draft');
 });

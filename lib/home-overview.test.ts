@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildHealthSummary, type HealthMeasurement } from './health.ts';
 import { buildBodyComposition } from './body-composition.ts';
-import { buildHomeOverview, type HomeFinanceInput, type HomeHealthInput, type HomeOverviewSources } from './home-overview.ts';
+import { buildHomeOverview, type HomeActionsInput, type HomeFinanceInput, type HomeHealthInput, type HomeOverviewSources } from './home-overview.ts';
 
 const NOW = '2026-11-09T08:00:00Z';
 const emptyFinance: HomeFinanceInput = { accounts: [] };
@@ -166,4 +166,64 @@ test('stale balances outrank an empty ledger setup while preserving order within
   assert.deepEqual(output.priorities.map((item) => item.tone), ['attention', 'setup']);
   const empty = buildHomeOverview(sources(), NOW);
   assert.deepEqual(empty.priorities.map((item) => item.id), ['health-setup', 'personal-setup', 'family-setup']);
+});
+
+function readyActions(overrides: Partial<HomeActionsInput> = {}): HomeActionsInput {
+  return { nutrition: { entryCountToday: 1, recordedDays7: 1 }, weekly: {
+    weekStart: '2026-11-09', previousWeekStart: '2026-11-02', previousHasRecords: true, reviewed: true,
+  }, decisions: [], ...overrides };
+}
+function readySources(actions: HomeActionsInput | null): HomeOverviewSources {
+  return sources({ health: health([
+    dayMetric('steps', '2026-11-08', 5000), dayMetric('active_energy', '2026-11-08', 300),
+    { id: 'sleep', metric: 'sleep', value: 7, unit: 'hours', aggregation: 'daily', startDate: '2026-11-07T23:00:00+08:00', endDate: '2026-11-08T07:00:00+08:00' },
+    { id: 'weight', metric: 'weight', value: 70, unit: 'kg', startDate: '2026-11-08T08:00:00+08:00' },
+  ]), personal: { accounts: [account('personal')] }, family: { accounts: [account('family')] }, actions });
+}
+
+void test('monthly checks catch last-month balances within 30 days and clear immediately after updating', () => {
+  const input = readySources(readyActions());
+  input.personal = { accounts: [account('personal', { asOfDate: '2026-10-31' }), account('personal')] };
+  const output = buildHomeOverview(input, NOW);
+  assert.equal(output.finance.personal.staleAccountCount, 0);
+  assert.equal(output.finance.personal.pendingBalanceCount, 1);
+  assert.equal(output.priorities[0].href, '/finance/balances?ledger=personal');
+  assert.match(output.priorities[0].detail, /1 \/ 2/);
+  input.personal = { accounts: [account('personal'), account('personal')] };
+  assert.deepEqual(buildHomeOverview(input, NOW).priorities, []);
+});
+
+void test('weekly review and nutrition actions clear when the saved next action and meal exist', () => {
+  const input = readySources(readyActions({ nutrition: { entryCountToday: 0, recordedDays7: 3 },
+    weekly: { weekStart: '2026-11-09', previousWeekStart: '2026-11-02', previousHasRecords: true, reviewed: false } }));
+  const output = buildHomeOverview(input, NOW);
+  assert.deepEqual(output.priorities.map((p) => p.id), ['weekly-review', 'nutrition-today']);
+  assert.equal(output.priorities[0].href, '/health/review?week=2026-11-02');
+  input.actions = readyActions();
+  assert.deepEqual(buildHomeOverview(input, NOW).priorities, []);
+  input.actions = readyActions({ nutrition: { entryCountToday: 0, recordedDays7: 0 } });
+  assert.deepEqual(buildHomeOverview(input, NOW).priorities, []);
+});
+
+void test('due goals and runway shortages become scoped actions without rounding money or mixing ledgers', () => {
+  const output = buildHomeOverview(readySources(readyActions({ decisions: [{
+    ledger: 'family', currency: 'CNY', goals: [
+      { id: 'old', name: '已到期目标', status: 'overdue', deadline: '2026-11-01', gapMinor: '9007199254740993' },
+      { id: 'done', name: '已完成', status: 'achieved', deadline: '2026-11-01', gapMinor: '0' },
+      { id: 'later', name: '远期目标', status: 'active', deadline: '2027-11-01', gapMinor: '1' },
+    ], runway: { gapMinor: '123', status: 'short', runwayMonths: '2.3', missingCount: 0 },
+  }] })), NOW);
+  assert.equal(output.priorities.length, 2);
+  assert.match(output.priorities[0].detail, /90,071,992,547,409\.93/);
+  assert.equal(output.priorities[0].href, '/finance/goals?ledger=family&currency=CNY');
+  assert.equal(output.priorities[1].href, '/finance/runway?ledger=family&currency=CNY');
+});
+
+void test('optional action failures keep core overview ready and never invent completion', () => {
+  const unavailable = buildHomeOverview(readySources(null), NOW);
+  assert.equal(unavailable.actionsStatus, 'unavailable');
+  assert.equal(unavailable.health.status, 'ready');
+  assert.equal(unavailable.finance.personal.status, 'ready');
+  assert.deepEqual(unavailable.priorities, []);
+  assert.equal(buildHomeOverview(readySources(readyActions({ weekly: null })), NOW).actionsStatus, 'partial');
 });

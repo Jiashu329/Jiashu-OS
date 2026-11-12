@@ -7,6 +7,9 @@ import * as finance from '../../../../lib/finance.ts';
 import * as goalRules from '../../../../lib/finance-goals.ts';
 import * as financeStore from '../../../../db/finance-store.ts';
 import * as goalStore from '../../../../db/finance-goals-store.ts';
+import * as runwayStore from '../../../../db/finance-runway-store.ts';
+import * as allocationRules from '../../../../lib/finance-allocation.ts';
+import { readFinanceDecisionSummary } from '../../../../db/finance-decision-summary.ts';
 
 const ORIGIN = 'https://synthetic-finance-goals.example';
 const TODAY = finance.todayShanghai();
@@ -20,7 +23,7 @@ const ids = {
 };
 type GoalView = ReturnType<typeof goalRules.buildFinanceGoalView>;
 interface GoalResponse { goal: GoalView }
-interface ListResponse { ledger: string; currency: string; today: string; goals: GoalView[]; accounts: { id: string }[] }
+interface ListResponse { ledger: string; currency: string; today: string; goals: (GoalView & { sharing: allocationRules.GoalFundSharing | null })[]; accounts: { id: string }[]; sharing: allocationRules.FinanceAllocationView }
 interface ApiError { code: string; error: string }
 async function readGoal(response: Response): Promise<GoalResponse> { return await response.json() as GoalResponse; }
 async function readList(response: Response): Promise<ListResponse> { return await response.json() as ListResponse; }
@@ -76,7 +79,7 @@ async function fixture(t: TestContext) {
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
     ...shared, ...finance, ...financeStore,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);
-  const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, env };
+  const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, ...runwayStore, ...allocationRules, env };
   const goalsShared = loadExports(new URL('./_shared.ts', import.meta.url), baseBindings, ['goalsDatabase', 'goalsError', 'goalNotFound', 'goalAccounts', 'presentGoal']);
   const bindings = { ...baseBindings, ...goalsShared };
   const route = loadExports(new URL('./route.ts', import.meta.url), bindings, ['GET', 'POST']) as { GET(request: Request): Promise<Response>; POST(request: Request): Promise<Response> };
@@ -189,4 +192,46 @@ test('list filters and eligible account choices remain scoped to one owner and l
   assert.equal((await readList(await f.get('ledger=family&currency=all'))).goals.length, 1);
   assert.equal((await readList(await f.get('ledger=personal&currency=all&includeArchived=1'))).goals.length, 3);
   f.signIn('bob'); await f.post(input({ accountIds: [ids.bob] })); const other = await readList(await f.get()); assert.equal(other.goals.length, 1); assert.deepEqual(other.accounts.map((account) => account.id), [ids.bob]);
+});
+
+void test('goal lists show shared account and emergency references without reserving funds or counting archived targets', async (t) => {
+  const f = await fixture(t);
+  const first = (await readGoal(await f.post(input({ name: 'First', accountIds: [ids.cny] })))).goal;
+  const second = (await readGoal(await f.post(input({ name: 'Second', accountIds: [ids.cny] })))).goal;
+  const archived = (await readGoal(await f.post(input({ name: 'Archived', accountIds: [ids.cny] })))).goal;
+  await f.patch(archived.id, { archived: true });
+  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.cny] });
+  const listed = await readList(await f.get('ledger=personal&currency=CNY&includeArchived=1'));
+  assert.equal(listed.sharing.accounts.length, 1);
+  assert.deepEqual(new Set(listed.sharing.accounts[0].goals.map((goal) => goal.id)), new Set([first.id, second.id]));
+  assert.equal(listed.sharing.accounts[0].includesRunway, true);
+  assert.equal(listed.sharing.accounts[0].balanceMinor, '9007199254740993');
+  assert.equal(listed.goals.find((goal) => goal.id === archived.id)?.sharing, null);
+  assert.equal(listed.goals.find((goal) => goal.id === first.id)?.sharing?.sharedBalanceMinor, '9007199254740993');
+  assert.deepEqual(listed.goals.find((goal) => goal.id === first.id)?.sharing?.otherGoals, [{ id: second.id, name: 'Second' }]);
+  assert.equal(listed.goals.find((goal) => goal.id === first.id)?.currentMinor, '9007199254740993');
+  assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM finance_balance_entries').get()?.total, 8);
+  await financeStore.patchFinanceAccount(f.db, 'alice', ids.cny, { archived: true });
+  assert.deepEqual((await readList(await f.get())).sharing.accounts, []);
+  f.signIn('bob');
+  assert.deepEqual((await readList(await f.get())).sharing.accounts, []);
+});
+
+void test('current decision summaries keep gaps and emergency coverage scoped by owner, ledger and currency', async (t) => {
+  const f = await fixture(t);
+  const live = (await readGoal(await f.post(input({ deadline: PAST })))).goal;
+  const archived = (await readGoal(await f.post(input({ name: 'Archived' })))).goal;
+  await f.patch(archived.id, { archived: true });
+  await f.post(input({ ledger: 'family', accountIds: [ids.family] }));
+  await f.post(input({ currency: 'USD', accountIds: [ids.usd] }));
+  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.zero] });
+  const summary = await readFinanceDecisionSummary(f.db, 'alice', 'personal', 'CNY', TODAY);
+  assert.equal(summary.basis, 'current'); assert.equal(summary.asOfDate, TODAY);
+  assert.deepEqual(summary.goals, [{ id: live.id, name: live.name, status: 'overdue', gapMinor: '100000', monthlyMinor: null, deadline: PAST, percent: 0 }]);
+  assert.equal(summary.runway?.gapMinor, '600000'); assert.equal(summary.runway?.status, 'short');
+  assert.equal(summary.sharing.accounts[0].includesRunway, true);
+  const family = await readFinanceDecisionSummary(f.db, 'alice', 'family', 'CNY', TODAY);
+  assert.equal(family.goals.length, 1); assert.equal(family.runway, null);
+  const other = await readFinanceDecisionSummary(f.db, 'bob', 'personal', 'CNY', TODAY);
+  assert.deepEqual(other.goals, []); assert.equal(other.runway, null); assert.deepEqual(other.sharing.accounts, []);
 });

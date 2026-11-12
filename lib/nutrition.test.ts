@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId } from './nutrition.ts';
+import { buildNutritionQuickEntry, buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionMealCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
 
 const NOW = new Date('2026-11-10T08:00:00Z');
@@ -143,4 +143,46 @@ void test('the first supported days clamp both the recent range and visible card
     assert.equal(review.recent7days.at(-1)!.date, selected);
     for (const point of review.recent7days) assert.equal(parseNutritionQuery(new URLSearchParams({ date: point.date }), NOW).date, point.date);
   }
+});
+
+void test('quick suggestions preserve distinct portions and unknown calories, ignore deleted and future rows, and rank repeated observations', () => {
+  const rows = [
+    entry({ id: 'older-oats', date: '2026-10-20', name: '燕麦', portion: '一碗', caloriesTenth: 2000 }),
+    entry({ id: 'recent-oats', date: '2026-11-09', name: '燕麦', portion: '一碗', caloriesTenth: 2000, meal: 'lunch' }),
+    entry({ id: 'different-portion', date: '2026-11-10', name: '燕麦', portion: '半碗', caloriesTenth: 1000 }),
+    entry({ id: 'unknown', date: '2026-11-09', name: '未知热量', caloriesTenth: null }),
+    entry({ id: 'zero', date: '2026-11-09', name: '零热量', caloriesTenth: 0 }),
+    entry({ id: 'deleted', date: '2026-11-09', name: '已删除', deletedAt: '2026-11-09T01:00:00Z' }),
+    entry({ id: 'future', date: '2026-11-11', name: '未来食物' }),
+    entry({ id: 'too-old', date: '2026-10-11', name: '过早食物' }),
+  ];
+  const quick = buildNutritionQuickEntry(rows, '2026-11-10');
+  assert.equal(quick.from, '2026-10-12'); assert.equal(quick.previousDate, '2026-11-09');
+  assert.equal(quick.recent[0].id, 'different-portion');
+  assert.equal(quick.frequent.length, 1); assert.equal(quick.frequent[0].id, 'recent-oats'); assert.equal(quick.frequent[0].uses, 2);
+  assert.equal(quick.recent.find((row) => row.id === 'unknown')?.calories, null);
+  assert.equal(quick.recent.find((row) => row.id === 'zero')?.calories, '0.0');
+  assert.deepEqual(quick.previousMeals.find((meal) => meal.meal === 'lunch')?.entries.map((row) => row.id), ['recent-oats']);
+  assert.equal(quick.previousMeals.reduce((sum, meal) => sum + meal.entries.length, 0), 3);
+  assert.ok(quick.recent.every((row) => !['deleted', 'future', 'too-old'].includes(row.id)));
+  const historical = buildNutritionQuickEntry(rows, '2026-11-09');
+  assert.ok(historical.recent.every((row) => row.date <= '2026-11-09'));
+  assert.equal(buildNutritionQuickEntry([], '1970-01-01').previousDate, null);
+});
+
+void test('whole-meal snapshots validate all rows and apply only the chosen target date and meal', () => {
+  const parsed = parseNutritionMealCreate({ date: '2026-11-10', meal: 'lunch', entries: [
+    { name: ' 饭 ', portion: ' 一碗 ', calories: '000.0', note: '' }, { name: '菜', calories: null },
+  ] }, NOW);
+  assert.equal(parsed.entries.length, 2); assert.ok(parsed.entries.every((row) => row.date === parsed.date && row.meal === parsed.meal));
+  assert.equal(parsed.entries[0].caloriesTenth, 0); assert.equal(parsed.entries[1].caloriesTenth, null);
+  for (const body of [
+    { date: '2026-11-11', meal: 'lunch', entries: [{ name: '饭' }] },
+    { date: '2026-11-10', meal: 'other', entries: [{ name: '饭' }] },
+    { date: '2026-11-10', meal: 'lunch', entries: [] },
+    { date: '2026-11-10', meal: 'lunch', entries: Array.from({ length: 41 }, () => ({ name: '饭' })) },
+    { date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭', date: '2026-11-09' }] },
+    { date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭', owner: 'bob' }] },
+  ]) assert.throws(() => parseNutritionMealCreate(body, NOW), NutritionValidationError);
+  assert.throws(() => parseNutritionMealCreate({ date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭' }, { name: '', calories: '1' }] }, NOW), (error: unknown) => error instanceof NutritionValidationError && error.issues[0].path === 'entries[1].name');
 });

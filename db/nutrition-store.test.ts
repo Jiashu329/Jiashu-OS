@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { NutritionInput } from '../lib/nutrition.ts';
-import { createNutritionEntry, listNutritionEntries, NutritionConflictError, readNutritionEntry,
+import { createNutritionEntry, createNutritionMeal, listNutritionEntries, NutritionConflictError, readNutritionEntry,
   replaceNutritionEntry, setNutritionEntryDeleted } from './nutrition-store.ts';
 
 const NOW = '2026-11-10T04:00:00.000Z';
@@ -119,4 +119,36 @@ void test('owner and date ranges isolate every read and mutation without a hidde
   assert.equal((await listNutritionEntries(f.db, 'alice', { from: '2026-11-09', to: '2026-11-09' })).length, 125);
   assert.equal((await listNutritionEntries(f.db, 'alice', { from: '2026-11-04', to: '2026-11-10' })).length, 126);
   assert.equal((await listNutritionEntries(f.db, 'bob', { from: '2026-11-04', to: '2026-11-10' })).length, 1);
+});
+
+void test('an atomic whole meal preserves unknown and zero values and replays current revisions without restoring deleted food', async (t) => {
+  const f = fixture(t); const rows = [input({ name: 'zero', caloriesTenth: 0 }), input({ name: 'unknown', caloriesTenth: null })];
+  const first = await createNutritionMeal(f.db, 'alice', rows, ID, NOW);
+  assert.equal(first.entries.length, 2); assert.equal(first.replayed, false); assert.equal(f.count(), 2);
+  assert.notEqual(first.entries[0].id, first.entries[1].id); assert.equal(first.entries[0].caloriesTenth, 0); assert.equal(first.entries[1].caloriesTenth, null);
+  await replaceNutritionEntry(f.db, 'alice', first.entries[0].id, input({ name: 'edited zero', caloriesTenth: 0 }), 1, LATER);
+  await setNutritionEntryDeleted(f.db, 'alice', first.entries[1].id, true, 1, LATER);
+  const replay = await createNutritionMeal(f.db, 'alice', rows, ID.toUpperCase(), LATER);
+  assert.equal(replay.replayed, true); assert.equal(f.count(), 2); assert.equal(replay.entries[0].name, 'edited zero');
+  assert.equal(replay.entries[1].deletedAt, LATER); assert.equal(replay.entries[1].caloriesTenth, null);
+});
+
+void test('changed whole-meal content or length rejects the entire replay without partially adding rows, while owners remain isolated', async (t) => {
+  const f = fixture(t); const first = await createNutritionMeal(f.db, 'alice', [input()], ID, NOW);
+  await assert.rejects(createNutritionMeal(f.db, 'alice', [input(), input({ name: 'extra' })], ID, LATER), NutritionConflictError);
+  await assert.rejects(createNutritionMeal(f.db, 'alice', [input({ name: 'changed' })], ID, LATER), NutritionConflictError);
+  assert.equal(f.count(), 1); assert.equal((await readNutritionEntry(f.db, 'alice', first.entries[0].id))?.name, 'synthetic oats');
+  const bob = await createNutritionMeal(f.db, 'bob', [input()], ID, NOW);
+  assert.notEqual(bob.entries[0].id, first.entries[0].id); assert.equal(f.count(), 2);
+  assert.equal(await readNutritionEntry(f.db, 'alice', bob.entries[0].id), null);
+  assert.equal(await readNutritionEntry(f.db, 'bob', first.entries[0].id), null);
+});
+
+void test('a rejected row rolls back the whole meal and retrying the original identifier saves it once', async (t) => {
+  const f = fixture(t); const rows = [input({ name: 'first' }), input({ name: 'reject' }), input({ name: 'last' })];
+  f.sqlite.exec("CREATE TRIGGER reject_meal BEFORE INSERT ON nutrition_entries WHEN NEW.name = 'reject' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+  await assert.rejects(createNutritionMeal(f.db, 'alice', rows, ID, NOW)); assert.equal(f.count(), 0);
+  f.sqlite.exec('DROP TRIGGER reject_meal');
+  assert.equal((await createNutritionMeal(f.db, 'alice', rows, ID, NOW)).entries.length, 3); assert.equal(f.count(), 3);
+  assert.equal((await createNutritionMeal(f.db, 'alice', rows, ID, LATER)).replayed, true); assert.equal(f.count(), 3);
 });

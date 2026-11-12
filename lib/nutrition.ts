@@ -46,7 +46,18 @@ export interface NutritionReview extends NutritionQuery {
   entries: NutritionEntryView[];
   summary: NutritionSummary;
   recent7days: Array<{ date: string; summary: NutritionSummary }>;
+  quickEntry: NutritionQuickEntry;
 }
+export interface NutritionSuggestion extends NutritionEntryView { uses: number }
+export interface NutritionQuickEntry {
+  from: string;
+  previousDate: string | null;
+  previousMeals: Array<{ meal: NutritionMeal; label: string; entries: NutritionEntryView[] }>;
+  recent: NutritionSuggestion[];
+  frequent: NutritionSuggestion[];
+}
+export interface NutritionMealInput { date: string; meal: NutritionMeal; entries: NutritionInput[] }
+export const MAX_NUTRITION_MEAL_ENTRIES = 40;
 export type NutritionPatch = { kind: 'edit'; input: NutritionInput; expectedRevision: number }
   | { kind: 'deleted'; deleted: boolean; expectedRevision: number };
 
@@ -118,6 +129,23 @@ export function parseNutritionCreate(input: unknown, now: Date | number = Date.n
     note: text(raw.note, 'note', 500, true), caloriesTenth: calories(raw.calories),
   };
 }
+/** An explicit, editable snapshot of a whole meal; all rows share the selected date and meal. */
+export function parseNutritionMealCreate(input: unknown, now: Date | number = Date.now()): NutritionMealInput {
+  const raw = fields(input, ['date', 'meal', 'entries']);
+  const selectedDate = date(raw.date, shanghaiDay(new Date(now).toISOString()));
+  if (typeof raw.meal !== 'string' || !Object.hasOwn(NUTRITION_MEALS, raw.meal)) return fail('meal', '请选择早餐、午餐、晚餐或加餐。');
+  if (!Array.isArray(raw.entries) || raw.entries.length < 1 || raw.entries.length > MAX_NUTRITION_MEAL_ENTRIES) return fail('entries', '每次整餐保存需包含 1–40 项食物；记录较多时请分次添加。');
+  const meal = raw.meal as NutritionMeal;
+  const entries = raw.entries.map((item, index) => {
+    const row = fields(item, ['name', 'portion', 'calories', 'note']);
+    try { return parseNutritionCreate({ ...row, date: selectedDate, meal }, now); }
+    catch (error) {
+      if (error instanceof NutritionValidationError) throw new NutritionValidationError(error.issues.map((issue) => ({ ...issue, path: `entries[${index}].${issue.path}` })));
+      throw error;
+    }
+  });
+  return { date: selectedDate, meal, entries };
+}
 export function parseNutritionPatch(input: unknown, now: Date | number = Date.now()): NutritionPatch {
   const raw = fields(input, ['date', 'meal', 'name', 'portion', 'calories', 'note', 'deleted', 'expectedRevision']);
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1) return fail('expectedRevision', '请先读取最新版本的饮食记录。');
@@ -139,6 +167,34 @@ export function parseNutritionQuery(params: URLSearchParams, now: Date | number 
 export function presentNutritionEntry(entry: NutritionEntry): NutritionEntryView {
   return { ...entry, calories: entry.caloriesTenth === null ? null : decimal(BigInt(entry.caloriesTenth)), deleted: entry.deletedAt !== null };
 }
+export function nutritionQuickFrom(selectedDate: string): string {
+  const from = shiftDate(selectedDate, -29);
+  return from < '1970-01-01' ? '1970-01-01' : from;
+}
+/** Reuse only active, observed portions. A different calorie value stays a different suggestion. */
+export function buildNutritionQuickEntry(entries: readonly NutritionEntry[], selectedDate: string): NutritionQuickEntry {
+  const from = nutritionQuickFrom(selectedDate);
+  const active = entries.filter((row) => row.deletedAt === null && row.date >= from && row.date <= selectedDate)
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+  const groups = new Map<string, NutritionSuggestion>();
+  for (const row of active) {
+    const key = JSON.stringify([row.name, row.portion, row.caloriesTenth]);
+    const existing = groups.get(key);
+    if (existing) existing.uses++;
+    else groups.set(key, { ...presentNutritionEntry(row), uses: 1 });
+  }
+  const recent = [...groups.values()];
+  const previousDate = selectedDate > '1970-01-01' ? shiftDate(selectedDate, -1) : null;
+  return {
+    from, previousDate,
+    previousMeals: (Object.keys(NUTRITION_MEALS) as NutritionMeal[]).map((meal) => ({ meal, label: NUTRITION_MEALS[meal],
+      entries: active.filter((row) => row.date === previousDate && row.meal === meal)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).map(presentNutritionEntry),
+    })),
+    recent: recent.slice(0, 6),
+    frequent: [...recent].filter((row) => row.uses >= 2).sort((a, b) => b.uses - a.uses || b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 6),
+  };
+}
 export function summarizeNutrition(entries: readonly NutritionEntry[]): NutritionSummary {
   const active = entries.filter((entry) => entry.deletedAt === null);
   const sum = (rows: readonly NutritionEntry[]) => {
@@ -157,7 +213,7 @@ export function buildNutritionReview(entries: readonly NutritionEntry[], selecti
   const visible = selected.filter((entry) => selection.includeDeleted || entry.deletedAt === null)
     .sort((a, b) => order.indexOf(a.meal) - order.indexOf(b.meal) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const recentDays = Math.round((Date.parse(selection.recentTo + 'T12:00:00Z') - Date.parse(selection.recentFrom + 'T12:00:00Z')) / 86400000) + 1;
-  return { ...selection, entries: visible.map(presentNutritionEntry), summary: summarizeNutrition(selected),
+  return { ...selection, entries: visible.map(presentNutritionEntry), summary: summarizeNutrition(selected), quickEntry: buildNutritionQuickEntry(entries, selection.date),
     recent7days: Array.from({ length: recentDays }, (_, index) => {
       const date = shiftDate(selection.recentFrom, index);
       return { date, summary: summarizeNutrition(entries.filter((entry) => entry.date === date)) };
