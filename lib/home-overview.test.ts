@@ -168,6 +168,29 @@ test('stale balances outrank an empty ledger setup while preserving order within
   assert.deepEqual(empty.priorities.map((item) => item.id), ['health-setup', 'personal-setup', 'family-setup']);
 });
 
+test('today nutrition uses only active Shanghai-day records, exact macro totals and explicit targets',()=>{
+  const base={id:'private-food',date:'2026-11-09',meal:'lunch' as const,name:'PRIVATE_FOOD',portion:'PRIVATE_PORTION',note:'PRIVATE_NOTE',
+    caloriesTenth:1001,carbsTenth:0,proteinTenth:123,fatTenth:null,revision:1,createdAt:NOW,updatedAt:NOW,deletedAt:null};
+  const output=buildHomeOverview(sources({nutrition:{entries:[base,{...base,id:'old',date:'2026-11-08',proteinTenth:9999},
+    {...base,id:'deleted',deletedAt:NOW,proteinTenth:9999}],goals:{calories:'1800.0',carbs:'200.0',protein:'80.0',fat:null,revision:1,createdAt:NOW,updatedAt:NOW}}}),NOW);
+  assert.equal(output.nutrition.status,'ready');assert.equal(output.nutrition.entryCount,1);
+  assert.deepEqual(output.nutrition.nutrients.protein,{total:'12.3',knownCount:1,unknownCount:0});
+  assert.deepEqual(output.nutrition.nutrients.fat,{total:null,knownCount:0,unknownCount:1});
+  assert.equal(output.nutrition.nutrients.carbs.total,'0.0');assert.equal(output.nutrition.targets.protein,'80.0');
+  assert.ok(!JSON.stringify(output).includes('PRIVATE_'));
+  assert.equal(buildHomeOverview(sources({nutrition:null}),NOW).nutrition.status,'unavailable');
+  const empty=buildHomeOverview(sources({nutrition:{entries:[]}}),NOW).nutrition;
+  assert.equal(empty.status,'ready');assert.equal(empty.nutrients.calories.total,null);assert.equal(empty.meals.lunch,'unrecorded');
+});
+
+test('monthly balance-check tasks expose older in-month-independent accounts without treating a fresh receipt as a new balance',()=>{
+  const output=buildHomeOverview(sources({personal:{accounts:[account('personal',{asOfDate:'2026-10-31'}),account('personal',{asOfDate:'2026-11-01'})]}}),NOW);
+  assert.equal(output.finance.personal.staleAccountCount,0);assert.equal(output.finance.personal.uncheckedAccountCount,1);
+  assert.ok(output.priorities.some((item)=>item.id==='personal-month-check'&&item.href==='/finance/balances?ledger=personal'));
+  const quickWeight=output.priorities.find((item)=>item.id==='weight-record');
+  if(quickWeight)assert.equal(quickWeight.href,'/health/records?metric=weight&compose=1');
+});
+
 function readyActions(overrides: Partial<HomeActionsInput> = {}): HomeActionsInput {
   return { nutrition: { entryCountToday: 1, recordedDays7: 1 }, weekly: {
     weekStart: '2026-11-09', previousWeekStart: '2026-11-02', previousHasRecords: true, reviewed: true,

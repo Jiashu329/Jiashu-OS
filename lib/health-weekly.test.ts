@@ -88,7 +88,7 @@ void test('weekly averages use actual recorded days, preserve zero and never inc
   assert.equal(steps.currentRecordedDays, 2);
   assert.equal(steps.previousRecordedDays, 2);
   assert.deepEqual(steps.currentPoints, [
-    { day: '2026-11-09', value: 0 }, { day: '2026-11-10', value: 10000 }, { day: '2026-11-11', value: null },
+    { day: '2026-11-09', value: 0,target:8000,targetEffectiveFrom:null }, { day: '2026-11-10', value: 10000,target:8000,targetEffectiveFrom:null }, { day: '2026-11-11', value: null,target:8000,targetEffectiveFrom:null },
   ]);
   assert.deepEqual(steps.previousPoints.map((point) => point.day), ['2026-11-02', '2026-11-03', '2026-11-04']);
   assert.equal(steps.target, 8000);
@@ -190,6 +190,13 @@ void test('empty periods have null averages and deltas, with zero observations r
   assert.equal(oneSide.currentAverage, 0);
   assert.equal(oneSide.previousAverage, null);
   assert.equal(oneSide.delta, null);
+});
+
+void test('mixed target weeks count each date against its effective version and report daily evidence',()=>{
+  const data:GoalSettings={targets:{steps:8000,sleep:null,active_energy:null},updatedAt:'2026-11-10T00:00:00Z',revision:1,effectiveFrom:'2026-11-10',history:[{revision:0,effectiveFrom:'1970-01-01',targets:{steps:6000,sleep:null,active_energy:null},createdAt:'2026-11-01T00:00:00Z'},{revision:1,effectiveFrom:'2026-11-10',targets:{steps:8000,sleep:null,active_energy:null},createdAt:'2026-11-10T00:00:00Z'}]};
+  const records=['2026-11-02','2026-11-03','2026-11-04','2026-11-09','2026-11-10','2026-11-11'].map((day)=>({id:'steps:'+day,metric:'steps' as const,value:day==='2026-11-11'?9000:7000,unit:'count' as const,aggregation:'daily' as const,startDate:day+'T00:00:00+08:00',endDate:day+'T08:00:00+08:00',source:'synthetic'}));
+  const result=buildHealthWeeklyReview(records,data,parseHealthWeekQuery(new URLSearchParams(),Date.parse('2026-11-11T08:00:00Z')),Date.parse('2026-11-11T08:00:00Z')).metrics[0];
+  assert.equal(result.currentAchievedDays,2);assert.equal(result.previousAchievedDays,3);assert.deepEqual(result.targetsInPeriod?.map((point)=>point.target),[6000,8000,8000]);
 });
 
 void test('nutrition compares equal weekday windows and preserves unknown heat and absent dates', () => {

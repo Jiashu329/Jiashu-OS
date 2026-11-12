@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     if (version !== undefined && !closed) return json({ error: '找不到这个月结版本。', code: 'FINANCE_CLOSE_NOT_FOUND' }, 404);
     const report = closed && !draft ? closed.report : await (async () => {
       const snapshot = await readFinanceReviewSnapshot(env.DB, user.userId, selection.ledger, selection.cutoffDay);
-      return buildFinanceReview(snapshot.accounts, snapshot.balances, selection);
+      return buildFinanceReview(snapshot.accounts, snapshot.balances, selection, snapshot.classifications);
     })();
     let decisions;
     try { decisions = await readFinanceDecisionSummary(env.DB, user.userId, selection.ledger, selection.currency, selection.today); }

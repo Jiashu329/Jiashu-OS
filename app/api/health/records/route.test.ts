@@ -7,7 +7,7 @@ import * as health from '../../../../lib/health.ts';
 import * as composition from '../../../../lib/body-composition.ts';
 import * as recordRules from '../../../../lib/health-records.ts';
 import * as recordStore from '../../../../db/health-records-store.ts';
-import { syncDiagnosticStatements } from '../../../../db/sync-diagnostics-store.ts';
+import * as importStore from '../../../../db/health-import-store.ts';
 
 const ORIGIN = 'https://synthetic-health-records.example';
 const CAPTURED = new Date().toISOString();
@@ -73,7 +73,7 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
-  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore, syncDiagnosticStatements }, ['importHealth', 'readHealth', 'readHealthRange']);
+  const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore, ...importStore }, ['importHealth', 'readHealth', 'readHealthRange']);
   let bindings = { ...shared, ...repository, ...health, ...recordRules, ...recordStore, env };
   const recordsSharedPath = new URL('./_shared.ts', import.meta.url);
   if (existsSync(recordsSharedPath)) bindings = { ...bindings, ...loadExports(recordsSharedPath, bindings) };
@@ -91,7 +91,8 @@ async function fixture(t: TestContext) {
   }
   async function sync(userId: string, measurements: health.HealthMeasurement[], exportedAt = FIRST_EXPORT) {
     const payload = health.parseSyncPayload({ version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt, measurements });
-    return (repository.importHealth as (userId: string, payload: health.HealthSyncPayload) => Promise<unknown>)(userId, payload);
+    const preview = await importStore.previewHealthImport(db, userId, payload);
+    return (repository.importHealth as (userId: string, payload: health.HealthSyncPayload, deviceId: null, options: importStore.HealthImportOptions) => Promise<unknown>)(userId, payload, null, { previewToken: preview.token, confirmSourceChanges: true });
   }
   return {
     db, env, queries, sync,

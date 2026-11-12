@@ -28,7 +28,7 @@ function adapter(sqlite: DatabaseSync, afterStatement?: (index: number) => Promi
     },
     async batch(statements: BatchStatement[]) {
       batchCalls++;
-      assert.equal(statements.length, 2, 'review must read accounts and balances in a single batch');
+      assert.equal(statements.length, 3, 'review must read accounts, balances and classifications in a single batch');
       sqlite.exec('BEGIN');
       try {
         const result = [];
@@ -61,7 +61,7 @@ function addBalance(sqlite: DatabaseSync, accountId: string, amountMinor: string
     .run('synthetic-review-' + (++balanceNumber), owner, accountId, amountMinor, asOfDate, createdAt);
 }
 
-void test('review snapshot is read-only and isolates owners, current ledgers and archive status in both queries', async (t) => {
+void test('review snapshot is read-only and isolates owners, ledgers and classification history in all queries', async (t) => {
   const { sqlite, db, calls } = fixture(t);
   addAccount(sqlite, 'a');
   addAccount(sqlite, 'usd', { currency: 'USD' });
@@ -77,14 +77,14 @@ void test('review snapshot is read-only and isolates owners, current ledgers and
   const before = sqlite.prepare('SELECT total_changes() AS total').get()!.total;
   const result = await readFinanceReviewSnapshot(db, 'alice', 'personal', '2026-11-09');
   assert.equal(calls(), 1);
-  assert.deepEqual(result.accounts.map((row) => row.accountId), ['a', 'usd']);
-  assert.deepEqual(result.balances.map((row) => row.amountMinor), ['100', '200']);
-  assert.ok(result.accounts.every((row) => row.archivedAt === null));
+  assert.deepEqual(result.accounts.map((row) => row.accountId), ['a', 'archived', 'usd']);
+  assert.deepEqual(result.balances.map((row) => row.amountMinor), ['100', '400', '200']);
+  assert.equal(result.accounts.find((row)=>row.accountId==='archived')!.archivedAt,'2026-11-09T00:00:00Z');
   assert.equal(sqlite.prepare('SELECT total_changes() AS total').get()!.total, before);
   const family = await readFinanceReviewSnapshot(db, 'alice', 'family', '2026-11-09');
   assert.deepEqual(family.accounts.map((row) => row.accountId), ['family']);
   assert.deepEqual(family.balances.map((row) => row.amountMinor), ['300']);
-  assert.deepEqual(await readFinanceReviewSnapshot(db, "alice' OR 1=1 --", 'personal', '2026-11-09'), { accounts: [], balances: [] });
+  assert.deepEqual(await readFinanceReviewSnapshot(db, "alice' OR 1=1 --", 'personal', '2026-11-09'), { accounts: [], balances: [], classifications: [] });
 });
 
 void test('sequence and as-of dates survive SQL reads for precise corrections, backfills and per-currency calculation', async (t) => {

@@ -32,6 +32,10 @@ export interface SleepStages {
   awake: number;
   inBed: number;
 }
+/** Source interval bounds for the longest sleep group; reporting-window bounds are never reused as sleep times. */
+export interface SleepTiming {
+  onset:string;wake:string;clipped:boolean;method:'longest-sleep-group-v1';
+}
 
 export interface HealthMeasurement {
   id: string;
@@ -46,6 +50,7 @@ export interface HealthMeasurement {
   aggregation?: "daily" | "sample";
   /** Optional for legacy totals. The four asleep stages sum to value. */
   sleepStages?: SleepStages;
+  sleepTiming?: SleepTiming;
 }
 
 export interface HealthSyncPayload {
@@ -185,7 +190,7 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
   const byID = new Map<string, string>();
   const byKey = new Map<string, string>();
   const sources = new Map<string, string>();
-  const allowedMeasurementKeys = new Set(["id", "metric", "value", "unit", "startDate", "endDate", "source", "aggregation", "sleepStages"]);
+  const allowedMeasurementKeys = new Set(["id", "metric", "value", "unit", "startDate", "endDate", "source", "aggregation", "sleepStages", "sleepTiming"]);
   const sleepStageKeys = ["unspecified", "core", "deep", "rem", "awake", "inBed"] as const;
   const sleepTolerance = 1e-8;
 
@@ -265,6 +270,16 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
         }
       }
     }
+    let sleepTiming:SleepTiming|undefined;
+    if(Object.hasOwn(item,'sleepTiming')){
+      const timingPath=`${path}.sleepTiming`,timing=item.sleepTiming;
+      if(metric!=='sleep'||!isObject(timing))add(timingPath,'Sleep timing is only allowed as a sleep interval object');
+      else{
+        const onset=normalizeTimestamp(timing.onset),wake=normalizeTimestamp(timing.wake);
+        if(Object.keys(timing).some((key)=>!['onset','wake','clipped','method'].includes(key))||timing.method!=='longest-sleep-group-v1'||typeof timing.clipped!=='boolean'||!onset||!wake||Date.parse(wake)<=Date.parse(onset)||!startDate||!endDate||Date.parse(onset)<Date.parse(startDate)||Date.parse(wake)>Date.parse(endDate)||typeof item.value!=='number'||item.value<=0)add(timingPath,'Expected real positive sleep bounds within the reporting window and an explicit clipping flag');
+        else sleepTiming={onset,wake,clipped:timing.clipped,method:'longest-sleep-group-v1'};
+      }
+    }
     if (issues.length !== issueCount) continue;
 
     const measurement: HealthMeasurement = {
@@ -277,6 +292,7 @@ export function parseSyncPayload(input: unknown): HealthSyncPayload {
       ...(item.source !== undefined ? { source: item.source as string } : {}),
       ...(isSampleMetric(metric) ? { aggregation: "sample" as const } : { aggregation: "daily" as const }),
       ...(sleepStages ? { sleepStages } : {}),
+      ...(sleepTiming ? { sleepTiming } : {}),
     };
     const serialized = JSON.stringify(measurement);
     const priorID = byID.get(measurement.id);
@@ -307,6 +323,7 @@ export interface HealthTrendPoint {
   measuredAt: string;
   source: string | null;
   sleepStages?: SleepStages;
+  sleepTiming?: SleepTiming;
 }
 
 export interface HealthMetricSummary {
@@ -345,6 +362,7 @@ export function buildHealthSummary(input: readonly HealthMeasurement[]): HealthS
       if (!isSampleMetric(metric) || !previous || Date.parse(measuredAt) >= Date.parse(previous.measuredAt)) {
         daily.set(day, { day, value: row.value, measuredAt, source: row.source ?? null,
           ...(row.metric === "sleep" && row.sleepStages ? { sleepStages: row.sleepStages } : {}),
+          ...(row.metric === "sleep" && row.sleepTiming ? { sleepTiming: row.sleepTiming } : {}),
         });
       }
     }

@@ -17,6 +17,8 @@ export const APP_THEME_CSS = String.raw`
   --red:#a33131;
   --orange:#a16c3c;
   --radius:8px;
+  --panel-radius:12px;
+  --control-radius:8px;
   --shadow:0 2px 8px rgb(29 39 56 / 4%);
 }
 html{accent-color:var(--primary);text-rendering:optimizeLegibility;-webkit-text-size-adjust:100%}

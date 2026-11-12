@@ -28,6 +28,21 @@ export const ACCOUNT_TYPES = {
   other_liability: { label: '其他负债', side: 'liability' },
 } as const;
 
+export const LIQUIDITY_KINDS = { liquid: '可随时动用', restricted: '部分可动用', illiquid: '暂不可动用', unreviewed: '尚未核对' } as const;
+export type LiquidityKind = keyof typeof LIQUIDITY_KINDS;
+export function defaultAccountLiquidity(type: string): { liquidityKind: LiquidityKind; usableBps: number } {
+  if (type === 'cash' || type === 'bank') return { liquidityKind: 'liquid', usableBps: 10000 };
+  if (type === 'property' || ['credit_card', 'loan', 'other_liability'].includes(type)) return { liquidityKind: 'illiquid', usableBps: 0 };
+  return { liquidityKind: 'unreviewed', usableBps: 0 };
+}
+export function accountLiquidity(account: { type: string; liquidityKind?: string; usableBps?: number }) {
+  const fallback = defaultAccountLiquidity(account.type);
+  const kind = account.liquidityKind ?? fallback.liquidityKind;
+  const bps = account.usableBps ?? fallback.usableBps;
+  if (!Object.hasOwn(LIQUIDITY_KINDS, kind) || !Number.isSafeInteger(bps) || bps < 0 || bps > 10000 || (['illiquid', 'unreviewed'].includes(kind) && bps !== 0)) return { liquidityKind: 'unreviewed' as LiquidityKind, usableBps: 0 };
+  return { liquidityKind: kind as LiquidityKind, usableBps: bps };
+}
+
 export type LedgerKind = keyof typeof LEDGERS;
 export type CurrencyCode = keyof typeof CURRENCIES;
 export type AccountType = keyof typeof ACCOUNT_TYPES;
@@ -188,10 +203,10 @@ export function parseCreateAccount(input: unknown, options: { today?: string } =
   };
 }
 
-export interface AccountPatch { name?: string; type?: AccountType; note?: string; archived?: boolean }
+export interface AccountPatch { name?: string; type?: AccountType; note?: string; archived?: boolean; liquidityKind?: LiquidityKind; usableBps?: number }
 
 export function parseAccountPatch(input: unknown): AccountPatch {
-  const raw = fields(input, ['name', 'type', 'note', 'archived']);
+  const raw = fields(input, ['name', 'type', 'note', 'archived', 'liquidityKind', 'usableBps']);
   if (!Object.keys(raw).length) return fail('$', '请至少修改一个账户字段。');
   const patch: AccountPatch = {};
   if (Object.hasOwn(raw, 'name')) patch.name = text(raw.name, 'name', 60);
@@ -201,10 +216,25 @@ export function parseAccountPatch(input: unknown): AccountPatch {
     if (typeof raw.archived !== 'boolean') return fail('archived', '归档状态需为是或否。');
     patch.archived = raw.archived;
   }
+  if (Object.hasOwn(raw, 'liquidityKind') || Object.hasOwn(raw, 'usableBps')) {
+    if (typeof raw.liquidityKind !== 'string' || !Object.hasOwn(LIQUIDITY_KINDS, raw.liquidityKind)) return fail('liquidityKind', '请选择资金可动用程度。');
+    if (!Number.isSafeInteger(raw.usableBps) || Number(raw.usableBps) < 0 || Number(raw.usableBps) > 10000) return fail('usableBps', '可动用比例需为0至100%，最多两位小数。');
+    if (['illiquid', 'unreviewed'].includes(raw.liquidityKind) && raw.usableBps !== 0) return fail('usableBps', '未核对或暂不可动用的账户比例需为0。');
+    patch.liquidityKind = raw.liquidityKind as LiquidityKind; patch.usableBps = raw.usableBps as number;
+  }
   return patch;
 }
 
 export const parseAccountUpdate = parseAccountPatch;
+
+export interface AccountPatchCommand extends AccountPatch { expectedRevision: number }
+/** Writes require the version the editor actually read; bare patch parsing is also used by backup validation. */
+export function parseAccountPatchCommand(input: unknown): AccountPatchCommand {
+  const raw = fields(input, ['name', 'type', 'note', 'archived', 'liquidityKind', 'usableBps', 'expectedRevision']);
+  if (!Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1) return fail('expectedRevision', '请先读取最新账户版本，再保存修改。');
+  const { expectedRevision, ...patch } = raw;
+  return { ...parseAccountPatch(patch), expectedRevision: expectedRevision as number };
+}
 
 export interface BalanceEntryInput { amount: string; amountMinor: string; asOfDate: string; note: string }
 

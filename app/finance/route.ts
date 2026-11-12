@@ -10,8 +10,8 @@ export async function GET(request: Request) {
   const query = new URLSearchParams({ ledger });
   const currency = source.get('currency');
   if (currency && Object.hasOwn(CURRENCIES, currency)) query.set('currency', currency);
-  await requireChatGPTUser('/finance?' + query);
-  return new Response(renderFinanceApp(), { headers: {
+  const user = await requireChatGPTUser('/finance?' + query);
+  return new Response(renderFinanceApp(user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

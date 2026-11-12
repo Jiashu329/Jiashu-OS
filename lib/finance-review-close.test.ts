@@ -44,3 +44,21 @@ void test('preview fingerprint survives a new viewing day and rejects changed ac
   const changed = structuredClone(original); changed.accounts[0].name = '重命名';
   assert.notEqual(await financeReviewHash(original), await financeReviewHash(changed));
 });
+
+void test('snapshots preserve dated classifications and known zero membership without rejecting archived final accounts', () => {
+  const selection = parseFinanceReviewQuery(new URLSearchParams({ month: '2026-10' }), NOW);
+  const archived = buildFinanceReview([{ accountId: 'bank', name: '历史账户', ledger: 'personal', currency: 'CNY', type: 'loan', archivedAt: '2026-10-20T04:00:00Z' }],
+    [{ accountId: 'bank', amountMinor: '10000', asOfDate: '2026-09-15', sequence: 1 }], selection, [
+      { accountId: 'bank', revision: 1, effectiveFrom: '1970-01-01', type: 'bank', archived: 0, origin: 'opening', recordedAt: '2026-09-15T04:00:00Z' },
+      { accountId: 'bank', revision: 2, effectiveFrom: '2026-10-20', type: 'loan', archived: 1, origin: 'change', recordedAt: '2026-10-20T04:00:00Z' },
+    ]);
+  const restored = parseStoredFinanceReview(JSON.parse(JSON.stringify(archived)));
+  assert.equal(restored.snapshot.accountCount, 0);
+  assert.equal(restored.snapshot.netMinor, '0');
+  assert.equal(restored.previous.netMinor, '10000');
+  assert.equal(restored.change.membershipNetMinor, '-10000');
+  assert.equal(restored.accounts[0].previousType, 'bank');
+  assert.equal(restored.accounts[0].archived, true);
+  const corrupt = structuredClone(archived); corrupt.accounts[0].classificationChangeMinor = 'invalid';
+  assert.throws(() => parseStoredFinanceReview(corrupt));
+});

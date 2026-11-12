@@ -8,14 +8,14 @@ import type { FinanceRunwaySettings } from './finance-runway.ts';
 const scope = { userId: 'alice', ledger: 'personal' as const };
 function plan(id: string, accountIds = ['a'], patch: Partial<FinanceGoalPlan> = {}): FinanceGoalPlan {
   return { id, accountIds, name: '目标' + id, userId: 'alice', ledger: 'personal', currency: 'CNY',
-    targetMinor: '100000', deadline: '2027-01-01', creationHash: '', createdAt: '', updatedAt: '', archivedAt: null, ...patch };
+    targetMinor: '100000', deadline: '2027-01-01', creationHash: '', createdAt: '', updatedAt: '', archivedAt: null, revision: 1, ...patch };
 }
-function account(id: string, patch: Partial<FinanceGoalAccount> & { userId?: string } = {}) {
+function account(id: string, patch: Partial<FinanceGoalAccount> & { userId?: string; liquidityKind?: string; usableBps?: number } = {}) {
   return { id, name: '账户' + id, ledger: 'personal', currency: 'CNY', type: 'bank', balanceMinor: '9007199254740993',
     asOfDate: '2026-11-12', archivedAt: null, ...patch };
 }
 function runway(accountIds = ['a'], patch: Partial<FinanceRunwaySettings> = {}): FinanceRunwaySettings {
-  return { ...scope, currency: 'CNY', monthlyExpenseMinor: '10000', targetMonths: 6, accountIds, createdAt: '', updatedAt: '', ...patch };
+  return { ...scope, currency: 'CNY', monthlyExpenseMinor: '10000', targetMonths: 6, accountIds, createdAt: '', updatedAt: '', revision: 1, ...patch };
 }
 
 void test('shared references retain exact balances once per account and never change goal progress', () => {
@@ -38,6 +38,17 @@ void test('one goal shared only with emergency funds is surfaced, including a ge
   assert.equal(result.byGoal.one.sharedBalanceMinor, '0');
   assert.deepEqual(result.byGoal.one.otherGoals, []);
   assert.equal(result.byGoal.one.includesRunway, true);
+  assert.equal(result.accounts[0].runwayUsableMinor, '0');
+});
+
+void test('shared references distinguish nominal balances from reviewed emergency liquidity', () => {
+  const accounts = [account('a', { liquidityKind: 'restricted', usableBps: 3333 }),
+    account('b', { type: 'investment', liquidityKind: 'unreviewed', usableBps: 0 })];
+  const result = buildFinanceAllocationView(scope, [plan('one', ['a', 'b'])], accounts, [runway(['a', 'b'])]);
+  assert.equal(result.accounts[0].balanceMinor, '9007199254740993');
+  assert.equal(result.accounts[0].runwayUsableMinor, (BigInt('9007199254740993') * BigInt(3333) / BigInt(10000)).toString());
+  assert.equal(result.accounts[1].includesRunway, true, 'a saved reference remains visible even when unreviewed funds contribute zero');
+  assert.equal(result.accounts[1].runwayUsableMinor, '0');
 });
 
 void test('archived and foreign plans and nonmatching runway scopes do not create overlaps', () => {

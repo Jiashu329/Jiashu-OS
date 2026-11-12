@@ -16,7 +16,8 @@ export function goalsError(error: unknown) {
 }
 export function goalNotFound() { return json({ error: '找不到这个财务目标。', code: 'FINANCE_GOAL_NOT_FOUND' }, 404); }
 export async function goalAccounts(userId: string, ledger: string) {
-  return (await listFinanceAccounts(goalsDatabase(), userId, ledger)).filter((row) => Object.hasOwn(ACCOUNT_TYPES, row.type) && ACCOUNT_TYPES[row.type as AccountType].side === 'asset');
+  // Progress needs archived/classification-changed links as well as selectable assets.
+  return listFinanceAccounts(goalsDatabase(), userId, ledger, true);
 }
 export async function presentGoal(plan: FinanceGoalPlan) {
   return buildFinanceGoalView(plan, await goalAccounts(plan.userId, plan.ledger), todayShanghai());

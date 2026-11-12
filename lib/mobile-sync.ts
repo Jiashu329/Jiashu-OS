@@ -145,6 +145,14 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
   if (issues.length) throw new HealthValidationError(issues);
   if (intervals.length === 0) return standard;
 
+  // Union real asleep samples first, then group fragments separated by at most
+  // one hour. A nap cannot move the longest night's wake time to the afternoon.
+  const asleep=intervals.filter((interval)=>[1,3,4,5].includes(interval[2])).map(([start,end])=>[start,end] as [number,number]).sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const union:Array<[number,number]>=[];
+  for(const interval of asleep){const previous=union.at(-1);if(previous&&interval[0]<=previous[1])previous[1]=Math.max(previous[1],interval[1]);else union.push([...interval]);}
+  const groups:Array<Array<[number,number]>>=[];
+  for(const interval of union){const group=groups.at(-1);if(group&&interval[0]-group.at(-1)![1]<=3600000)group.push(interval);else groups.push([interval]);}
+
   const sleepMeasurements = windows.flatMap((window) => {
     const events: Array<{ time: number; state: AppleSleepState; delta: number }> = [];
     for (const [start, end, parsedState] of intervals) {
@@ -189,11 +197,15 @@ export function parseMobileSyncPayload(input: unknown): HealthSyncPayload {
       awake: milliseconds.awake / 3600000,
       inBed: milliseconds.inBed / 3600000,
     };
+    const candidates=groups.map((group)=>({group,duration:group.reduce((total,[start,end])=>total+Math.max(0,Math.min(end,window.end)-Math.max(start,window.start)),0)})).filter((candidate)=>candidate.duration>0).sort((a,b)=>b.duration-a.duration||b.group.at(-1)![1]-a.group.at(-1)![1]);
+    const main=candidates[0]?.group;
+    const timing=main?{onset:new Date(Math.max(main[0][0],window.start)).toISOString(),wake:new Date(Math.min(main.at(-1)![1],window.end)).toISOString(),clipped:main[0][0]<window.start||main.at(-1)![1]>window.end,method:'longest-sleep-group-v1' as const}:undefined;
     return [{
       id: `sleep-report:${window.day}`, metric: "sleep", value: totalMilliseconds / 3600000,
       unit: "hours", aggregation: "daily", source: sleepReport.source,
       startDate: new Date(window.start).toISOString(), endDate: new Date(window.end).toISOString(),
       sleepStages,
+      ...(timing?{sleepTiming:timing}:{}),
     }];
   });
 

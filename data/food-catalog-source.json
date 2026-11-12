@@ -1,0 +1,24 @@
+{
+  "name": "台湾食品药物管理署食品营养成分资料集",
+  "url": "https://data.gov.tw/dataset/8543",
+  "version": "2024-03-29 镜像快照；原始发布版本未注明",
+  "count": 2161,
+  "license": "政府资料开放授权条款第1版",
+  "licenseUrl": "https://data.gov.tw/license",
+  "attribution": "原始资料：台湾卫生福利部食品药物管理署，依政府资料开放授权条款第1版提供。本目录进行了字段整理、简繁转换与别名补充；与提供机关无隶属或合作关系。",
+  "description": "每100g可食部的参考营养值。来源为2024-03-29固定GitHub镜像快照，镜像未注明原始发布版本，不代表2026年最新资料。不同生熟状态、品种与烹调方式不可直接混用；未知营养字段留空。来源单位重未注明单位名称，因此仅标为参考单位，不自动当作一个、一碗或一毫升。",
+  "energyField": "热量（kcal/100g），保留源“熱量”字段；没有混用“修正熱量”。",
+  "snapshotDate": "2024-03-29",
+  "upstreamRelease": null,
+  "mirror": {
+    "url": "https://github.com/liao961120/Taiwan-FDA-nutrition",
+    "commit": "da3bd63ee385638c7c490bc7999507ad70572b70",
+    "file": "made/nutrition.csv",
+    "rawUrl": "https://raw.githubusercontent.com/liao961120/Taiwan-FDA-nutrition/da3bd63ee385638c7c490bc7999507ad70572b70/made/nutrition.csv",
+    "sha256": "4670ababc656e1136a8f10faff7e0a59c7700ff988e95ec471870132ea7c6d64"
+  },
+  "transformation": {
+    "script": "scripts/import-food-catalog.py",
+    "simplifiedChinese": "OpenCC t2s / opencc-python-reimplemented 0.1.7"
+  }
+}

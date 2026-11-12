@@ -72,11 +72,12 @@ export async function listHealthRecords(db: HealthRecordsDatabase, userId: strin
   const last = records.at(-1);
   return { records, hasMore, nextCursor: hasMore && last ? JSON.stringify([last.day, last.recordKey]) : null };
 }
-export async function readEffectiveHealthMeasurements(db: HealthRecordsDatabase, userId: string, from: string, to?: string): Promise<HealthMeasurement[]> {
+export async function readEffectiveHealthMeasurements(db: HealthRecordsDatabase, userId: string, from: string, to?: string, metrics?: readonly HealthMeasurement['metric'][]): Promise<HealthMeasurement[]> {
   const suffix = to === undefined ? '' : ' AND day <= ?';
   const values = to === undefined ? [userId, userId, from] : [userId, userId, from, to];
+  if (metrics) values.push(JSON.stringify(metrics));
   const rows = await db.prepare(merged + ' SELECT effectiveJson FROM records WHERE deleted = 0 AND day >= ?'
-    + suffix + ' ORDER BY day ASC, recordKey ASC').bind(...values).all<{ effectiveJson: string }>();
+    + suffix + (metrics ? ' AND metric IN (SELECT value FROM json_each(?))' : '') + ' ORDER BY day ASC, recordKey ASC').bind(...values).all<{ effectiveJson: string }>();
   return rows.results.map((row) => JSON.parse(row.effectiveJson) as HealthMeasurement);
 }
 const receiptColumns = `change_id AS changeId, record_key AS recordKey, request_hash AS requestHash, action,

@@ -1,4 +1,4 @@
-import { ACCOUNT_TYPES } from './finance.ts';
+import { ACCOUNT_TYPES, accountLiquidity } from './finance.ts';
 import type { AccountType, CurrencyCode, LedgerKind } from './finance.ts';
 import type { FinanceGoalAccount, FinanceGoalPlan } from './finance-goals.ts';
 import type { FinanceRunwaySettings } from './finance-runway.ts';
@@ -10,6 +10,7 @@ export interface SharedFinanceAccount {
   balanceMinor: string;
   goals: { id: string; name: string }[];
   includesRunway: boolean;
+  runwayUsableMinor: string | null;
 }
 export interface GoalFundSharing {
   sharedBalanceMinor: string;
@@ -28,7 +29,7 @@ export interface FinanceAllocationView {
 export function buildFinanceAllocationView(
   scope: { userId: string; ledger: LedgerKind },
   plans: readonly FinanceGoalPlan[],
-  accounts: readonly (FinanceGoalAccount & { userId?: string })[],
+  accounts: readonly (FinanceGoalAccount & { userId?: string; liquidityKind?: string; usableBps?: number })[],
   runways: readonly FinanceRunwaySettings[],
 ): FinanceAllocationView {
   const eligible = new Map(accounts.filter((account) => account.ledger === scope.ledger
@@ -46,7 +47,7 @@ export function buildFinanceAllocationView(
       let shared = references.get(id);
       if (!shared) {
         shared = { accountId: id, name: account.name, currency: plan.currency,
-          balanceMinor: account.balanceMinor, goals: [], includesRunway: false };
+          balanceMinor: account.balanceMinor, goals: [], includesRunway: false, runwayUsableMinor: null };
         references.set(id, shared);
       }
       shared.goals.push({ id: plan.id, name: plan.name });
@@ -57,7 +58,10 @@ export function buildFinanceAllocationView(
     for (const id of new Set(runway.accountIds)) {
       const account = eligible.get(id);
       const shared = references.get(id);
-      if (account?.currency === runway.currency && shared) shared.includesRunway = true;
+      if (account?.currency === runway.currency && shared) {
+        shared.includesRunway = true;
+        shared.runwayUsableMinor = (BigInt(account.balanceMinor) * BigInt(accountLiquidity(account).usableBps) / BigInt(10000)).toString();
+      }
     }
   }
   const sharedAccounts = [...references.values()].filter((account) => account.goals.length > 1 || account.includesRunway)

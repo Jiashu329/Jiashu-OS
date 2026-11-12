@@ -1,8 +1,10 @@
 import { env } from 'cloudflare:workers';
+import { HealthImportConflictError, writeHealthImport, previewHealthImport, listHealthImports, revertHealthImport, type HealthImportOptions } from './health-import-store';
 import { buildBodyComposition } from '../lib/body-composition';
 import { readEffectiveHealthMeasurements } from './health-records-store';
-import { readSyncImportDiagnostics, syncDiagnosticStatements } from './sync-diagnostics-store';
+import { readSyncImportDiagnostics } from './sync-diagnostics-store';
 import { buildSyncDiagnostics } from '../lib/sync-diagnostics';
+import { listSyncAttempts, readSyncMetricStatus, recordSyncAttempt, type SyncAttemptInput } from './sync-attempts-store';
 import {
   createSyncConnection,
   findSyncConnection,
@@ -12,15 +14,25 @@ import {
 } from './sync-connections';
 import {
   buildHealthSummary,
-  measurementDay,
-  measurementKey,
   shanghaiDay,
+  type HealthMetric,
   type HealthSyncPayload,
 } from '../lib/health';
 
 function database(): D1Database {
   if (!env.DB) throw new Error('Health database is not configured');
   return env.DB;
+}
+
+export async function readSyncDiagnostics(userId: string) {
+  const [attempts, metricStatus, coverage] = await Promise.all([listSyncAttempts(database(), userId), readSyncMetricStatus(database(), userId), readSyncStatus(userId)]);
+  return { attempts, lastImport: coverage.lastImport, metricStatus: metricStatus.map((row) => {
+    const metric = coverage.metrics.find((item) => item.metric === row.metric)!;
+    return { ...row, lastRecordDate: metric.latestDay, observedDays7: metric.observedDays7, observedDays30: metric.observedDays30, freshness: metric.freshness, lastImport: metric.lastImport };
+  }) };
+}
+export async function saveSyncAttempt(userId: string, input: SyncAttemptInput) {
+  return recordSyncAttempt(database(), userId, input);
 }
 
 function fromDay(days: number): string {
@@ -43,10 +55,10 @@ export async function readHealth(userId: string, days: number) {
 }
 
 /** Inclusive Shanghai calendar-day range for selected historical health reviews. */
-export async function readHealthRange(userId: string, from: string, to: string) {
+export async function readHealthRange(userId: string, from: string, to: string, metrics?: readonly HealthMetric[]) {
   const db = database();
   const [measurements, last] = await Promise.all([
-    readEffectiveHealthMeasurements(db, userId, from, to),
+    readEffectiveHealthMeasurements(db, userId, from, to, metrics),
     db.prepare('SELECT MAX(received_at) AS received_at FROM health_syncs WHERE user_id = ?')
       .bind(userId).first<{ received_at: string | null }>(),
   ]);
@@ -65,54 +77,18 @@ export class SyncDeviceInvalidError extends Error {
   }
 }
 
-export async function importHealth(userId: string, payload: HealthSyncPayload, deviceId: string | null = null) {
-  const db = database();
-  const receivedAt = new Date().toISOString();
-  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(payload))))]
-    .map((part) => part.toString(16).padStart(2, '0')).join('');
-  const records = payload.measurements.map((measurement) => ({
-    key: measurementKey(measurement),
-    metric: measurement.metric,
-    day: measurementDay(measurement),
-    measurement: JSON.stringify(measurement),
-  }));
-  // One JSON-backed INSERT keeps a 1,000-record import within D1's statement
-  // and bound-parameter limits. D1 batch applies this and the sync receipt atomically.
-  const commands = [db.prepare(`
-    INSERT INTO health_measurements
-      (user_id, record_key, metric, day, measurement_json, exported_at, received_at)
-    SELECT ?, json_extract(value, '$.key'), json_extract(value, '$.metric'),
-      json_extract(value, '$.day'), json_extract(value, '$.measurement'), ?, ?
-    FROM json_each(?) WHERE
-      (? IS NULL OR EXISTS (
-        SELECT 1 FROM sync_devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL
-      ))
-    ON CONFLICT(user_id, record_key) DO UPDATE SET
-      metric = excluded.metric,
-      day = excluded.day,
-      measurement_json = excluded.measurement_json,
-      exported_at = excluded.exported_at,
-      received_at = excluded.received_at
-    WHERE excluded.exported_at > health_measurements.exported_at
-  `).bind(userId, payload.exportedAt, receivedAt, JSON.stringify(records), deviceId, deviceId, userId)];
-  commands.push(...syncDiagnosticStatements(db, userId, payload, receivedAt, deviceId));
-  commands.push(db.prepare(`
-    INSERT INTO health_syncs (user_id, payload_hash, exported_at, received_at, measurement_count)
-    SELECT ?, ?, ?, ?, ? WHERE
-      (? IS NULL OR EXISTS (
-        SELECT 1 FROM sync_devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL
-      ))
-    ON CONFLICT(user_id, payload_hash) DO UPDATE SET received_at = excluded.received_at
-  `).bind(userId, hash, payload.exportedAt, receivedAt, payload.measurements.length, deviceId, deviceId, userId));
-  if (deviceId) {
-    commands.push(db.prepare('UPDATE sync_devices SET last_used_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL')
-      .bind(receivedAt, deviceId, userId));
+export async function importHealth(userId: string, payload: HealthSyncPayload, deviceId: string | null = null, options: HealthImportOptions = {}) {
+  try { return await writeHealthImport(database(), userId, payload, deviceId, options); }
+  catch (error) {
+    if (error instanceof HealthImportConflictError && error.code === 'SYNC_DEVICE_INVALID') throw new SyncDeviceInvalidError();
+    throw error;
   }
-  const result = await db.batch(commands);
-  if (deviceId && result.at(-1)?.meta.changes !== 1) throw new SyncDeviceInvalidError();
-  const imported = result[0].meta.changes ?? 0;
-  return { ok: true, imported, skipped: payload.measurements.length - imported, lastSync: receivedAt };
 }
+export async function previewImport(userId: string, payload: HealthSyncPayload) {
+  return previewHealthImport(database(), userId, payload);
+}
+export async function readImportHistory(userId: string) { return listHealthImports(database(), userId); }
+export async function revertImport(userId: string, id: string, reason: string) { return revertHealthImport(database(), userId, id, reason); }
 
 export async function readSyncStatus(userId: string) {
   const db = database();
@@ -142,8 +118,8 @@ export async function revokeSyncDevice(userId: string, deviceId: string): Promis
   return revokeSyncConnection(database(), userId, deviceId);
 }
 
-export async function exportHealth(userId: string): Promise<HealthSyncPayload> {
-  const data = await readHealth(userId, 90);
+export async function exportHealth(userId: string,range?:{from:string;to:string}): Promise<HealthSyncPayload> {
+  const data = range?await readHealthRange(userId,range.from,range.to):await readHealth(userId, 90);
   return {
     version: 1,
     source: 'apple-health-shortcuts',

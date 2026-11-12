@@ -14,6 +14,7 @@ import { readWeightPlanSettings, writeWeightPlanSettings } from '../../../../db/
 import { listNutritionEntries } from '../../../../db/nutrition-store.ts';
 import { readWeeklyActions, writeWeeklyAction } from '../../../../db/health-weekly-actions-store.ts';
 import { shiftWeekDay } from '../../../../lib/health-weekly-actions.ts';
+import { readWithDeadline } from '../../../../lib/read-deadline.ts';
 
 const NOW = new Date('2026-11-12T08:00:00.000Z');
 const ORIGIN = 'https://synthetic-weekly.example';
@@ -42,9 +43,11 @@ function fixture(t: TestContext) {
         bind(...parameters: unknown[]) { values = parameters as SQLInputValue[]; return bound; },
         async first<T>() { return (statement.get(...values) as T | undefined) ?? null; },
         async all<T>() { return { results: statement.all(...values) as T[] }; },
+        execute(){const before=Number(sqlite.prepare('SELECT total_changes() n').get()?.n);const results=statement.columns().length?statement.all(...values):(statement.run(...values),[]);return{results,meta:{changes:Number(sqlite.prepare('SELECT total_changes() n').get()?.n)-before}};},
       };
       return bound;
     },
+    async batch(commands:Array<{execute():unknown}>){sqlite.exec('BEGIN');try{const result=commands.map((c)=>c.execute());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}},
   } as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db };
   let userId: string | null = 'alice';
@@ -53,7 +56,7 @@ function fixture(t: TestContext) {
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable']);
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
-    ...shared, ...repository, ...weekly, env, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay,
+    ...shared, ...repository, ...weekly, env, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay, readWithDeadline,
     parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, NOW),
     buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], NOW, args[4]),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
@@ -65,7 +68,7 @@ function fixture(t: TestContext) {
   return {
     env, queries, record, sqlite, db,
     signIn(owner: string | null) { userId = owner; },
-    setGoals(owner: string, targets: GoalTargets) { return writeGoalSettings(db, owner, targets, NOW.toISOString()); },
+    setGoals(owner: string, targets: GoalTargets) { return readGoalSettings(db,owner).then((settings)=>writeGoalSettings(db,owner,targets,settings.revision??0,'1970-01-02',NOW.toISOString())); },
     get(query = '') { return route.GET(new Request(ORIGIN + '/api/health/review?' + query)); },
   };
 }
@@ -230,7 +233,7 @@ void test('reviews combine same-period nutrition, cutoff-only weight progress, a
   ] as const) f.sqlite.prepare(`INSERT INTO nutrition_entries
     (id,user_id,date,meal,name,portion,note,calories_tenth,creation_hash,revision,created_at,updated_at,deleted_at)
     VALUES (?,?,?,'lunch','synthetic','','',?,'hash',1,?,?,?)`).run(id,owner,date,calories,NOW.toISOString(),NOW.toISOString(),deleted);
-  await writeWeightPlanSettings(f.db,'alice',{baselineWeight:80,targetWeight:70,startDate:'2026-10-01',deadline:'2026-12-01',enabled:true});
+  await writeWeightPlanSettings(f.db,'alice',{baselineWeight:80,targetWeight:70,startDate:'2026-10-01',deadline:'2026-12-01',enabled:true},0);
   f.record('alice',weight('old-weight','2026-11-01T08:00:00+08:00',78));
   f.record('alice',weight('later-weight','2026-11-09T08:00:00+08:00',70));
   await writeWeeklyAction(f.db,'alice',{weekStart:'2026-11-09',text:'午饭后散步',status:'planned',feedback:'',expectedRevision:0});
@@ -250,4 +253,13 @@ void test('reviews combine same-period nutrition, cutoff-only weight progress, a
   assert.equal(history.weightPlan.review.observations.average7,78);
   assert.equal(history.weightPlan.review.progress?.progressPercent,20);
   assert.equal(history.weightPlan.usesCurrentSettings,true);
+});
+
+
+void test('optional action storage failure preserves metrics and never looks like an empty saved plan', async(t)=>{
+  const f=fixture(t);f.record('alice',daily('steps','2026-11-09',1234));
+  f.sqlite.exec('DROP TABLE health_weekly_actions');
+  const response=await f.get();assert.equal(response.status,200);
+  const data=await readReview(response);assert.equal(data.metrics[0].currentAverage,1234);
+  assert.equal(data.supplementalStatus.actions,'unavailable');assert.equal(data.supplementalStatus.nutrition,'ready');
 });

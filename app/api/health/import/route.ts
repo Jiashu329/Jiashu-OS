@@ -1,10 +1,19 @@
-import { findSyncDevice, importHealth, SyncDeviceInvalidError } from '../../../../db/health-repository';
-import { HealthValidationError, MAX_SYNC_BYTES, measurementDay } from '../../../../lib/health';
+import { findSyncDevice, importHealth, readImportHistory, readSyncDiagnostics, saveSyncAttempt, SyncDeviceInvalidError } from '../../../../db/health-repository';
+import { HealthImportConflictError } from '../../../../db/health-import-store';
+import { HealthValidationError, MAX_SYNC_BYTES, measurementDay, type HealthSyncPayload } from '../../../../lib/health';
+import { emptySyncSummary, syncAttemptStatus, syncPayloadSummary, withEmptySleepRequest, SYNC_FAILURES, type SyncFailureCode } from '../../../../lib/sync-diagnostics';
 import { parseMobileSyncPayload } from '../../../../lib/mobile-sync';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated, unavailable } from '../../_shared';
 import { hashSyncToken, isSyncToken } from '../../sync/devices/tokens';
 
 export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  const user = await apiUser();
+  if (!user) return unauthenticated();
+  try { return json({ batches: await readImportHistory(user.userId), ...await readSyncDiagnostics(user.userId), checkedAt: new Date().toISOString() }); }
+  catch { return unavailable(); }
+}
 
 async function limitedBody(request: Request) {
   if (!request.body) return '';
@@ -31,14 +40,23 @@ export async function POST(request: Request) {
   const user = await apiUser();
   if (!user) return unauthenticated();
   if (!isSameOrigin(request)) return invalidOrigin();
+  const channel = request.headers.has('x-sync-device') ? 'device' as const : 'manual' as const;
+  let deviceId: string | null = null;
+  let parsedPayload: HealthSyncPayload | null = null;
+  let sleepRequest: { from: string; to: string; source: string } | null = null;
+  const failure = async (errorCode: SyncFailureCode) => {
+    try { await saveSyncAttempt(user.userId, { channel, deviceId, status: 'failed', errorCode,
+      summary: withEmptySleepRequest(parsedPayload ? syncPayloadSummary(parsedPayload) : emptySyncSummary(), sleepRequest) }); }
+    catch { console.error(JSON.stringify({ event: 'sync_receipt_unavailable', reason: 'diagnostic_write_failed' })); }
+  };
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+    await failure('SYNC_INVALID_FORMAT');
     return json({ error: '请导入 JSON 格式的数据。' }, 415);
   }
   const length = Number(request.headers.get('content-length'));
-  if (Number.isFinite(length) && length > MAX_SYNC_BYTES) return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413);
+  if (Number.isFinite(length) && length > MAX_SYNC_BYTES) { await failure('SYNC_TOO_LARGE'); return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413); }
   try {
     const token = request.headers.get('x-sync-device');
-    let deviceId: string | null = null;
     if (token !== null) {
       if (!isSyncToken(token)) throw new SyncDeviceInvalidError();
       deviceId = await findSyncDevice(user.userId, await hashSyncToken(token));
@@ -46,6 +64,7 @@ export async function POST(request: Request) {
     }
     const body = await limitedBody(request);
     const payload = parseMobileSyncPayload(body);
+    parsedPayload = payload;
     const parsedBody = JSON.parse(body);
     const requestedSleep = Object.hasOwn(parsedBody, 'sleepReport');
     let sleepDays = 0;
@@ -62,16 +81,29 @@ export async function POST(request: Request) {
         return day >= firstDay && day <= lastDay;
       }).map(measurementDay));
       sleepDays = recordedDays.size;
+      if (sleepDays === 0) sleepRequest = { from: firstDay, to: lastDay, source: parsedBody.sleepReport.source };
     }
     if (Date.parse(payload.exportedAt) > Date.now() + 5 * 60000) {
+      await failure('SYNC_FUTURE_EXPORT');
       return json({ error: '导出时间晚于当前时间，请检查 iPhone 的日期与时区。' }, 400);
     }
-    const result = await importHealth(user.userId, payload, deviceId);
+    const imported = await importHealth(user.userId, payload, deviceId, {
+      previewToken: request.headers.get('x-import-preview'),
+      confirmSourceChanges: request.headers.get('x-confirm-source-changes') === 'true',
+    });
+    const { attemptSummary, ...result } = imported;
+    const summary = withEmptySleepRequest(attemptSummary ?? syncPayloadSummary(payload), sleepRequest);
+    try { await saveSyncAttempt(user.userId, { channel, deviceId, status: syncAttemptStatus(result, summary), batchId: result.batchId ?? null, summary }); }
+    catch { console.error(JSON.stringify({ event: 'sync_receipt_unavailable', reason: 'diagnostic_write_failed' })); }
     if (requestedSleep && sleepDays === 0) {
       return json({ ...result, sleepStatus: 'no-asleep-data', sleepDays, message: '已接收记录，但本次日期范围没有可计入的入睡片段。卧床与清醒不会计作睡眠；缺失日期不补零，网站已有睡眠记录会保留。' });
     }
     return json({ ...result, ...(requestedSleep ? { sleepStatus: 'recorded', sleepDays } : {}) });
   } catch (error) {
+    const failureCode: SyncFailureCode = error instanceof SyncDeviceInvalidError ? 'SYNC_DEVICE_INVALID'
+      : error instanceof RangeError ? 'SYNC_TOO_LARGE' : error instanceof HealthValidationError ? 'SYNC_INVALID_FORMAT'
+      : error instanceof HealthImportConflictError && Object.hasOwn(SYNC_FAILURES, error.code) ? error.code as SyncFailureCode : 'SYNC_STORAGE_UNAVAILABLE';
+    await failure(failureCode);
     if (error instanceof SyncDeviceInvalidError) return json({ error: '同步设备密钥无效或已撤销，请重新连接设备。', code: 'SYNC_DEVICE_INVALID' }, 403);
     if (error instanceof RangeError) return json({ error: '单次同步文件不能超过 512 KB，请分批同步。' }, 413);
     if (error instanceof HealthValidationError) {
@@ -81,6 +113,7 @@ export async function POST(request: Request) {
         : '同步数据格式不正确，请检查数据类型、单位、日期和每日汇总设置。';
       return json({ error: message, code: error.code, issues: error.issues }, 400);
     }
+    if (error instanceof HealthImportConflictError) return json({ error: error.message, code: error.code }, error.code === 'HEALTH_IMPORT_NOT_FOUND' ? 404 : 409);
     return unavailable();
   }
 }

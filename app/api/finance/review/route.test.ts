@@ -1,9 +1,10 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { FinanceIdempotencyConflictError } from '../../../../db/finance-store.ts';
+import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from '../../../../db/finance-store.ts';
 import { readFinanceReviewSnapshot } from '../../../../db/finance-review-store.ts';
 import { readFinanceDecisionSummary } from '../../../../db/finance-decision-summary.ts';
 import { readFinanceMonthCloseBundle, readFinanceMonthCloseOperation, writeFinanceMonthClose } from '../../../../db/finance-month-close-store.ts';
@@ -82,7 +83,7 @@ function fixture(t: TestContext) {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError,
+    ...shared, ...balanceChanges, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError, FinanceMetadataConflictError,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'financeIdempotencyKey', 'guardFinanceWrite', 'invalidFinanceIdempotencyKey']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview, FinanceValidationError,
@@ -332,4 +333,33 @@ void test('closed versions are isolated by owner, ledger and currency and invali
   assert.equal((await f.get('ledger=personal&currency=USD&month=2026-10&version=1')).status, 404);
   f.signIn('bob'); assert.equal((await f.get(query + '&version=1')).status, 404);
   assert.equal((await readReview(await f.get(query))).close.state, 'draft');
+});
+
+test('review API keeps pre-change bank assets after later debt reclassification and archive',async(t)=>{
+ const f=fixture(t);f.account({id:'a',type:'loan',archivedAt:'2026-11-06T02:00:00Z'});f.balance('a','10000','2026-10-15');
+ for(const [revision,effective,type,archived,origin]of [[1,'1970-01-01','bank',0,'opening'],[2,'2026-11-05','loan',0,'change'],[3,'2026-11-06','loan',1,'change']] as const)f.sqlite.prepare('INSERT INTO finance_account_classifications(user_id,account_id,revision,effective_from,type,archived,origin,recorded_at)VALUES(?,?,?,?,?,?,?,?)').run('alice','a',revision,effective,type,archived,origin,'2026-11-06T02:00:00Z');
+ const october=await readReview(await f.get('month=2026-10'));assert.equal(october.snapshot.assetsMinor,'10000');assert.equal(october.snapshot.netMinor,'10000');
+ const november=await readReview(await f.get());assert.equal(november.previous.netMinor,'10000');assert.equal(november.snapshot.netMinor,'0');assert.equal(november.change.membershipNetMinor,'-10000');assert.equal(november.trend.find(p=>p.month==='2026-10')!.netMinor,'10000');
+ f.signIn('bob');const foreign=await readReview(await f.get());assert.equal(foreign.snapshot.netMinor,null);assert.deepEqual(foreign.historicalAssumptions,[]);
+});
+
+void test('month closes include effective corrected balances and dated membership, while later voids preserve the confirmed version', async (t) => {
+  const f = fixture(t); f.account({ id: 'bank' }); f.balance('bank', '10000', '2026-09-15'); f.balance('bank', '20000', '2026-10-15');
+  f.sqlite.prepare("INSERT INTO finance_account_classifications(user_id,account_id,revision,effective_from,type,archived,origin,recorded_at) VALUES('alice','bank',1,'1970-01-01','bank',0,'opening','2026-09-15T04:00:00Z')").run();
+  f.sqlite.prepare("INSERT INTO finance_balance_changes(id,user_id,account_id,entry_id,revision,action,amount_minor,as_of_date,note,reason,request_hash,created_at) VALUES('correction','alice','bank','synthetic-balance-2',1,'correct','25000','2026-10-15','','合成更正','synthetic','2026-11-01T04:00:00Z')").run();
+  const query = 'ledger=personal&currency=CNY&month=2026-10';
+  const preview = await readReview(await f.get(query)); assert.equal(preview.snapshot.netMinor, '25000');
+  const body = { ledger: 'personal', currency: 'CNY', month: '2026-10', expectedVersion: 0, previewHash: preview.close.previewHash, reason: '' };
+  assert.equal((await f.close(body)).status, 201);
+  f.sqlite.prepare("INSERT INTO finance_balance_changes(id,user_id,account_id,entry_id,revision,action,amount_minor,as_of_date,note,reason,request_hash,created_at) VALUES('void','alice','bank','synthetic-balance-2',2,'void',NULL,NULL,NULL,'合成作废','synthetic','2026-11-02T04:00:00Z')").run();
+  assert.equal((await readReview(await f.get(query))).snapshot.netMinor, '25000');
+  assert.equal((await readReview(await f.get(query + '&draft=1'))).snapshot.netMinor, '10000');
+  f.sqlite.prepare("UPDATE finance_accounts SET archived_at='2026-10-25T04:00:00Z' WHERE id='bank'").run();
+  f.sqlite.prepare("INSERT INTO finance_account_classifications(user_id,account_id,revision,effective_from,type,archived,origin,recorded_at) VALUES('alice','bank',2,'2026-10-25','bank',1,'change','2026-10-25T04:00:00Z')").run();
+  const zero = await readReview(await f.get(query + '&draft=1'));
+  assert.equal(zero.snapshot.accountCount, 0); assert.equal(zero.snapshot.netMinor, '0');
+  assert.equal((await f.close({ ...body, expectedVersion: 1, previewHash: zero.close.previewHash, reason: '确认已归档空账本' })).status, 201);
+  const fixed = await readReview(await f.get(query)); assert.equal(fixed.close.version, 2); assert.equal(fixed.snapshot.netMinor, '0');
+  assert.equal(fixed.change.membershipNetMinor, '-10000');
+  assert.equal((await readReview(await f.get(query + '&version=1'))).snapshot.netMinor, '25000');
 });

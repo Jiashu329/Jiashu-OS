@@ -3,9 +3,14 @@ import { shanghaiDay } from './health.ts';
 import { buildFinanceSummary, formatMoney, type CurrencyCode, type FinanceSummaryAccount, type LedgerKind } from './finance.ts';
 import { isCheckedThisMonth } from './finance-balance-check.ts';
 import type { BodyComposition } from './body-composition.ts';
+import type { NutritionDayStatus, NutritionEntry, NutritionMealStatus, NutritionMeal } from './nutrition.ts';
+import { nutritionDayCompleteness } from './nutrition-review.ts';
+import { summarizeNutrients, type NutritionNutrients } from './nutrition-nutrients.ts';
+import { nutritionGoalProgress, type NutritionGoals } from './nutrition-goals.ts';
 
 export interface HomeHealthInput { summary: HealthSummary; lastSync: string | null; bodyComposition?: BodyComposition }
 export interface HomeFinanceInput { accounts: readonly (FinanceSummaryAccount & { asOfDate: string })[] }
+export interface HomeNutritionInput { entries: readonly NutritionEntry[]; statuses?: readonly NutritionDayStatus[]; goals?: NutritionGoals | null }
 export interface HomeActionsInput {
   nutrition: { entryCountToday: number; recordedDays7: number } | null;
   weekly: { weekStart: string; previousWeekStart: string; previousHasRecords: boolean; reviewed: boolean } | null;
@@ -19,6 +24,7 @@ export interface HomeOverviewSources {
   health: HomeHealthInput | null;
   personal: HomeFinanceInput | null;
   family: HomeFinanceInput | null;
+  nutrition?: HomeNutritionInput | null;
   actions?: HomeActionsInput | null;
 }
 export type HomeMetric = HealthMetric | 'body_fat';
@@ -43,7 +49,15 @@ export interface HomeFinance {
   oldestBalanceDate: string | null;
   latestBalanceDate: string | null;
   staleAccountCount: number;
+  uncheckedAccountCount: number;
   pendingBalanceCount: number;
+}
+export interface HomeNutrition {
+  status: 'ready' | 'unavailable'; date: string; entryCount: number; complete: boolean;
+  meals: Record<NutritionMeal, NutritionMealStatus>;
+  nutrients: NutritionNutrients;
+  targets: Record<'calories'|'carbs'|'protein'|'fat',string|null>;
+  progress: ReturnType<typeof nutritionGoalProgress>;
 }
 export interface HomePriority {
   id: string;
@@ -63,8 +77,9 @@ export interface HomeOverview {
     recordedMetricCount: number;
   };
   finance: Record<LedgerKind, HomeFinance>;
-  priorities: HomePriority[];
+  nutrition: HomeNutrition;
   actionsStatus: 'ready' | 'partial' | 'unavailable' | 'not-requested';
+  priorities: HomePriority[];
 }
 
 const metricDefinitions: { metric: HomeMetric; label: string; unit: string }[] = [
@@ -104,7 +119,7 @@ function healthOverview(input: HomeHealthInput | null, today: string): HomeOverv
 }
 
 function financeOverview(input: HomeFinanceInput | null, ledger: LedgerKind, today: string): HomeFinance {
-  if (!input) return { status: 'unavailable', accountCount: 0, currencies: [], oldestBalanceDate: null, latestBalanceDate: null, staleAccountCount: 0, pendingBalanceCount: 0 };
+  if (!input) return { status: 'unavailable', accountCount: 0, currencies: [], oldestBalanceDate: null, latestBalanceDate: null, staleAccountCount: 0, uncheckedAccountCount: 0, pendingBalanceCount: 0 };
   const accounts = input.accounts.filter((account) => account.ledger === ledger && account.archived !== true);
   const summary = buildFinanceSummary(accounts, ledger);
   const dates = accounts.map((account) => account.asOfDate).sort();
@@ -115,8 +130,17 @@ function financeOverview(input: HomeFinanceInput | null, ledger: LedgerKind, tod
     })),
     oldestBalanceDate: dates[0] ?? null, latestBalanceDate: dates.at(-1) ?? null,
     staleAccountCount: accounts.filter((account) => account.asOfDate < daysBefore(today, 30)).length,
+    uncheckedAccountCount: accounts.filter((account) => !isCheckedThisMonth(account.asOfDate, today)).length,
     pendingBalanceCount: accounts.filter((account) => !isCheckedThisMonth(account.asOfDate, today)).length,
   };
+}
+
+function nutritionOverview(input: HomeNutritionInput | null | undefined, today: string): HomeNutrition {
+  const entries=(input?.entries??[]).filter((entry)=>entry.date===today&&entry.deletedAt===null);
+  const status=input?.statuses?.find((row)=>row.date===today);
+  const nutrients=summarizeNutrients(entries),goals=input?.goals;
+  const targets={calories:goals?.calories??null,carbs:goals?.carbs??null,protein:goals?.protein??null,fat:goals?.fat??null};
+  return {status:input?'ready':'unavailable',date:today,entryCount:entries.length,...nutritionDayCompleteness(entries,status),nutrients,targets,progress:nutritionGoalProgress(nutrients,targets)};
 }
 
 /** A read-only snapshot. Freshness follows record dates, never the last sync receipt. */
@@ -128,6 +152,7 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     personal: financeOverview(sources.personal, 'personal', today),
     family: financeOverview(sources.family, 'family', today),
   };
+  const nutrition=nutritionOverview(sources.nutrition,today);
   const priorities: HomePriority[] = [];
   if (health.status === 'unavailable') priorities.push({
     id: 'health-unavailable', tone: 'attention', title: '重新读取健康数据',
@@ -158,20 +183,28 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     if (book.staleAccountCount) priorities.push({
       id: ledger + '-stale', tone: 'attention', title: '更新' + label + '的余额',
       detail: book.staleAccountCount + '个账户的余额日期已超过30天；最早为' + book.oldestBalanceDate + '。',
-      href: '/finance/balances?ledger=' + ledger, actionLabel: '核对余额',
+      href: '/finance?ledger=' + ledger, actionLabel: '更新余额',
     });
     else if (!book.accountCount) priorities.push({
       id: ledger + '-setup', tone: 'setup', title: '建立' + label,
       detail: '暂无账户，添加账户和当前余额。',
       href: '/finance?ledger=' + ledger, actionLabel: '添加首个账户',
     });
+    else if (book.uncheckedAccountCount) priorities.push({
+      id:ledger+'-month-check',tone:'attention',title:'核对'+label+'本月余额',detail:'待核对 '+book.uncheckedAccountCount+' / '+book.accountCount+' 个账户；尚无本月余额记录。',
+      href:'/finance/balances?ledger='+ledger,actionLabel:'开始本月核对',
+    });
   }
   const weight = health.metrics.find((metric) => metric.metric === 'weight')!;
   if (health.status === 'ready' && weight.freshness !== 'current') priorities.push({
     id: 'weight-record', tone: 'setup', title: '更新体重记录',
-    detail: weight.day ? '最近记录：' + weight.day + '。运行体重同步快捷指令更新。' : '近90天暂无体重记录，可同步苹果健康中的测量数据。',
-    href: '/connect-weight', actionLabel: '接入体重与去脂体重',
+    detail: weight.day ? '最近记录：' + weight.day + '。可快速补记或运行体重同步。' : '近90天暂无体重记录，可以先手动记一次。',
+    href: '/health/records?metric=weight&compose=1', actionLabel: '记体重',
   });
+  if(Object.hasOwn(sources,'nutrition')){
+    if(nutrition.status==='unavailable')priorities.push({id:'nutrition-unavailable',tone:'attention',title:'重新读取饮食记录',detail:'今日饮食读取失败，尚不能判断记录状态。',href:'/health/nutrition',actionLabel:'查看饮食'});
+    else if(!nutrition.entryCount&&!nutrition.complete)priorities.push({id:'nutrition-record',tone:'setup',title:'记下今天吃过的',detail:'今天还没有食物记录，已明确未进食的餐次会保留。',href:'/health/nutrition?compose=1',actionLabel:'记饮食'});
+  }
   const actions = sources.actions;
   if (actions) {
     for (const decision of actions.decisions ?? []) {
@@ -197,20 +230,12 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
         href: '/finance/runway' + scope, actionLabel: '查看资金安排',
       });
     }
-    for (const ledger of ['personal', 'family'] as const) {
-      const book = finance[ledger];
-      if (book.status === 'ready' && book.pendingBalanceCount && !book.staleAccountCount) priorities.push({
-        id: ledger + '-monthly-check', tone: 'action', title: '完成本月余额核对',
-        detail: (ledger === 'family' ? '家庭账本' : '个人账本') + ' · 待核对 ' + book.pendingBalanceCount + ' / ' + book.accountCount + ' 个账户。',
-        href: '/finance/balances?ledger=' + ledger, actionLabel: '核对余额',
-      });
-    }
     if (actions.weekly?.previousHasRecords && !actions.weekly.reviewed) priorities.push({
       id: 'weekly-review', tone: 'action', title: '完成上周健康复盘',
       detail: '查看 ' + actions.weekly.previousWeekStart + ' 起这一周的记录，并为本周选一项行动。',
       href: '/health/review?week=' + actions.weekly.previousWeekStart, actionLabel: '复盘并安排本周',
     });
-    if (actions.nutrition && actions.nutrition.recordedDays7 > 0 && !actions.nutrition.entryCountToday) priorities.push({
+    if (!Object.hasOwn(sources, 'nutrition') && actions.nutrition && actions.nutrition.recordedDays7 > 0 && !actions.nutrition.entryCountToday) priorities.push({
       id: 'nutrition-today', tone: 'action', title: '记录今天的饮食',
       detail: '今天还没有饮食记录，可复用最近食物或复制前一天的一餐。',
       href: '/health/nutrition', actionLabel: '记一餐',
@@ -220,5 +245,5 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     : [actions.nutrition, actions.weekly, actions.decisions].some((part) => part === null) ? 'partial' : 'ready';
   const toneOrder = { attention: 0, action: 1, setup: 2, neutral: 3 } as const;
   priorities.sort((left, right) => toneOrder[left.tone] - toneOrder[right.tone]);
-  return { asOf, today, health, finance, actionsStatus, priorities: priorities.slice(0, 3) };
+  return { asOf, today, health, finance, nutrition, actionsStatus, priorities: priorities.slice(0, 3) };
 }

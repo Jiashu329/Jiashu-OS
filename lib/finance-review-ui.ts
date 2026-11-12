@@ -31,12 +31,13 @@ const REVIEW_SCRIPT = String.raw`
     if(standalone){document.querySelectorAll('[data-review-ledger]').forEach((button)=>{const selected=button.dataset.reviewLedger===state.ledger;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;});root.setAttribute('aria-labelledby','review-ledger-'+state.ledger);el('currency').value=state.currency;el('back-link').href='/finance?'+new URLSearchParams({ledger:state.ledger,currency:state.currency});const path=reviewPath()+location.hash;if(location.pathname+location.search+location.hash!==path)history.replaceState(null,'',path);}
   }
   function refreshToday(){state.today=localToday();if(!state.month||state.followCurrent)state.month=state.today.slice(0,7);if(state.month>state.today.slice(0,7))state.month=state.today.slice(0,7);updateControls();}
-  function dateRange(snapshot){if(!snapshot.accountCount)return '暂无余额记录';const oldest=snapshot.oldestBalanceDate;const latest=snapshot.latestBalanceDate;return oldest&&latest?'余额记录日期 '+oldest+(oldest!==latest?' — '+latest:''):'余额记录日期未知';}
+  function dateRange(snapshot){if(!snapshot.accountCount)return snapshot.netMinor!==null?'截止日没有未归档账户计入':'暂无余额记录';const oldest=snapshot.oldestBalanceDate;const latest=snapshot.latestBalanceDate;return oldest&&latest?'余额记录日期 '+oldest+(oldest!==latest?' — '+latest:''):'余额记录日期未知';}
   function renderStats(data){
+    el('scope').textContent='账户分类与归档状态按各截止日的有效版本；余额采用当前有效记录，未更新时沿用。'+(data.historicalAssumptions?.length?' '+data.historicalAssumptions.length+' 个旧账户的起始分类／归档状态为兼容基线；基线记录日前的历史无法核实，不能当作当时已确认状态。':'');
     el('cutoff').textContent=monthText(data.month)+' · '+(data.month===data.today.slice(0,7)?'截至今天（'+data.cutoffDay+'）':'截至 '+data.cutoffDay)+' · '+data.snapshot.accountCount+' 个账户';
     el('stats').innerHTML=[['assetsMinor','资产'],['liabilitiesMinor','负债'],['netMinor','净资产']].map(([key,label])=>{const value=data.snapshot[key];const delta=data.change[key];return '<article class="review-stat'+(key==='netMinor'?' net':'')+'"><h3>'+label+'</h3><p class="review-stat-value'+(value===null?' empty':BigInt(value)<0n?' negative':'')+'">'+(value===null?'暂无记录':money(value))+'</p><p class="review-stat-change '+signedClass(delta,key==='liabilitiesMinor')+'">'+(delta===null?'暂无上月记录':'较上月 '+signedMoney(delta))+'</p></article>';}).join('');
     el('freshness').textContent=dateRange(data.snapshot)+(data.snapshot.accountCount?'；'+data.snapshot.carriedAccountCount+' 个账户沿用早于本月的余额。':'。');
-    el('breakdown').textContent=data.change.netMinor===null?'暂无上月记录，暂不做环比比较。':'净资产变化 '+signedMoney(data.change.netMinor)+'；其中已有账户余额变化 '+signedMoney(data.change.comparableNetMinor)+'，首次计入账户净额 '+signedMoney(data.change.newNetMinor)+'。';
+    el('breakdown').textContent=data.change.netMinor===null?'暂无上月记录，暂不做环比比较。':'净资产变化 '+signedMoney(data.change.netMinor)+'；其中已有账户余额变化 '+signedMoney(data.change.comparableNetMinor)+'，首次计入账户净额 '+signedMoney(data.change.newNetMinor)+'，分类调整影响 '+signedMoney(data.change.reclassificationNetMinor||'0')+'，归档／恢复影响 '+signedMoney(data.change.membershipNetMinor||'0')+'。';
   }
   function renderTrend(data){
     const trend=data.trend;const observed=trend.filter((point)=>minorValid(point.netMinor));el('trend-title').textContent='近'+trend.length+'个月净资产';el('table-toggle').textContent='查看'+trend.length+'个月精确明细';el('table-scroll').setAttribute('aria-label',trend.length+'个月金额明细，可横向滚动');el('trend-subtitle').textContent=trend[0].month+' — '+trend.at(-1).month+' · '+state.currency;
@@ -57,12 +58,12 @@ const REVIEW_SCRIPT = String.raw`
       const labelIndexes=[...new Set([0,Math.round((trend.length-1)/3),Math.round((trend.length-1)*2/3),trend.length-1])];el('chart-labels').innerHTML=labelIndexes.map((index)=>'<span style="'+(trend.length===1?'left:50%;transform:translateX(-50%)':'left:'+index/(trend.length-1)*100+'%')+'">'+trend[index].month+'</span>').join('');
       el('chart-extents').innerHTML='<span>最低 '+esc(money(minimum.toString()))+'</span><span>最高 '+esc(money(maximum.toString()))+'</span>';
     }
-    el('month-rows').innerHTML=trend.map((point)=>'<tr'+(point.month===data.month?' class="selected"':'')+'><th scope="row">'+point.month+'</th>'+['assetsMinor','liabilitiesMinor','netMinor'].map((key)=>'<td'+(point[key]===null?' class="empty"':'')+'>'+(point[key]===null?'无记录':money(point[key]))+'</td>').join('')+'<td>'+(point.accountCount?point.carriedAccountCount+' / '+point.accountCount+' 个账户沿用<small>'+esc(dateRange(point))+'</small>':'无记录')+'</td></tr>').join('');
+    el('month-rows').innerHTML=trend.map((point)=>'<tr'+(point.month===data.month?' class="selected"':'')+'><th scope="row">'+point.month+'</th>'+['assetsMinor','liabilitiesMinor','netMinor'].map((key)=>'<td'+(point[key]===null?' class="empty"':'')+'>'+(point[key]===null?'无记录':money(point[key]))+'</td>').join('')+'<td>'+(point.accountCount?point.carriedAccountCount+' / '+point.accountCount+' 个账户沿用<small>'+esc(dateRange(point))+'</small>':point.netMinor!==null?'无未归档账户计入':'无记录')+'</td></tr>').join('');
   }
   function accountRow(account,isNew=false){
-    const type=accountTypes[account.type]?.label||(account.side==='liability'?'负债账户':'资产账户');const delta=isNew?(account.side==='liability'?-BigInt(account.currentMinor):BigInt(account.currentMinor)).toString():account.netChangeMinor;
+    const type=(accountTypes[account.type]?.label||(account.side==='liability'?'负债账户':'资产账户'))+(account.classificationChanged?'（原 '+(accountTypes[account.previousType]?.label||'原分类')+'）':'')+(account.archived?' · 本月已归档':'');const delta=isNew?(account.side==='liability'?-BigInt(account.currentMinor):BigInt(account.currentMinor)).toString():account.netChangeMinor;
     const dates=isNew?'余额日期 '+account.currentAsOfDate:'余额日期 '+account.previousAsOfDate+' → '+account.currentAsOfDate;
-    return '<li class="review-account"><div><div class="review-account-name">'+esc(account.name)+'<span class="review-account-type">'+esc(type)+'</span></div><p class="review-account-date">'+esc(dates)+(account.carried?'<span class="review-account-carried">沿用此前记录</span>':'')+'</p></div><div class="review-account-values"><p>本月 '+esc(money(account.currentMinor))+'</p>'+(!isNew?'<p><small>上月 '+esc(money(account.previousMinor))+'</small></p>':'')+'<p class="review-account-delta '+signedClass(delta)+'">'+(isNew?'首次计入净额 ':'净资产变化 ')+esc(signedMoney(delta))+'</p></div></li>';
+    return '<li class="review-account"><div><div class="review-account-name">'+esc(account.name)+'<span class="review-account-type">'+esc(type)+'</span></div><p class="review-account-date">'+esc(dates)+(account.membershipChanged?' · 归档／恢复影响已单列':'')+(account.classificationChanged?' · 分类影响 '+esc(signedMoney(account.classificationChangeMinor||'0')):'')+(account.carried?'<span class="review-account-carried">沿用此前记录</span>':'')+'</p></div><div class="review-account-values"><p>本月 '+esc(money(account.currentMinor))+'</p>'+(!isNew?'<p><small>上月 '+esc(money(account.previousMinor))+'</small></p>':'')+'<p class="review-account-delta '+signedClass(delta)+'">'+(isNew?'首次计入净额 ':'净资产变化 ')+esc(signedMoney(delta))+'</p></div></li>';
   }
   function renderAccounts(data){
     const existing=data.accounts.filter((account)=>account.kind==='existing');const added=data.accounts.filter((account)=>account.kind==='new');
@@ -77,10 +78,10 @@ const REVIEW_SCRIPT = String.raw`
   function renderClose(data){
     const close=data.close;el('close-panel').hidden=!close;if(!close)return;
     el('close-state').textContent=close.state==='closed'?'已确认月结 · 版本 '+close.version+' · '+closeTime(close.closedAt)+(close.reason?' · '+close.reason:''):'未结报表'+(close.latestVersion?' · 正在预览重新月结的当前数据':'');
-    el('scope').textContent=close.state==='closed'?'本报表的账户、分类、余额和趋势已固定；后续归档、重分类、补记不会改写此版本。':'按当前未归档账户及当前分类回看；月末使用最近余额，未更新时沿用。已结束月份可确认月结。';
-    el('close-confirm').hidden=close.state!=='draft'||!close.canClose||!data.snapshot.accountCount;el('close-confirm').textContent=close.latestVersion?'确认重新月结':'确认本月月结';
+    if(close.state==='closed')el('scope').textContent='本报表的账户、分类、余额和趋势已固定；后续归档、重分类、补记或更正不会改写此版本。'+(data.historicalAssumptions?.length?' '+data.historicalAssumptions.length+' 个旧账户的起始分类／归档状态为兼容基线；基线记录日前的历史无法核实。':'');
+    el('close-confirm').hidden=close.state!=='draft'||!close.canClose||data.snapshot.netMinor===null;el('close-confirm').textContent=close.latestVersion?'确认重新月结':'确认本月月结';
     el('close-preview').hidden=close.state!=='closed';el('close-back').hidden=close.state!=='draft'||!close.latestVersion;
-    el('close-note').textContent=!close.canClose?'本月尚未结束，可先核对与回顾，结束后再确认月结。':!data.snapshot.accountCount?'本月暂无可结余额记录。':'确认前请检查沿用余额和账户范围。重新月结会追加版本，并保留原报表。';
+    el('close-note').textContent=!close.canClose?'本月尚未结束，可先核对与回顾，结束后再确认月结。':data.snapshot.netMinor===null?'本月暂无可结余额记录。':'确认前请检查沿用余额和账户范围。重新月结会追加版本，并保留原报表。';
     el('close-versions').innerHTML='<option value="latest">最新已结版本</option>'+close.versions.map((item)=>'<option value="'+item.version+'"'+(state.version===item.version?' selected':'')+'>版本 '+item.version+' · '+esc(closeTime(item.closedAt))+'</option>').join('');el('close-version-label').hidden=!close.versions.length;
   }
   function renderDecisions(data){

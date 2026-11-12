@@ -1,0 +1,21 @@
+{
+  "active": "tfda-2024-03-29-cn2",
+  "legacy": "tfda-2024-03-29",
+  "releases": [
+    {
+      "id": "tfda-2024-03-29",
+      "file": "data/food-catalog.json",
+      "sha256": "c03f67b580b3c291bb51789f5f89a96fb5e43fcba7e057ba3b5c8fbe157cc28a",
+      "publishedAt": null,
+      "label": "原始中文整理版"
+    },
+    {
+      "id": "tfda-2024-03-29-cn2",
+      "parent": "tfda-2024-03-29",
+      "file": "data/food-catalog-releases/tfda-2024-03-29-cn2.json",
+      "sha256": "9b5faa7d2b5566ea00741a2801386cfb9092b49492df1c677233626bce42e094",
+      "publishedAt": "2026-11-12",
+      "label": "中文检索与称重参考第2版"
+    }
+  ]
+}

@@ -58,7 +58,9 @@ export function parseStoredFinanceReview(input: unknown, scope?: { ledger: strin
   const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const snapshot = (value: unknown) => {
     if (!object(value) || !count(value.accountCount) || !count(value.carriedAccountCount) || value.carriedAccountCount > value.accountCount) return false;
-    if (value.accountCount === 0) return value.assetsMinor === null && value.liabilitiesMinor === null && value.netMinor === null && value.oldestBalanceDate === null && value.latestBalanceDate === null;
+    if (value.accountCount === 0) return ((value.assetsMinor === null && value.liabilitiesMinor === null && value.netMinor === null)
+      || (value.assetsMinor === '0' && value.liabilitiesMinor === '0' && value.netMinor === '0'))
+      && value.oldestBalanceDate === null && value.latestBalanceDate === null;
     return amount(value.assetsMinor, false) && amount(value.liabilitiesMinor, false) && amount(value.netMinor)
       && BigInt(value.assetsMinor) - BigInt(value.liabilitiesMinor) === BigInt(value.netMinor)
       && day(value.oldestBalanceDate) && day(value.latestBalanceDate) && value.oldestBalanceDate <= value.latestBalanceDate;
@@ -70,6 +72,7 @@ export function parseStoredFinanceReview(input: unknown, scope?: { ledger: strin
   const selection = parseFinanceReviewQuery(new URLSearchParams({ ledger: input.ledger, currency: input.currency, month: input.month }), new Date(input.today + 'T04:00:00Z'));
   if (input.previousMonth !== selection.previousMonth || input.cutoffDay !== selection.cutoffDay || input.previousCutoffDay !== selection.previousCutoffDay) return fail();
   for (const key of ['assetsMinor', 'liabilitiesMinor', 'netMinor', 'comparableNetMinor', 'newNetMinor']) if (input.change[key] !== null && !amount(input.change[key])) return fail();
+  for (const key of ['reclassificationNetMinor', 'membershipNetMinor']) if (input.change[key] !== undefined && input.change[key] !== null && !amount(input.change[key])) return fail();
   if (!Array.isArray(input.availableCurrencies) || input.availableCurrencies.some((value) => typeof value !== 'string' || !Object.hasOwn(CURRENCIES, value))) return fail();
   if (!Array.isArray(input.trend) || input.trend.length < 1 || input.trend.length > 12 || input.trend.some((row) => !object(row) || !month(row.month) || !day(row.cutoffDay) || !snapshot(row)) || input.trend.at(-1)?.month !== input.month) return fail();
   if (!Array.isArray(input.accounts) || input.accounts.length > 100000) return fail();
@@ -82,6 +85,10 @@ export function parseStoredFinanceReview(input: unknown, scope?: { ledger: strin
     seen.add(row.accountId as string);
     if (row.kind === 'new' ? row.previousMinor !== null || row.previousAsOfDate !== null || row.netChangeMinor !== null
       : !amount(row.previousMinor, false) || !day(row.previousAsOfDate) || !amount(row.netChangeMinor)) return fail();
+    if (row.previousType !== undefined && (typeof row.previousType !== 'string' || !Object.hasOwn(ACCOUNT_TYPES, row.previousType))) return fail();
+    for (const key of ['classificationChanged', 'membershipChanged', 'archived']) if (row[key] !== undefined && typeof row[key] !== 'boolean') return fail();
+    for (const key of ['balanceChangeMinor', 'classificationChangeMinor', 'membershipChangeMinor']) if (row[key] !== undefined && !amount(row[key])) return fail();
   }
+  if (input.historicalAssumptions !== undefined && (!Array.isArray(input.historicalAssumptions) || input.historicalAssumptions.some((row) => !object(row) || !text(row.accountId) || !text(row.name) || (row.knownFrom !== null && !day(row.knownFrom))))) return fail();
   return input as unknown as FinanceReview;
 }

@@ -5,6 +5,9 @@ import test from 'node:test';
 import { HealthValidationError, MAX_SYNC_BYTES, measurementDay, type HealthSyncPayload } from '../../../../lib/health.ts';
 import { parseMobileSyncPayload } from '../../../../lib/mobile-sync.ts';
 import { hashSyncToken, isSyncToken } from '../../sync/devices/tokens.ts';
+import { HealthImportConflictError } from '../../../../db/health-import-store.ts';
+import { emptySyncSummary, syncAttemptStatus, syncPayloadSummary, withEmptySleepRequest, SYNC_FAILURES } from '../../../../lib/sync-diagnostics.ts';
+import type { SyncAttemptInput } from '../../../../db/sync-attempts-store.ts';
 
 const ORIGIN = 'https://synthetic-health.example';
 const EXPORTED_AT = '2026-11-09T14:00:00+08:00';
@@ -39,26 +42,38 @@ function loadExports(path: URL, bindings: Record<string, unknown>, names: string
   return new Function(...Object.keys(bindings), source + '\nreturn {' + names.join(',') + '};')(...Object.values(bindings));
 }
 
-function fixture() {
+function fixture(options: { signedIn?: boolean } = {}) {
   const writes: HealthSyncPayload[] = [];
   let unchanged = false;
+  const attempts: SyncAttemptInput[] = [];
+  let rejection: Error | null = null;
+  let reads = 0;
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => ({ userId: 'synthetic-owner' }),
+    getChatGPTUser: async () => options.signedIn === false ? null : ({ userId: 'synthetic-owner' }),
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
   class SyncDeviceInvalidError extends Error {}
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, HealthValidationError, MAX_SYNC_BYTES, measurementDay,
     parseMobileSyncPayload, hashSyncToken, isSyncToken, SyncDeviceInvalidError,
+    HealthImportConflictError, emptySyncSummary, syncAttemptStatus, syncPayloadSummary, withEmptySleepRequest, SYNC_FAILURES,
+    saveSyncAttempt: async (_userId: string, attempt: SyncAttemptInput) => { attempts.push(attempt); },
+    readImportHistory: async (userId: string) => { assert.equal(userId, 'synthetic-owner'); reads++; return []; },
+    readSyncDiagnostics: async (userId: string) => { assert.equal(userId, 'synthetic-owner'); return { attempts: [], metricStatus: [] }; },
     findSyncDevice: async () => 'synthetic-device',
     importHealth: async (userId: string, payload: HealthSyncPayload) => {
       assert.equal(userId, 'synthetic-owner');
+      if (rejection) throw rejection;
       writes.push(payload);
       return { ok: true, imported: unchanged ? 0 : payload.measurements.length,
         skipped: unchanged ? payload.measurements.length : 0, lastSync: EXPORTED_AT };
     },
-  }, ['POST']) as { POST(request: Request): Promise<Response> };
+  }, ['POST', 'GET']) as { POST(request: Request): Promise<Response>; GET(): Promise<Response> };
   return {
     writes,
+    attempts,
+    get reads() { return reads; },
+    get() { return route.GET(); },
+    reject(error: Error) { rejection = error; },
     markUnchanged() { unchanged = true; },
     post(payload: unknown) {
       return route.POST(new Request(ORIGIN + '/api/health/import', {
@@ -68,6 +83,15 @@ function fixture() {
     },
   };
 }
+
+test('diagnostic history returns a server verification timestamp and does not read data before authentication', async () => {
+  const f = fixture(); const response = await f.get();
+  assert.equal(response.status, 200);
+  const data = await response.json() as { checkedAt: string; attempts: unknown[]; batches: unknown[] };
+  assert.ok(Number.isFinite(Date.parse(data.checkedAt))); assert.deepEqual(data.attempts, []); assert.deepEqual(data.batches, []);
+  assert.equal(f.reads, 1); assert.equal(f.writes.length, 0);
+  const anonymous = fixture({ signedIn: false }); assert.equal((await anonymous.get()).status, 401); assert.equal(anonymous.reads, 0);
+});
 
 function segment(day: string, state = 1) {
   return { state, startDate: day + 'T01:00:00+08:00', endDate: day + 'T07:00:00+08:00' };
@@ -106,6 +130,38 @@ test('a report with no asleep data across its range returns zero days without fa
   assert.match(result.message, /不补零/);
   assert.match(result.message, /已有睡眠记录会保留/);
   assert.deepEqual(f.writes[0].measurements, []);
+  assert.equal(f.attempts[0].status, 'empty');
+  assert.deepEqual(f.attempts[0].summary?.metrics.map((row) => [row.metric, row.received, row.from, row.to]), [['sleep', 0, '2026-11-07', '2026-11-09']]);
+});
+
+test('invalid payload diagnostics retain only a fixed code and unknown scope', async () => {
+  const f = fixture(); const response = await f.post({ secret: 'synthetic-invalid-body', measurements: 'bad' });
+  assert.equal(response.status, 400); assert.equal(f.writes.length, 0);
+  assert.equal(f.attempts[0].errorCode, 'SYNC_INVALID_FORMAT');
+  assert.equal(f.attempts[0].summary?.known, false); assert.equal(f.attempts[0].summary?.received, null);
+  assert.doesNotMatch(JSON.stringify(f.attempts), /synthetic-invalid-body|secret/);
+});
+
+test('source conflict produces a safe persisted result while preserving the 409 confirmation boundary', async () => {
+  const f = fixture(); f.reject(new HealthImportConflictError('HEALTH_IMPORT_SOURCE_CONFIRMATION', '请确认来源变化'));
+  const response = await f.post(upload([segment('2026-11-09')]));
+  assert.equal(response.status, 409); assert.equal(f.writes.length, 0);
+  assert.equal(f.attempts[0].status, 'failed'); assert.equal(f.attempts[0].errorCode, 'HEALTH_IMPORT_SOURCE_CONFIRMATION');
+  assert.equal(f.attempts[0].summary?.metrics[0].metric, 'sleep');
+  assert.equal(f.attempts[0].summary?.metrics[0].updated, 0);
+});
+
+test('failed server previews retain safe diagnostics while valid previews make no diagnostic or health writes', async () => {
+  const attempts: SyncAttemptInput[] = []; let previews = 0;
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => ({ userId: 'synthetic-owner' }) }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
+  const route = loadExports(new URL('./preview/route.ts', import.meta.url), { ...shared, HealthValidationError, MAX_SYNC_BYTES, parseMobileSyncPayload, emptySyncSummary, syncPayloadSummary,
+    saveSyncAttempt: async (owner: string, input: SyncAttemptInput) => { assert.equal(owner,'synthetic-owner'); attempts.push(input); },
+    previewImport: async (_owner: string, _payload: HealthSyncPayload) => { previews++; return { token: 'a'.repeat(64) }; },
+  }, ['POST']) as { POST(request: Request): Promise<Response> };
+  const request = (value: unknown) => new Request(ORIGIN+'/api/health/import/preview',{ method:'POST', headers:{Origin:ORIGIN,'Content-Type':'application/json'},body:JSON.stringify(value) });
+  assert.equal((await route.POST(request(upload([])))).status,200); assert.equal(previews,1); assert.equal(attempts.length,0);
+  assert.equal((await route.POST(request({secret:'synthetic-invalid-preview'}))).status,400); assert.equal(previews,1); assert.equal(attempts.length,1);
+  assert.equal(attempts[0].errorCode,'SYNC_INVALID_FORMAT'); assert.equal(attempts[0].summary?.known,false); assert.doesNotMatch(JSON.stringify(attempts),/synthetic-invalid-preview|secret/);
 });
 
 test('sleep outside the requested range cannot make an empty report look recorded', async () => {
@@ -121,6 +177,7 @@ test('sleep outside the requested range cannot make an empty report look recorde
   assert.equal(result.sleepDays, 0);
   assert.equal(result.imported, 1);
   assert.equal(f.writes[0].measurements.length, 1);
+  assert.deepEqual(f.attempts[0].summary?.emptySleepWindow, { from: '2026-11-03', to: '2026-11-09' });
 });
 
 test('the earliest requested day is counted and unchanged reuploads retain their recorded status', async () => {

@@ -23,9 +23,9 @@ export async function POST(request: Request) {
       || prior.version !== input.expectedVersion + 1 || prior.reason !== input.reason || prior.requestHash !== input.previewHash)) throw new FinanceCloseConflictError('这次提交标识已用于其他月结内容。请重新读取报表。');
     const report = prior?.report ?? await (async () => {
       const snapshot = await readFinanceReviewSnapshot(env.DB, user.userId, input.selection.ledger, input.selection.cutoffDay);
-      return buildFinanceReview(snapshot.accounts, snapshot.balances, input.selection);
+      return buildFinanceReview(snapshot.accounts, snapshot.balances, input.selection, snapshot.classifications);
     })();
-    if (!report.snapshot.accountCount) throw new FinanceValidationError([{ path: 'month', message: '本月暂无可结余额记录。' }]);
+    if (report.snapshot.netMinor === null) throw new FinanceValidationError([{ path: 'month', message: '本月暂无可结余额记录。' }]);
     if (!prior && await financeReviewHash(report) !== input.previewHash) throw new FinanceCloseConflictError();
     const closed = await writeFinanceMonthClose(env.DB, user.userId, { report, expectedVersion: input.expectedVersion, operationId, requestHash: input.previewHash, reason: input.reason });
     return json({ month: closed.month, ledger: closed.ledger, currency: closed.currency, version: closed.version, closedAt: closed.closedAt, reason: closed.reason }, prior ? 200 : 201);

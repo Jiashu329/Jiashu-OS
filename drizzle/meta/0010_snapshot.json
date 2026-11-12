@@ -1,11 +1,11 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c8b28a5e-194a-47f3-896c-ddde7f335201",
+  "id": "7f324a07-81a3-4699-bb62-267ff8305f1f",
   "prevId": "311af953-9974-43ed-acfe-12035b5d4b67",
   "tables": {
-    "backup_restore_guards": {
-      "name": "backup_restore_guards",
+    "ai_usage_limits": {
+      "name": "ai_usage_limits",
       "columns": {
         "user_id": {
           "name": "user_id",
@@ -14,8 +14,29 @@
           "notNull": true,
           "autoincrement": false
         },
-        "valid": {
-          "name": "valid",
+        "day": {
+          "name": "day",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "day_count": {
+          "name": "day_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute": {
+          "name": "minute",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute_count": {
+          "name": "minute_count",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -26,12 +47,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {
-        "backup_restore_valid": {
-          "name": "backup_restore_valid",
-          "value": "\"backup_restore_guards\".\"valid\" = 1"
-        }
-      }
+      "checkConstraints": {}
     },
     "finance_accounts": {
       "name": "finance_accounts",
@@ -313,106 +329,6 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "finance_month_closes": {
-      "name": "finance_month_closes",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "ledger": {
-          "name": "ledger",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "currency": {
-          "name": "currency",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "month": {
-          "name": "month",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "request_hash": {
-          "name": "request_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "snapshot_json": {
-          "name": "snapshot_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "closed_at": {
-          "name": "closed_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "finance_month_closes_owner_operation_idx": {
-          "name": "finance_month_closes_owner_operation_idx",
-          "columns": [
-            "user_id",
-            "operation_id"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "finance_month_closes_user_id_ledger_currency_month_version_pk": {
-          "columns": [
-            "user_id",
-            "ledger",
-            "currency",
-            "month",
-            "version"
-          ],
-          "name": "finance_month_closes_user_id_ledger_currency_month_version_pk"
-        }
-      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -807,87 +723,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "health_sync_diagnostics": {
-      "name": "health_sync_diagnostics",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "received_at": {
-          "name": "received_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "exported_at": {
-          "name": "exported_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "submitted_count": {
-          "name": "submitted_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "imported_count": {
-          "name": "imported_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "skipped_count": {
-          "name": "skipped_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "first_day": {
-          "name": "first_day",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "last_day": {
-          "name": "last_day",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "health_sync_diagnostics_user_id_scope_pk": {
-          "columns": [
-            "user_id",
-            "scope"
-          ],
-          "name": "health_sync_diagnostics_user_id_scope_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "health_syncs": {
       "name": "health_syncs",
       "columns": {
@@ -945,80 +780,6 @@
             "payload_hash"
           ],
           "name": "health_syncs_user_id_payload_hash_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "health_weekly_actions": {
-      "name": "health_weekly_actions",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "week_start": {
-          "name": "week_start",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "feedback": {
-          "name": "feedback",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "revision": {
-          "name": "revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "health_weekly_actions_user_id_week_start_pk": {
-          "columns": [
-            "user_id",
-            "week_start"
-          ],
-          "name": "health_weekly_actions_user_id_week_start_pk"
         }
       },
       "uniqueConstraints": {},

@@ -1,3 +1,4 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -63,7 +64,7 @@ async function fixture(t: TestContext) {
   const env: { DB?: D1Database } = { DB: db };
   let owner: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null }, ['apiUser', 'json', 'isSameOrigin']);
-  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...finance, ...financeStore }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
+  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...balanceChanges, ...finance, ...financeStore }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...financeShared, ...finance, ...financeStore, ...runwayRules, ...runwayStore, env }, ['GET', 'PUT']) as { GET(request: Request): Promise<Response>; PUT(request: Request): Promise<Response> };
   for (const [key, currency, type, userId, ledger, amountMinor] of [
     ['cny', 'CNY', 'bank', 'alice', 'personal', '9007199254740993'], ['zero', 'CNY', 'bank', 'alice', 'personal', '0'],
@@ -71,7 +72,7 @@ async function fixture(t: TestContext) {
     ['family', 'CNY', 'bank', 'alice', 'family', '1000'], ['loan', 'CNY', 'loan', 'alice', 'personal', '10000'],
     ['archived', 'CNY', 'bank', 'alice', 'personal', '10000'], ['bob', 'CNY', 'bank', 'bob', 'personal', '77700'],
   ] as const) await financeStore.createFinanceAccount(db, userId, { ledger, currency, type, name: key, note: '', amountMinor, asOfDate: finance.todayShanghai() }, new Date().toISOString(), ids[key]);
-  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { archived: true }); queries.length = 0;
+  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { expectedRevision: 1, archived: true }); queries.length = 0;
   return {
     sqlite, db, env, queries,
     signIn(userId: string | null) { owner = userId; },
@@ -84,7 +85,7 @@ async function fixture(t: TestContext) {
     count() { return Number(sqlite.prepare('SELECT count(*) AS total FROM finance_runway_settings').get()?.total); },
   };
 }
-const input = (patch: Record<string, unknown> = {}) => ({ monthlyExpenseAmount: '100', targetMonths: 6, accountIds: [ids.zero], ...patch });
+const input = (patch: Record<string, unknown> = {}) => ({ monthlyExpenseAmount: '100', targetMonths: 6, accountIds: [ids.zero], expectedRevision: 0, ...patch });
 
 test('runway reads and writes require sign-in and writes require the same origin', async (t) => {
   const f = await fixture(t); f.signIn(null);
@@ -98,9 +99,21 @@ test('unconfigured reserves stay unset and eligible choices exclude other owners
   for (const query of ['ledger=business&currency=CNY', 'ledger=personal&currency=BTC']) assert.equal((await f.get(query)).status, 400);
 });
 
+test('runway revision is explicit and two-tab conflicts return 409 without overwriting saved data', async (t) => {
+  const f = await fixture(t);
+  assert.equal(((await f.get()).status), 200);
+  assert.equal((await f.put({ monthlyExpenseAmount: '100', targetMonths: 6, accountIds: [ids.zero] })).status, 400);
+  for (const expectedRevision of [-1, '0', 0.5, null]) assert.equal((await f.put(input({ expectedRevision }))).status, 400);
+  const initial = await readRunway(await f.put(input())); assert.equal(initial.settings?.revision, 1);
+  const changed = await readRunway(await f.put(input({ targetMonths: 8, expectedRevision: 1 }))); assert.equal(changed.settings?.revision, 2);
+  const conflict = await f.put(input({ targetMonths: 99, expectedRevision: 1 })); assert.equal(conflict.status, 409);
+  assert.equal((await readError(conflict)).code, 'FINANCE_RUNWAY_CONFLICT');
+  const saved = await readRunway(await f.get()); assert.equal(saved.settings?.targetMonths, 8); assert.equal(saved.settings?.revision, 2);
+});
+
 test('saving and replacing reserve settings does not duplicate rows or change account balances', async (t) => {
   const f = await fixture(t); const firstResponse = await f.put(input()); assert.equal(firstResponse.status, 200); const first = await readRunway(firstResponse); assert.ok(first.settings); assert.ok(first.progress); assert.equal(first.settings.monthlyExpenseMinor, '10000'); assert.equal(first.progress.currentMinor, '0'); assert.equal(first.progress.runwayMonths, '0.00'); assert.equal(first.progress.gapMinor, '60000');
-  assert.equal((await f.put(input())).status, 200); assert.equal(f.count(), 1); const updated = await readRunway(await f.put(input({ monthlyExpenseAmount: '125.50', targetMonths: 9 }))); assert.ok(updated.settings); assert.equal(updated.settings.monthlyExpenseMinor, '12550'); assert.equal(updated.settings.targetMonths, 9); assert.equal(f.count(), 1);
+  assert.equal((await f.put(input({ expectedRevision: 1 }))).status, 200); assert.equal(f.count(), 1); const updated = await readRunway(await f.put(input({ monthlyExpenseAmount: '125.50', targetMonths: 9, expectedRevision: 2 }))); assert.ok(updated.settings); assert.equal(updated.settings.monthlyExpenseMinor, '12550'); assert.equal(updated.settings.targetMonths, 9); assert.equal(f.count(), 1);
   assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM finance_balance_entries').get()?.total, 8);
 });
 
@@ -123,10 +136,10 @@ test('extreme balances, fractional coverage and JPY retain exact string arithmet
 });
 
 test('unchanged invalid links can be retained for expense edits, while failed re-selection leaves settings unchanged', async (t) => {
-  const f = await fixture(t); await f.put(input()); await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { archived: true });
-  const edited = await readRunway(await f.put(input({ monthlyExpenseAmount: '200', targetMonths: 9 }))); assert.ok(edited.progress); assert.ok(edited.settings); assert.equal(edited.progress.missingCount, 1); assert.equal(edited.progress.currentMinor, '0'); assert.equal(edited.settings.monthlyExpenseMinor, '20000');
+  const f = await fixture(t); await f.put(input()); await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { expectedRevision: 1, archived: true });
+  const edited = await readRunway(await f.put(input({ monthlyExpenseAmount: '200', targetMonths: 9, expectedRevision: 1 }))); assert.ok(edited.progress); assert.ok(edited.settings); assert.equal(edited.progress.missingCount, 1); assert.equal(edited.progress.currentMinor, '0'); assert.equal(edited.settings.monthlyExpenseMinor, '20000');
   f.beforeWrite(() => f.sqlite.prepare('UPDATE finance_accounts SET archived_at=? WHERE id=?').run(new Date().toISOString(), ids.cny));
-  assert.equal((await f.put(input({ accountIds: [ids.cny], monthlyExpenseAmount: '999' }))).status, 400);
+  assert.equal((await f.put(input({ accountIds: [ids.cny], monthlyExpenseAmount: '999', expectedRevision: 2 }))).status, 400);
   const retained = await readRunway(await f.get()); assert.ok(retained.settings); assert.equal(retained.settings.monthlyExpenseMinor, '20000'); assert.deepEqual(retained.settings.accountIds, [ids.zero]); assert.equal(f.count(), 1);
 });
 
@@ -134,4 +147,12 @@ test('reserve settings remain independent for every owner, ledger and currency',
   const f = await fixture(t); await f.put(input()); await f.put(input({ accountIds: [ids.usd], monthlyExpenseAmount: '50' }), 'ledger=personal&currency=USD'); await f.put(input({ accountIds: [ids.family], monthlyExpenseAmount: '5' }), 'ledger=family&currency=CNY'); f.signIn('bob'); await f.put(input({ accountIds: [ids.bob], monthlyExpenseAmount: '70' }));
   const bob = await readRunway(await f.get()); assert.ok(bob.settings); assert.equal(bob.settings.monthlyExpenseMinor, '7000'); assert.deepEqual(bob.accounts.map((account) => account.id), [ids.bob]); f.signIn('alice');
   const personal = await readRunway(await f.get()); assert.ok(personal.settings); assert.equal(personal.settings.monthlyExpenseMinor, '10000'); const family = await readRunway(await f.get('ledger=family&currency=CNY')); assert.ok(family.settings); assert.equal(family.settings.monthlyExpenseMinor, '500'); assert.equal(f.count(), 4);
+});
+
+test('runway returns exact reviewed liquidity contributions without rewriting saved selection or targets',async(t)=>{
+ const f=await fixture(t);const initial=await readRunway(await f.put(input({accountIds:[ids.cny]})));assert.equal(initial.settings!.targetMonths,6);
+ f.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='restricted',usable_bps=3333 WHERE id=?").run(ids.cny);
+ const reviewed=await readRunway(await f.get());assert.equal(reviewed.progress!.nominalMinor,'9007199254740993');assert.equal(reviewed.progress!.currentMinor,(BigInt('9007199254740993')*BigInt(3333)/BigInt(10000)).toString());
+ f.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='unreviewed',usable_bps=0 WHERE id=?").run(ids.cny);
+ const unreviewed=await readRunway(await f.get());assert.equal(unreviewed.progress!.currentMinor,'0');assert.equal(unreviewed.progress!.unreviewedMinor,'9007199254740993');assert.equal(unreviewed.progress!.excludedMinor,'9007199254740993');assert.equal(unreviewed.settings!.revision,initial.settings!.revision);assert.deepEqual(unreviewed.settings!.accountIds,[ids.cny]);assert.equal(unreviewed.settings!.monthlyExpenseMinor,'10000');assert.equal(unreviewed.settings!.targetMonths,6);
 });

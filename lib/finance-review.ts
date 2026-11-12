@@ -9,6 +9,10 @@ export interface ReviewAccountRow {
   currency: CurrencyCode;
   archivedAt: string | null;
 }
+export interface AccountClassification {
+  accountId: string; revision: number; effectiveFrom: string; type: AccountType;
+  archived: number; origin: 'opening' | 'baseline' | 'change'; recordedAt: string;
+}
 export interface ReviewBalanceRow {
   accountId: string;
   amountMinor: string;
@@ -45,6 +49,8 @@ export interface ReviewAccountChange {
   currentAsOfDate: string;
   previousAsOfDate: string | null;
   carried: boolean;
+  previousType?: AccountType; classificationChanged?: boolean; membershipChanged?: boolean; archived?: boolean;
+  balanceChangeMinor?: string; classificationChangeMinor?: string; membershipChangeMinor?: string;
 }
 export interface FinanceReview extends ReviewSelection {
   availableCurrencies: string[];
@@ -56,9 +62,11 @@ export interface FinanceReview extends ReviewSelection {
     netMinor: string | null;
     comparableNetMinor: string | null;
     newNetMinor: string | null;
+    reclassificationNetMinor: string | null; membershipNetMinor: string | null;
   };
   trend: Array<ReviewSnapshot & { month: string; cutoffDay: string }>;
   accounts: ReviewAccountChange[];
+  historicalAssumptions: Array<{ accountId: string; name: string; knownFrom: string | null }>;
 }
 
 function monthIndex(month: string) {
@@ -139,65 +147,52 @@ function summarize(accounts: readonly ReviewAccountRow[], balances: ReadonlyMap<
   };
 }
 
-/** Current account metadata is deliberately applied to each historical cutoff. */
-export function buildFinanceReview(accounts: readonly ReviewAccountRow[], balances: readonly ReviewBalanceRow[], selection: ReviewSelection): FinanceReview {
-  const active = accounts.filter((account) => account.ledger === selection.ledger && account.archivedAt === null);
-  const selected = active.filter((account) => account.currency === selection.currency);
+/** Classification is resolved at each cutoff, independently of the carried balance date. */
+export function buildFinanceReview(accounts: readonly ReviewAccountRow[], balances: readonly ReviewBalanceRow[], selection: ReviewSelection, history: readonly AccountClassification[] = []): FinanceReview {
+  const scoped = accounts.filter((account) => account.ledger === selection.ledger);
+  const selected = scoped.filter((account) => account.currency === selection.currency);
   const ids = new Set(selected.map((account) => account.accountId));
+  const byAccount = new Map<string, AccountClassification[]>();
+  for (const row of history) { const rows = byAccount.get(row.accountId) ?? []; rows.push(row); byAccount.set(row.accountId, rows); }
+  for (const rows of byAccount.values()) rows.sort((a,b) => a.effectiveFrom.localeCompare(b.effectiveFrom) || a.revision-b.revision);
+  const classification = (account: ReviewAccountRow, cutoff: string) => {
+    const row = byAccount.get(account.accountId)?.filter((row) => row.effectiveFrom <= cutoff).at(-1);
+    return { ...account, type: row?.type ?? account.type, archivedAt: row ? row.archived ? row.recordedAt : null : account.archivedAt };
+  };
+  const eligible = (cutoff: string) => selected.map((account) => classification(account,cutoff)).filter((account) => account.archivedAt === null);
   const currentBalances = balancesAt(balances, ids, selection.cutoffDay);
   const previousBalances = balancesAt(balances, ids, selection.previousCutoffDay);
-  const snapshot = summarize(selected, currentBalances, selection.month);
-  const previous = summarize(selected, previousBalances, selection.previousMonth);
-  const comparable = snapshot.accountCount > 0 && previous.accountCount > 0;
-  let comparableNet = BigInt(0);
-  let newNet = BigInt(0);
-  const accountChanges: ReviewAccountChange[] = [];
-  for (const account of selected) {
-    const current = currentBalances.get(account.accountId);
-    if (!current) continue;
-    const prior = previousBalances.get(account.accountId);
-    const side = ACCOUNT_TYPES[account.type].side;
-    const currentSigned = signed(current.amountMinor, side);
-    const netChange = prior ? currentSigned - signed(prior.amountMinor, side) : null;
-    if (netChange === null) newNet += currentSigned;
-    else comparableNet += netChange;
-    accountChanges.push({
-      accountId: account.accountId, name: account.name, type: account.type, side,
-      kind: prior ? 'existing' : 'new', previousMinor: prior?.amountMinor ?? null,
-      currentMinor: current.amountMinor, netChangeMinor: netChange?.toString() ?? null,
-      currentAsOfDate: current.asOfDate, previousAsOfDate: prior?.asOfDate ?? null,
-      carried: current.asOfDate < selection.month + '-01',
-    });
-  }
-  accountChanges.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'existing' ? -1 : 1;
-    if (a.kind === 'existing') {
-      const aDelta = BigInt(a.netChangeMinor!);
-      const bDelta = BigInt(b.netChangeMinor!);
-      const aAbs = aDelta < BigInt(0) ? -aDelta : aDelta;
-      const bAbs = bDelta < BigInt(0) ? -bDelta : bDelta;
-      if (aAbs !== bAbs) return aAbs > bAbs ? -1 : 1;
-    }
-    const nameOrder = a.name.localeCompare(b.name, 'zh-CN');
-    return nameOrder || (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0);
-  });
-  const endMonth = monthIndex(selection.month);
-  const trend: FinanceReview['trend'] = [];
-  for (let index = Math.max(monthIndex('1970-01'), endMonth - 11); index <= endMonth; index++) {
-    const month = monthFromIndex(index);
-    const cutoffDay = month === selection.today.slice(0, 7) ? selection.today : monthEnd(month);
-    trend.push({ month, cutoffDay, ...summarize(selected, balancesAt(balances, ids, cutoffDay), month) });
-  }
-  const delta = (key: 'assetsMinor' | 'liabilitiesMinor' | 'netMinor') => comparable
-    ? (BigInt(snapshot[key]!) - BigInt(previous[key]!)).toString() : null;
-  return {
-    ...selection, availableCurrencies: [...new Set(active.map((account) => account.currency))].sort(),
-    snapshot, previous,
-    change: {
-      assetsMinor: delta('assetsMinor'), liabilitiesMinor: delta('liabilitiesMinor'), netMinor: delta('netMinor'),
-      comparableNetMinor: comparable ? comparableNet.toString() : null,
-      newNetMinor: snapshot.accountCount ? newNet.toString() : null,
-    },
-    trend, accounts: accountChanges,
+  const snapshotAt = (cutoff: string, month: string, values = balancesAt(balances,ids,cutoff)) => {
+    const snapshot = summarize(eligible(cutoff),values,month);
+    // An archived final account is a known empty book; no historical balances remains unknown.
+    if (!snapshot.accountCount && values.size && history.length) return { ...snapshot, assetsMinor:'0',liabilitiesMinor:'0',netMinor:'0' };
+    return snapshot;
   };
+  const snapshot = snapshotAt(selection.cutoffDay,selection.month,currentBalances);
+  const previous = snapshotAt(selection.previousCutoffDay,selection.previousMonth,previousBalances);
+  const comparable = snapshot.netMinor !== null && previous.netMinor !== null;
+  let comparableNet=BigInt(0),newNet=BigInt(0),reclassificationNet=BigInt(0),membershipNet=BigInt(0);
+  const accountChanges: ReviewAccountChange[]=[];
+  for (const account of selected) {
+    const current=currentBalances.get(account.accountId),prior=previousBalances.get(account.accountId);
+    if (!current) continue;
+    const now=classification(account,selection.cutoffDay),before=classification(account,selection.previousCutoffDay);
+    const active=now.archivedAt===null,wasActive=before.archivedAt===null;
+    if ((!active&&!wasActive)||(!prior&&!active)) continue;
+    const side=ACCOUNT_TYPES[now.type].side,previousSide=ACCOUNT_TYPES[before.type].side;
+    const currentSigned=active?signed(current.amountMinor,side):BigInt(0),previousSigned=prior&&wasActive?signed(prior.amountMinor,previousSide):BigInt(0);
+    const netChange=prior?currentSigned-previousSigned:null;
+    let balanceChange=BigInt(0),classificationChange=BigInt(0),membershipChange=BigInt(0);
+    if (!prior) newNet+=currentSigned;
+    else if (active!==wasActive) { membershipChange=currentSigned-previousSigned; membershipNet+=membershipChange; }
+    else { balanceChange=signed(current.amountMinor,previousSide)-signed(prior.amountMinor,previousSide);classificationChange=currentSigned-signed(current.amountMinor,previousSide);comparableNet+=balanceChange;reclassificationNet+=classificationChange; }
+    accountChanges.push({accountId:account.accountId,name:account.name,type:now.type,side,kind:prior?'existing':'new',previousMinor:prior?.amountMinor??null,currentMinor:current.amountMinor,netChangeMinor:netChange?.toString()??null,currentAsOfDate:current.asOfDate,previousAsOfDate:prior?.asOfDate??null,carried:current.asOfDate<selection.month+'-01',
+      previousType:before.type,classificationChanged:before.type!==now.type,membershipChanged:active!==wasActive,archived:!active,balanceChangeMinor:balanceChange.toString(),classificationChangeMinor:classificationChange.toString(),membershipChangeMinor:membershipChange.toString()});
+  }
+  accountChanges.sort((a,b)=>{if(a.kind!==b.kind)return a.kind==='existing'?-1:1;if(a.kind==='existing'){const x=BigInt(a.netChangeMinor!),y=BigInt(b.netChangeMinor!),ax=x<BigInt(0)?-x:x,ay=y<BigInt(0)?-y:y;if(ax!==ay)return ax>ay?-1:1;}return a.name.localeCompare(b.name,'zh-CN')||a.accountId.localeCompare(b.accountId);});
+  const trend:FinanceReview['trend']=[],endMonth=monthIndex(selection.month);
+  for(let index=Math.max(monthIndex('1970-01'),endMonth-11);index<=endMonth;index++){const month=monthFromIndex(index),cutoffDay=month===selection.today.slice(0,7)?selection.today:monthEnd(month);trend.push({month,cutoffDay,...snapshotAt(cutoffDay,month)});}
+  const historicalAssumptions=selected.flatMap((account)=>{const baseline=byAccount.get(account.accountId)?.[0];const knownFrom=baseline?.recordedAt?todayShanghai(new Date(baseline.recordedAt)):null;return (!baseline&&balances.some((row)=>row.accountId===account.accountId&&row.asOfDate<=selection.cutoffDay)||baseline?.origin==='baseline'&&trend.some((point)=>point.cutoffDay<(knownFrom??'9999')&&balances.some((row)=>row.accountId===account.accountId&&row.asOfDate<=point.cutoffDay)))?[{accountId:account.accountId,name:account.name,knownFrom}]:[];}).sort((a,b)=>a.accountId.localeCompare(b.accountId));
+  const delta=(key:'assetsMinor'|'liabilitiesMinor'|'netMinor')=>comparable?(BigInt(snapshot[key]!)-BigInt(previous[key]!)).toString():null;
+  return {...selection,availableCurrencies:[...new Set(scoped.map((account)=>account.currency))].sort(),snapshot,previous,change:{assetsMinor:delta('assetsMinor'),liabilitiesMinor:delta('liabilitiesMinor'),netMinor:delta('netMinor'),comparableNetMinor:comparable?comparableNet.toString():null,newNetMinor:snapshot.netMinor!==null?newNet.toString():null,reclassificationNetMinor:comparable?reclassificationNet.toString():null,membershipNetMinor:comparable?membershipNet.toString():null},trend,accounts:accountChanges,historicalAssumptions};
 }

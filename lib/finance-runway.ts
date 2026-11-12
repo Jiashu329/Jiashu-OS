@@ -1,8 +1,8 @@
-import { ACCOUNT_TYPES, decimalFromMinor, FinanceValidationError, parseMoney } from './finance.ts';
+import { ACCOUNT_TYPES, accountLiquidity, decimalFromMinor, FinanceValidationError, parseMoney, todayShanghai } from './finance.ts';
 import type { AccountType, CurrencyCode, FinanceIssue, LedgerKind } from './finance.ts';
 import type { FinanceGoalAccount } from './finance-goals.ts';
 
-export type FinanceRunwayAccount = FinanceGoalAccount;
+export type FinanceRunwayAccount = FinanceGoalAccount & { liquidityKind?: string; usableBps?: number };
 export interface FinanceRunwayInput {
   monthlyExpenseMinor: string;
   targetMonths: number;
@@ -14,9 +14,13 @@ export interface FinanceRunwaySettings extends FinanceRunwayInput {
   currency: CurrencyCode;
   createdAt: string;
   updatedAt: string;
+  revision: number;
 }
 export interface FinanceRunwayProgress {
-  currentMinor: string;
+  currentMinor: string; nominalMinor: string; excludedMinor: string; unreviewedMinor: string;
+  unreviewedAccountCount: number; usableAccountCount: number; staleAccountCount: number;
+  accounts: Array<{ accountId: string; nominalMinor: string; usableMinor: string; liquidityKind: string; usableBps: number; stale: boolean }>;
+
   runwayMonths: string;
   runwayWholeMonths: string;
   runwayRemainderMinor: string;
@@ -30,7 +34,7 @@ export interface FinanceRunwayProgress {
   status: 'covered' | 'short';
 }
 export interface FinanceRunwayView {
-  settings: (FinanceRunwayInput & { monthlyExpenseAmount: string; createdAt: string; updatedAt: string }) | null;
+  settings: (FinanceRunwayInput & { monthlyExpenseAmount: string; createdAt: string; updatedAt: string; revision: number }) | null;
   progress: FinanceRunwayProgress | null;
 }
 export class FinanceRunwayValidationError extends Error {
@@ -69,16 +73,29 @@ export function parseFinanceRunwayInput(input: unknown, currency: CurrencyCode):
   return { monthlyExpenseMinor, targetMonths: raw.targetMonths, accountIds: [...ids].sort() };
 }
 
+export function parseFinanceRunwayCommand(input: unknown, currency: CurrencyCode): { input: FinanceRunwayInput; expectedRevision: number } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('$', '请提交完整的应急设置和读取版本。');
+  const { expectedRevision, ...value } = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) return fail('expectedRevision', '请先读取当前应急设置，再保存修改。');
+  return { input: parseFinanceRunwayInput(value, currency), expectedRevision: Number(expectedRevision) };
+}
+
 /** Decimal display is truncated; whole-month quotient and remainder retain the exact ratio. */
-export function buildFinanceRunwayView(settings: FinanceRunwaySettings | null, accounts: readonly FinanceRunwayAccount[]): FinanceRunwayView {
+export function buildFinanceRunwayView(settings: FinanceRunwaySettings | null, accounts: readonly FinanceRunwayAccount[], today = todayShanghai()): FinanceRunwayView {
   if (!settings) return { settings: null, progress: null };
   const linked = new Set(settings.accountIds);
   const matched = new Map(accounts.filter((account) => linked.has(account.id) && account.ledger === settings.ledger
     && account.currency === settings.currency && account.archivedAt === null
     && Object.hasOwn(ACCOUNT_TYPES, account.type) && ACCOUNT_TYPES[account.type as AccountType].side === 'asset')
     .map((account) => [account.id, account]));
-  let current = BigInt(0);
-  for (const account of matched.values()) current += BigInt(account.balanceMinor);
+  const cutoff = new Date(Date.parse(today+'T12:00:00Z')-30*86400000).toISOString().slice(0,10);
+  const liquidityAccounts = [...matched.values()].map((account) => {
+    const liquidity=accountLiquidity(account),nominal=BigInt(account.balanceMinor);
+    return {accountId:account.id,nominalMinor:account.balanceMinor,usableMinor:(nominal*BigInt(liquidity.usableBps)/BigInt(10000)).toString(),...liquidity,stale:account.asOfDate<cutoff};
+  });
+  const current=liquidityAccounts.reduce((sum,account)=>sum+BigInt(account.usableMinor),BigInt(0));
+  const nominal=liquidityAccounts.reduce((sum,account)=>sum+BigInt(account.nominalMinor),BigInt(0));
+  const unreviewed=liquidityAccounts.filter((account)=>account.liquidityKind==='unreviewed');
   const expense = BigInt(settings.monthlyExpenseMinor);
   const target = expense * BigInt(settings.targetMonths);
   const gap = current >= target ? BigInt(0) : target - current;
@@ -87,10 +104,11 @@ export function buildFinanceRunwayView(settings: FinanceRunwaySettings | null, a
   return {
     settings: {
       monthlyExpenseMinor: settings.monthlyExpenseMinor, monthlyExpenseAmount: decimalFromMinor(settings.monthlyExpenseMinor, settings.currency),
-      targetMonths: settings.targetMonths, accountIds: [...settings.accountIds], createdAt: settings.createdAt, updatedAt: settings.updatedAt,
+      targetMonths: settings.targetMonths, accountIds: [...settings.accountIds], createdAt: settings.createdAt, updatedAt: settings.updatedAt, revision: settings.revision,
     },
     progress: {
-      currentMinor: current.toString(), runwayMonths: scaled.slice(0, -2) + '.' + scaled.slice(-2),
+      currentMinor: current.toString(),nominalMinor:nominal.toString(),excludedMinor:(nominal-current).toString(),unreviewedMinor:unreviewed.reduce((sum,account)=>sum+BigInt(account.nominalMinor),BigInt(0)).toString(),
+      unreviewedAccountCount:unreviewed.length,usableAccountCount:liquidityAccounts.filter((account)=>account.usableBps>0).length,staleAccountCount:liquidityAccounts.filter((account)=>account.stale).length,accounts:liquidityAccounts, runwayMonths: scaled.slice(0, -2) + '.' + scaled.slice(-2),
       runwayWholeMonths: (current / expense).toString(), runwayRemainderMinor: (current % expense).toString(),
       targetMinor: target.toString(), gapMinor: gap.toString(),
       percent: current >= target ? 100 : Number(current * BigInt(10000) / target) / 100,

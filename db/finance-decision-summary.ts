@@ -17,7 +17,7 @@ export async function readFinanceDecisionSummary(
 ) {
   const [plans, accounts, runway] = await Promise.all([
     readFinanceGoalPlans(db, userId, ledger, currency),
-    listFinanceAccounts(db, userId, ledger),
+    listFinanceAccounts(db, userId, ledger, true),
     readFinanceRunwaySettings(db, userId, ledger, currency),
   ]);
   return {
@@ -26,7 +26,7 @@ export async function readFinanceDecisionSummary(
       const { id, name, status, gapMinor, monthlyMinor, deadline, percent } = buildFinanceGoalView(plan, accounts, today);
       return { id, name, status, gapMinor, monthlyMinor, deadline, percent };
     }),
-    runway: buildFinanceRunwayView(runway, accounts).progress,
+    runway: buildFinanceRunwayView(runway, accounts, today).progress,
     sharing: buildFinanceAllocationView({ userId, ledger }, plans, accounts, runway ? [runway] : []),
   };
 }

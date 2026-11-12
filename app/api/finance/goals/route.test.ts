@@ -1,3 +1,4 @@
+import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -77,13 +78,15 @@ async function fixture(t: TestContext) {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, ...finance, ...financeStore,
+    ...shared, ...balanceChanges, ...finance, ...financeStore,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);
   const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, ...runwayStore, ...allocationRules, env };
   const goalsShared = loadExports(new URL('./_shared.ts', import.meta.url), baseBindings, ['goalsDatabase', 'goalsError', 'goalNotFound', 'goalAccounts', 'presentGoal']);
   const bindings = { ...baseBindings, ...goalsShared };
   const route = loadExports(new URL('./route.ts', import.meta.url), bindings, ['GET', 'POST']) as { GET(request: Request): Promise<Response>; POST(request: Request): Promise<Response> };
-  const itemRoute = loadExports(new URL('./[id]/route.ts', import.meta.url), bindings, ['PATCH']) as { PATCH(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> };
+  const itemRoute = loadExports(new URL('./[id]/route.ts', import.meta.url), bindings, ['GET','PATCH']) as { GET(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response>; PATCH(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> };
+  const repository = loadExports(new URL('../../../../db/finance-repository.ts', import.meta.url), { ...bindings, ...balanceChanges }, ['financeAccountDetails','updateFinanceAccount']);
+  const accountRoute = loadExports(new URL('../accounts/[id]/route.ts', import.meta.url), { ...bindings, ...repository }, ['GET','PATCH']) as typeof itemRoute;
   for (const [key, currency, type, userId, ledger, amountMinor] of [
     ['cny', 'CNY', 'bank', 'alice', 'personal', '9007199254740993'], ['zero', 'CNY', 'bank', 'alice', 'personal', '0'],
     ['usd', 'USD', 'investment', 'alice', 'personal', '20000'], ['jpy', 'JPY', 'bank', 'alice', 'personal', '500'],
@@ -92,7 +95,7 @@ async function fixture(t: TestContext) {
   ] as const) {
     await financeStore.createFinanceAccount(db, userId, { ledger, currency, type, name: key, note: '', amountMinor, asOfDate: TODAY }, new Date().toISOString(), ids[key]);
   }
-  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { archived: true });
+  await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { expectedRevision: 1, archived: true });
   queries.length = 0;
   function request(method: string, path: string, body: unknown, key?: string, origin: string | null = ORIGIN) {
     const headers = new Headers({ 'Content-Type': 'application/json' });
@@ -107,10 +110,38 @@ async function fixture(t: TestContext) {
     get(query = 'ledger=personal&currency=all') { return route.GET(new Request(ORIGIN + '/api/finance/goals?' + query)); },
     post(body: unknown, key: string | undefined = crypto.randomUUID(), origin: string | null = ORIGIN) { return route.POST(request('POST', '/api/finance/goals', body, key, origin)); },
     patch(id: string, body: unknown, origin: string | null = ORIGIN) { return itemRoute.PATCH(request('PATCH', '/api/finance/goals/' + id, body, undefined, origin), { params: Promise.resolve({ id }) }); },
+    getGoal(id:string) { return itemRoute.GET(new Request(ORIGIN+'/api/finance/goals/'+id), {params:Promise.resolve({id})}); },
+    getAccount(id:string) { return accountRoute.GET(new Request(ORIGIN+'/api/finance/accounts/'+id), {params:Promise.resolve({id})}); },
+    patchAccount(id:string,body:unknown) { return accountRoute.PATCH(request('PATCH','/api/finance/accounts/'+id,body), {params:Promise.resolve({id})}); },
     count() { return Number(sqlite.prepare('SELECT count(*) AS total FROM finance_goal_plans').get()?.total); },
   };
 }
 const input = (patch: Record<string, unknown> = {}) => ({ ledger: 'personal', currency: 'CNY', name: 'Synthetic target', targetAmount: '1000', deadline: FUTURE, accountIds: [ids.zero], ...patch });
+
+test('account metadata HTTP edits require versions and stale or foreign edits cannot overwrite newer data',async(t)=>{
+  const f=await fixture(t);
+  assert.equal((await f.patchAccount(ids.zero,{name:'无版本'})).status,400);
+  const initial=(await (await f.getAccount(ids.zero)).json() as {account:{metadataRevision:number}}).account;
+  assert.equal(initial.metadataRevision,1);
+  const updated=await f.patchAccount(ids.zero,{name:'保留新名称',expectedRevision:initial.metadataRevision});assert.equal(updated.status,200);
+  const result=await updated.json() as {account:{name:string;metadataRevision:number;balanceRevision:number}};
+  assert.equal(result.account.metadataRevision,2);assert.equal(result.account.name,'保留新名称');
+  const stale=await f.patchAccount(ids.zero,{archived:true,expectedRevision:1});assert.equal(stale.status,409);assert.equal((await stale.json() as ApiError).code,'FINANCE_METADATA_CONFLICT');
+  assert.equal(f.sqlite.prepare('SELECT name FROM finance_accounts WHERE id=?').get(ids.zero)?.name,'保留新名称');
+  f.signIn('bob');assert.equal((await f.patchAccount(ids.zero,{name:'foreign',expectedRevision:2})).status,404);
+  assert.equal((await f.getAccount(ids.zero)).status,404);
+});
+
+test('goal HTTP versions protect edits and archive while GET returns the latest owner-scoped revision',async(t)=>{
+  const f=await fixture(t);const goal=(await readGoal(await f.post(input()))).goal;
+  assert.equal(goal.revision,1);
+  assert.equal((await f.patch(goal.id,{name:'无版本'})).status,400);
+  const changed=await f.patch(goal.id,{name:'较新目标',expectedRevision:1});assert.equal(changed.status,200);
+  assert.equal((await readGoal(changed)).goal.revision,2);
+  const stale=await f.patch(goal.id,{archived:true,expectedRevision:1});assert.equal(stale.status,409);assert.equal((await stale.json() as ApiError).code,'FINANCE_METADATA_CONFLICT');
+  const fresh=(await readGoal(await f.getGoal(goal.id))).goal;assert.equal(fresh.name,'较新目标');assert.equal(fresh.revision,2);assert.equal(fresh.archived,false);
+  f.signIn('bob');assert.equal((await f.getGoal(goal.id)).status,404);assert.equal((await f.patch(goal.id,{name:'foreign',expectedRevision:2})).status,404);
+});
 
 test('financial goal reads and writes require sign-in and same-origin submission', async (t) => {
   const f = await fixture(t); f.signIn(null);
@@ -127,7 +158,7 @@ test('same-key creation is idempotent, retains later edits and conflicts with ch
   const f = await fixture(t); const key = crypto.randomUUID(); const body = input();
   const firstResponse = await f.post(body, key); assert.equal(firstResponse.status, 201); const first = (await readGoal(firstResponse)).goal; assert.equal(first.id, key);
   const replay = await f.post(body, key); assert.equal(replay.status, 201); assert.equal((await readGoal(replay)).goal.id, key); assert.equal(f.count(), 1);
-  const edited = await f.patch(key, { name: 'Updated target', targetAmount: '2000' }); assert.equal(edited.status, 200);
+  const edited = await f.patch(key, { name: 'Updated target', targetAmount: '2000', expectedRevision: 1 }); assert.equal(edited.status, 200);
   const originalReplay = (await readGoal(await f.post(body, key))).goal; assert.equal(originalReplay.name, 'Updated target'); assert.equal(originalReplay.targetMinor, '200000'); assert.equal(f.count(), 1);
   const conflict = await f.post(input({ name: 'Different initial body' }), key); assert.equal(conflict.status, 409); assert.equal((await readError(conflict)).code, 'FINANCE_IDEMPOTENCY_CONFLICT');
   f.signIn('bob'); const foreign = await f.post(input({ accountIds: [ids.bob] }), key); assert.equal(foreign.status, 409); assert.equal((await f.patch(key, { name: 'unauthorized' })).status, 404); assert.equal((await readList(await f.get())).goals.length, 0);
@@ -140,7 +171,7 @@ test('linked accounts must belong to the owner, ledger and currency and be unarc
   }
   assert.equal(f.count(), 0);
   const goal = (await readGoal(await f.post(input()))).goal;
-  assert.equal((await f.patch(goal.id, { accountIds: [ids.loan] })).status, 400);
+  assert.equal((await f.patch(goal.id, { accountIds: [ids.loan], expectedRevision: goal.revision })).status, 400);
   assert.deepEqual((await readList(await f.get())).goals[0].accountIds, [ids.zero]);
 });
 
@@ -167,11 +198,11 @@ test('current amounts, gaps and monthly requirements retain exact minor units an
 test('editing preserves fixed ledger/currency and archive/restore keeps associations without moving funds', async (t) => {
   const f = await fixture(t); const goal = (await readGoal(await f.post(input()))).goal;
   for (const patch of [{ currency: 'USD' }, { ledger: 'family' }, { id: crypto.randomUUID() }, {}]) assert.equal((await f.patch(goal.id, patch)).status, 400);
-  const archived = await f.patch(goal.id, { archived: true }); assert.equal(archived.status, 200); assert.equal((await readGoal(archived)).goal.archived, true); assert.equal((await readList(await f.get())).goals.length, 0);
+  const archived = await f.patch(goal.id, { archived: true, expectedRevision: goal.revision }); assert.equal(archived.status, 200); assert.equal((await readGoal(archived)).goal.archived, true); assert.equal((await readList(await f.get())).goals.length, 0);
   assert.equal((await readList(await f.get('ledger=personal&currency=all&includeArchived=1'))).goals.length, 1);
-  assert.equal((await readGoal(await f.patch(goal.id, { archived: false }))).goal.archived, false);
-  await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { archived: true });
-  const updated = (await readGoal(await f.patch(goal.id, { name: 'Retained links' }))).goal; assert.equal(updated.name, 'Retained links'); assert.equal(updated.missingCount, 1); assert.equal(updated.currentMinor, '0');
+  assert.equal((await readGoal(await f.patch(goal.id, { archived: false, expectedRevision: goal.revision + 1 }))).goal.archived, false);
+  await financeStore.patchFinanceAccount(f.db, 'alice', ids.zero, { expectedRevision: 1, archived: true });
+  const updated = (await readGoal(await f.patch(goal.id, { name: 'Retained links', expectedRevision: goal.revision + 2 }))).goal; assert.equal(updated.name, 'Retained links'); assert.equal(updated.missingCount, 1); assert.equal(updated.archivedAccountCount, 1); assert.equal(updated.missingAccountCount, 0); assert.equal(updated.currentMinor, '0');
   assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM finance_balance_entries').get()?.total, 8, 'Goals must never create balance records or transfer funds');
 });
 
@@ -186,7 +217,7 @@ test('list filters and eligible account choices remain scoped to one owner and l
   await f.post(input());
   await f.post(input({ ledger: 'family', accountIds: [ids.family] }));
   await f.post(input({ currency: 'USD', accountIds: [ids.usd] }));
-  const archived = (await readGoal(await f.post(input({ name: 'Archived target' })))).goal; await f.patch(archived.id, { archived: true });
+  const archived = (await readGoal(await f.post(input({ name: 'Archived target' })))).goal; await f.patch(archived.id, { archived: true, expectedRevision: archived.revision });
   const personal = await readList(await f.get('ledger=personal&currency=CNY'));
   assert.equal(personal.goals.length, 1); assert.deepEqual(new Set(personal.accounts.map((account) => account.id)), new Set([ids.cny, ids.zero, ids.usd, ids.jpy]));
   assert.equal((await readList(await f.get('ledger=family&currency=all'))).goals.length, 1);
@@ -199,8 +230,8 @@ void test('goal lists show shared account and emergency references without reser
   const first = (await readGoal(await f.post(input({ name: 'First', accountIds: [ids.cny] })))).goal;
   const second = (await readGoal(await f.post(input({ name: 'Second', accountIds: [ids.cny] })))).goal;
   const archived = (await readGoal(await f.post(input({ name: 'Archived', accountIds: [ids.cny] })))).goal;
-  await f.patch(archived.id, { archived: true });
-  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.cny] });
+  await f.patch(archived.id, { archived: true, expectedRevision: archived.revision });
+  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.cny] }, 0);
   const listed = await readList(await f.get('ledger=personal&currency=CNY&includeArchived=1'));
   assert.equal(listed.sharing.accounts.length, 1);
   assert.deepEqual(new Set(listed.sharing.accounts[0].goals.map((goal) => goal.id)), new Set([first.id, second.id]));
@@ -211,7 +242,7 @@ void test('goal lists show shared account and emergency references without reser
   assert.deepEqual(listed.goals.find((goal) => goal.id === first.id)?.sharing?.otherGoals, [{ id: second.id, name: 'Second' }]);
   assert.equal(listed.goals.find((goal) => goal.id === first.id)?.currentMinor, '9007199254740993');
   assert.equal(f.sqlite.prepare('SELECT count(*) AS total FROM finance_balance_entries').get()?.total, 8);
-  await financeStore.patchFinanceAccount(f.db, 'alice', ids.cny, { archived: true });
+  await financeStore.patchFinanceAccount(f.db, 'alice', ids.cny, { archived: true, expectedRevision: 1 });
   assert.deepEqual((await readList(await f.get())).sharing.accounts, []);
   f.signIn('bob');
   assert.deepEqual((await readList(await f.get())).sharing.accounts, []);
@@ -221,10 +252,10 @@ void test('current decision summaries keep gaps and emergency coverage scoped by
   const f = await fixture(t);
   const live = (await readGoal(await f.post(input({ deadline: PAST })))).goal;
   const archived = (await readGoal(await f.post(input({ name: 'Archived' })))).goal;
-  await f.patch(archived.id, { archived: true });
+  await f.patch(archived.id, { archived: true, expectedRevision: archived.revision });
   await f.post(input({ ledger: 'family', accountIds: [ids.family] }));
   await f.post(input({ currency: 'USD', accountIds: [ids.usd] }));
-  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.zero] });
+  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '100000', targetMonths: 6, accountIds: [ids.zero] }, 0);
   const summary = await readFinanceDecisionSummary(f.db, 'alice', 'personal', 'CNY', TODAY);
   assert.equal(summary.basis, 'current'); assert.equal(summary.asOfDate, TODAY);
   assert.deepEqual(summary.goals, [{ id: live.id, name: live.name, status: 'overdue', gapMinor: '100000', monthlyMinor: null, deadline: PAST, percent: 0 }]);
@@ -234,4 +265,32 @@ void test('current decision summaries keep gaps and emergency coverage scoped by
   assert.equal(family.goals.length, 1); assert.equal(family.runway, null);
   const other = await readFinanceDecisionSummary(f.db, 'bob', 'personal', 'CNY', TODAY);
   assert.deepEqual(other.goals, []); assert.equal(other.runway, null); assert.deepEqual(other.sharing.accounts, []);
+});
+
+void test('shared progress and current decisions use corrected balances and reviewed liquidity without bypassing revisions', async (t) => {
+  const f = await fixture(t);
+  const first = (await readGoal(await f.post(input({ accountIds: [ids.cny] })))).goal;
+  await f.post(input({ name: 'Second', accountIds: [ids.cny] }));
+  const account = await financeStore.findFinanceAccount(f.db, 'alice', ids.cny);
+  assert.ok(account);
+  await balanceChanges.changeFinanceBalance(f.db, 'alice', ids.cny, 'initial:' + ids.cny, {
+    action: 'correct', expectedRevision: 0, expectedAccountRevision: account.balanceRevision,
+    amountMinor: '80000', asOfDate: TODAY, note: '', reason: 'Correct original balance before reviewing savings',
+  }, crypto.randomUUID());
+  await financeStore.patchFinanceAccount(f.db, 'alice', ids.cny, { expectedRevision: account.metadataRevision, liquidityKind: 'restricted', usableBps: 2500 });
+  await runwayStore.writeFinanceRunwaySettings(f.db, 'alice', 'personal', 'CNY', { monthlyExpenseMinor: '10000', targetMonths: 6, accountIds: [ids.cny] }, 0);
+  const listed = await readList(await f.get('ledger=personal&currency=CNY'));
+  const goal = listed.goals.find((item) => item.id === first.id)!;
+  assert.equal(goal.currentMinor, '80000'); assert.equal(goal.gapMinor, '20000');
+  assert.equal(goal.revision, first.revision, 'balance corrections never silently change target metadata revision');
+  assert.equal(goal.sharing?.sharedBalanceMinor, '80000');
+  assert.equal(goal.sharing?.accounts[0].runwayUsableMinor, '20000');
+  const summary = await readFinanceDecisionSummary(f.db, 'alice', 'personal', 'CNY', TODAY);
+  assert.equal(summary.goals[0].gapMinor, '20000');
+  assert.equal(summary.runway?.nominalMinor, '80000'); assert.equal(summary.runway?.currentMinor, '20000');
+  assert.equal(summary.runway?.gapMinor, '40000'); assert.equal(summary.runway?.runwayMonths, '2.00');
+  await financeStore.patchFinanceAccount(f.db, 'alice', ids.cny, { expectedRevision: account.metadataRevision + 1, archived: true });
+  const archived = await readList(await f.get('ledger=personal&currency=CNY'));
+  assert.equal(archived.goals[0].archivedAccountCount, 1);
+  assert.deepEqual(archived.sharing.accounts, []);
 });

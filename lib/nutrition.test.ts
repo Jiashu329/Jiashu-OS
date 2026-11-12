@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNutritionQuickEntry, buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionMealCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId } from './nutrition.ts';
+import { buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId, parseNutritionBatch, parseNutritionStatus } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
+import { searchFoods, calculateFoodSelection } from './food-catalog.ts';
 
 const NOW = new Date('2026-11-10T08:00:00Z');
 function input(patch: Record<string, unknown> = {}) {
@@ -28,6 +29,34 @@ void test('calorie input rejects coercion, scientific notation, extra decimals, 
     '100kcal', '1,234.5', '1\n', '\t1', '0'.repeat(129)]) {
     assert.throws(() => parseNutritionCreate(input({ calories }), NOW), NutritionValidationError);
   }
+});
+
+void test('macronutrient grams preserve exact tenths, unknowns and zero without changing legacy inputs', () => {
+  const parsed = parseNutritionCreate(input({ carbs: '0012.3', protein: '0', fat: ' 4.5 ' }), NOW);
+  assert.equal(parsed.carbsTenth, 123); assert.equal(parsed.proteinTenth, 0); assert.equal(parsed.fatTenth, 45);
+  assert.equal(Object.hasOwn(parseNutritionCreate(input(), NOW), 'carbsTenth'), false);
+  for (const key of ['carbs', 'protein', 'fat'] as const) {
+    for (const value of [undefined, null, '', '  ']) assert.equal(parseNutritionCreate(input({ [key]: value }), NOW)[`${key}Tenth`], null);
+    assert.equal(parseNutritionCreate(input({ [key]: '20000.0' }), NOW)[`${key}Tenth`], 200000);
+    for (const value of [0, true, [], {}, '-1', '+1', '1e2', 'NaN', 'Infinity', '1.00', '20000.1', '10g', '1,234', '1\n']) {
+      assert.throws(() => parseNutritionCreate(input({ [key]: value }), NOW), NutritionValidationError, key + ': ' + String(value));
+    }
+  }
+  const view = presentNutritionEntry(entry({ carbsTenth: 123, proteinTenth: 0, fatTenth: null }));
+  assert.equal(view.carbs, '12.3'); assert.equal(view.protein, '0.0'); assert.equal(view.fat, null);
+  assert.equal(presentNutritionEntry(entry()).carbs, null);
+});
+
+void test('macro edits and batches accept complete nutrient values while preserving legacy edit compatibility', () => {
+  const patch = parseNutritionPatch({ ...input({ carbs: '20.1', protein: '10', fat: null }), expectedRevision: 1 }, NOW);
+  assert.equal(patch.kind, 'edit');
+  if (patch.kind === 'edit') {
+    assert.equal(patch.input.carbsTenth, 201); assert.equal(patch.input.proteinTenth, 100); assert.equal(patch.input.fatTenth, null);
+  }
+  const batch = parseNutritionBatch({ entries: [input({ carbs: '0' }), input({ protein: '12.4' })] }, NOW);
+  assert.equal(batch[0].carbsTenth, 0); assert.equal(batch[1].proteinTenth, 124);
+  assert.throws(() => parseNutritionBatch({ entries: [input(), input({ fat: '-1' })] }, NOW), NutritionValidationError);
+  assert.throws(() => parseNutritionPatch({ deleted: true, expectedRevision: 1, carbs: '10' }, NOW), NutritionValidationError);
 });
 
 void test('food descriptions and dates validate against strict limits, supported meals and the current Shanghai day', () => {
@@ -82,7 +111,9 @@ void test('active summaries preserve null, zero and exact decimals and include m
   assert.equal(mixed.entryCount, 3);
   assert.equal(mixed.knownCount, 2);
   assert.equal(mixed.unknownCount, 1);
-  assert.deepEqual(mixed.meals[0], { meal: 'breakfast', label: '早餐', entryCount: 2, knownCount: 2, unknownCount: 0, knownCalories: '0.3' });
+  const { nutrients: breakfastNutrients, ...breakfast } = mixed.meals[0];
+  assert.deepEqual(breakfast, { meal: 'breakfast', label: '早餐', entryCount: 2, knownCount: 2, unknownCount: 0, knownCalories: '0.3' });
+  assert.deepEqual(breakfastNutrients.calories, {total:'0.3',knownCount:2,unknownCount:0});
   assert.equal(mixed.meals[1].unknownCount, 1);
   assert.equal(mixed.meals[2].entryCount, 0);
   assert.equal(mixed.meals[3].knownCalories, null);
@@ -145,44 +176,39 @@ void test('the first supported days clamp both the recent range and visible card
   }
 });
 
-void test('quick suggestions preserve distinct portions and unknown calories, ignore deleted and future rows, and rank repeated observations', () => {
-  const rows = [
-    entry({ id: 'older-oats', date: '2026-10-20', name: '燕麦', portion: '一碗', caloriesTenth: 2000 }),
-    entry({ id: 'recent-oats', date: '2026-11-09', name: '燕麦', portion: '一碗', caloriesTenth: 2000, meal: 'lunch' }),
-    entry({ id: 'different-portion', date: '2026-11-10', name: '燕麦', portion: '半碗', caloriesTenth: 1000 }),
-    entry({ id: 'unknown', date: '2026-11-09', name: '未知热量', caloriesTenth: null }),
-    entry({ id: 'zero', date: '2026-11-09', name: '零热量', caloriesTenth: 0 }),
-    entry({ id: 'deleted', date: '2026-11-09', name: '已删除', deletedAt: '2026-11-09T01:00:00Z' }),
-    entry({ id: 'future', date: '2026-11-11', name: '未来食物' }),
-    entry({ id: 'too-old', date: '2026-10-11', name: '过早食物' }),
-  ];
-  const quick = buildNutritionQuickEntry(rows, '2026-11-10');
-  assert.equal(quick.from, '2026-10-12'); assert.equal(quick.previousDate, '2026-11-09');
-  assert.equal(quick.recent[0].id, 'different-portion');
-  assert.equal(quick.frequent.length, 1); assert.equal(quick.frequent[0].id, 'recent-oats'); assert.equal(quick.frequent[0].uses, 2);
-  assert.equal(quick.recent.find((row) => row.id === 'unknown')?.calories, null);
-  assert.equal(quick.recent.find((row) => row.id === 'zero')?.calories, '0.0');
-  assert.deepEqual(quick.previousMeals.find((meal) => meal.meal === 'lunch')?.entries.map((row) => row.id), ['recent-oats']);
-  assert.equal(quick.previousMeals.reduce((sum, meal) => sum + meal.entries.length, 0), 3);
-  assert.ok(quick.recent.every((row) => !['deleted', 'future', 'too-old'].includes(row.id)));
-  const historical = buildNutritionQuickEntry(rows, '2026-11-09');
-  assert.ok(historical.recent.every((row) => row.date <= '2026-11-09'));
-  assert.equal(buildNutritionQuickEntry([], '1970-01-01').previousDate, null);
+void test('batch validation bounds the entire submission and rejects any invalid item before persistence', () => {
+  assert.equal(parseNutritionBatch({ entries: [input(), input({ calories: null })] }, NOW).length, 2);
+  for (const body of [{ entries: [] }, { entries: Array.from({ length: 31 }, () => input()) }, { entries: [input(), input({ date: '2026-02-30' })] }, { entries: [input()], userId: 'foreign' }]) assert.throws(() => parseNutritionBatch(body, NOW), NutritionValidationError);
+});
+void test('completion requires explicit meal states and never treats an unrecorded main meal as skipped', () => {
+  const status = { date: '2026-11-10', complete: true, expectedRevision: 0, meals: { breakfast: 'recorded', lunch: 'skipped', dinner: 'recorded', snack: 'unrecorded' } };
+  assert.equal(parseNutritionStatus(status, NOW).complete, true);
+  for (const body of [{ ...status, expectedRevision: -1 }, { ...status, complete: 'true' }, { ...status, meals: { ...status.meals, dinner: 'unrecorded' } }, { ...status, date: '2026-11-11' }, { ...status, meals: { ...status.meals, water: 'recorded' } }]) assert.throws(() => parseNutritionStatus(body, NOW), NutritionValidationError);
 });
 
-void test('whole-meal snapshots validate all rows and apply only the chosen target date and meal', () => {
-  const parsed = parseNutritionMealCreate({ date: '2026-11-10', meal: 'lunch', entries: [
-    { name: ' 饭 ', portion: ' 一碗 ', calories: '000.0', note: '' }, { name: '菜', calories: null },
-  ] }, NOW);
-  assert.equal(parsed.entries.length, 2); assert.ok(parsed.entries.every((row) => row.date === parsed.date && row.meal === parsed.meal));
-  assert.equal(parsed.entries[0].caloriesTenth, 0); assert.equal(parsed.entries[1].caloriesTenth, null);
-  for (const body of [
-    { date: '2026-11-11', meal: 'lunch', entries: [{ name: '饭' }] },
-    { date: '2026-11-10', meal: 'other', entries: [{ name: '饭' }] },
-    { date: '2026-11-10', meal: 'lunch', entries: [] },
-    { date: '2026-11-10', meal: 'lunch', entries: Array.from({ length: 41 }, () => ({ name: '饭' })) },
-    { date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭', date: '2026-11-09' }] },
-    { date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭', owner: 'bob' }] },
-  ]) assert.throws(() => parseNutritionMealCreate(body, NOW), NutritionValidationError);
-  assert.throws(() => parseNutritionMealCreate({ date: '2026-11-10', meal: 'lunch', entries: [{ name: '饭' }, { name: '', calories: '1' }] }, NOW), (error: unknown) => error instanceof NutritionValidationError && error.issues[0].path === 'entries[1].name');
+void test('catalog-backed input always recalculates food identity, portion and calories from the source record', () => {
+  const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0]; assert.ok(food);
+  const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
+  const expected = calculateFoodSelection(selection);
+  const parsed = parseNutritionCreate(input({ name: 'forged name', portion: 'forged portion', calories: '0', food: selection }), NOW);
+  assert.equal(parsed.name, food.name); assert.equal(parsed.portion, '150g'); assert.equal(parsed.caloriesTenth, expected.caloriesTenth);
+  assert.deepEqual(parsed.food, expected);
+  assert.throws(() => parseNutritionCreate(input({ food: { ...selection, caloriesTenth: 0 } }), NOW), NutritionValidationError);
+  assert.throws(() => parseNutritionCreate(input({ food: { ...selection, id: 'missing-source-record' } }), NOW), NutritionValidationError);
+  assert.equal(Object.hasOwn(parseNutritionCreate(input({ food: null }), NOW), 'food'), false);
+});
+
+void test('explicit macro values override catalog totals while empty fields use the known serving calculation', () => {
+  const food = searchFoods('米饭', 1)[0];
+  const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
+  const snapshot = calculateFoodSelection(selection);
+  const defaults = parseNutritionCreate(input({ food: selection, carbs: null, protein: '', fat: undefined }), NOW);
+  assert.equal(defaults.carbsTenth, snapshot.carbsTenth ?? null);
+  assert.equal(defaults.proteinTenth, snapshot.proteinTenth ?? null);
+  assert.equal(defaults.fatTenth, snapshot.fatTenth ?? null);
+  const corrected = parseNutritionCreate(input({ food: selection, carbs: '0', protein: '10.1', fat: '2.5' }), NOW);
+  assert.equal(corrected.carbsTenth, 0); assert.equal(corrected.proteinTenth, 101); assert.equal(corrected.fatTenth, 25);
+  assert.deepEqual(corrected.food, snapshot, 'Overrides must not rewrite source-derived provenance');
+  const legacy = parseNutritionCreate(input({ food: selection }), NOW);
+  assert.equal(Object.hasOwn(legacy, 'carbsTenth'), false, 'Old pending requests must keep their fingerprint');
 });

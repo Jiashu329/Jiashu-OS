@@ -1,6 +1,7 @@
 import { buildHealthSummary, shanghaiDay } from './health.ts';
 import type { HealthMeasurement } from './health.ts';
 import type { GoalSettings } from './health-goals.ts';
+import { goalTargetsForDay } from './health-goals.ts';
 import { summarizeNutrition } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
 import { buildWeightPlanReview } from './weight-plan.ts';
@@ -21,7 +22,7 @@ export interface HealthWeekSelection {
   isCurrent: boolean;
   partial: boolean;
 }
-export interface WeeklyPoint { day: string; value: number | null }
+export interface WeeklyPoint { day: string; value: number | null; target?: number | null; targetEffectiveFrom?: string | null }
 export interface WeeklyMetricReview {
   metric: WeeklyMetric;
   label: string;
@@ -36,6 +37,8 @@ export interface WeeklyMetricReview {
   target: number | null;
   currentAchievedDays: number | null;
   previousAchievedDays: number | null;
+  targetBasis?: 'daily';
+  targetsInPeriod?: Array<{ day: string; target: number | null; effectiveFrom: string | null }>;
 }
 export interface HealthWeeklyReview extends HealthWeekSelection {
   targetsUpdatedAt: string | null;
@@ -43,6 +46,7 @@ export interface HealthWeeklyReview extends HealthWeekSelection {
   nutrition: { current: WeeklyNutritionPeriod; previous: WeeklyNutritionPeriod };
   weightPlan: { asOfDay: string; usesCurrentSettings: true; review: WeightPlanReview };
   actions: { previous: WeeklyAction | null; current: WeeklyAction | null; next: WeeklyAction | null };
+  supplementalStatus: { nutrition: 'ready' | 'unavailable'; weightPlan: 'ready' | 'unavailable'; actions: 'ready' | 'unavailable' };
 }
 export interface WeeklyNutritionPeriod {
   recordedDays: number;
@@ -56,6 +60,7 @@ export interface WeeklyReviewContext {
   nutrition?: readonly NutritionEntry[];
   weightPlan?: WeightPlanSettings | null;
   actions?: HealthWeeklyReview['actions'];
+  supplementalStatus?: HealthWeeklyReview['supplementalStatus'];
 }
 
 export class HealthWeekValidationError extends Error {
@@ -117,7 +122,8 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
     const values = new Map(summary.metrics[metric].points.map((point) => [point.day, point.value]));
     const points = (start: string): WeeklyPoint[] => Array.from({ length: selection.comparisonDays }, (_, index) => {
       const day = shiftDay(start, index);
-      return { day, value: values.get(day) ?? null };
+      const goal = goalTargetsForDay(settings,day);
+      return { day, value: values.get(day) ?? null, ...(metric==='weight'?{}:{target:goal.targets[metric],targetEffectiveFrom:goal.effectiveFrom}) };
     });
     const currentPoints = points(selection.weekStart);
     const previousPoints = points(selection.previousStart);
@@ -132,8 +138,9 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
       metric, label: labels[metric], unit: units[metric], currentAverage, previousAverage,
       delta: currentAverage === null || previousAverage === null ? null : currentAverage - previousAverage,
       currentRecordedDays: current.length, previousRecordedDays: previous.length, currentPoints, previousPoints, target,
-      currentAchievedDays: target === null ? null : current.filter((point) => point.value >= target).length,
-      previousAchievedDays: target === null ? null : previous.filter((point) => point.value >= target).length,
+      currentAchievedDays: metric==='weight'||currentPoints.every((point)=>point.target===null) ? null : current.filter((point) => point.target!==null&&point.target!==undefined&&point.value >= point.target).length,
+      previousAchievedDays: metric==='weight'||previousPoints.every((point)=>point.target===null) ? null : previous.filter((point) => point.target!==null&&point.target!==undefined&&point.value >= point.target).length,
+      ...(metric==='weight'?{}:{targetBasis:'daily',targetsInPeriod:currentPoints.map((point)=>({day:point.day,target:point.target??null,effectiveFrom:point.targetEffectiveFrom??null}))}),
     };
   });
   const nutritionPeriod = (from: string, to: string): WeeklyNutritionPeriod => {
@@ -155,5 +162,6 @@ export function buildHealthWeeklyReview(measurements: readonly HealthMeasurement
     nutrition: { current: nutritionPeriod(selection.weekStart, selection.cutoffDay), previous: nutritionPeriod(selection.previousStart, selection.previousCutoffDay) },
     weightPlan: { asOfDay: selection.cutoffDay, usesCurrentSettings: true, review: buildWeightPlanReview(plan, measurements, asOf) },
     actions: context.actions ?? { previous: null, current: null, next: null },
+    supplementalStatus: context.supplementalStatus ?? { nutrition: 'ready', weightPlan: 'ready', actions: 'ready' },
   };
 }

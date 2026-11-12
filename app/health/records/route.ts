@@ -13,6 +13,7 @@ export async function GET(request: Request) {
   const metric = source.get('metric');
   if (metric && ['steps', 'sleep', 'active_energy', 'weight', 'lean_body_mass'].includes(metric)) query.set('metric', metric);
   if (source.get('includeDeleted') === '1') query.set('includeDeleted', '1');
+  if (source.get('compose') === '1') query.set('compose', '1');
   const suffix = query.size ? '?' + query : '';
   const user = await requireChatGPTUser('/health/records' + suffix);
   return new Response(renderHealthRecordsPage(user.userId), { headers: {

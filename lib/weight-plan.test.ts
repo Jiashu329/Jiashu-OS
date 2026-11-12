@@ -130,3 +130,23 @@ void test('settings require finite supported weights, full explicit fields and v
   ]) assert.throws(() => parseWeightPlanInput(input(patch), NOW), WeightPlanValidationError);
   for (const raw of [null, [], {}, { baselineWeight: 80, targetWeight: 70 }]) assert.throws(() => parseWeightPlanInput(raw, NOW), WeightPlanValidationError);
 });
+
+void test('7/30-day rates expose actual anchor span and require two observed dates',()=>{
+  const data=buildWeightPlanReview(settings(),[
+    weight('first','2026-10-13T07:00:00+08:00',80),weight('month','2026-10-14T07:00:00+08:00',79),
+    weight('week','2026-11-05T07:00:00+08:00',75),weight('last','2026-11-11T07:00:00+08:00',72),
+  ],NOW);
+  assert.deepEqual(data.observations.rate7,{from:'2026-11-05',to:'2026-11-11',recordedDays:2,daysBetween:6,changeKg:-3,kgPerWeek:-3.5});
+  assert.equal(data.observations.rate30.from,'2026-10-13');assert.equal(data.observations.rate30.daysBetween,29);
+  const single=buildWeightPlanReview(null,[weight('only','2026-11-11T07:00:00+08:00',72)],NOW).observations.rate7;
+  assert.equal(single.changeKg,null);assert.equal(single.kgPerWeek,null);assert.equal(single.recordedDays,1);
+});
+
+void test('sustained achievement requires seven consecutive real dates inside this cycle',()=>{
+  const points=Array.from({length:7},(_,index)=>weight('day'+index,`2026-11-${String(index+5).padStart(2,'0')}T07:00:00+08:00`,69));
+  assert.equal(buildWeightPlanReview(settings(),points,NOW).progress?.sustained.achieved,true);
+  const missing=buildWeightPlanReview(settings(),points.slice(1),NOW).progress?.sustained;
+  assert.equal(missing?.achieved,false);assert.equal(missing?.recordedDays,6);
+  assert.equal(buildWeightPlanReview(settings({startDate:'2026-11-10'}),points,NOW).progress?.sustained.achieved,false);
+  assert.equal(buildWeightPlanReview(settings({baselineWeight:70,targetWeight:70}),points,NOW).progress?.sustained.achieved,false);
+});

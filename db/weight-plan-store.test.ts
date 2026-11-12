@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { readWeightPlanSettings, writeWeightPlanSettings } from './weight-plan-store.ts';
+import { readWeightPlanSettings, WeightPlanConflictError, writeWeightPlanSettings } from './weight-plan-store.ts';
 import type { WeightPlanDatabase } from './weight-plan-store.ts';
 import type { WeightPlanInput } from '../lib/weight-plan.ts';
 
@@ -37,11 +37,11 @@ void test('reading a new owner returns no plan and persists no inferred default 
 
 void test('complete replacement stores fractional weights, keeps creation time and preserves disabled settings for re-enabling', async (t) => {
   const { sqlite, db } = fixture(t);
-  assert.deepEqual(await writeWeightPlanSettings(db, 'alice', initial, NOW), { ...initial, createdAt: NOW, updatedAt: NOW });
+  assert.deepEqual(await writeWeightPlanSettings(db, 'alice', initial, 0, NOW), { ...initial, createdAt: NOW, updatedAt: NOW, revision:1 });
   const replaced = { ...initial, baselineWeight: 60.75, targetWeight: 65.25, enabled: false };
-  assert.deepEqual(await writeWeightPlanSettings(db, 'alice', replaced, LATER), { ...replaced, createdAt: NOW, updatedAt: LATER });
-  assert.deepEqual(await readWeightPlanSettings(db, 'alice'), { ...replaced, createdAt: NOW, updatedAt: LATER });
-  const resumed = await writeWeightPlanSettings(db, 'alice', { ...replaced, enabled: true }, LATER);
+  assert.deepEqual(await writeWeightPlanSettings(db, 'alice', replaced, 1, LATER), { ...replaced, createdAt: NOW, updatedAt: LATER, revision:2 });
+  assert.deepEqual(await readWeightPlanSettings(db, 'alice'), { ...replaced, createdAt: NOW, updatedAt: LATER, revision:2 });
+  const resumed = await writeWeightPlanSettings(db, 'alice', { ...replaced, enabled: true }, 2, LATER);
   assert.equal(resumed.enabled, true);
   assert.equal(resumed.targetWeight, 65.25);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS total FROM health_weight_plan_settings').get()!.total, 1);
@@ -49,9 +49,9 @@ void test('complete replacement stores fractional weights, keeps creation time a
 
 void test('each owner keeps an independent plan and bound lookups cannot escape the owner filter', async (t) => {
   const { db } = fixture(t);
-  await writeWeightPlanSettings(db, 'alice', initial, NOW);
-  await writeWeightPlanSettings(db, 'bob', { ...initial, baselineWeight: 60, targetWeight: 60 }, NOW);
-  await writeWeightPlanSettings(db, 'alice', { ...initial, enabled: false }, LATER);
+  await writeWeightPlanSettings(db, 'alice', initial, 0, NOW);
+  await writeWeightPlanSettings(db, 'bob', { ...initial, baselineWeight: 60, targetWeight: 60 }, 0, NOW);
+  await writeWeightPlanSettings(db, 'alice', { ...initial, enabled: false }, 1, LATER);
   assert.equal((await readWeightPlanSettings(db, 'bob'))!.enabled, true);
   assert.equal((await readWeightPlanSettings(db, 'bob'))!.targetWeight, 60);
   assert.equal(await readWeightPlanSettings(db, "alice' OR 1=1 --"), null);
@@ -59,8 +59,10 @@ void test('each owner keeps an independent plan and bound lookups cannot escape 
 
 void test('a failed complete replacement leaves the previous plan intact', async (t) => {
   const { sqlite, db } = fixture(t);
-  const saved = await writeWeightPlanSettings(db, 'alice', initial, NOW);
+  const saved = await writeWeightPlanSettings(db, 'alice', initial, 0, NOW);
   sqlite.exec("CREATE TRIGGER reject_weight_plan BEFORE UPDATE ON health_weight_plan_settings BEGIN SELECT RAISE(ABORT, 'simulated replacement failure'); END;");
-  await assert.rejects(writeWeightPlanSettings(db, 'alice', { ...initial, enabled: false }, LATER), /simulated replacement failure/);
+  await assert.rejects(writeWeightPlanSettings(db, 'alice', { ...initial, enabled: false }, 1, LATER), /simulated replacement failure/);
   assert.deepEqual(await readWeightPlanSettings(db, 'alice'), saved);
 });
+
+void test('a stale plan replacement returns conflict and retains the newer plan',async(t)=>{const f=fixture(t);await writeWeightPlanSettings(f.db,'alice',initial,0,NOW);await writeWeightPlanSettings(f.db,'alice',{...initial,targetWeight:65},1,LATER);await assert.rejects(writeWeightPlanSettings(f.db,'alice',{...initial,targetWeight:60},1,LATER),WeightPlanConflictError);assert.equal((await readWeightPlanSettings(f.db,'alice'))?.targetWeight,65);});

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
-import { readGoalSettings, writeGoalSettings } from '../../../../db/health-goals-store';
-import { GoalValidationError, parseGoalSettingsInput } from '../../../../lib/health-goals';
+import { HealthGoalConflictError, readGoalSettings, writeGoalSettings } from '../../../../db/health-goals-store';
+import { GoalValidationError, parseGoalUpdateInput } from '../../../../lib/health-goals';
 import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated, unavailable } from '../../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -49,9 +49,10 @@ export async function PUT(request: Request) {
     return json({ error: '请通过网站提交 JSON 格式的健康目标。' }, 415);
   }
   try {
-    const targets = parseGoalSettingsInput(await readBody(request));
-    return json(await writeGoalSettings(database(), user.userId, targets));
+    const input = parseGoalUpdateInput(await readBody(request));
+    return json(await writeGoalSettings(database(), user.userId, input.targets, input.expectedRevision, input.effectiveFrom));
   } catch (error) {
+    if (error instanceof HealthGoalConflictError) return json({ error:error.message,code:error.code },409);
     if (error instanceof GoalValidationError) return json({ error: '请检查健康目标。', code: error.code, issues: error.issues }, 400);
     if (error instanceof SyntaxError) return json({ error: '目标设置格式不正确，请重试。', code: 'INVALID_HEALTH_GOALS' }, 400);
     if (error instanceof RangeError) return json({ error: '目标设置不能超过 2 KB。', code: 'HEALTH_GOALS_TOO_LARGE' }, 413);
