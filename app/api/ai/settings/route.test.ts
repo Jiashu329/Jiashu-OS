@@ -7,6 +7,7 @@ import test, { type TestContext } from 'node:test';
 import * as settingsRules from '../../../../lib/ai-settings.ts';
 import * as settingsCrypto from '../../../../lib/ai-settings-crypto.ts';
 import * as settingsStore from '../../../../db/ai-settings-store.ts';
+import * as siteSettingsStore from '../../../../db/site-ai-settings-store.ts';
 import * as usageStore from '../../../../db/ai-usage-store.ts';
 import * as provider from '../../../../lib/ai-provider.ts';
 
@@ -36,6 +37,8 @@ interface SettingsResponse {
   settings: settingsStore.AISettingsMetadata;
   storageReady: boolean;
   message: string;
+  scope: 'site';
+  canManage: boolean;
 }
 interface ErrorResponse { error: string; code: string }
 const data = async (response: Response) => await response.json() as SettingsResponse;
@@ -67,10 +70,11 @@ async function fixture(t: TestContext) {
       return bound;
     },
   } as unknown as D1Database;
-  const env: { DB?: D1Database; AI_SETTINGS_ENCRYPTION_KEY?: string; MINIMAX_API_KEY?: string } = {
-    DB: db, AI_SETTINGS_ENCRYPTION_KEY: MASTER, MINIMAX_API_KEY: 'synthetic-global-key-must-not-be-used',
+  const env: { DB?: D1Database; APP_OWNER_USER_ID?: string; AI_SETTINGS_ENCRYPTION_KEY?: string; MINIMAX_API_KEY?: string } = {
+    DB: db, APP_OWNER_USER_ID: 'alice', AI_SETTINGS_ENCRYPTION_KEY: MASTER, MINIMAX_API_KEY: 'synthetic-global-key-must-not-be-used',
   };
   let owner: string | null = 'alice';
+  let ownerRole = true;
   let providerStatus = 200;
   let providerPayload: unknown;
   let providerHeaders: HeadersInit | undefined;
@@ -86,7 +90,8 @@ async function fixture(t: TestContext) {
     await providerHook?.();
     if (providerError) throw providerError;
     return provider.callHealthAssistant(configuration, input, { fetch: async (url, options) => {
-      outgoing.push({ url: String(url), authorization: new Headers(options?.headers).get('Authorization'), body: JSON.parse(String(options?.body)) as Record<string, unknown> });
+      if (typeof options?.body !== 'string') throw new Error('Expected a synthetic JSON provider request');
+      outgoing.push({ url: typeof url === 'string' ? url : url instanceof Request ? url.url : url.href, authorization: new Headers(options.headers).get('Authorization'), body: JSON.parse(options.body) as Record<string, unknown> });
       return Response.json(providerPayload ?? (providerStatus === 200
         ? { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: PROVIDER_TEXT } }] }
         : { error: { message: KEY_A + ':' + PROVIDER_TEXT } }), { status: providerStatus, headers: providerHeaders });
@@ -97,8 +102,8 @@ async function fixture(t: TestContext) {
     await quotaHook?.();
     return result;
   };
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
-  const bindings = { ...shared, ...settingsRules, ...settingsCrypto, ...settingsStore, ...usageStore, ...provider, callHealthAssistant, consumeAIQuota, env, Date: RequestDate };
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner, isOwner: ownerRole } : null });
+  const bindings = { ...shared, ...settingsRules, ...settingsCrypto, ...settingsStore, ...siteSettingsStore, ...usageStore, ...provider, callHealthAssistant, consumeAIQuota, env, Date: RequestDate };
   const settingsShared = loadExports(new URL('./_shared.ts', import.meta.url), bindings);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...bindings, ...settingsShared }) as {
     GET(): Promise<Response>; PUT(request: Request): Promise<Response>; DELETE(request: Request): Promise<Response>;
@@ -109,12 +114,12 @@ async function fixture(t: TestContext) {
     if (options.contentType !== null) headers.set('Content-Type', options.contentType ?? 'application/json');
     if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
     return new Request(ORIGIN + '/api/ai/settings' + (method === 'POST' ? '/test' : ''), {
-      method, headers, ...(body === undefined ? {} : { body: options.raw ? String(body) : JSON.stringify(body) }),
+      method, headers, ...(body === undefined ? {} : { body: options.raw && typeof body === 'string' ? body : JSON.stringify(body) }),
     });
   }
   return {
     sqlite, db, env, queries, calls, outgoing,
-    signIn(userId: string | null) { owner = userId; },
+    signIn(userId: string | null, isOwner = userId === 'alice') { owner = userId; ownerRole = isOwner; },
     read() { return route.GET(); },
     save(body: unknown, options: Parameters<typeof request>[2] = {}) { return route.PUT(request('PUT', body, options)); },
     clear(body: unknown, options: Parameters<typeof request>[2] = {}) { return route.DELETE(request('DELETE', body, options)); },
@@ -124,7 +129,7 @@ async function fixture(t: TestContext) {
     beforeProvider(action: () => Promise<void>) { providerHook = action; },
     afterQuota(action: () => Promise<void>) { quotaHook = action; },
     failStorage(error: Error | null) { storageError = error; },
-    async resolve(userId = owner!) { return settingsStore.resolveUserAIConfiguration(db, userId, env.AI_SETTINGS_ENCRYPTION_KEY); },
+    async resolve() { return siteSettingsStore.resolveSiteAIConfiguration(db, env); },
   };
 }
 
@@ -137,7 +142,7 @@ void test('settings endpoints require authentication and same-origin JSON before
     assert.equal(response.status, 401); assert.equal(response.headers.get('Cache-Control'), 'no-store');
   }
   assert.deepEqual(f.queries, []); assert.deepEqual(f.calls, []); f.signIn('alice');
-  for (const mutate of [f.save, f.clear, f.testConnection]) {
+  for (const mutate of [f.save.bind(f), f.clear.bind(f), f.testConnection.bind(f)]) {
     assert.equal((await mutate(input(), { origin: 'https://foreign.example' })).status, 403);
     assert.equal((await mutate(input(), { origin: null })).status, 403);
     assert.equal((await mutate(input(), { contentType: 'text/plain' })).status, 415);
@@ -163,6 +168,7 @@ void test('strict settings bodies and explicit test consent fail before any SQL 
 void test('saving and GET expose metadata only while the real database contains encrypted credentials', async (t) => {
   const f = await fixture(t); const empty = await data(await f.read());
   assert.equal(empty.settings.configured, false); assert.equal(empty.settings.revision, 0); assert.equal(empty.storageReady, true);
+  assert.equal(empty.scope, 'site');assert.equal(empty.canManage, true);
   const savedResponse = await f.save(input()); assert.equal(savedResponse.status, 200);
   const saved = await data(savedResponse); assert.equal(saved.settings.configured, true); assert.equal(saved.settings.revision, 1); assert.equal(saved.settings.lastTestStatus, null);
   const row = f.sqlite.prepare('SELECT * FROM ai_user_settings WHERE user_id=?').get('alice')!;
@@ -191,18 +197,23 @@ void test('blank keys preserve the saved secret while changed model and region a
   const fresh = await fixture(t); assert.equal((await fresh.save(input({ apiKey: '' }))).status, 400); assert.equal((await fresh.resolve()).ready, false);
 });
 
-void test('encrypted settings and test connections stay isolated to the authenticated user', async (t) => {
-  const f = await fixture(t); await f.save(input()); f.signIn('bob');
-  assert.equal((await data(await f.read())).settings.configured, false);
-  assert.equal((await f.resolve()).ready, false);
-  assert.equal((await f.testConnection(consent(0))).status, 400); assert.equal(f.calls.length, 0);
-  assert.equal((await f.save(input({ apiKey: KEY_B, region: 'global' }))).status, 200);
-  assert.equal((await f.testConnection(consent(1))).status, 200);
-  assert.equal(f.outgoing[0].authorization, 'Bearer ' + KEY_B);
-  f.signIn('alice'); assert.equal((await data(await f.read())).settings.region, 'cn');
-  assert.equal((await f.testConnection(consent(1))).status, 200); assert.equal(f.outgoing[1].authorization, 'Bearer ' + KEY_A);
-  assert.equal((await f.clear({ expectedRevision: 1 })).status, 200); assert.equal((await f.resolve()).ready, false);
-  f.signIn('bob'); assert.equal((await f.resolve()).ready, true); assert.equal((await data(await f.read())).settings.configured, true);
+void test('members see shared metadata but cannot mutate or test, while personal keys and environment keys never become fallbacks', async (t) => {
+  const f = await fixture(t); await f.save(input());
+  await settingsStore.saveAISettings(f.db, 'bob', settingsRules.parseAISettingsSave(input({ apiKey: KEY_B, region: 'global' })), MASTER);
+  f.signIn('bob');const member = await data(await f.read());
+  assert.equal(member.settings.configured, true);assert.equal(member.settings.region, 'cn');assert.equal(member.scope, 'site');assert.equal(member.canManage, false);
+  assert.equal((await f.resolve()).ready, true);
+  const before = f.queries.length;
+  for (const response of [await f.save(input({ apiKey: KEY_B, region: 'global' })), await f.clear({ expectedRevision: 1 }), await f.testConnection(consent(1))]) {
+    assert.equal(response.status, 403);assert.equal((await failure(response)).code, 'AI_SETTINGS_OWNER_REQUIRED');
+  }
+  assert.equal(f.queries.length, before);assert.equal(f.calls.length, 0);assert.equal(f.sqlite.prepare('SELECT day_count FROM ai_usage_limits WHERE user_id=?').get('bob'), undefined);
+  f.signIn('alice');assert.equal((await f.testConnection(consent(1))).status, 200);assert.equal(f.outgoing[0].authorization, 'Bearer ' + KEY_A);
+  assert.equal((await f.save(input({ apiKey: KEY_B, region: 'global', expectedRevision: 1 }))).status, 200);
+  f.signIn('bob');const updated = await data(await f.read());assert.equal(updated.settings.region, 'global');assert.equal(updated.settings.revision, 2);assert.equal((await f.resolve()).ready, true);
+  f.signIn('alice');assert.equal((await f.clear({ expectedRevision: 2 })).status, 200);
+  f.signIn('bob');assert.equal((await f.resolve()).ready, false);assert.equal((await data(await f.read())).settings.configured, false);
+  assert.equal((await settingsStore.resolveUserAIConfiguration(f.db, 'bob', MASTER)).ready, true);
 });
 
 void test('revision conflicts and clear tombstones prevent stale saves from resurrecting a removed secret', async (t) => {
@@ -217,8 +228,9 @@ void test('revision conflicts and clear tombstones prevent stale saves from resu
   assert.equal(row.key_ciphertext, null); assert.equal(row.key_iv, null);
   assert.equal((await f.save(input())).status, 409); assert.equal((await f.resolve()).ready, false);
   assert.equal((await f.testConnection(consent(1))).status, 409); assert.equal((await f.testConnection(consent(2))).status, 400); assert.equal(f.calls.length, 0);
-  f.signIn('bob'); assert.equal((await f.clear({ expectedRevision: 0 })).status, 200);
-  assert.equal((await f.save(input({ apiKey: KEY_B }))).status, 409);
+  f.signIn('bob'); assert.equal((await f.clear({ expectedRevision: 0 })).status, 403);
+  assert.equal((await f.save(input({ apiKey: KEY_B }))).status, 403);
+  assert.equal(f.sqlite.prepare('SELECT * FROM ai_user_settings WHERE user_id=?').get('bob'), undefined);
 });
 
 void test('a missing or invalid encryption master disables saving and testing but still permits deletion', async (t) => {
@@ -317,4 +329,37 @@ void test('connection failures expose only safe provider diagnostics and keep sa
   const settings = (await data(await f.read())).settings;
   assert.equal(settings.revision, 1); assert.equal(settings.model, 'MiniMax-M3'); assert.equal(settings.region, 'cn');
   assert.equal(settings.configured, true); assert.equal(settings.lastTestStatus, 'failed');
+});
+
+void test('management needs both the verified owner role and the configured server owner identity', async (t) => {
+  const f = await fixture(t);await f.save(input());
+  for (const [identity, role] of [['bob', true], ['alice', false]] as const) {
+    f.signIn(identity, role);const metadata = await data(await f.read());assert.equal(metadata.canManage, false);assert.equal(metadata.scope, 'site');assert.equal(metadata.settings.configured, true);
+    const before = f.queries.length;
+    for (const response of [await f.save(input({ expectedRevision: 1 })), await f.clear({ expectedRevision: 1 }), await f.testConnection(consent(1))]) {
+      assert.equal(response.status, 403);assert.equal((await failure(response)).code, 'AI_SETTINGS_OWNER_REQUIRED');
+    }
+    assert.equal(f.queries.length, before);assert.equal(f.calls.length, 0);
+  }
+});
+
+void test('shared configuration uses the server owner binding and missing owner resolution fails closed with an administrator message', async (t) => {
+  const f = await fixture(t);delete f.env.APP_OWNER_USER_ID;
+  f.sqlite.prepare('INSERT INTO app_owner_identity (id,user_id,email,created_at) VALUES (?,?,?,?)').run('owner', 'alice', 'owner@example.test', new Date().toISOString());
+  assert.equal((await f.save(input())).status, 200);f.signIn('bob');const member = await data(await f.read());assert.equal(member.settings.configured, true);assert.equal(member.canManage, false);
+  const publicText = JSON.stringify(member);assert.equal(publicText.includes('owner@example.test'), false);assert.equal(publicText.includes('alice'), false);
+  f.sqlite.prepare('DELETE FROM app_owner_identity').run();f.signIn('alice');
+  for (const response of [await f.read(), await f.save(input({ expectedRevision: 1 })), await f.clear({ expectedRevision: 1 }), await f.testConnection(consent(1))]) {
+    assert.equal(response.status, 503);const result = await failure(response);assert.equal(result.code, 'SITE_AI_NOT_CONFIGURED');assert.match(result.error, /管理员/);
+  }
+  assert.equal(f.calls.length, 0);assert.equal(f.sqlite.prepare('SELECT day_count FROM ai_usage_limits WHERE user_id=?').get('alice'), undefined);
+});
+
+void test('a changed server owner while quota is pending prevents testing another owner configuration', async (t) => {
+  const f = await fixture(t);await f.save(input());
+  f.afterQuota(async () => { f.env.APP_OWNER_USER_ID = 'bob'; });
+  const response = await f.testConnection(consent(1));assert.equal(response.status, 403);assert.equal((await failure(response)).code, 'AI_SETTINGS_OWNER_REQUIRED');
+  assert.equal(f.calls.length, 0);assert.equal(f.outgoing.length, 0);
+  assert.equal(f.sqlite.prepare('SELECT day_count FROM ai_usage_limits WHERE user_id=?').get('alice')?.day_count, 1);
+  assert.equal(f.sqlite.prepare('SELECT day_count FROM ai_usage_limits WHERE user_id=?').get('bob'), undefined);
 });

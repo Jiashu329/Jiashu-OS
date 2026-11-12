@@ -91,7 +91,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[] } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   let current = new URL(path, 'https://synthetic-production.example');
@@ -141,7 +141,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     requests.push({ path, method });
     if (path === '/api/overview') return Response.json(overview);
     if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
-    if (path === '/api/ai/settings') return Response.json({ settings: { configured: false, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
+    if (path === '/api/ai/settings') return Response.json({ scope: 'site', canManage: catalog.aiCanManage !== false, settings: { configured: catalog.aiConfigured === true, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     const parsed = new URL(path, location.origin);
     const emptyMealStates = { breakfast:'unrecorded',lunch:'unrecorded',dinner:'unrecorded',snack:'unrecorded' } as const;
@@ -194,6 +194,20 @@ test('production AI settings reads metadata and keeps connection tests behind us
   await settle(() => f.document.getElementById('ai-settings-page')?.getAttribute('aria-busy') === 'false');
   assert.equal(f.document.getElementById('ai-settings-configured')?.textContent, '未配置');
   assert.equal((f.document.getElementById('ai-settings-api-key') as HTMLInputElement)?.value, '');
+  assert.deepEqual(f.requests, [{ path: '/api/ai/settings', method: 'GET' }]);
+});
+
+test('production members use shared AI status without exposing configuration controls or dispatching settings writes', { skip: !hasBuild }, async () => {
+  const f = await fixture('id="ai-settings-page"', '/settings/ai', 390, {}, { foods: [], aiCanManage: false, aiConfigured: true });
+  await settle(() => f.document.getElementById('ai-settings-page')?.getAttribute('aria-busy') === 'false');
+  for (const id of ['manage-panel', 'test-panel', 'delete-panel']) {
+    assert.equal(f.document.getElementById('ai-settings-' + id)?.hidden, true);
+  }
+  assert.match(f.document.getElementById('ai-settings-shared-note')?.textContent ?? '', /无需/);
+  assert.match(f.document.getElementById('ai-settings-summary-model')?.textContent ?? '', /MiniMax-M3/);
+  assert.equal((f.document.getElementById('ai-settings-api-key') as HTMLInputElement).disabled, true);
+  f.document.getElementById('ai-settings-form')!.dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  for (const id of ['test', 'delete-open', 'delete-submit']) f.document.getElementById('ai-settings-' + id)!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   assert.deepEqual(f.requests, [{ path: '/api/ai/settings', method: 'GET' }]);
 });
 

@@ -3,7 +3,8 @@ import { readHealthRange } from '../../../../db/health-repository';
 import { readNutritionRangeSnapshot } from '../../../../db/nutrition-store';
 import { consumeAIQuota, readAIQuota } from '../../../../db/ai-usage-store';
 import { AIProviderError, callHealthAssistant } from '../../../../lib/ai-provider';
-import { AISettingsConflictError, readAISettings, resolveUserAIConfiguration } from '../../../../db/ai-settings-store';
+import { AISettingsConflictError } from '../../../../db/ai-settings-store';
+import { readSiteAISettings, resolveSiteAIConfiguration, SiteAISettingsUnavailableError } from '../../../../db/site-ai-settings-store';
 import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto';
 import { buildHealthAssistantContext, HealthAssistantContextError } from '../../../../lib/health-assistant-context';
 import { HealthAssistantChatError, MAX_ASSISTANT_REQUEST_BYTES, parseAssistantHistory, validAssistantText } from '../../../../lib/health-assistant-chat';
@@ -18,9 +19,9 @@ import { apiUser, invalidOrigin, isSameOrigin, json, unauthenticated } from '../
 
 export const dynamic = 'force-dynamic';
 
-async function configuration(userId: string, expectedRevision?: number) {
+async function configuration(expectedRevision?: number) {
   if (!env.DB) throw new Error('AI settings storage unavailable');
-  return resolveUserAIConfiguration(env.DB, userId, env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision);
+  return resolveSiteAIConfiguration(env.DB, env, expectedRevision);
 }
 
 class AssistantRequestError extends Error {}
@@ -42,7 +43,8 @@ async function contextFor(userId: string, period: {days:number;from:string;to:st
 function failure(error: unknown, quota?: AIQuotaResult): Response {
   const usage = quota ? { usage: {remainingToday:quota.remainingToday,retryAfter:quota.retryAfter} } : {};
   if (error instanceof AISettingsConflictError) return json({ error: 'AI 设置已更新，请重新读取配置后再提问。', code: 'AI_SETTINGS_CONFLICT', ...usage }, 409);
-  if (error instanceof AISettingsCryptoError) return json({ error: '无法读取已保存的密钥，请到 AI 设置重新填写并保存。', code: 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE', ...usage }, 503);
+  if (error instanceof SiteAISettingsUnavailableError) return json({ error: '网站 AI 服务尚未配置，请联系网站创建者。', code: error.code }, 503);
+  if (error instanceof AISettingsCryptoError) return json({ error: '网站 AI 配置暂不可用，请联系网站创建者检查。', code: 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE', ...usage }, 503);
   if (error instanceof AIProviderError) return json({ error: error.message, code: error.code, diagnostics: error.diagnostics, ...usage }, error.status);
   if (error instanceof HealthAssistantContextError) return json({ error: error.message, code: error.code, ...usage }, 400);
   if (error instanceof AssistantRequestError || error instanceof AssistantScopeError || error instanceof HealthAssistantChatError || error instanceof SyntaxError) return json({
@@ -65,7 +67,7 @@ export async function GET(request: Request) {
     if (['nutrition','goals'].some((key) => query.has(key) && !['0','1'].includes(query.get(key)!))) throw new AssistantScopeError();
     const scope = parseAssistantScope({metrics:query.has('metrics') ? (query.get('metrics') ? query.get('metrics')!.split(',') : []) : [...parseAssistantScope().metrics], includeNutrition:query.get('nutrition') !== '0', includeGoals:query.get('goals') === '1'});
     const selected = await contextFor(user.userId, period, scope, now);
-    const config = await configuration(user.userId);
+    const config = await configuration();
     const usage = await readAIQuota(env.DB, user.userId, now);
     return json({ usage, scopeKey:assistantScopeKey(period.days,scope,custom?period:undefined), configuration: { ready: config.ready, provider: config.providerLabel, model: config.model, message: config.message }, ...selected });
   } catch (error) { return failure(error); }
@@ -116,16 +118,16 @@ export async function POST(request: Request) {
     const history = parseAssistantHistory(input.history);
     if (input.historyScope !== undefined && (typeof input.historyScope !== 'string' || input.historyScope !== assistantScopeKey(period.days,scope,custom?period:undefined))) throw new AssistantRequestError('资料范围已变化，请开始新对话后再提问。');
     if (!env.DB) throw new Error('AI settings storage unavailable');
-    const savedSettings = await readAISettings(env.DB, user.userId);
-    const config = await configuration(user.userId, savedSettings.revision);
-    if (!config.ready) return json({ error: config.message, code: 'AI_NOT_CONFIGURED' }, 503);
+    const savedSettings = await readSiteAISettings(env.DB, env);
+    const config = await configuration(savedSettings.revision);
+    if (!config.ready) return json({ error: '网站 AI 服务尚未就绪，请联系网站创建者检查配置。', code: 'AI_NOT_CONFIGURED' }, 503);
     const selected = await contextFor(user.userId, period, scope, now);
     if (!selected.hasData) return json({ error: '这个时间范围没有健康或饮食记录，请先同步或补录数据。', code: 'HEALTH_ASSISTANT_NO_DATA' }, 400);
     quota = await consumeAIQuota(env.DB, user.userId, now);
     if (!quota.allowed) return json({ error: '已达到健康助手的请求上限，请稍后再试。每分钟最多 3 次，每天最多 20 次。', code: 'AI_RATE_LIMITED', usage: {remainingToday:quota.remainingToday,retryAfter:quota.retryAfter} }, 429,
       { 'Retry-After': String(quota.retryAfter) });
     // Recheck the saved version after data/limit reads so a concurrent clear cannot reuse a captured key.
-    const activeConfig = await configuration(user.userId, savedSettings.revision);
+    const activeConfig = await configuration(savedSettings.revision);
     const result = await callHealthAssistant(activeConfig, { question: input.question.trim(), context: selected.context,
       ...(history.length ? { history } : {}) });
     return json({ ...result, answerHtml: renderAssistantMarkdown(result.answer, selected.sources), usage: {remainingToday:quota.remainingToday,retryAfter:0}, scopeKey:assistantScopeKey(period.days,scope,custom?period:undefined), generatedAt: new Date().toISOString(), range: selected.context.range, sources: selected.sources });

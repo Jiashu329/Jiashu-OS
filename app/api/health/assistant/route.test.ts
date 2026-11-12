@@ -9,6 +9,7 @@ import * as scopeRules from '../../../../lib/health-assistant-scope.ts';
 import { renderAssistantMarkdown } from '../../../../lib/assistant-markdown.ts';
 import { AISettingsCryptoError } from '../../../../lib/ai-settings-crypto.ts';
 import { AISettingsConflictError } from '../../../../db/ai-settings-store.ts';
+import { SiteAISettingsUnavailableError } from '../../../../db/site-ai-settings-store.ts';
 import type { HealthMeasurement } from '../../../../lib/health.ts';
 import { shanghaiDay } from '../../../../lib/health.ts';
 import type { NutritionDayStatus } from '../../../../lib/nutrition.ts';
@@ -22,15 +23,16 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
 }
 function fixture() {
   let userId: string | null = 'alice';
-  const env = { DB: {} as D1Database, AI_SETTINGS_ENCRYPTION_KEY: 'synthetic-test-only-encryption-master' };
-  const keys: Record<string, string> = { alice: 'synthetic-alice-test-only-key', bob: 'synthetic-bob-test-only-key' };
-  const revisions: Record<string, number> = { alice: 1, bob: 2 };
+  const env = { DB: {} as D1Database, APP_OWNER_USER_ID: 'site-owner', AI_SETTINGS_ENCRYPTION_KEY: 'synthetic-test-only-encryption-master' };
+  const keys: Record<string, string> = { 'site-owner': 'synthetic-shared-test-only-key', bob: 'synthetic-bob-unused-personal-key' };
+  const revisions: Record<string, number> = { 'site-owner': 1, bob: 2 };
   const settingsReads: Array<{ db: unknown; user: string }> = [];
   const configReads: Array<{ db: unknown; user: string; master: unknown; expectedRevision?: number }> = [];
   const configurations: provider.AIConfiguration[] = [];
   const reads: Array<{ user: string; from: string; to: string; kind: string; metrics?: readonly string[] }> = [];
   const outgoing: Array<{ question: string; context: rules.HealthAssistantContext; history?: readonly chat.AssistantHistoryMessage[] }> = [];
-  const quotaUsers: string[] = [];
+  const quotaUsers: string[] = [], quotaReadUsers: string[] = [];
+  let configFailure: unknown;
   const statusRows: Record<string, NutritionDayStatus[]> = {};
   let allowed = true, empty = false, fail = false;
   let contextHook: (() => Promise<void>) | null = null, quotaHook: (() => Promise<void>) | null = null;
@@ -42,13 +44,20 @@ function fixture() {
     getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const handlers = load(new URL('./route.ts', import.meta.url), {
-    ...shared, env, ...rules, ...provider, ...chat, ...scopeRules, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError,
-    readAISettings: async (db: unknown, user: string) => { settingsReads.push({ db, user }); return { revision: revisions[user] ?? 0 }; },
-    resolveUserAIConfiguration: async (db: unknown, user: string, master: unknown, expectedRevision?: number) => {
+    ...shared, env, ...rules, ...provider, ...chat, ...scopeRules, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError, SiteAISettingsUnavailableError,
+    readSiteAISettings: async (db: unknown, configurationEnv: typeof env) => {
+      assert.equal(configurationEnv, env);
+      if (configFailure) throw configFailure;
+      settingsReads.push({ db, user: env.APP_OWNER_USER_ID }); return { revision: revisions[env.APP_OWNER_USER_ID] };
+    },
+    resolveSiteAIConfiguration: async (db: unknown, configurationEnv: typeof env, expectedRevision?: number) => {
+      assert.equal(configurationEnv, env);
+      if (configFailure) throw configFailure;
+      const user = env.APP_OWNER_USER_ID, master = env.AI_SETTINGS_ENCRYPTION_KEY;
       configReads.push({ db, user, master, expectedRevision });
-      if (expectedRevision !== undefined && expectedRevision !== (revisions[user] ?? 0)) throw new AISettingsConflictError();
+      if (expectedRevision !== undefined && expectedRevision !== revisions[user]) throw new AISettingsConflictError();
       return provider.readAIConfiguration({ AI_PROVIDER: 'minimax', MINIMAX_API_KEY: keys[user],
-        MINIMAX_MODEL: user === 'bob' ? 'MiniMax-M2.7' : 'MiniMax-M3', MINIMAX_REGION: user === 'bob' ? 'global' : 'cn' });
+        MINIMAX_MODEL: 'MiniMax-M3', MINIMAX_REGION: 'cn' });
     },
     readHealthRange: async (user: string, from: string, to: string, metrics?: readonly string[]) => {
       reads.push({ user, from, to, kind: 'health', metrics });
@@ -64,7 +73,7 @@ function fixture() {
       if (fail) throw new Error('synthetic-private-status-storage-exception');
       return { entries: [], statuses: statusRows[user] ?? [] };
     },
-    readAIQuota: async () => ({allowed:true,retryAfter:0,remainingToday:20}),
+    readAIQuota: async (_db: unknown, user: string) => { quotaReadUsers.push(user); return {allowed:true,retryAfter:0,remainingToday:20}; },
     readGoalSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'goals'});return {targets:{steps:8000,sleep:8,active_energy:null},effectiveFrom:today}; },
     readNutritionGoals:async(_db:unknown,user:string)=>{reads.push({user,from:today,to:today,kind:'nutrition-goals'});return {calories:'1800.0',carbs:'200.0',protein:'80.0',fat:'60.0',revision:1};},
     readWeightPlanSettings: async (_db:unknown,user:string) => { reads.push({user,from:today,to:today,kind:'plan'});return {enabled:true,baselineWeight:75,targetWeight:70,startDate:today,deadline:'2027-01-01'}; },
@@ -83,12 +92,12 @@ function fixture() {
     if (options.length) headers.set('Content-Length', options.length);
     return new Request(ORIGIN + '/api/health/assistant', { method: 'POST', headers, body: options.raw ? String(body) : JSON.stringify(body) });
   };
-  return { env, keys, revisions, settingsReads, configReads, configurations, reads, outgoing, quotaUsers, handlers, request, today,
+  return { env, keys, revisions, settingsReads, configReads, configurations, reads, outgoing, quotaUsers, quotaReadUsers, handlers, request, today,
     setNutritionStatus(user: string, statuses: NutritionDayStatus[]) { statusRows[user] = statuses; },
     signIn(value: string | null) { userId = value; }, setAllowed(value: boolean) { allowed = value; },
-    setEmpty(value: boolean) { empty = value; }, setFailure(value: boolean) { fail = value; },
-    setConfigured(value: boolean, user = userId ?? 'alice') { keys[user] = value ? 'synthetic-' + user + '-test-only-key' : ''; revisions[user] = (revisions[user] ?? 0) + 1; },
-    changeKey(key: string, user = userId ?? 'alice') { keys[user] = key; revisions[user] = (revisions[user] ?? 0) + 1; },
+    setEmpty(value: boolean) { empty = value; }, setFailure(value: boolean) { fail = value; }, setConfigFailure(value: unknown) { configFailure = value; },
+    setConfigured(value: boolean, user = env.APP_OWNER_USER_ID) { keys[user] = value ? 'synthetic-' + user + '-test-only-key' : ''; revisions[user] = (revisions[user] ?? 0) + 1; },
+    changeKey(key: string, user = env.APP_OWNER_USER_ID) { keys[user] = key; revisions[user] = (revisions[user] ?? 0) + 1; },
     beforeContext(action: () => Promise<void>) { contextHook = action; }, beforeQuota(action: () => Promise<void>) { quotaHook = action; },
     get(query = '') { return handlers.GET(new Request(ORIGIN + '/api/health/assistant' + query)); },
     post(body?: unknown, options?: Parameters<typeof request>[1]) { return handlers.POST(request(body, options)); },
@@ -159,15 +168,16 @@ void test('GET is a local preview only, uses the authenticated owner, and never 
   assert.equal(data.configuration.ready, true); assert.equal(data.context.range.days, 30);
   assert.equal(data.configuration.model, 'MiniMax-M3');
   const encoded = JSON.stringify(data); for (const secret of [...Object.values(f.keys), f.env.AI_SETTINGS_ENCRYPTION_KEY]) assert.ok(!encoded.includes(secret));
-  assert.deepEqual(f.configReads, [{ db: f.env.DB, user: 'alice', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined }]);
+  assert.deepEqual(f.configReads, [{ db: f.env.DB, user: 'site-owner', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined }]);
   assert.equal(f.outgoing.length, 0); assert.equal(f.quotaUsers.length, 0);
   assert.ok(f.reads.every((entry) => entry.user === 'alice'));
   for (const query of ['?days=91', '?days=7&days=30', '?userId=bob', '?days=7e0']) assert.equal((await f.get(query)).status, 400);
   f.signIn('bob'); const other = await f.get(); assert.equal(other.status, 200);
   assert.equal(f.reads.at(-1)?.user, 'bob');
   const otherData = await other.json() as { configuration: { model: string } };
-  assert.equal(otherData.configuration.model, 'MiniMax-M2.7');
-  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'bob', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined });
+  assert.equal(otherData.configuration.model, 'MiniMax-M3');
+  assert.deepEqual(f.quotaReadUsers, ['alice', 'bob']);
+  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'site-owner', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: undefined });
 });
 
 void test('explicit sharing, a supported range and a bounded question are required before any provider request', async () => {
@@ -253,13 +263,16 @@ void test('POST sends only the server-selected owner context and returns data re
   const sent = JSON.stringify(f.outgoing[0]);
   for (const value of ['alice', 'bob', 'synthetic-private@example.test', 'private-record-id', 'private-source-label', ...Object.values(f.keys), f.env.AI_SETTINGS_ENCRYPTION_KEY]) assert.ok(!sent.includes(value));
   assert.ok(f.reads.every((entry) => entry.user === 'alice')); assert.deepEqual(f.quotaUsers, ['alice']);
-  assert.deepEqual(f.settingsReads, [{ db: f.env.DB, user: 'alice' }]);
-  assert.deepEqual(f.configReads, Array.from({ length: 2 }, () => ({ db: f.env.DB, user: 'alice', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 1 })));
+  assert.deepEqual(f.settingsReads, [{ db: f.env.DB, user: 'site-owner' }]);
+  assert.deepEqual(f.configReads, Array.from({ length: 2 }, () => ({ db: f.env.DB, user: 'site-owner', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 1 })));
   assert.equal(f.configurations[0].model, 'MiniMax-M3'); assert.equal(f.configurations[0].region, 'cn');
   f.signIn('bob'); assert.equal((await f.post()).status, 200);
-  assert.equal(f.configurations[1].model, 'MiniMax-M2.7'); assert.equal(f.configurations[1].region, 'global');
-  assert.deepEqual(f.settingsReads.at(-1), { db: f.env.DB, user: 'bob' });
-  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'bob', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 2 });
+  assert.equal(f.configurations[1].model, 'MiniMax-M3'); assert.equal(f.configurations[1].region, 'cn');
+  assert.deepEqual(f.quotaUsers, ['alice', 'bob']);
+  assert.equal(f.outgoing[0].context.health.find((metric) => metric.metric === 'steps')!.points[0].value, 100);
+  assert.equal(f.outgoing[1].context.health.find((metric) => metric.metric === 'steps')!.points[0].value, 200);
+  assert.deepEqual(f.settingsReads.at(-1), { db: f.env.DB, user: 'site-owner' });
+  assert.deepEqual(f.configReads.at(-1), { db: f.env.DB, user: 'site-owner', master: f.env.AI_SETTINGS_ENCRYPTION_KEY, expectedRevision: 1 });
 });
 
 void test('storage failures fail closed without exposing private exceptions or sending a request', async () => {
@@ -283,7 +296,7 @@ void test('clearing the key while health context is loading prevents the capture
   f.setConfigured(false); waiting.release();
   const response = await pending; assert.equal(response.status, 409);
   assert.equal((await response.json() as { code: string }).code, 'AI_SETTINGS_CONFLICT');
-  assert.equal(f.revisions.alice, 2); assert.equal(f.keys.alice, '');
+  assert.equal(f.revisions['site-owner'], 2); assert.equal(f.keys['site-owner'], '');
   assert.equal(f.configReads.at(-1)?.expectedRevision, 1);
   assert.equal(f.configurations.length, 0); assert.equal(f.outgoing.length, 0);
 });
@@ -295,7 +308,7 @@ void test('saving a replacement key while quota is pending requires a fresh ques
   f.changeKey('synthetic-replacement-user-key'); waiting.release();
   const response = await pending; assert.equal(response.status, 409);
   assert.equal((await response.json() as { code: string }).code, 'AI_SETTINGS_CONFLICT');
-  assert.equal(f.revisions.alice, 2); assert.equal(f.configReads.at(-1)?.expectedRevision, 1);
+  assert.equal(f.revisions['site-owner'], 2); assert.equal(f.configReads.at(-1)?.expectedRevision, 1);
   assert.equal(f.configurations.length, 0); assert.equal(f.outgoing.length, 0);
   assert.equal((await f.post()).status, 200); assert.equal(f.outgoing.length, 1);
   assert.equal(f.configReads.at(-1)?.expectedRevision, 2);
@@ -319,4 +332,16 @@ void test('completion status is read for the authenticated owner and reaches pre
   const other = await (await f.get()).json() as { context: rules.HealthAssistantContext };
   assert.equal(other.context.nutrition.completeDays, 0);
   assert.equal(other.context.nutrition.days.length, 0);
+});
+
+void test('site configuration and encryption failures tell members to contact the creator without consuming their quota', async () => {
+  for (const error of [new SiteAISettingsUnavailableError(), new AISettingsCryptoError()]) {
+    const f = fixture(); f.signIn('bob'); f.setConfigFailure(error);
+    const response = await f.post(); assert.equal(response.status, 503);
+    const result = await response.json() as {error:string;code:string};
+    assert.match(result.error, /联系网站创建者/);
+    assert.equal(result.code, error instanceof SiteAISettingsUnavailableError ? 'SITE_AI_NOT_CONFIGURED' : 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE');
+    assert.equal(f.quotaUsers.length, 0); assert.equal(f.outgoing.length, 0);
+    assert.ok(!JSON.stringify(result).includes('synthetic-'));
+  }
 });

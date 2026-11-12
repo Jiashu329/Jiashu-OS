@@ -5,6 +5,7 @@ import test from 'node:test';
 import * as parser from '../../../../../lib/nutrition-parser.ts';
 import * as provider from '../../../../../lib/ai-provider.ts';
 import { AISettingsConflictError } from '../../../../../db/ai-settings-store.ts';
+import { SiteAISettingsUnavailableError } from '../../../../../db/site-ai-settings-store.ts';
 import { AISettingsCryptoError } from '../../../../../lib/ai-settings-crypto.ts';
 import { shanghaiDay } from '../../../../../lib/health.ts';
 
@@ -21,19 +22,20 @@ function fixture() {
   let answer = JSON.stringify({ items: [{ name: '熟米饭', amount: 150, unit: '克', meal: 'lunch', dateText: null, sourceText: '150克熟米饭' }] });
   const today = shanghaiDay(new Date().toISOString());
   const defaultBody = { text: '午餐吃了150克熟米饭', date: today };
-  const env = { DB: {} as D1Database, AI_SETTINGS_ENCRYPTION_KEY: 'PRIVATE-MASTER' };
+  const env = { DB: {} as D1Database, APP_OWNER_USER_ID: 'site-owner', AI_SETTINGS_ENCRYPTION_KEY: 'PRIVATE-MASTER' };
   const configReads: Array<{ user: string; revision?: number }> = [], quotaUsers: string[] = [];
   const outgoing: Array<{ user: string | null; input: parser.NutritionParserRequest }> = [];
   const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null },
     ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const nutrition = load(new URL('../_shared.ts', import.meta.url), { ...shared }, ['nutritionGuard', 'nutritionBody']);
   const handlers = load(new URL('./route.ts', import.meta.url), { env, ...shared, ...nutrition, ...parser, ...provider,
-    AISettingsConflictError, AISettingsCryptoError,
-    readAISettings: async (_db: unknown, id: string) => { if (failure) throw failure; return { revision, user: id }; },
-    resolveUserAIConfiguration: async (_db: unknown, id: string, _master: unknown, expectedRevision?: number) => {
-      configReads.push({ user: id, revision: expectedRevision });
+    AISettingsConflictError, AISettingsCryptoError, SiteAISettingsUnavailableError,
+    readSiteAISettings: async (_db: unknown, configurationEnv: typeof env) => { if (failure) throw failure; assert.equal(configurationEnv, env); return { revision }; },
+    resolveSiteAIConfiguration: async (_db: unknown, configurationEnv: typeof env, expectedRevision?: number) => {
+      assert.equal(configurationEnv, env);
+      configReads.push({ user: env.APP_OWNER_USER_ID, revision: expectedRevision });
       if (expectedRevision !== revision) throw new AISettingsConflictError();
-      return provider.readAIConfiguration({ MINIMAX_API_KEY: configured ? 'PRIVATE-KEY-' + id : '' });
+      return provider.readAIConfiguration({ MINIMAX_API_KEY: configured ? 'PRIVATE-SHARED-KEY' : '' });
     },
     consumeAIQuota: async (_db: unknown, id: string) => { quotaUsers.push(id); beforeQuota?.(); return { allowed, retryAfter: 37 }; },
     callNutritionParser: async (_config: provider.AIConfiguration, input: parser.NutritionParserRequest) => {
@@ -48,7 +50,7 @@ function fixture() {
     setAllowed(value: boolean) { allowed = value; },
     setFailure(value: unknown) { failure = value; },
     setAnswer(value: string) { answer = value; },
-    changeDuringQuota() { beforeQuota = () => { revision++; }; },
+    changeDuringQuota(clear = false) { beforeQuota = () => { revision++; if (clear) configured = false; }; },
     post(body: unknown = defaultBody, options: { origin?: string | null; type?: string; raw?: boolean; length?: string } = {}) {
       const headers = new Headers({ 'Content-Type': options.type ?? 'application/json' });
       if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
@@ -93,11 +95,11 @@ test('a successful parse returns editable drafts with local calories and no pers
   assert.equal(result.provider, 'MiniMax');
   assert.equal(f.outgoing.length, 1);
   assert.deepEqual(f.outgoing[0].input, { text: '午餐吃了150克熟米饭', date: f.today, today: f.today, meal: null });
-  assert.ok(f.configReads.every((read) => read.user === 'alice' && read.revision === 1));
+  assert.ok(f.configReads.every((read) => read.user === 'site-owner' && read.revision === 1));
   assert.deepEqual(f.quotaUsers, ['alice']);
   assert.equal(JSON.stringify(result).includes('PRIVATE-'), false);
   f.signIn('bob'); assert.equal((await f.post()).status, 200);
-  assert.equal(f.configReads.at(-1)?.user, 'bob'); assert.equal(f.quotaUsers.at(-1), 'bob');
+  assert.equal(f.configReads.at(-1)?.user, 'site-owner'); assert.equal(f.quotaUsers.at(-1), 'bob');
 });
 
 test('the reported breakfast sentence accepts a date with a time of day and preserves all three food quantities', async () => {
@@ -168,4 +170,21 @@ test('storage, crypto and provider failures return only safe local classificatio
   f.setFailure(new provider.AIProviderError('MiniMax 暂时不可用。', 'AI_RATE_LIMITED', 429, { upstreamStatus: 429 }));
   const limited = await f.post(); assert.equal(limited.status, 429);
   assert.deepEqual((await limited.json() as { diagnostics: unknown }).diagnostics, { upstreamStatus: 429 });
+});
+
+test('shared configuration unavailable and encryption errors direct members to the site creator', async () => {
+  for (const error of [new SiteAISettingsUnavailableError(), new AISettingsCryptoError()]) {
+    const f = fixture(); f.signIn('bob'); f.setFailure(error);
+    const response = await f.post(); assert.equal(response.status, 503);
+    const result = await response.json() as {error:string;code:string};
+    assert.match(result.error, /联系网站创建者/);
+    assert.equal(result.code, error instanceof SiteAISettingsUnavailableError ? 'SITE_AI_NOT_CONFIGURED' : 'AI_SETTINGS_ENCRYPTION_UNAVAILABLE');
+    assert.equal(f.quotaUsers.length, 0); assert.equal(f.outgoing.length, 0);
+  }
+});
+test('clearing the shared key while a member quota reservation is pending stops text upload', async () => {
+  const f = fixture(); f.signIn('bob'); f.changeDuringQuota(true);
+  const response = await f.post(); assert.equal(response.status, 409);
+  assert.deepEqual(f.quotaUsers, ['bob']); assert.equal(f.outgoing.length, 0);
+  assert.ok(f.configReads.every((read) => read.user === 'site-owner' && read.revision === 1));
 });

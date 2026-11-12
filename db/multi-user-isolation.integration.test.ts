@@ -12,10 +12,13 @@ import { readHealthRecord, readHealthRecordHistory, writeHealthRecord } from './
 import { HealthImportConflictError, previewHealthImport, writeHealthImport, listHealthImports, revertHealthImport } from './health-import-store.ts';
 import { createSyncConnection, findSyncConnection, listSyncConnections, revokeSyncConnection } from './sync-connections.ts';
 import { hashSyncToken } from '../app/api/sync/devices/tokens.ts';
-import { NutritionConflictError, createNutritionEntry, readNutritionEntry, readNutritionHistory, replaceNutritionEntry } from './nutrition-store.ts';
+import { NutritionConflictError, createNutritionEntry, readNutritionEntry, readNutritionHistory, readNutritionRangeSnapshot, replaceNutritionEntry } from './nutrition-store.ts';
 import { createNutritionTemplate, readNutritionTemplate, previewStoredNutritionTemplate } from './nutrition-templates-store.ts';
 import { readAISettings, saveAISettings, resolveUserAIConfiguration } from './ai-settings-store.ts';
 import { consumeAIQuota, readAIQuota } from './ai-usage-store.ts';
+import { readSiteAISettings, resolveSiteAIConfiguration } from './site-ai-settings-store.ts';
+import { buildHealthAssistantContext } from '../lib/health-assistant-context.ts';
+import { callHealthAssistant } from '../lib/ai-provider.ts';
 import { writeWeeklyAction, readWeeklyAction } from './health-weekly-actions-store.ts';
 import { writeFinanceMonthClose, readFinanceMonthCloseOperation } from './finance-month-close-store.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from './data-backup-store.ts';
@@ -141,6 +144,38 @@ void test('AI configuration and encrypted credentials are owner bound and quota 
   assert.equal((await readAIQuota(db, 'bob', Date.parse(NOW))).remainingToday, 20);
   assert.equal((await consumeAIQuota(db, 'bob', Date.parse(NOW))).allowed, true);
   assert.doesNotMatch(JSON.stringify(await readAISettings(db, 'bob')), /sk-synthetic|ciphertext|keyIv/);
+});
+
+void test('shared MiniMax uses the bound creator key while each actor sends only their own nutrition and consumes their own quota', async (t) => {
+  const { db, sqlite } = fixture(t);
+  sqlite.prepare("INSERT INTO app_owner_identity (id,user_id,email,created_at) VALUES ('owner',?,?,?)").run('alice', 'creator@example.invalid', NOW);
+  const runtime = { AI_SETTINGS_ENCRYPTION_KEY: MASTER };
+  const sharedKey = 'sk-synthetic-shared-creator-private';
+  await saveAISettings(db, 'alice', { apiKey: sharedKey, model: 'MiniMax-M3', region: 'cn', expectedRevision: 0 }, MASTER, NOW);
+  // An older personal configuration must not override the creator's service.
+  await saveAISettings(db, 'bob', { apiKey: 'sk-synthetic-ignored-member-private', model: 'MiniMax-M2.7', region: 'global', expectedRevision: 0 }, MASTER, NOW);
+  await createNutritionEntry(db, 'alice', { ...nutrition('Alice-private-food'), caloriesTenth: 3210 }, ID, NOW);
+  await createNutritionEntry(db, 'bob', { ...nutrition('Bob-private-food'), caloriesTenth: 7770 }, SECOND_ID, NOW);
+  const outgoing: Array<{ authorization: string | null; body: string }> = [];
+  for (const actor of ['alice', 'bob']) {
+    const settings = await readSiteAISettings(db, runtime);
+    const configuration = await resolveSiteAIConfiguration(db, runtime, settings.revision);
+    const snapshot = await readNutritionRangeSnapshot(db, actor, { from: DAY, to: DAY });
+    const selected = buildHealthAssistantContext({ measurements: [], nutrition: snapshot.entries, nutritionStatuses: snapshot.statuses,
+      days: 1, from: DAY, to: DAY, now: Date.parse(NOW) });
+    assert.equal((await consumeAIQuota(db, actor, Date.parse(NOW))).allowed, true);
+    await callHealthAssistant(configuration, { question: '合成测试问题', context: selected.context }, { fetch: async (_url, options) => {
+      outgoing.push({ authorization: new Headers(options?.headers).get('Authorization'), body: String(options?.body) });
+      return Response.json({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '合成测试回答' } }] });
+    } });
+  }
+  assert.deepEqual(outgoing.map((item) => item.authorization), ['Bearer ' + sharedKey, 'Bearer ' + sharedKey]);
+  assert.match(outgoing[0].body, /321\.0/); assert.doesNotMatch(outgoing[0].body, /777\.0|Bob-private|ignored-member/);
+  assert.match(outgoing[1].body, /777\.0/); assert.doesNotMatch(outgoing[1].body, /321\.0|Alice-private|shared-creator/);
+  assert.equal((await readAIQuota(db, 'alice', Date.parse(NOW))).remainingToday, 19);
+  assert.equal((await readAIQuota(db, 'bob', Date.parse(NOW))).remainingToday, 19);
+  assert.equal((await readAIQuota(db, 'third-user', Date.parse(NOW))).remainingToday, 20);
+  assert.doesNotMatch(JSON.stringify(await readSiteAISettings(db, runtime)), /sk-synthetic|ciphertext|keyIv|alice|bob/);
 });
 
 void test('weekly actions and identical month-close operation IDs belong to independent user scopes', async (t) => {

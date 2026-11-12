@@ -47,7 +47,7 @@ function controls(){
   const remaining=Math.max(0,Math.ceil((state.cooldownUntil-Date.now())/1000));el('usage').textContent=(state.remainingToday===null?'应用今日剩余次数待读取':'应用今日剩余 '+state.remainingToday+' / 20 次')+'（与 Token Plan 余额不同）'+(remaining?' · '+remaining+' 秒后可重试':'');
   el('count').textContent=[...el('question').value].length+' / 1000';
   el('launcher-label').textContent=state.sending?'健康助手 · 正在回复':'健康助手';
-  el('input-hint').textContent=state.loading?'正在读取所选健康摘要…':state.typing?'正在逐字显示，可点击“立即显示”查看全文':state.sending?'MiniMax 正在回复…':!state.data?'打开后读取健康摘要':!state.data.configuration.ready?'先在 AI 设置保存配置':!state.data.hasData?'所选范围暂无健康或饮食记录':'Enter 发送 · Shift+Enter 换行';
+  el('input-hint').textContent=state.loading?'正在读取所选健康摘要…':state.typing?'正在逐字显示，可点击“立即显示”查看全文':state.sending?'MiniMax 正在回复…':!state.data?'打开后读取健康摘要':!state.data.configuration.ready?'请网站创建者配置 AI 服务':!state.data.hasData?'所选范围暂无健康或饮食记录':'Enter 发送 · Shift+Enter 换行';
 }
 function resizeInput(){el('question').style.height='auto';el('question').style.height=Math.min(el('question').scrollHeight,126)+'px';}
 function sourceList(target,sources){
@@ -75,7 +75,7 @@ function renderContext(data){
   sourceList(el('sources'),data.sources);
   el('limitations').textContent=data.context.limitations.filter((note)=>typeof note==='string').join(' ');
   el('config').hidden=data.configuration.ready===true;
-  el('config-message').textContent=typeof data.configuration.message==='string'?data.configuration.message:'请先在 AI 设置保存自己的 MiniMax 配置。';
+  el('config-message').textContent=typeof data.configuration.message==='string'?data.configuration.message:'请网站创建者在 AI 设置配置共享 MiniMax 服务。你无需填写密钥。';
   if(!data.hasData)status('所选范围暂无健康或饮食记录。同步或补录后，可重新读取。',true);
 }
 async function readResponse(response,valid=()=>true){
@@ -151,7 +151,7 @@ function checkAnswer(data){const range=data?.range;return typeof data?.answer===
 async function submit(event){
   event?.preventDefault();if(state.loading||state.sending)return;formError('');const question=el('question').value.trim();
   if(!question||[...question].length>1000){formError('请填写 1–1000 个字符的问题。');el('question').focus();return;}
-  if(!state.data?.configuration?.ready){formError('请先在 AI 设置保存可用的 MiniMax 配置。');return;}
+  if(!state.data?.configuration?.ready){formError('请网站创建者配置可用的共享 MiniMax 服务。');return;}
   if(!state.data.hasData){formError('所选范围暂无健康或饮食记录，请同步或补录后再提问。');return;}
   if(state.cooldownUntil>Date.now()){formError('请等待限流倒计时结束后主动重试。');return;}
   const session=state.session,history=boundedHistory(state.history),questionBubble=appendUser(question),waiting=pending();
