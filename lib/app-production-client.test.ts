@@ -219,6 +219,25 @@ test('minified personal food templates open their lazy list and typed source fie
   assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')));
 });
 
+test('390px minified photo entry stays local until recognition and preserves the original text draft',async()=>{
+  const f=await fixture('id="nutrition-page"','/health/nutrition',390);
+  await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false');
+  const text=f.document.getElementById('nutrition-ai-text') as HTMLTextAreaElement;text.value='保留尚未使用的文字描述';
+  f.document.getElementById('nutrition-method-photo')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(f.document.getElementById('nutrition-entry-photo')?.hidden,false);
+  assert.equal((f.document.getElementById('nutrition-photo-recognize') as HTMLButtonElement).disabled,true);
+  const album=f.document.getElementById('nutrition-photo-file')! as HTMLInputElement;
+  assert.match(album.getAttribute('accept')??'',/image\/png/);assert.equal(album.hasAttribute('capture'),false);
+  assert.equal(f.document.getElementById('nutrition-photo-camera')?.getAttribute('capture'),'environment');
+  Object.defineProperty(album,'files',{configurable:true,value:[new File([],'empty.jpg',{type:'image/jpeg'})]});
+  album.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+  await settle(()=>f.document.getElementById('nutrition-photo-status')?.textContent?.includes('非空')===true);
+  assert.equal(f.document.getElementById('nutrition-photo-preview')?.hidden,true);
+  f.document.querySelector('[data-entry-method="ai"]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(text.value,'保留尚未使用的文字描述');
+  assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/photo')&&!request.path.includes('/parse')));
+});
+
 test('production shortcut installation page waits for user action before taking a server-clock baseline', async () => {
   const f = await fixture('id="template-check"', '/sync/templates', 390);
   assert.equal(f.document.querySelectorAll('.template-grid .template-card').length, 4);

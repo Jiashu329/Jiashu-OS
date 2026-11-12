@@ -3,6 +3,7 @@ import test from 'node:test';
 import { AIProviderError, callHealthAssistant, readAIConfiguration } from './ai-provider.ts';
 import { HEALTH_ASSISTANT_SYSTEM_PROMPT } from './health-assistant-prompt.ts';
 import type { AssistantHistoryMessage } from './health-assistant-chat.ts';
+import { TINY_JPEG_DATA_URL } from '../tests/fixtures/nutrition-photo.ts';
 
 const API_KEY = 'test-private-minimax-key-do-not-echo';
 const configured = (fields = {}) => readAIConfiguration({ MINIMAX_API_KEY: API_KEY, ...fields });
@@ -591,4 +592,34 @@ test('nutrition extraction rejects invalid input or forged configuration before 
   }
   await assert.rejects(callNutritionParser({ ...configured() }, input, { fetch }), expectError('AI_NOT_CONFIGURED', 503));
   assert.equal(requests, 0);
+});
+
+test('photo recognition sends one sanitized JPEG block to the current official endpoint without tools or private fields',async()=>{
+  const {callNutritionPhotoParser,NUTRITION_PHOTO_SYSTEM_PROMPT}=await import('./ai-provider.ts');
+  let requests=0;
+  const fetch:typeof globalThis.fetch=async(url,init)=>{
+    requests++;assert.equal(url,'https://api.minimax.cn/v1/chat/completions');assert.equal(init?.redirect,'manual');
+    const body=JSON.parse(String(init?.body));assert.equal(body.model,'MiniMax-M3');assert.equal(body.stream,false);assert.equal(body.tools,undefined);
+    assert.deepEqual(body.thinking,{type:'disabled'});assert.equal(body.messages[0].content,NUTRITION_PHOTO_SYSTEM_PROMPT);
+    assert.match(body.messages[0].content,/照片无法确认实际吃下多少/);assert.match(body.messages[0].content,/不返回或推断日期、餐次/);
+    const content=body.messages[1].content;assert.equal(content.length,2);assert.equal(content[0].type,'text');assert.equal(content[1].type,'image_url');
+    assert.deepEqual(content[1].image_url,{url:TINY_JPEG_DATA_URL,detail:'default'});
+    const text=JSON.parse(content[0].text);assert.deepEqual(text,{text:'实际吃了一半',selectedDate:'2026-11-10',today:'2026-11-12',timezone:'Asia/Shanghai',selectedMeal:'lunch'});
+    assert.ok(!String(init?.body).includes(API_KEY));return jsonResponse(completion({content:'{"items":[]}'}));
+  };
+  const result=await callNutritionPhotoParser(configured(),{image:{dataUrl:TINY_JPEG_DATA_URL},text:'实际吃了一半',date:'2026-11-10',today:'2026-11-12',meal:'lunch'},{fetch});
+  assert.equal(result.answer,'{"items":[]}');assert.equal(requests,1);assert.ok(!JSON.stringify(result).includes('data:image'));
+});
+test('unsupported vision models and malformed or remote photo inputs stop before provider work',async()=>{
+  const {callNutritionPhotoParser,assertNutritionPhotoModel}=await import('./ai-provider.ts');let requests=0;
+  const fetch:typeof globalThis.fetch=async()=>{requests++;return jsonResponse(completion());};
+  const photo={image:{dataUrl:TINY_JPEG_DATA_URL},text:'',date:'2026-11-10',today:'2026-11-12',meal:null};
+  assert.throws(()=>assertNutritionPhotoModel(configured({MINIMAX_MODEL:'MiniMax-M2.5'})),expectError('AI_VISION_UNSUPPORTED',400));
+  await assert.rejects(callNutritionPhotoParser(configured({MINIMAX_MODEL:'MiniMax-M2.5'}),photo,{fetch}),expectError('AI_VISION_UNSUPPORTED',400));
+  await assert.rejects(callNutritionPhotoParser({...configured()},photo,{fetch}),expectError('AI_NOT_CONFIGURED',503));
+  await assert.rejects(callNutritionPhotoParser(configured(),{...photo,image:{dataUrl:'https://attacker.test/private.jpg'}},{fetch}),expectError('AI_INPUT_INVALID',400));
+  assert.equal(requests,0);
+  const flash=await callNutritionPhotoParser(configured({MINIMAX_MODEL:'MiniMax-M3.1-Flash',MINIMAX_REGION:'global'}),photo,{fetch:async(url,init)=>{
+    assert.equal(url,'https://api.minimax.io/v1/chat/completions');const body=JSON.parse(String(init?.body));assert.equal(body.reasoning_effort,'low');assert.equal(body.thinking,undefined);return jsonResponse(completion({content:'{"items":[]}'}));
+  }});assert.equal(flash.model,'MiniMax-M3.1-Flash');
 });

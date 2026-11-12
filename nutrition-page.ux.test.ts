@@ -6,11 +6,12 @@ import { renderNutritionPage } from './nutrition-page.ts';
 test('nutrition starts with one recording composer and keeps history and maintenance out of the daily path', () => {
   const { document } = parseHTML(renderNutritionPage('layout-fixture'));
   const tabs = [...document.querySelectorAll('#nutrition-entry-methods [role="tab"]')];
-  assert.deepEqual(tabs.map((tab) => tab.getAttribute('data-entry-method')), ['ai', 'quick', 'manual']);
+  assert.deepEqual(tabs.map((tab) => tab.getAttribute('data-entry-method')), ['ai', 'quick', 'manual', 'photo']);
   assert.equal(tabs.filter((tab) => tab.getAttribute('aria-selected') === 'true').length, 1);
   assert.equal(document.getElementById('nutrition-entry-ai')?.hasAttribute('hidden'), false);
   assert.equal(document.getElementById('nutrition-entry-quick')?.hasAttribute('hidden'), true);
   assert.equal(document.getElementById('nutrition-entry-manual')?.hasAttribute('hidden'), true);
+  assert.equal(document.getElementById('nutrition-entry-photo')?.hasAttribute('hidden'), true);
   for (const id of ['nutrition-options', 'nutrition-history']) {
     const section = document.getElementById(id);
     assert.equal(section?.tagName, 'DETAILS');

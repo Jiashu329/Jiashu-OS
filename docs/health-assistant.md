@@ -28,6 +28,8 @@ MiniMax 密钥使用 AES-256-GCM 加密后存入 D1，随机 IV 与认证数据�
 
 官方资料：[兼容接口与模型参数](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[获取 API Key](https://platform.minimax.cn/docs/guides/quickstart-preparation)。模型使用权限与费用由 MiniMax 账号决定。
 
+饮食页的“图片”入口沿用同一配置；M3 和 M3.1 Flash 可通过图片内容块识别餐食。仅在本人点击识别后发送本次压缩图片和补充说明，不读取或附带其他健康、饮食或财务记录。图片不保存在本站，结果核对后才进入饮食记录。此入口与文字解析、健康助手及连接测试共用应用请求额度；详见[照片识别](nutrition.md#照片识别)。
+
 ## 数据范围和行为
 
 新回答收到后会以打字机效果逐字显示，保留 Markdown 排版；可点“立即显示”展开全文。长回答自动加速，展示时间最多约 12 秒。系统启用“减少动态效果”时直接显示全文。最小化窗口会保留输出进度，向上阅读时不会强制滚动到底部。

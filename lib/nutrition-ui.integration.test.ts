@@ -62,6 +62,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   let nextGoal: (() => Promise<Response>) | undefined;
   let nextRestore: (() => Promise<Response>) | undefined;
   let nextTemplate: (() => Promise<Response>) | undefined;
+  let nextPhoto: (() => Promise<Response>) | undefined;
   const templates = structuredClone(options.templates ?? []);
   const templateReceipts = new Map<string, { serialized: string; template: NutritionTemplate }>();
   let goals={calories:null,carbs:null,protein:null,fat:null,revision:0,createdAt:null,updatedAt:null,...options.goals};
@@ -93,6 +94,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
     if(parsed.pathname.endsWith('/history'))return Response.json({entryId:ID,history:options.history??[]});
     if(parsed.pathname.endsWith('/restore')){const handler=nextRestore;nextRestore=undefined;if(handler)return handler();const current=entries.find(item=>item.id===ID)!;const target=options.history?.find(item=>item.revision===body.revision)?.after;if(!target)return Response.json({error:'找不到这个版本'},{status:404});Object.assign(current,target,{revision:current.revision+1});return Response.json({entry:current,replayed:false});}
     if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: options.foods ?? [food] });
+    if (parsed.pathname.endsWith('/photo')) { const handler=nextPhoto;nextPhoto=undefined;if(handler)return handler();return Response.json({drafts:options.drafts??[draft({date:body.date,meal:body.meal})],warnings:[],provider:'MiniMax',model:'synthetic'}); }
     if (parsed.pathname.endsWith('/parse')) return Response.json({ drafts: options.drafts ?? [draft()], warnings: [], provider: 'MiniMax', model: 'synthetic' });
     if (parsed.pathname.endsWith('/batch')) {
       const handler = nextBatch; nextBatch = undefined;
@@ -126,8 +128,11 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   if(options.durable){const saved=options.durable;Object.assign(window,{JiashuDrafts:{setOwner(){},storage(){return sessionStorage;},save(id:string,label:string,data:unknown,meta:Record<string,unknown>={}){if(options.durableFails)return false;saved.set(id,{id,label,data:structuredClone(data),updatedAt:NOW,...meta});return true;},get(id:string){return saved.get(id)??null;},list(){return [...saved.values()];},remove(id:string){return saved.delete(id);},clearConfirmed(id:string){return saved.delete(id);}}});}
   let focused: Element | null = null;
   for (const node of document.querySelectorAll('input,button,textarea,select')) Object.defineProperty(node, 'focus', { configurable: true, value() { focused = node; } });
+  const originalCreate=document.createElement.bind(document);
+  const jpeg=Uint8Array.from([255,216,255,192,0,17,8,2,88,3,32,3,1,17,0,2,17,0,3,17,0,255,217]);
+  (document as any).createElement=(tag:string,...args:any[])=>{const node=originalCreate(tag,...args);if(tag==='canvas')Object.assign(node,{getContext:()=>({fillStyle:'',fillRect(){},drawImage(){}}),toBlob(callback:(blob:Blob)=>void){callback(new Blob([jpeg],{type:'image/jpeg'}));}});return node;};
   const source = renderNutritionScript('test').replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
-  runInNewContext(source, { window, document, Element: window.Element, Event: window.Event, fetch, location, history, sessionStorage, Date: FixedDate, Intl, URL, URLSearchParams, Headers, AbortController, crypto: webcrypto, setTimeout, clearTimeout, queueMicrotask });
+  runInNewContext(source, { window, document, Element: window.Element, Event: window.Event, fetch, location, history, sessionStorage, Date: FixedDate, Intl, URL, URLSearchParams, Headers, AbortController, Blob, btoa, createImageBitmap:async()=>({width:800,height:600,close(){}}),crypto: webcrypto, setTimeout, clearTimeout, queueMicrotask });
   const el = (id: string) => document.getElementById('nutrition-' + id)! as unknown as HTMLElement & { value: string; checked: boolean; disabled: boolean; open: boolean };
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click', { button: 0 }));
   const input = (target: string | Element, value: string, kind = 'input') => { const node = typeof target === 'string' ? el(target) : target as unknown as typeof el extends (...args: any[]) => infer R ? R : never; (node as any).value = value; node.dispatchEvent(event(kind)); };
@@ -137,6 +142,8 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
     nextGoal(handler: () => Promise<Response>) { nextGoal = handler; },
     nextRestore(handler: () => Promise<Response>) { nextRestore = handler; },
     nextTemplate(handler: () => Promise<Response>) { nextTemplate = handler; },
+    nextPhoto(handler: () => Promise<Response>) { nextPhoto = handler; },
+    async photo() {Object.defineProperty(el('photo-file'),'files',{configurable:true,value:[new File([jpeg],'test-food.jpg',{type:'image/jpeg'})]});el('photo-file').dispatchEvent(event('change'));await settled(()=>!el('photo-preview').hidden);},
     setGoals(value: Record<string,any>) { goals={...goals,...value}; },
     async ready() { await settled(() => !el('content').hidden); },
     async history() { el('history').open = true; el('history').setAttribute('open', ''); el('history').dispatchEvent(event('toggle')); await settled(() => el('review-status').textContent?.includes('已记录部分') === true); },
@@ -155,6 +162,27 @@ async function openTemplates(app:ReturnType<typeof fixture>) {
   app.el('templates').open=true;app.el('templates').setAttribute('open','');app.el('templates').dispatchEvent(app.event('toggle'));
   await settled(()=>app.el('templates-status').textContent?.includes('选择模板')===true||app.el('templates-status').textContent?.includes('还没有模板')===true);
 }
+
+test('photo recognition uses the existing editable batch and preserves an unrelated text description after saving',async()=>{
+  const durable=new Map<string,any>();
+  const app=fixture({durable,drafts:[draft({calories:'450.0',carbs:'50.0',protein:'0.0',fat:null,calorieSource:'ai',macroSources:{carbs:'ai',protein:'ai',fat:null},provenance:{calories:{source:'ai',basis:'图片份量参考',portion:'约1份',originalValue:'450.0'},carbs:{source:'ai',basis:'图片估算',originalValue:'50.0'},protein:{source:'ai',basis:'图片估算',originalValue:'0.0'},fat:{source:'unknown'}},note:'图片估算需核对'})]});
+  await app.ready();app.input('ai-text','这份文字草稿还没有整理');app.click(app.document.querySelector('[data-entry-method="photo"]')!);app.input('photo-meal','lunch','change');app.input('photo-text','这是我的午餐');await app.photo();
+  assert.equal(app.requests.some((row)=>row.url.endsWith('/photo')),false);assert.equal(app.el('entry-ai').hidden,true);assert.equal(app.el('entry-photo').hidden,false);
+  app.submit('photo-form');await settled(()=>app.el('batch-dialog').open);assert.equal(app.entries.length,0);
+  assert.equal(app.requests.filter((row)=>row.url.endsWith('/photo')).length,1);assert.equal(app.requests.some((row)=>row.url.endsWith('/batch')),false);assert.ok(!JSON.stringify([...durable.values()]).includes('data:image'));
+  app.submit('batch-form');await settled(()=>app.entries.length===1&&!app.el('batch-dialog').open);
+  assert.equal(app.entries[0].protein,'0.0');assert.equal(app.entries[0].fat,null);assert.equal(app.entries[0].provenance.calories.source,'ai');assert.equal(app.el('ai-text').value,'这份文字草稿还没有整理');assert.equal(app.el('photo-preview').hidden,true);assert.equal(app.el('photo-text').value,'');
+  assert.ok(!JSON.stringify([...app.storage.values()]).includes('data:image'));assert.ok(!JSON.stringify([...durable.values()]).includes('data:image'));
+});
+
+test('a pending batch prevents photo model calls and an in-flight photo excludes the text parser',async()=>{
+  const app=fixture({drafts:[draft()]});await app.ready();app.click(app.document.querySelector('[data-entry-method="photo"]')!);await app.photo();
+  let finish!:(response:Response)=>void;app.nextPhoto(()=>new Promise<Response>((done)=>finish=done));app.submit('photo-form');await settled(()=>app.requests.some((row)=>row.url.endsWith('/photo')));
+  app.input('ai-text','当前不应发送这句话');app.click('ai-parse');assert.equal(app.requests.some((row)=>row.url.endsWith('/parse')),false);
+  finish(Response.json({drafts:[draft({meal:null})],warnings:[]}));await settled(()=>app.el('batch-dialog').open);
+  assert.equal(app.el('photo-recognize').disabled,true);app.submit('photo-form');assert.equal(app.requests.filter((row)=>row.url.endsWith('/photo')).length,1);
+  app.input(app.el('batch-rows').querySelector('[data-draft-field="meal"]')!,'lunch','change');app.nextBatch(async()=>{throw new Error('synthetic uncertain reply');});app.submit('batch-form');await settled(()=>app.el('batch-error').textContent?.length!==0);app.submit('photo-form');assert.equal(app.requests.filter((row)=>row.url.endsWith('/photo')).length,1);assert.equal(app.el('ai-text').value,'当前不应发送这句话');
+});
 
 test('personal foods stay behind quick-entry disclosure and save four nullable values with packaging sources',async()=>{
   const app=fixture();await app.ready();assert.equal(app.requests.some(row=>row.url.includes('/templates')),false);await openTemplates(app);

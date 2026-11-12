@@ -51,3 +51,10 @@ test('a 503 preserves status and safe diagnostics for the retry UI', async () =>
   const untrusted = fixture(async () => Response.json({ diagnosticId: '<unsafe-value>' }, { status: 503 }));
   await assert.rejects(untrusted('/api/health'), (error: unknown) => !(error as Error).message.includes('<unsafe-value>'));
 });
+
+test('only a bounded numeric 429 retry interval reaches the explicit retry UI',async()=>{
+  for(const [status,header,expected]of [[429,'37',37],[429,'86400',86400],[429,'0',undefined],[429,'86401',undefined],[429,'<unsafe>',undefined],[429,'Thu, 12 Nov 2026 12:00:00 GMT',undefined],[503,'37',undefined]] as const){
+    const request=fixture(async()=>Response.json({error:'请稍后重试',code:'RATE_LIMITED'},{status,headers:{'Retry-After':header}}));
+    await assert.rejects(request('/api/health/nutrition/photo'),(error:unknown)=>{assert.equal((error as {retryAfter?:number}).retryAfter,expected);return true;});
+  }
+});
