@@ -173,10 +173,13 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     const candidates = searchFoods(name, 6);
     // The official display name carries its specification; a branded base name
     // may resolve only when exactly one specification matches.
-    const exact = candidates.filter((food) => [food.name, ...food.aliases,
+    // A Luckin product is published for one specific cup/temperature/sweetness
+    // configuration. A model-normalized name cannot establish that configuration.
+    const exact = candidates.filter((food) => !food.id.startsWith('luckin-cn:') && [food.name, ...food.aliases,
       ...(food.basis === 'perServing' ? [food.name.replace(/［[^［］]+］$/, '')] : [])].some((alias) => normalized(alias) === normalized(name))
       && compatiblePreparation(value.sourceText as string, food));
     const warnings: string[] = [];
+    if (candidates.some((food) => food.id.startsWith('luckin-cn:'))) warnings.push('瑞幸官网热量仅适用于列明的杯型、冰热和糖度，请核对候选规格后主动选择。');
     const estimate = calorieEstimate(value.estimate);
     let food: NutritionDraft['food'] = null, calories: string | null = null, portion = amount === null ? '份量待补充' : String(amount) + (unit ?? '（单位待补充）');
     let calorieSource: NutritionDraft['calorieSource'] = null, note = '';

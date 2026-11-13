@@ -1,0 +1,35 @@
+{
+  "name": "瑞幸咖啡中国官网产品信息",
+  "url": "https://lkcoffee.com/products",
+  "version": "2026-11-13官网快照（未注明营养更新日期）",
+  "count": 28,
+  "nutritionCount": 21,
+  "catalogOnlyCount": 7,
+  "description": "官网产品信息快照：28款餐品，21款公布特定配置的单杯热量，7款未公布热量。杯型、冰热、咖啡豆、浓度和糖度须与官网列明配置一致；未为其他配置推算热量。",
+  "snapshotDate": "2026-11-13",
+  "upstreamRelease": null,
+  "attribution": "瑞幸咖啡中国官网产品信息与对应产品详情；营养数据、产品图片及免责声明以官网为准。",
+  "rightsNotice": "官网公开页面，未提供开放数据许可；不套用其他数据来源的许可。",
+  "servingBasis": "每份表示官网列明参考配置的一杯；杯体容量提示不作为实际饮品克重，不转换为每100克数据。",
+  "source": {
+    "rawFile": "data/food-catalog-sources/luckin-cn-2026-11-13.raw.json",
+    "rawSha256": "e689b5455564f346f24522c693a9ffee99c4b4625dc3d000169132a47e9cb38f",
+    "fetchedAtUtc": "2026-11-13T05:59:21.317906+00:00",
+    "listingApi": "https://lkcoffee.com/portalcapi/resource/portal/product/list",
+    "queryExample": {
+      "pageNum": 1,
+      "pageSize": 12,
+      "categorySlug": "lattes"
+    }
+  },
+  "release": {
+    "id": "luckin-cn-2026-11-13-v1",
+    "file": "data/food-catalog-releases/luckin-cn-2026-11-13-v1.json",
+    "sha256": "12a002b953e8aafdd488cbb3a04009c76f9cfff26750a1378f244d7f7334f9d4"
+  },
+  "transformation": {
+    "script": "scripts/import-luckin-catalog.py",
+    "calories": "仅提取官方热量声明，kJ未知，不按4.184反算；宏量营养仅使用明确单杯营养字段。",
+    "excluded": "未为可选杯型、糖度和温度生成未经公布的营养规格；未从0糖0脂营销描述推导营养值。"
+  }
+}

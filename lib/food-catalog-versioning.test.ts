@@ -84,7 +84,7 @@ void test('legacy queued submissions keep their pre-versioning fingerprint and e
   }
 });
 
-void test('previous brand submissions retain their fingerprint while new selections bind the withdrawal release', async () => {
+void test('previous brand submissions retain their fingerprint while new selections bind the active release', async () => {
   const selection = { id: 'mcd-cn:49:28', amount: 1, unit: '份' };
   const previous = parseNutritionCreate({ ...body, food: { ...selection, catalogRelease: MCD_FOOD_CATALOG_RELEASE } }, now);
   const current = parseNutritionCreate({ ...body, food: { ...selection, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE } }, now);

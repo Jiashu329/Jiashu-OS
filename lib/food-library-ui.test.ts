@@ -5,18 +5,22 @@ import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import mcd from '../data/food-catalog-releases/mcd-cn-2025-04-v1.json' with { type: 'json' };
+import mcdSource from '../data/food-catalog-sources/mcd-cn-2025-04.json' with { type: 'json' };
 import { renderFoodLibraryPage } from '../food-library-page.ts';
 import { FOOD_LIBRARY_CSS, FOOD_LIBRARY_SCRIPT } from './food-library-ui.ts';
 
 const foods = mcd.foods;
 const categories = [...new Set(foods.map((food) => food.category))].map((name) => ({ name, count: foods.filter((food) => food.category === name).length }));
-type Reply = { foods: unknown[]; categories: typeof categories; total: number; images?: Record<string, {src:string;alt:string}> };
+type Reply = { foods: unknown[]; categories: typeof categories; total: number; images?: Record<string, {src:string;alt:string}>; brands?: Array<{id:string;name:string;count:number}>; sources?: unknown[] };
 type Responder = (url: URL) => Response | Promise<Response>;
 async function settled(check: () => boolean) {
   for (let count = 0; count < 80; count++) { if (check()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
   assert.ok(check(), 'Food library operation did not settle');
 }
-function fixture(options: { search?: string; responder?: Responder } = {}) {
+function fixture(options: { search?: string; responder?: Responder; catalog?: Array<{id:string;name:string;aliases:string[];category:string}> } = {}) {
+  const catalog = options.catalog ?? foods;
+  const catalogCategories = [...new Set(catalog.map((food) => food.category))].map((name) => ({name,count:catalog.filter((food)=>food.category===name).length}));
+  const brands = [{id:'mcd-cn',name:'麦当劳中国',count:catalog.filter(food=>food.id.startsWith('mcd-cn:')).length},{id:'luckin-cn',name:'瑞幸咖啡',count:catalog.filter(food=>food.id.startsWith('luckin-cn:')).length}];
   const { window, document } = parseHTML(renderFoodLibraryPage());
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -38,9 +42,9 @@ function fixture(options: { search?: string; responder?: Responder } = {}) {
   const session = { document, changed: false, async request(input: string, init: RequestInit) {
     const url = new URL(input, location.origin); requests.push({ url, init });
     const responder = next; next = null; if (responder) return responder(url);
-    const query = url.searchParams.get('q') || '', category = url.searchParams.get('category') || '', offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
-    const matches = foods.filter((food) => (!category || food.category === category) && (!query || food.name.includes(query) || food.aliases.some((alias) => alias.includes(query))));
-    return Response.json({ foods: matches.slice(offset, offset + limit), categories, total: matches.length, images: Object.fromEntries(matches.map((food) => [food.id, {src:'/food-images/mcd-cn/'+food.id.split(':')[1]+'.png',alt:food.name}])) } satisfies Reply);
+    const query = url.searchParams.get('q') || '', brand=url.searchParams.get('brand')||'', category = url.searchParams.get('category') || '', offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
+    const matches = catalog.filter((food) => (!brand || food.id.startsWith(brand+':')) && (!category || food.category === category) && (!query || food.name.includes(query) || food.aliases.some((alias) => alias.includes(query))));
+    return Response.json({ foods: matches.slice(offset, offset + limit), categories:catalogCategories, brands, sources:[mcdSource], total: matches.length, images: Object.fromEntries(matches.map((food) => [food.id, {src:'/food-images/'+food.id.split(':')[0]+'/'+food.id.split(':')[1]+'.png',alt:food.name}])) } satisfies Reply);
   } };
   Object.assign(window, { JiashuAccountSession: session });
   runInNewContext(FOOD_LIBRARY_SCRIPT, { window, document, location, history, URL, URLSearchParams, Element: window.Element, AbortController, setTimeout, clearTimeout });
@@ -48,6 +52,7 @@ function fixture(options: { search?: string; responder?: Responder } = {}) {
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click'));
   return { window, document, session, requests, visited, location, el, click,
     submit() { el('filter').dispatchEvent(event('submit')); },
+    changeBrand(brand: string) { el('brand').value = brand; el('brand').dispatchEvent(event('change')); },
     changeCategory(category: string) { el('category').value = category; el('category').dispatchEvent(event('change')); },
     next(responder: Responder) { next = responder; },
     ready() { return settled(() => el('list').getAttribute('aria-busy') === 'false'); },
@@ -58,7 +63,7 @@ function fixture(options: { search?: string; responder?: Responder } = {}) {
 test('food library restores shareable search/category/page URL state and uses identity-aware read transport', async () => {
   const app = fixture({ search: '?q=&category=' + encodeURIComponent('汉堡和卷') + '&offset=24&ignored=1' });
   await app.ready();
-  assert.equal(app.requests[0].url.pathname, '/api/health/nutrition/foods');
+  assert.equal(app.requests[0].url.pathname, '/api/health/foods');
   assert.equal(app.requests[0].url.searchParams.get('limit'), '24');
   assert.equal(app.requests[0].url.searchParams.get('category'), '汉堡和卷');
   assert.equal(app.requests.every((request) => request.init.method === 'GET' && request.init.cache === 'no-store'), true);
@@ -67,7 +72,7 @@ test('food library restores shareable search/category/page URL state and uses id
   assert.equal(app.document.querySelectorAll('#food-library-category option').length, 9);
   app.click('clear'); await app.ready();
   assert.equal(app.document.querySelectorAll('.fl-card').length, 24);
-  assert.equal(app.el('count').textContent, '共 137 个规格 · 显示 1–24');
+  assert.equal(app.el('count').textContent, '共 137 个条目 · 显示 1–24');
   app.click('next'); await app.ready();
   assert.equal(new URLSearchParams(app.location.search).get('offset'), '24');
   assert.equal(app.el('page-number').textContent, '第 2 / 6 页');
@@ -228,4 +233,57 @@ test('food library route authenticates its canonical URL and marks the document 
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.match(await response.text(), /<!-- owner=alice -->/);
+});
+
+const luckinKnown = {
+  ...foods[0], id:'luckin-cn:1', name:'瑞幸生椰拿铁', aliases:['瑞幸生椰拿铁'], category:'拿铁类', description:'官网热量适用于指定配置。',
+  source:{name:'瑞幸咖啡官网产品信息',url:'https://lkcoffee.com/products/coconut-latte',recordId:'1',version:'2026-11-13官网快照（未注明营养更新日期）'},
+  serving:{unit:'份',label:'大杯/冰/埃塞金烘/默认浓度/不另外加糖',originalLabel:null,kcal:179,energyKj:null,energyBasis:'officialKcal'},
+};
+const luckinUnknown = {
+  basis:'catalogOnly', id:'luckin-cn:44', name:'瑞幸泰奶鸳鸯拿铁', aliases:['瑞幸泰奶鸳鸯拿铁'], category:'拿铁类',
+  description:'官网仅公布部分营养信息。',source:{...luckinKnown.source,url:'https://lkcoffee.com/products/thai-yuen-yeung-latte',recordId:'44'},
+  reference:{label:null,protein:6.5,caffeineMg:143.1},
+};
+
+test('brand changes reset pagination and category while preserving search and browser URL restoration', async () => {
+  const app = fixture({catalog:[...foods,luckinKnown,luckinUnknown]});await app.ready();
+  assert.equal(app.document.querySelectorAll('#food-library-brand option').length,3);
+  app.click('next');await app.ready();
+  app.changeCategory('汉堡和卷');await app.ready();
+  app.changeBrand('luckin-cn');await app.ready();
+  assert.equal(app.el('brand').value,'luckin-cn');assert.equal(app.el('category').value,'');
+  assert.equal(app.el('list').children.length,2);assert.equal(app.el('pagination').hidden,true);
+  assert.equal(new URLSearchParams(app.location.search).get('brand'),'luckin-cn');
+  assert.equal(new URLSearchParams(app.location.search).has('category'),false);
+  assert.equal(new URLSearchParams(app.location.search).has('offset'),false);
+  assert.equal(app.requests.at(-1)?.url.searchParams.get('brand'),'luckin-cn');
+  app.location.search='?brand=mcd-cn&offset=24';app.window.dispatchEvent(new app.window.Event('popstate'));await app.ready();
+  assert.equal(app.el('brand').value,'mcd-cn');assert.equal(app.el('list').children.length,24);
+  assert.equal(app.el('page-number').textContent,'第 2 / 6 页');
+  app.click('clear');await app.ready();assert.equal(app.el('brand').value,'');assert.equal(app.el('count').textContent,'共 139 个条目 · 显示 1–24');
+});
+
+test('Luckin calories retain their exact official configuration and missing kJ or macros stay unpublished', async () => {
+  const app=fixture({responder:()=>Response.json({foods:[luckinKnown],total:1,categories:[{name:'拿铁类',count:1}],brands:[{id:'luckin-cn',name:'瑞幸咖啡',count:1}],sources:[{name:luckinKnown.source.name,snapshotDate:'2026-11-13'}],images:{[luckinKnown.id]:{src:'/food-images/luckin-cn/1.jpeg',alt:'生椰拿铁'}}})});await app.ready();
+  assert.equal(app.el('list').querySelector('img')?.getAttribute('src'),'/food-images/luckin-cn/1.jpeg');
+  assert.match(app.el('list').textContent??'',/179/);assert.match(app.el('list').textContent??'',/大杯\/冰\/埃塞金烘\/默认浓度\/不另外加糖/);
+  app.click(app.document.querySelector('[data-food-open]')!);
+  const text=app.el('detail').textContent??'';assert.match(text,/179/);assert.match(text,/2026-11-13/);assert.doesNotMatch(text,/2026-11-12|2025-04/);
+  const energyRow=[...app.el('detail').querySelectorAll('dl>div')].find(row=>row.querySelector('dt')?.textContent==='能量');
+  assert.equal(energyRow?.querySelector('dd')?.textContent,'未公布');
+  assert.equal(app.el('detail').querySelectorAll('.fl-ring-carbs,.fl-ring-protein,.fl-ring-fat').length,0);
+  assert.ok(app.el('detail').querySelector('.fl-ring-missing'));assert.match(text,/修改杯型、冰热、糖度或配料后需重新核对/);
+});
+
+test('a catalog-only product displays unknown heat without inventing serving weight and offers manual confirmation', async () => {
+  const app=fixture({catalog:[luckinUnknown]});await app.ready();
+  assert.match(app.el('list').textContent??'',/热量未公布/);assert.match(app.el('list').textContent??'',/官网未注明固定规格/);
+  assert.doesNotMatch(app.el('list').textContent??'',/0 kcal|null|NaN|每 100 克/);
+  app.click(app.document.querySelector('[data-food-open]')!);
+  const text=app.el('detail').textContent??'';
+  assert.match(text,/蛋白质6.5 g/);assert.match(text,/咖啡因143.1 mg/);assert.match(text,/官网未公布此产品的热量/);
+  assert.doesNotMatch(text,/0 kcal|null|NaN|每 100 克/);
+  assert.equal(app.el('record').textContent,'带入手工核对');assert.equal(app.el('record').getAttribute('href'),'/health/nutrition?food=luckin-cn%3A44');
+  assert.equal(app.requests.length,1);assert.ok(app.requests.every(item=>item.init.method==='GET'));
 });

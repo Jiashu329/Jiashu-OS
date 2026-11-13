@@ -10,8 +10,10 @@ export async function GET(request: Request) {
   const text = source.get('q')?.trim().slice(0, 100);
   const category = source.get('category')?.slice(0, 100);
   const offset = source.get('offset');
+  const brand = source.get('brand');
   if (text) query.set('q', text);
   if (category) query.set('category', category);
+  if (brand === 'mcd-cn' || brand === 'luckin-cn') query.set('brand', brand);
   if (offset && /^(?:0|[1-9]\d*)$/.test(offset) && Number.isSafeInteger(Number(offset))) query.set('offset', String(Math.floor(Number(offset) / 24) * 24));
   const user = await requireChatGPTUser('/health/foods' + (query.size ? '?' + query : ''));
   return new Response(withPageAccount(renderFoodLibraryPage(), user.userId), { headers: {

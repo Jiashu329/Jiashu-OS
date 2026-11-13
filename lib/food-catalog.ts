@@ -4,7 +4,10 @@ import releaseManifest from '../data/food-catalog-releases.json' with { type: 'j
 import chineseRelease from '../data/food-catalog-releases/tfda-2024-03-29-cn2.json' with { type: 'json' };
 import mcdRelease from '../data/food-catalog-releases/mcd-cn-2025-04-v1.json' with { type: 'json' };
 import mcdSource from '../data/food-catalog-sources/mcd-cn-2025-04.json' with { type: 'json' };
-import currentRelease from '../data/food-catalog-releases/mcd-only-2026-11-13-v1.json' with { type: 'json' };
+import mcdOnlyRelease from '../data/food-catalog-releases/mcd-only-2026-11-13-v1.json' with { type: 'json' };
+import luckinRelease from '../data/food-catalog-releases/luckin-cn-2026-11-13-v1.json' with { type: 'json' };
+import luckinSource from '../data/food-catalog-sources/luckin-cn-2026-11-13.json' with { type: 'json' };
+import currentRelease from '../data/food-catalog-releases/brands-2026-11-13-luckin-v1.json' with { type: 'json' };
 
 export interface FoodSource { name: string; url: string; recordId: string; version: string }
 interface FoodItemBase {
@@ -30,7 +33,9 @@ export interface ServingNutrition {
   label: string;
   originalLabel: string | null;
   kcal: number;
-  energyKj: number;
+  /** Null when the upstream label publishes kcal only; never infer kJ. */
+  energyKj: number | null;
+  energyBasis?: 'officialKcal';
   protein?: number;
   fat?: number;
   carbs?: number;
@@ -95,15 +100,19 @@ export const LEGACY_FOOD_CATALOG_RELEASE = releaseManifest.legacy;
 export const ACTIVE_FOOD_CATALOG_RELEASE = releaseManifest.active;
 export const CHINESE_FOOD_CATALOG_RELEASE = chineseRelease.id;
 export const MCD_FOOD_CATALOG_RELEASE = mcdRelease.id;
+export const MCD_ONLY_FOOD_CATALOG_RELEASE = mcdOnlyRelease.id;
 export const FOOD_CATALOG_RELEASES = Object.freeze(releaseManifest.releases.map((release) => Object.freeze({ ...release,
-  sourceVersion: release.id === ACTIVE_FOOD_CATALOG_RELEASE ? mcdSource.version
-    : release.id === MCD_FOOD_CATALOG_RELEASE ? `${sourceData.version}；${mcdSource.version}` : sourceData.version,
-  sourceSnapshotDate: [MCD_FOOD_CATALOG_RELEASE, ACTIVE_FOOD_CATALOG_RELEASE].includes(release.id) ? mcdSource.snapshotDate : sourceData.snapshotDate,
+  sourceVersion: release.id === ACTIVE_FOOD_CATALOG_RELEASE ? `${mcdSource.version}；${luckinSource.version}`
+    : release.id === MCD_ONLY_FOOD_CATALOG_RELEASE ? mcdSource.version
+      : release.id === MCD_FOOD_CATALOG_RELEASE ? `${sourceData.version}；${mcdSource.version}` : sourceData.version,
+  sourceSnapshotDate: release.id === ACTIVE_FOOD_CATALOG_RELEASE ? luckinSource.snapshotDate
+    : [MCD_FOOD_CATALOG_RELEASE, MCD_ONLY_FOOD_CATALOG_RELEASE].includes(release.id) ? mcdSource.snapshotDate : sourceData.snapshotDate,
   active: release.id === ACTIVE_FOOD_CATALOG_RELEASE })));
-/** Current discovery has one source. Archived sources are retained only to validate captured records. */
+/** Each brand retains its own upstream attribution and published nutritional basis. */
 export const FOOD_CATALOG_SOURCE = Object.freeze({ ...mcdSource, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE,
   catalogVersion: currentRelease.label, catalogUpdatedAt: currentRelease.publishedAt });
-export const FOOD_CATALOG_SOURCES = Object.freeze([FOOD_CATALOG_SOURCE]);
+export const FOOD_CATALOG_SOURCES = Object.freeze([FOOD_CATALOG_SOURCE,
+  Object.freeze({ ...luckinSource, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE })]);
 function freezeFood(food: FoodItem): FoodItem {
   return Object.freeze({ ...food, source: Object.freeze({ ...food.source }),
     ...(isServingFood(food) ? { serving: Object.freeze({ ...food.serving }) } : {}),
@@ -124,8 +133,15 @@ const previousCatalog: FoodItem[] = [
 // A withdrawal is a new immutable release; the prior mixed catalog must remain
 // byte-for-byte calculable for stored snapshots, queued commands and backups.
 const previousBrandFoods = new Map(previousCatalog.filter((food) => food.id.startsWith('mcd-cn:')).map((food) => [food.id, food]));
-const catalog: FoodItem[] = currentRelease.foodIds.map((id) => {
+const mcdOnlyCatalog: FoodItem[] = mcdOnlyRelease.foodIds.map((id) => {
   const food = previousBrandFoods.get(id);
+  if (!food) throw new Error('食物库发布清单缺少可信来源。');
+  return freezeFood({ ...food, catalogRelease: MCD_ONLY_FOOD_CATALOG_RELEASE });
+});
+const currentFoods = new Map([...mcdOnlyCatalog, ...(luckinRelease.foods as ServingFoodItem[])]
+  .map((food) => [food.id, food]));
+const catalog: FoodItem[] = currentRelease.foodIds.map((id) => {
+  const food = currentFoods.get(id);
   if (!food) throw new Error('当前食物库发布清单缺少可信来源。');
   return freezeFood({ ...food, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE });
 });
@@ -133,6 +149,7 @@ const releases = new Map<string, Map<string, FoodItem>>([
   [LEGACY_FOOD_CATALOG_RELEASE, new Map(baseline.map((food) => [food.id.toLowerCase(), food]))],
   [CHINESE_FOOD_CATALOG_RELEASE, new Map(chineseCatalog.map((food) => [food.id.toLowerCase(), food]))],
   [MCD_FOOD_CATALOG_RELEASE, new Map(previousCatalog.map((food) => [food.id.toLowerCase(), food]))],
+  [MCD_ONLY_FOOD_CATALOG_RELEASE, new Map(mcdOnlyCatalog.map((food) => [food.id.toLowerCase(), food]))],
   [ACTIVE_FOOD_CATALOG_RELEASE, new Map(catalog.map((food) => [food.id.toLowerCase(), food]))],
 ]);
 export const FOOD_CATALOG_CATEGORIES = Object.freeze([...new Set(catalog.map((food) => food.category))]
@@ -191,8 +208,11 @@ function calculateServingFood(food: ServingFoodItem, amount: number, unit: strin
   if (unit !== food.serving.unit) throw new Error('此食物仅公布官方规格每份营养，请按份数记录；没有克重或毫升换算依据。');
   if (amount > 1000) throw new Error('单项食物最多记录1,000份，请核对份数。');
   const serving = food.serving;
-  if (serving.unit !== '份' || !serving.label || !Number.isFinite(serving.energyKj) || serving.energyKj < 0
-    || !Number.isInteger(serving.kcal) || serving.kcal < 0 || serving.kcal !== Math.round(serving.energyKj / 4.184)) {
+  const officialKcal = serving.energyBasis === 'officialKcal' && serving.energyKj === null;
+  const officialKj = serving.energyBasis === undefined && typeof serving.energyKj === 'number'
+    && Number.isFinite(serving.energyKj) && serving.energyKj >= 0 && serving.kcal === Math.round(serving.energyKj / 4.184);
+  if (serving.unit !== '份' || !serving.label || !Number.isInteger(serving.kcal) || serving.kcal < 0
+    || (!officialKcal && !officialKj)) {
     throw new Error('食物库官方每份营养数据格式不正确，请重新选择食物。');
   }
   const macros: { carbsTenth?: number; proteinTenth?: number; fatTenth?: number } = {};

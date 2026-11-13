@@ -1,0 +1,374 @@
+{
+  "sourcePage": "https://lkcoffee.com/products",
+  "sourceRawFile": "data/food-catalog-sources/luckin-cn-2026-11-13.raw.json",
+  "sourceRawSha256": "e689b5455564f346f24522c693a9ffee99c4b4625dc3d000169132a47e9cb38f",
+  "fetchedAtUtc": "2026-11-13T05:59:21.317906+00:00",
+  "description": "瑞幸中国官网对应产品原图，不代表实际杯型、容量或配方。",
+  "rightsNotice": "官网未提供开放数据许可。",
+  "images": [
+    {
+      "productId": "1",
+      "productTitle": "生椰拿铁",
+      "foodIds": [
+        "luckin-cn:1"
+      ],
+      "src": "/food-images/luckin-cn/1.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/52155ea342784e5e92935467d921b24c.png",
+      "sha256": "de5ffa17a9ddba18b6db1ae47547990c218e1906f80d11fc1d10e8a568426710",
+      "bytes": 109323,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "4",
+      "productTitle": "茉莉花香拿铁",
+      "foodIds": [
+        "luckin-cn:4"
+      ],
+      "src": "/food-images/luckin-cn/4.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/08/0de4a497f3ba47fab6239bac36840385.png",
+      "sha256": "b53b3114de12a25e868a04a6cb78bb798e00e36849c78ce0b95da12c277adf34",
+      "bytes": 55138,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "5",
+      "productTitle": "拿铁",
+      "foodIds": [
+        "luckin-cn:5"
+      ],
+      "src": "/food-images/luckin-cn/5.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/08/81a3af83583a4752bf00a0e40df95e59.png",
+      "sha256": "5110b86536ec98abe8da3f6e3fbb8b023a76e9c52a73f3fc57229f73f4fbfcde",
+      "bytes": 40478,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "7",
+      "productTitle": "小黄油拿铁",
+      "foodIds": [
+        "luckin-cn:7"
+      ],
+      "src": "/food-images/luckin-cn/7.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/f061918c5d4c4688b0b84f477f74fd21.png",
+      "sha256": "aca8168395f73b3e9be5f69b43da40b2a1b44e1e460b6c46de9a37af04943c95",
+      "bytes": 127431,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "9",
+      "productTitle": "轻椰茉莉拿铁",
+      "foodIds": [
+        "luckin-cn:9"
+      ],
+      "src": "/food-images/luckin-cn/9.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/0ddfaeeba9d94a1583dfb8fafcb1e28f.png",
+      "sha256": "4c45d167aabef8b554f529ac74291886779e21eb2e257aff6017c3590fce070f",
+      "bytes": 125402,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "10",
+      "productTitle": "丝绒拿铁",
+      "foodIds": [
+        "luckin-cn:10"
+      ],
+      "src": "/food-images/luckin-cn/10.jpeg",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/08/26f156673e8f4eb6ab9fb2c0c6b68102.jpeg",
+      "sha256": "e6bd5da4b2fc18b2d9c8800c7dfe50368885e02e61cf35343f812a3f630fbb66",
+      "bytes": 11881,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "44",
+      "productTitle": "泰奶鸳鸯拿铁",
+      "foodIds": [
+        "luckin-cn:44"
+      ],
+      "src": "/food-images/luckin-cn/44.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/08/17/7ecb19d3d2db4cf2baec8eb041689138.png",
+      "sha256": "c728b31f47d8c4a564b399995eba38f887b4b9dec5910dfba333f1427c3c72b2",
+      "bytes": 129509,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "52",
+      "productTitle": "小奶酪拿铁",
+      "foodIds": [
+        "luckin-cn:52"
+      ],
+      "src": "/food-images/luckin-cn/52.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/09/07/6cd25d89b5cf40a69f38f93b2e58c776.png",
+      "sha256": "668af05e6a080538f712bc88bebb01ce53d9bdfa31d46b9a2df2a91a9c3950ce",
+      "bytes": 103906,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "20",
+      "productTitle": "生椰杨枝甘露",
+      "foodIds": [
+        "luckin-cn:20"
+      ],
+      "src": "/food-images/luckin-cn/20.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/11/18b64d3f2900454490805d02fa40e398.png",
+      "sha256": "09ae98120a79b0ad67aa000f0bad6e609a9936c8cd4c9e5f9a69ac0d982555ab",
+      "bytes": 72126,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "43",
+      "productTitle": "经典泰奶",
+      "foodIds": [
+        "luckin-cn:43"
+      ],
+      "src": "/food-images/luckin-cn/43.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/08/17/8796417fbf2241279bf56124441b50ca.png",
+      "sha256": "3a4725983e3e62ede77b7c8679899a53193dc059e9c10492855f1bac56447d99",
+      "bytes": 125775,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "49",
+      "productTitle": "咸法酪泰奶",
+      "foodIds": [
+        "luckin-cn:49"
+      ],
+      "src": "/food-images/luckin-cn/49.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/08/31/dedbf3234ca24cb9ba3c42dd17891d35.png",
+      "sha256": "c084753a706cf6e2b4a6f88a74856421cf60717d6f1b0f86c7b2f0035c172208",
+      "bytes": 104849,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "51",
+      "productTitle": "抹茶奶酪拿铁",
+      "foodIds": [
+        "luckin-cn:51"
+      ],
+      "src": "/food-images/luckin-cn/51.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/09/07/8939050e89864b0cad44065159ca49ab.png",
+      "sha256": "29466ccba0171b1f3584df55988b55e58d232971ad6e525ce713535a74d757ed",
+      "bytes": 102343,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "2",
+      "productTitle": "标准美式",
+      "foodIds": [
+        "luckin-cn:2"
+      ],
+      "src": "/food-images/luckin-cn/2.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/05/26/2d5a0991ec494824bce275529e6082e2.png",
+      "sha256": "9690d012a13168399f2e1efff106b06dc82cc17e16bf72fbb82908cd3d601d70",
+      "bytes": 100972,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "3",
+      "productTitle": "加浓美式",
+      "foodIds": [
+        "luckin-cn:3"
+      ],
+      "src": "/food-images/luckin-cn/3.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/05/26/80e338ad3e6f49728043565ccb700416.png",
+      "sha256": "55b358e3150ed079219b81689cc21c096a66553091e3a0790f8bd7859c18f74e",
+      "bytes": 101052,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "12",
+      "productTitle": "橙C美式",
+      "foodIds": [
+        "luckin-cn:12"
+      ],
+      "src": "/food-images/luckin-cn/12.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/8083ab7c6e9f4a2d8556abf6864d6c36.png",
+      "sha256": "fdda4ad76a46fa04dd6104f546695b67ba52350ee50fd5a1a5cb5907a336ecae",
+      "bytes": 132927,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "13",
+      "productTitle": "小黄油美式",
+      "foodIds": [
+        "luckin-cn:13"
+      ],
+      "src": "/food-images/luckin-cn/13.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/3e15b9d9c55d468882b839a7684d6b28.png",
+      "sha256": "77ad5fda1da164af349551f1405e75a611a47a212a8d33025b40972e33b87c60",
+      "bytes": 119509,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "14",
+      "productTitle": "苹果C美式",
+      "foodIds": [
+        "luckin-cn:14"
+      ],
+      "src": "/food-images/luckin-cn/14.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/53a095b960a04fd1b92bbe1ae45bd9ea.png",
+      "sha256": "b7393e4b6bf015fc6be544c5ab3e51ae69af0c8e8062ce6894bba591f5cf27fa",
+      "bytes": 112699,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "15",
+      "productTitle": "柚C美式",
+      "foodIds": [
+        "luckin-cn:15"
+      ],
+      "src": "/food-images/luckin-cn/15.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/13/2ec3e5a946a4432e8fdf88ec07d8ac95.png",
+      "sha256": "84ac6b157af8e351f641bbf3799aefeab3104f83dcac4e725c20a68f8cdc7035",
+      "bytes": 121705,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "26",
+      "productTitle": "全冰黑巧美式",
+      "foodIds": [
+        "luckin-cn:26"
+      ],
+      "src": "/food-images/luckin-cn/26.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/07/12/4f760d6b14cd4ccfb6b4881e94211a00.png",
+      "sha256": "53e9e6fee52dd2aaeac211f847f1bdbc2afb9b8d61afe9a850412b1c3a1e5e7c",
+      "bytes": 39682,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "60",
+      "productTitle": "柠C气泡美式",
+      "foodIds": [
+        "luckin-cn:60"
+      ],
+      "src": "/food-images/luckin-cn/60.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/cc620ca04fa3425f83a5a1f6d46b1b77.png",
+      "sha256": "8d27aab47d1b32cd3e781da19739d7add5b744c1f0533802a5eb1e1160255080",
+      "bytes": 125735,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "61",
+      "productTitle": "鲜切柠C美式",
+      "foodIds": [
+        "luckin-cn:61"
+      ],
+      "src": "/food-images/luckin-cn/61.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/13/b98a6caa54b74773bb955b583c01c5d5.png",
+      "sha256": "5cb6472e2af5bd8a1fca27e7945df119815d6163b00a552116f866d821423e3e",
+      "bytes": 126739,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "18",
+      "productTitle": "苹果C冰茶",
+      "foodIds": [
+        "luckin-cn:18"
+      ],
+      "src": "/food-images/luckin-cn/18.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/8e7270373e1e4f268a1df64a4b75582d.png",
+      "sha256": "e5a72036b64e0ea0f5c3d30ce8818950915d3e3327be87c44f7ea6d1e8d506a0",
+      "bytes": 79249,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "19",
+      "productTitle": "葡萄冰茶",
+      "foodIds": [
+        "luckin-cn:19"
+      ],
+      "src": "/food-images/luckin-cn/19.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/11/11/e4e461eddeaf40838c351fc4cb9a8ccf.png",
+      "sha256": "91e4fd037537880b39ffce94aea9cde17c8065dc4c7e33c3d7ccaf618ec3edf1",
+      "bytes": 107153,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "28",
+      "productTitle": "Hello 苹果茉莉",
+      "foodIds": [
+        "luckin-cn:28"
+      ],
+      "src": "/food-images/luckin-cn/28.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/07/12/df199354f80a4bea943d81f117c619f0.png",
+      "sha256": "83e4fe43216590208d935b99dcc9b309ec4227220176e222c05c6b9ed1ab3bfe",
+      "bytes": 32463,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "16",
+      "productTitle": "鲜萃轻轻茉莉",
+      "foodIds": [
+        "luckin-cn:16"
+      ],
+      "src": "/food-images/luckin-cn/16.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/08/c26adbd1664148979a965aa7b48ecc34.png",
+      "sha256": "408b2241dcd367432ab432b1d5cc71a85d9514a82cc7fba4ff0ebbfb547a8285",
+      "bytes": 36401,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "17",
+      "productTitle": "羽衣轻体果蔬茶",
+      "foodIds": [
+        "luckin-cn:17"
+      ],
+      "src": "/food-images/luckin-cn/17.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/06/08/705abce21ae340f4af2b9990eca08cf5.png",
+      "sha256": "e21b3399b32ed99705108e322e13498405a075b3e72af678f3400d3d66a50662",
+      "bytes": 79938,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "22",
+      "productTitle": "瑰夏之梦",
+      "foodIds": [
+        "luckin-cn:22"
+      ],
+      "src": "/food-images/luckin-cn/22.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/07/12/c920c6961bab4ee78cf888b78efa6d10.png",
+      "sha256": "7a20c763f27c6ca2a5f0bb1388d51c2ba32e48d417bad5e94cccc36c921df9ae",
+      "bytes": 29521,
+      "width": 480,
+      "height": 480
+    },
+    {
+      "productId": "50",
+      "productTitle": "瑰夏白冷萃",
+      "foodIds": [
+        "luckin-cn:50"
+      ],
+      "src": "/food-images/luckin-cn/50.png",
+      "sourceUrl": "https://img.luckincoffeecdn.com/luckymediaadmin/2026/09/07/b60b1112a0cc492c88822ada9e3d078c.png",
+      "sha256": "238df79f10047df6ade3b3434f3617d948aba6aa7234c35aad878ef5715ff80c",
+      "bytes": 93729,
+      "width": 480,
+      "height": 480
+    }
+  ]
+}

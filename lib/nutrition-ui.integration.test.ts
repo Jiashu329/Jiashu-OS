@@ -1102,3 +1102,48 @@ test('an unavailable current catalog selection shows an error without opening or
   const app=fixture({foods:[],search:'?date='+DAY+'&food=tfda%3Aremoved'});await app.ready();await settled(()=>app.el('food-handoff-message').textContent?.includes('当前食物库')===true);
   assert.equal(app.el('dialog').open,false);assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);assert.equal(app.el('food-handoff-retry').hidden,false);
 });
+
+const luckinReferenceProduct={basis:'catalogOnly',id:'luckin-cn:44',name:'瑞幸泰奶鸳鸯拿铁',aliases:[],category:'拿铁类',state:'官网产品信息',
+  source:{name:'瑞幸官网产品信息',url:'https://lkcoffee.com/products/thai-yuen-yeung-latte',recordId:'44',version:'2026-11-13官网快照'},
+  reference:{label:'冰/大杯/不另外加糖',protein:6.5}};
+
+test('a Luckin product without official heat opens editable manual confirmation and preserves only published macros',async()=>{
+  const app=fixture({foods:[luckinReferenceProduct],search:'?date='+DAY+'&food='+encodeURIComponent(luckinReferenceProduct.id)});
+  await app.ready();await settled(()=>app.el('dialog').open);
+  assert.ok(app.requests.some(row=>row.url.startsWith('/api/health/foods?id=')));
+  assert.equal(app.el('name').value,luckinReferenceProduct.name);assert.equal(app.el('portion').value,luckinReferenceProduct.reference.label);
+  assert.equal(app.el('food-selection').hidden,true);assert.equal(app.el('calories').value,'');assert.equal(app.el('calories').disabled,false);
+  assert.equal(app.el('protein').value,'6.5');assert.equal(app.el('carbs').value,'');assert.equal(app.el('fat').value,'');
+  assert.equal(app.el('source-protein').value,'label');assert.equal(app.el('source-calories').value,'unknown');
+  assert.match(app.el('note').value,/https:\/\/lkcoffee\.com\/products\/thai-yuen-yeung-latte/);assert.match(app.el('form-status').textContent!,/热量未公布/);
+  assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);
+  app.input('meal','lunch','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;
+  assert.equal(Object.hasOwn(sent,'food'),false);assert.equal(sent.calories,null);assert.equal(sent.protein,'6.5');assert.equal(sent.carbs,null);assert.equal(sent.fat,null);
+  assert.equal(sent.provenance.protein.source,'label');assert.equal(sent.provenance.protein.originalValue,'6.5');assert.equal(sent.provenance.calories.source,'unknown');
+});
+
+test('a Luckin product with no fixed official specification leaves portion blank and manual corrections are explicit',async()=>{
+  const product={...luckinReferenceProduct,id:'luckin-cn:49',name:'瑞幸咸法酪泰奶',reference:{label:null}};
+  const app=fixture({foods:[product],search:'?date='+DAY+'&food='+encodeURIComponent(product.id)});
+  await app.ready();await settled(()=>app.el('dialog').open);
+  assert.equal(app.el('portion').value,'');assert.equal(app.el('calories').value,'');assert.equal(app.el('protein').value,'');
+  assert.match(app.el('note').value,/未注明固定规格/);
+  app.input('portion','我实际喝了半杯');app.input('calories','80');app.input('meal','snack','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;
+  assert.equal(sent.portion,'我实际喝了半杯');assert.equal(sent.calories,'80.0');assert.equal(sent.provenance.calories.source,'manual');assert.equal(Object.hasOwn(sent,'food'),false);
+});
+
+test('kcal-only Luckin serving selections scale official heat while preserving unknown macros and no gram conversion',async()=>{
+  const selected={...officialServingFood,id:'luckin-cn:1',name:'瑞幸生椰拿铁［官网对应规格］',catalogRelease:'catalog-2026-11-13-luckin-v1',
+    serving:{unit:'份',label:'大杯/冰/埃塞金烘/默认浓度/不另外加糖',originalLabel:null,kcal:179,energyKj:null,energyBasis:'officialKcal'}};
+  const app=fixture({foods:[selected],search:'?date='+DAY+'&food='+encodeURIComponent(selected.id)});
+  await app.ready();await settled(()=>app.el('dialog').open);
+  assert.equal(app.el('calories').value,'179.0');assert.equal(app.el('protein').value,'');assert.equal(app.el('food-unit').value,'份');
+  assert.deepEqual([...app.el('food-unit').querySelectorAll('option')].map(node=>node.getAttribute('value')),['份']);
+  app.input('food-quantity','0.5');assert.equal(app.el('calories').value,'89.5');assert.equal(app.el('protein').value,'');
+  app.input('food-quantity','2');assert.equal(app.el('calories').value,'358.0');assert.match(app.el('food-preview').textContent!,/大杯\/冰/);
+  app.input('meal','lunch','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;
+  assert.deepEqual(sent.food,{id:selected.id,amount:2,unit:'份',catalogRelease:selected.catalogRelease});assert.equal(sent.calories,'358.0');assert.equal(sent.protein,null);
+});

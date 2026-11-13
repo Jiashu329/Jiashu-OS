@@ -1,0 +1,854 @@
+{
+  "id": "luckin-cn-2026-11-13-v1",
+  "publishedAt": "2026-11-13",
+  "description": "官网28款产品；21款按官网列明参考配置保留kcal，7款未公布热量仅供查阅。未展开没有独立营养依据的可选SKU。",
+  "foods": [
+    {
+      "id": "luckin-cn:1",
+      "name": "瑞幸生椰拿铁［大杯/冰/埃塞金烘/默认浓度/不另外加糖］",
+      "aliases": [
+        "瑞幸生椰拿铁",
+        "luckin 生椰拿铁"
+      ],
+      "searchAliases": [
+        "生椰拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：浓缩咖啡、椰浆饮品;适合人群：咖啡新手；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n热量：约179kcal/杯\n咖啡因：约118.4mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/coconut-latte",
+        "recordId": "1",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖",
+        "originalLabel": null,
+        "kcal": 179,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:4",
+      "name": "瑞幸茉莉花香拿铁［大杯/冰/埃塞金烘/默认浓度/不另外加糖/牛奶］",
+      "aliases": [
+        "瑞幸茉莉花香拿铁",
+        "luckin 茉莉花香拿铁"
+      ],
+      "searchAliases": [
+        "茉莉花香拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "中国大陆官网参考规格",
+      "description": "口味微甜，76kcal低卡 · 花香茶咖。鲜萃茉莉花香与IIAC金奖咖啡豆融合，口感轻盈丝滑，茶香与咖啡香层层交织。\n热量76kcal，咖啡因236mg（大杯/冰/埃塞金烘/默认浓度/不另外加糖/牛奶）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/jasmine-latte",
+        "recordId": "4",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖/牛奶",
+        "originalLabel": null,
+        "kcal": 76,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:5",
+      "name": "瑞幸拿铁［大杯/热/埃塞金烘/默认浓度/不另外加糖/牛奶］",
+      "aliases": [
+        "瑞幸拿铁",
+        "luckin 拿铁"
+      ],
+      "searchAliases": [
+        "拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "中国大陆官网参考规格",
+      "description": "意式经典奶咖 · 太妃糖尾韵 · 全年必喝。Espresso与香醇牛奶精妙融合，入口明快柔和，后段坚果尾韵，口感平衡，口味微甜。\n热量268kcal，咖啡因98.6mg（大杯/热/埃塞金烘/默认浓度/不另外加糖/牛奶）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/latte",
+        "recordId": "5",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/热/埃塞金烘/默认浓度/不另外加糖/牛奶",
+        "originalLabel": null,
+        "kcal": 268,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:9",
+      "name": "瑞幸轻椰茉莉拿铁［大杯/冰/意式拼配/默认浓度/不另外加糖］",
+      "aliases": [
+        "瑞幸轻椰茉莉拿铁",
+        "luckin 轻椰茉莉拿铁"
+      ],
+      "searchAliases": [
+        "轻椰茉莉拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：椰浆饮品、茉莉花茶袋泡茶、浓缩咖啡、水；适合人群：咖啡新手；推荐点单：大杯/冰/意式拼配/默认浓度/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/意式拼配/默认浓度/不另外加糖\n热量：约120kcal/杯\n咖啡因：约179.1mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/light-coconut-jasmine-latte",
+        "recordId": "9",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/意式拼配/默认浓度/不另外加糖",
+        "originalLabel": null,
+        "kcal": 120,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:10",
+      "name": "瑞幸丝绒拿铁［大杯/热/埃塞金烘/默认浓度/不另外加糖］",
+      "aliases": [
+        "瑞幸丝绒拿铁",
+        "luckin 丝绒拿铁"
+      ],
+      "searchAliases": [
+        "丝绒拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "中国大陆官网参考规格",
+      "description": "添加丝绒风味厚奶，丝滑感较普通拿铁提升20.99%，口味香甜，奶香浓郁，甜感柔和，尽显丝滑。\n热量376kcal（大杯/热/埃塞金烘/默认浓度/不另外加糖）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/velvet-latte",
+        "recordId": "10",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/热/埃塞金烘/默认浓度/不另外加糖",
+        "originalLabel": null,
+        "kcal": 376,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:20",
+      "name": "瑞幸生椰杨枝甘露［大杯/冰/不另外加糖/西柚粒］",
+      "aliases": [
+        "瑞幸生椰杨枝甘露",
+        "luckin 生椰杨枝甘露"
+      ],
+      "searchAliases": [
+        "生椰杨枝甘露"
+      ],
+      "category": "其他非咖啡类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：速冻调制芒果浆、红西柚果粒罐头、椰浆饮品、茉莉花茶（袋泡茶）、原味晶球风味饮料（含凝胶颗粒）/原味晶球（果冻）、椰奶风味冻、甘蔗糖浆；适合人群：甜品爱好者；推荐点单：大杯/冰/不另外加糖/西柚粒\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/non-coffee/coconut-mango-pomelo-sago",
+        "recordId": "20",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/不另外加糖/西柚粒",
+        "originalLabel": null,
+        "kcal": 176,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:2",
+      "name": "瑞幸标准美式［大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶］",
+      "aliases": [
+        "瑞幸标准美式",
+        "luckin 标准美式"
+      ],
+      "searchAliases": [
+        "标准美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：浓缩咖啡，水；适合人群：咖啡爱好者；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶\n热量：约11kcal/杯\n咖啡因：约164.3mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/americano",
+        "recordId": "2",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶",
+        "originalLabel": null,
+        "kcal": 11,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:3",
+      "name": "瑞幸加浓美式［大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶］",
+      "aliases": [
+        "瑞幸加浓美式",
+        "luckin 加浓美式"
+      ],
+      "searchAliases": [
+        "加浓美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "提神 · 高咖啡因 。双份Espresso浓缩，咖啡因含量约198.9mg/杯，口味较苦，口感浓烈醇厚，0糖0脂仅14kcal，提神不负担。\n热量14kcal，咖啡因198.9mg（大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/double-americano",
+        "recordId": "3",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖/无奶",
+        "originalLabel": null,
+        "kcal": 14,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:12",
+      "name": "瑞幸橙C美式［大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡］",
+      "aliases": [
+        "瑞幸橙C美式",
+        "luckin 橙C美式"
+      ],
+      "searchAliases": [
+        "橙C美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：浓缩咖啡、水、速冻橙浆/橙汁饮料浓浆、原味调味糖浆；适合人群：果咖爱好者；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡\n热量：约122kcal/杯\n咖啡因：约158.4mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/orange-c-americano",
+        "recordId": "12",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡",
+        "originalLabel": null,
+        "kcal": 122,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:13",
+      "name": "瑞幸小黄油美式［大杯/冰/埃塞金烘/默认浓度/不另外加糖］",
+      "aliases": [
+        "瑞幸小黄油美式",
+        "luckin 小黄油美式"
+      ],
+      "searchAliases": [
+        "小黄油美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：黄油丝绒风味奶（配制型含乳饮料）、浓缩咖啡、水；过敏原：乳及乳制品（包括乳糖）；适合人群：甜品爱好者；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n热量：约173kcal/杯\n咖啡因：约212mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/butter-americano",
+        "recordId": "13",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖",
+        "originalLabel": null,
+        "kcal": 173,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:14",
+      "name": "瑞幸苹果C美式［大杯/冰/意式拼配/不另外加糖/默认浓度］",
+      "aliases": [
+        "瑞幸苹果C美式",
+        "luckin 苹果C美式"
+      ],
+      "searchAliases": [
+        "苹果C美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：苹果复合果蔬汁饮料浓浆、浓缩咖啡、水\n适合人群：果咖爱好者；推荐点单：大杯/冰/意式拼配/不另外加糖/默认浓度\n以下营养成分及咖啡因数据适用于：大杯/冰/意式拼配/不另外加糖/默认浓度\n热量：约131kcal/杯（约29.2kcal/100mL）\n咖啡因：约136.4mg/杯（约30.3mg/100mL）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/apple-c-americano",
+        "recordId": "14",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/意式拼配/不另外加糖/默认浓度",
+        "originalLabel": null,
+        "kcal": 131,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:15",
+      "name": "瑞幸柚C美式［大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡］",
+      "aliases": [
+        "瑞幸柚C美式",
+        "luckin 柚C美式"
+      ],
+      "searchAliases": [
+        "柚C美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：柚子复合果汁饮料浓浆、浓缩咖啡；适合人群：果咖爱好者；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡\n热量：约137kcal/杯\n咖啡因：约184.1mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/pomelo-c-americano",
+        "recordId": "15",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖/无气泡",
+        "originalLabel": null,
+        "kcal": 137,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:26",
+      "name": "瑞幸全冰黑巧美式［16oz/全冰去水/不另外加糖/意式拼配/短萃浓缩］",
+      "aliases": [
+        "瑞幸全冰黑巧美式",
+        "luckin 全冰黑巧美式"
+      ],
+      "searchAliases": [
+        "全冰黑巧美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "全冰黑巧美式，口感较苦。热量132kcal，咖啡因35.9mg（16oz/全冰去水/不另外加糖/意式拼配/短萃浓缩）。\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/iced-dark-chocolate-americano",
+        "recordId": "26",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "16oz/全冰去水/不另外加糖/意式拼配/短萃浓缩",
+        "originalLabel": null,
+        "kcal": 132,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:60",
+      "name": "瑞幸柠C气泡美式［大杯/冰/不另外加糖/意式拼配/默认浓度］",
+      "aliases": [
+        "瑞幸柠C气泡美式",
+        "luckin 柠C气泡美式"
+      ],
+      "searchAliases": [
+        "柠C气泡美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：柠檬片，柠檬果粒罐头，柠檬汁饮料浓浆，浓缩咖啡，苏打水，原味糖浆；适合人群：果咖爱好者；推荐点单：大杯/冰/不另外加糖/意式拼配/默认浓度\n以下营养成分及咖啡因数据适用于：大杯/冰/不另外加糖/意式拼配/默认浓度\n热量：约83kcal/杯\n咖啡因：约134mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/lemon-c-sparkling-americano",
+        "recordId": "60",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/不另外加糖/意式拼配/默认浓度",
+        "originalLabel": null,
+        "kcal": 83,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:61",
+      "name": "瑞幸鲜切柠C美式［超大杯/冰/微甜］",
+      "aliases": [
+        "瑞幸鲜切柠C美式",
+        "luckin 鲜切柠C美式"
+      ],
+      "searchAliases": [
+        "鲜切柠C美式"
+      ],
+      "category": "美式类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：柠檬片，柠檬汁饮料浓浆，浓缩咖啡，茉莉花茶（袋泡茶），水；适合人群：果咖爱好者；推荐点单：超大杯/冰/微甜\n以下营养成分及咖啡因数据适用于：超大杯/冰/微甜\n热量：约112kcal/杯\n咖啡因：约116mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/americanos/fresh-cut-lemon-c-americano",
+        "recordId": "61",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "超大杯/冰/微甜",
+        "originalLabel": null,
+        "kcal": 112,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:18",
+      "name": "瑞幸苹果C冰茶［大杯/冰/不另外加糖/茉莉花香］",
+      "aliases": [
+        "瑞幸苹果C冰茶",
+        "luckin 苹果C冰茶"
+      ],
+      "searchAliases": [
+        "苹果C冰茶"
+      ],
+      "category": "冰茶冰奶类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：苹果复合果蔬汁饮料浓浆、茉莉花茶袋泡茶、水；适合人群：咖啡因不耐受人群；推荐点单：大杯/冰/不另外加糖/茉莉花香\n以下营养成分及咖啡因数据适用于：大杯/冰/不另外加糖/茉莉花香\n热量：约130kcal/杯（约28.9kcal/100mL）\n咖啡因：约19.2mg/杯（约4.26mg/100mL）\nL-抗坏血酸：约239mg/杯（约53.1mg/100mL）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/iced-teas/apple-c-iced-tea",
+        "recordId": "18",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/不另外加糖/茉莉花香",
+        "originalLabel": null,
+        "kcal": 130,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:19",
+      "name": "瑞幸葡萄冰茶［大杯/冰/茉莉花香/不另外加糖］",
+      "aliases": [
+        "瑞幸葡萄冰茶",
+        "luckin 葡萄冰茶"
+      ],
+      "searchAliases": [
+        "葡萄冰茶"
+      ],
+      "category": "冰茶冰奶类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：糖水葡萄罐头、葡萄汁饮料浓浆/速冻调制葡萄汁、茉莉花茶袋泡茶、水、甘蔗糖浆；适合人群：果茶爱好者；推荐点单：大杯/冰/茉莉花香/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/茉莉花香/不另外加糖\n热量：约115kcal/杯\n咖啡因：约17.9mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/iced-teas/grape-iced-tea",
+        "recordId": "19",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/茉莉花香/不另外加糖",
+        "originalLabel": null,
+        "kcal": 115,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:28",
+      "name": "瑞幸Hello 苹果茉莉［16oz/冰/不另外加糖/茉莉花香］",
+      "aliases": [
+        "瑞幸Hello 苹果茉莉",
+        "luckin Hello 苹果茉莉"
+      ],
+      "searchAliases": [
+        "Hello 苹果茉莉"
+      ],
+      "category": "冰茶冰奶类",
+      "state": "中国大陆官网参考规格",
+      "description": "Hello 苹果茉莉上新，鲜爽好喝轻负担。含 24h 鲜榨 NFC 苹果汁*，急速锁鲜。鲜醇果奶味融合清雅花香，刚刚好的酸甜鲜爽。100% 鲜萃现泡茉莉花茶，0 茶粉口感更鲜灵。热量约 173kcal，咖啡因41.5mg（16oz/冰/不另外加糖/茉莉花香）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/iced-teas/hello-apple-jasmine",
+        "recordId": "28",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "16oz/冰/不另外加糖/茉莉花香",
+        "originalLabel": null,
+        "kcal": 173,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:16",
+      "name": "瑞幸鲜萃轻轻茉莉［大杯/冰/不另外加糖/不含轻咖］",
+      "aliases": [
+        "瑞幸鲜萃轻轻茉莉",
+        "luckin 鲜萃轻轻茉莉"
+      ],
+      "searchAliases": [
+        "鲜萃轻轻茉莉"
+      ],
+      "category": "轻乳茶类",
+      "state": "中国大陆官网参考规格",
+      "description": "主要原料：纯牛奶、牛乳乳饮料、茉莉花茶（袋泡茶）、甘蔗糖浆；过敏原：乳及乳制品（包括乳糖）；适合人群：口味清淡人群；推荐点单：大杯/冰/不另外加糖/不含轻咖\n以下营养成分及咖啡因数据适用于：大杯/冰/不另外加糖/不含轻咖\n热量：约95kcal/杯\n咖啡因：约83.3mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/light-milk-teas/fresh-brewed-jasmine",
+        "recordId": "16",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/不另外加糖/不含轻咖",
+        "originalLabel": null,
+        "kcal": 95,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:17",
+      "name": "瑞幸羽衣轻体果蔬茶［大杯/冰/不另外加糖］",
+      "aliases": [
+        "瑞幸羽衣轻体果蔬茶",
+        "luckin 羽衣轻体果蔬茶"
+      ],
+      "searchAliases": [
+        "羽衣轻体果蔬茶"
+      ],
+      "category": "果蔬茶类",
+      "state": "中国大陆官网参考规格",
+      "description": "4种果蔬 · 约94kcal · 0脂食物。含超级食物羽衣甘蓝，搭配4种新鲜果蔬，190+项原料检测，配方干净，酸甜解腻。\n热量94kcal（大杯/冰/不另外加糖）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/fruit-vegetable-teas/kale-fruit-vegetable-tea",
+        "recordId": "17",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "大杯/冰/不另外加糖",
+        "originalLabel": null,
+        "kcal": 94,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    },
+    {
+      "id": "luckin-cn:22",
+      "name": "瑞幸瑰夏之梦［16oz/冰/微甜］",
+      "aliases": [
+        "瑞幸瑰夏之梦",
+        "luckin 瑰夏之梦"
+      ],
+      "searchAliases": [
+        "瑰夏之梦"
+      ],
+      "category": "冷萃类",
+      "state": "中国大陆官网参考规格",
+      "description": "夏日梦幻限定，一杯花果醇香。瑰夏冷萃 X 玫瑰荔枝风味 X 燕麦奶 X 椰浆，一杯花果醇香。源自单一产地精品埃塞瑰夏咖啡豆，快速冷萃果酸清甜。顶部真实玫瑰花，甄选平阴重瓣玫瑰。含 NFC 荔枝汁*，应季采摘口感鲜甜。热量约 161kcal，咖啡因约 78.8mg（16oz/冰/微甜）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/cold-brew-drinks/gesha-dream",
+        "recordId": "22",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "perServing",
+      "grams": null,
+      "kcalPer100g": null,
+      "portions": [],
+      "serving": {
+        "unit": "份",
+        "label": "16oz/冰/微甜",
+        "originalLabel": null,
+        "kcal": 161,
+        "energyKj": null,
+        "energyBasis": "officialKcal"
+      }
+    }
+  ],
+  "products": [
+    {
+      "id": "luckin-cn:7",
+      "name": "瑞幸小黄油拿铁",
+      "aliases": [
+        "瑞幸小黄油拿铁",
+        "luckin 小黄油拿铁"
+      ],
+      "searchAliases": [
+        "小黄油拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "官网产品信息",
+      "description": "主要原料：黄油丝绒风味奶（配制型含乳饮料），纯牛奶，浓缩咖啡；过敏原：乳及乳制品（包括乳糖）；适合人群：甜品爱好者；推荐点单：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/埃塞金烘/默认浓度/不另外加糖\n咖啡因：约171.9mg/杯\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/butter-latte",
+        "recordId": "7",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "大杯/冰/埃塞金烘/默认浓度/不另外加糖",
+        "caffeineMg": 171.9
+      }
+    },
+    {
+      "id": "luckin-cn:44",
+      "name": "瑞幸泰奶鸳鸯拿铁",
+      "aliases": [
+        "瑞幸泰奶鸳鸯拿铁",
+        "luckin 泰奶鸳鸯拿铁"
+      ],
+      "searchAliases": [
+        "泰奶鸳鸯拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/08/17\n主要原料：丝绒风味厚奶（配制型含乳饮料），液体奶酪制品/液体奶酪乳饮料，泰式红茶风味固体饮料，纯牛奶，浓缩咖啡；过敏原：乳及乳制品（包括乳糖）；适合人群：奶茶爱好者；推荐点单：冰/大杯/不另外加糖\n以下营养成分及咖啡因数据适用于：冰/大杯/不另外加糖\n咖啡因：约143.1mg/杯（约31.8mg/100mL）\n蛋白质6.5g/杯（约1.45g/100mL）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/thai-yuen-yeung-latte",
+        "recordId": "44",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "冰/大杯/不另外加糖",
+        "protein": 6.5,
+        "caffeineMg": 143.1
+      }
+    },
+    {
+      "id": "luckin-cn:52",
+      "name": "瑞幸小奶酪拿铁",
+      "aliases": [
+        "瑞幸小奶酪拿铁",
+        "luckin 小奶酪拿铁"
+      ],
+      "searchAliases": [
+        "小奶酪拿铁"
+      ],
+      "category": "拿铁类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/09/07\n主要原料：液体奶酪制品/液体奶酪乳饮料、鲜牛奶、浓缩咖啡；风味与口感：奶酪香与咖啡香交织，入口顺滑醇厚；原料来源与工艺：新西兰进口奶酪，臻选100%阿拉比卡咖啡豆，新鲜研磨，即刻萃取\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/lattes/mini-cheese-latte",
+        "recordId": "52",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "冰/大杯/意式拼配/不另外加糖/默认浓缩"
+      }
+    },
+    {
+      "id": "luckin-cn:43",
+      "name": "瑞幸经典泰奶",
+      "aliases": [
+        "瑞幸经典泰奶",
+        "luckin 经典泰奶"
+      ],
+      "searchAliases": [
+        "经典泰奶"
+      ],
+      "category": "其他非咖啡类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/08/17\n主要原料：丝绒风味厚奶，液体奶酪制品/液体奶酪乳饮料，泰式风味红茶，泰式红茶风味固体饮料，香草味调味糖浆；过敏原：乳及乳制品（包括乳糖）；原料来源与工艺：甄选泰式风味红茶，茶汤红亮，蜜香十足；含新西兰进口干酪，层层丰盈；适合人群：偏爱醇厚奶感；推荐点单：大杯/冰/不另外加糖\n以下营养成分及咖啡因数据适用于：大杯/冰/不另外加糖\n咖啡因：约137.3mg/杯（约30.5mg/100mL）\n蛋白质：约4.4g/杯（约0.98g/100mL）\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/non-coffee/classic-thai-milk-tea",
+        "recordId": "43",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "大杯/冰/不另外加糖",
+        "protein": 4.4,
+        "caffeineMg": 137.3
+      }
+    },
+    {
+      "id": "luckin-cn:49",
+      "name": "瑞幸咸法酪泰奶",
+      "aliases": [
+        "瑞幸咸法酪泰奶",
+        "luckin 咸法酪泰奶"
+      ],
+      "searchAliases": [
+        "咸法酪泰奶"
+      ],
+      "category": "其他非咖啡类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/08/31\n主要原料：泰式风味红茶、新西兰进口干酪；风味与口感：茶香奶浓，双重醇香，丝滑细腻；原料来源与工艺：甄选泰式风味红茶，新西兰进口干酪\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/non-coffee/salted-cheese-thai-milk-tea",
+        "recordId": "49",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": null
+      }
+    },
+    {
+      "id": "luckin-cn:51",
+      "name": "瑞幸抹茶奶酪拿铁",
+      "aliases": [
+        "瑞幸抹茶奶酪拿铁",
+        "luckin 抹茶奶酪拿铁"
+      ],
+      "searchAliases": [
+        "抹茶奶酪拿铁"
+      ],
+      "category": "其他非咖啡类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/09/07\n主要原料：抹茶茶固体饮料，鲜牛奶，液体奶酪制品/液体奶酪乳饮料，原味糖浆；风味与口感：浓郁抹茶融合液体奶酪，浓而不腻更丝滑；原料来源与工艺：甄选100%千目级纯抹茶，新西兰进口奶酪\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/non-coffee/matcha-cheese-latte",
+        "recordId": "51",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "冰，大杯，少少甜，牛奶"
+      }
+    },
+    {
+      "id": "luckin-cn:50",
+      "name": "瑞幸瑰夏白冷萃",
+      "aliases": [
+        "瑞幸瑰夏白冷萃",
+        "luckin 瑰夏白冷萃"
+      ],
+      "searchAliases": [
+        "瑰夏白冷萃"
+      ],
+      "category": "冷萃类",
+      "state": "官网产品信息",
+      "description": "上市时间：2026/09/07\n主要原料：瑰夏焙炒咖啡粉，液体奶酪制品/液体奶酪乳饮料，水；风味与口感：甜橙般明亮果酸与榛果可可风味圆润口感；原料来源与工艺：源自SCA80+精品咖啡豆，创新使用快速冷萃工艺\n仅适用于官网列明的参考配置；其他杯型、温度、咖啡豆、浓度或糖度不能沿用该数值。官网未注明营养数据更新日期。",
+      "source": {
+        "name": "瑞幸咖啡中国官网产品信息",
+        "url": "https://lkcoffee.com/products/cold-brew-drinks/geisha-white-cold-brew",
+        "recordId": "50",
+        "version": "2026-11-13官网快照（未注明营养更新日期）"
+      },
+      "basis": "catalogOnly",
+      "reference": {
+        "label": "冰/大杯/不另外加糖"
+      }
+    }
+  ]
+}

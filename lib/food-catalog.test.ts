@@ -33,14 +33,14 @@ void test('current discovery and source attribution contain only the retained of
   assert.equal(FOOD_CATALOG_SOURCE.count, 137);
   assert.equal(FOOD_CATALOG_SOURCE.url, 'https://www.mcdonalds.com.cn/nutrition_calculator');
   assert.equal(FOOD_CATALOG_SOURCE.upstreamRelease, '2025-04');
-  assert.equal(FOOD_CATALOG_SOURCES.length, 1);
+  assert.equal(FOOD_CATALOG_SOURCES.length, 2);
   assert.equal(Object.hasOwn(FOOD_CATALOG_SOURCE, 'licenseUrl'), false);
-  const first = browseFoods({ limit: 50 }), second = browseFoods({ offset: 50, limit: 50 }), last = browseFoods({ offset: 100, limit: 50 });
-  assert.deepEqual([first.total, second.total, last.total], [137, 137, 137]);
-  assert.deepEqual([first.foods.length, second.foods.length, last.foods.length], [50, 50, 37]);
-  const all = [...first.foods, ...second.foods, ...last.foods];
-  assert.equal(new Set(all.map((food) => food.id)).size, 137);
-  assert.ok(all.every((food) => food.id.startsWith('mcd-cn:') && food.catalogRelease === ACTIVE_FOOD_CATALOG_RELEASE));
+  const first = browseFoods({ limit: 50 }), second = browseFoods({ offset: 50, limit: 50 }), last = browseFoods({ offset: 100, limit: 50 }), final = browseFoods({ offset: 150, limit: 50 });
+  assert.deepEqual([first.total, second.total, last.total, final.total], [158, 158, 158, 158]);
+  assert.deepEqual([first.foods.length, second.foods.length, last.foods.length, final.foods.length], [50, 50, 50, 8]);
+  const all = [...first.foods, ...second.foods, ...last.foods, ...final.foods];
+  assert.equal(new Set(all.map((food) => food.id)).size, 158);
+  assert.ok(all.every((food) => /^(?:mcd-cn|luckin-cn):/.test(food.id) && food.catalogRelease === ACTIVE_FOOD_CATALOG_RELEASE));
   for (const query of ['米饭', '白飯', 'COOKED RICE', '西兰花', '冷冻火腿炒饭']) assert.deepEqual(searchFoods(query), []);
   assert.equal(searchFoods(' 巨无霸 ')[0].id, 'mcd-cn:49:28');
   assert.deepEqual(searchFoods('不存在的合成食物关键词'), []);
@@ -51,8 +51,8 @@ void test('current discovery and source attribution contain only the retained of
 });
 
 void test('category filters, pagination and ranking operate on the same complete current catalog', () => {
-  assert.equal(FOOD_CATALOG_CATEGORIES.length, 8);
-  assert.equal(FOOD_CATALOG_CATEGORIES.reduce((sum, item) => sum + item.count, 0), 137);
+  assert.equal(FOOD_CATALOG_CATEGORIES.length, 15);
+  assert.equal(FOOD_CATALOG_CATEGORIES.reduce((sum, item) => sum + item.count, 0), 158);
   for (const category of FOOD_CATALOG_CATEGORIES) {
     const result = browseFoods({ category: category.name, limit: 50 });
     assert.equal(result.total, category.count);

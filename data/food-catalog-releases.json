@@ -1,5 +1,5 @@
 {
-  "active": "catalog-2026-11-13-mcd-only-v1",
+  "active": "catalog-2026-11-13-luckin-v1",
   "legacy": "tfda-2024-03-29",
   "releases": [
     {
@@ -34,6 +34,15 @@
       "publishedAt": "2026-11-13",
       "label": "麦当劳中国官方食物库",
       "sourceFile": "data/food-catalog-sources/mcd-cn-2025-04.json"
+    },
+    {
+      "id": "catalog-2026-11-13-luckin-v1",
+      "parent": "catalog-2026-11-13-mcd-only-v1",
+      "file": "data/food-catalog-releases/brands-2026-11-13-luckin-v1.json",
+      "sha256": "7043050aaba9885a683bc4ce7995a40dc092c5c87b51ef7440f2e93c84d55eb0",
+      "publishedAt": "2026-11-13",
+      "label": "麦当劳与瑞幸官方营养食物库",
+      "sourceFile": "data/food-catalog-sources/luckin-cn-2026-11-13.json"
     }
   ]
 }

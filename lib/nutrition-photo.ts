@@ -115,10 +115,12 @@ export function buildNutritionPhotoDrafts(answer: string, request: NutritionPhot
     if (request.meal === null) warnings.push('请选择这项食物的餐次。');
     const missing = keys.filter((key) => values[key] === null).map((key) => labels[key]);
     if (missing.length) warnings.push(missing.join('、') + '暂时未知，请按实际份量补充；未知不会按0计算。');
+    const candidates = searchFoods(name, 6);
+    if (candidates.some((food) => food.id.startsWith('luckin-cn:'))) warnings.push('瑞幸官网热量仅适用于列明的杯型、冰热和糖度，图片不能确认这些配置，请核对候选规格后主动选择。');
     drafts.push({ date: request.date, meal: request.meal, name, amount: null, unit: null, portion,
       calories: values.calories, calorieSource: values.calories === null ? null : 'ai', carbs: values.carbs, protein: values.protein, fat: values.fat,
       macroSources: { carbs: values.carbs === null ? null : 'ai', protein: values.protein === null ? null : 'ai', fat: values.fat === null ? null : 'ai' },
-      provenance, note: safeSlice('AI 图片估算；' + basis + '；' + portion + '。需核对实际食用量。', 500), food: null, candidates: searchFoods(name, 6), warnings });
+      provenance, note: safeSlice('AI 图片估算；' + basis + '；' + portion + '。需核对实际食用量。', 500), food: null, candidates, warnings });
   }
   return { drafts, warnings: drafts.length ? ['以下是图片识别草稿。热量和三大营养素是图片份量的参考估算，请核对后保存。', ...(skipped ? ['部分项目辨认不清，未自动生成记录；可补充清晰图片或手动填写。'] : [])]
     : ['这张图片中没有可可靠辨认的食物。请换一张食物更清晰的照片，或使用文字、手动录入。'] };

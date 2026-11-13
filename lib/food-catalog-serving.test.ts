@@ -28,7 +28,7 @@ void test('current catalog retains every pinned official specification while his
     assert.equal(food.catalogRelease, ACTIVE_FOOD_CATALOG_RELEASE);
     assert.equal(food.source.recordId, row.id.slice('mcd-cn:'.length));
     assert.deepEqual(food.serving, row.serving);
-    assert.equal(food.serving.kcal, Math.round(food.serving.energyKj / 4.184));
+    assert.equal(food.serving.kcal, Math.round(row.serving.energyKj / 4.184));
     assert.equal(getFood(row.id, LEGACY_FOOD_CATALOG_RELEASE), null);
     assert.equal(getFood(row.id, CHINESE_FOOD_CATALOG_RELEASE), null);
     assert.equal(validateFoodSnapshot(calculateFoodSelection({ id: row.id, amount: 1, unit: '份', catalogRelease: food.catalogRelease })).caloriesTenth, row.serving.kcal * 10);

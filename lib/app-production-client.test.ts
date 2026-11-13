@@ -14,7 +14,8 @@ import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
-import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_SOURCES, browseFoods, getFood } from './food-catalog.ts';
+import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
+import { FOOD_LIBRARY_BRANDS, FOOD_LIBRARY_CATEGORIES, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
@@ -157,14 +158,19 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const selection = parseNutritionQuery(parsed.searchParams);
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
+    if (parsed.pathname === '/api/health/foods') {
+      const metadata={brands:FOOD_LIBRARY_BRANDS,categories:FOOD_LIBRARY_CATEGORIES,sources:FOOD_CATALOG_SOURCES};
+      if (parsed.searchParams.has('id')) {
+        const food=getLibraryFood(parsed.searchParams.get('id')!);
+        return food?Response.json({food,...metadata,images:foodCatalogImages([food])}):Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
+      }
+      const result=browseFoodLibrary({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',brand:parsed.searchParams.get('brand')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??24)});
+      return Response.json({...result,...metadata,images:foodCatalogImages(result.foods)});
+    }
     if (parsed.pathname === '/api/health/nutrition/foods') {
       if (parsed.searchParams.has('id')) {
         const food = getFood(parsed.searchParams.get('id')!);
         return food ? Response.json({food}) : Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
-      }
-      if (location.pathname === '/health/foods') {
-        const result=browseFoods({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??20)});
-        return Response.json({...result,categories:FOOD_CATALOG_CATEGORIES,sources:FOOD_CATALOG_SOURCES,images:foodCatalogImages(result.foods)});
       }
       return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
     }
@@ -447,7 +453,7 @@ test('minified food library browses the current catalog, paginates and opens rea
   photo.dispatchEvent(new f.window.Event('error'));
   assert.equal((photo as unknown as HTMLImageElement).hidden, true);
   assert.equal((photo.parentElement!.querySelector('.fl-image-fallback') as unknown as HTMLElement).hidden, false);
-  assert.match(f.document.getElementById('food-library-count')?.textContent ?? '', /共 137 个规格/);
+  assert.match(f.document.getElementById('food-library-count')?.textContent ?? '', /共 165 个条目/);
   assert.equal(f.document.querySelector('[data-context-path="/health/foods"]')?.getAttribute('aria-current'), 'page');
   const firstName = list.querySelector('.fl-card-name')?.textContent;
   list.querySelector('[data-food-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
@@ -460,7 +466,7 @@ test('minified food library browses the current catalog, paginates and opens rea
   assert.ok(record.searchParams.get('food')?.startsWith('mcd-cn:'));
   f.document.getElementById('food-library-close')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   f.document.getElementById('food-library-next')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => list.getAttribute('aria-busy') === 'false' && f.document.getElementById('food-library-page-number')?.textContent === '第 2 / 6 页');
+  await settle(() => list.getAttribute('aria-busy') === 'false' && f.document.getElementById('food-library-page-number')?.textContent === '第 2 / 7 页');
   assert.equal(list.children.length, 24);
   assert.notEqual(list.querySelector('.fl-card-name')?.textContent, firstName);
   assert.ok(f.requests.some((item) => new URL(item.path, 'https://synthetic.example').searchParams.get('offset') === '24'));
@@ -471,7 +477,7 @@ test('minified food library browses the current catalog, paginates and opens rea
   assert.ok(list.children.length > 0 && list.children.length < 24);
   assert.equal(f.document.getElementById('food-library-pagination')?.hidden, true);
   assert.ok(!f.document.body.textContent?.includes('台湾'));
-  assert.ok(f.requests.every((item) => item.method === 'GET' && item.path.startsWith('/api/health/nutrition/foods?')));
+  assert.ok(f.requests.every((item) => item.method === 'GET' && item.path.startsWith('/api/health/foods?')));
 });
 
 test('minified food-library handoff prepares a one-serving confirmation without saving', { skip: !hasBuild }, async () => {
@@ -483,4 +489,34 @@ test('minified food-library handoff prepares a one-serving confirmation without 
   assert.equal((f.document.getElementById('nutrition-calories') as HTMLInputElement).value, '513.0');
   assert.ok(f.requests.some((item) => item.path.includes('/foods?id=')));
   assert.ok(f.requests.every((item) => item.method === 'GET'));
+});
+
+test('minified Luckin library restores its brand, shows unknown energy and opens product details without inventing a serving', { skip: !hasBuild }, async () => {
+  const f=await fixture('id="food-library-page"','/health/foods?brand=luckin-cn&q='+encodeURIComponent('小黄油拿铁'),390);
+  const list=f.document.getElementById('food-library-list')!;
+  await settle(()=>list.getAttribute('aria-busy')==='false');
+  assert.equal((f.document.getElementById('food-library-brand') as unknown as HTMLSelectElement).value,'luckin-cn');
+  assert.equal(list.children.length,1);
+  assert.match(list.textContent??'',/热量未公布/);
+  assert.ok(list.querySelector('img')?.getAttribute('src')?.startsWith('/food-images/luckin-cn/'));
+  list.querySelector('[data-food-open]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.match(f.document.getElementById('food-library-detail')?.textContent??'',/官网未公布此产品的热量/);
+  assert.equal(f.document.getElementById('food-library-record')?.textContent,'带入手工核对');
+  assert.ok(f.requests.every((item)=>item.method==='GET'&&item.path.startsWith('/api/health/foods?')));
+});
+
+test('minified Luckin handoffs preserve official kcal or unknown energy behind explicit manual confirmation', { skip: !hasBuild }, async () => {
+  const known=await fixture('id="nutrition-page"','/health/nutrition?food=luckin-cn%3A1',390);
+  await settle(()=>known.document.getElementById('nutrition-dialog')?.hasAttribute('open')===true);
+  const quantity=known.document.getElementById('nutrition-food-quantity') as HTMLInputElement;
+  assert.equal((known.document.getElementById('nutrition-calories') as HTMLInputElement).value,'179.0');
+  quantity.value='0.5';quantity.dispatchEvent(new known.window.Event('input',{bubbles:true}));
+  assert.equal((known.document.getElementById('nutrition-calories') as HTMLInputElement).value,'89.5');
+  const unknown=await fixture('id="nutrition-page"','/health/nutrition?food=luckin-cn%3A49',390);
+  await settle(()=>unknown.document.getElementById('nutrition-dialog')?.hasAttribute('open')===true);
+  assert.equal((unknown.document.getElementById('nutrition-calories') as HTMLInputElement).value,'');
+  assert.equal((unknown.document.getElementById('nutrition-portion') as HTMLInputElement).value,'');
+  assert.match((unknown.document.getElementById('nutrition-name') as HTMLInputElement).value,/咸法酪泰奶/);
+  assert.match((unknown.document.getElementById('nutrition-note') as HTMLTextAreaElement).value,/lkcoffee.com/);
+  assert.ok([...known.requests,...unknown.requests].every((item)=>item.method==='GET'));
 });

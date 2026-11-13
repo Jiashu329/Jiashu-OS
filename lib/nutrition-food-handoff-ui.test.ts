@@ -2,19 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { installNutritionFoodHandoff } from './nutrition-food-handoff-ui.ts';
-import { getFood } from './food-catalog.ts';
+import { getFood, type ServingFoodItem } from './food-catalog.ts';
+import type { CatalogOnlyProduct, LibraryFood } from './food-library-catalog.ts';
 
 const food = getFood('mcd-cn:49:28')!;
-function fixture() {
+function fixture(selected: LibraryFood = food) {
   const { document } = parseHTML('<section id="notice" hidden><span id="message"></span><button id="retry"></button><button id="resume"></button></section>');
   let ready = false, blocked: string | null = null, consumed = 0, restored = 0, requests = 0;
-  let respond: () => Promise<{ food?: typeof food }> = async () => ({ food });
-  const opened: typeof food[] = [];
+  let respond: () => Promise<{ food?: LibraryFood }> = async () => ({ food: selected });
+  const opened: LibraryFood[] = [];
   const notice = document.getElementById('notice')!, message = document.getElementById('message')!;
   const retry = document.getElementById('retry')! as unknown as HTMLButtonElement, resume = document.getElementById('resume')! as unknown as HTMLButtonElement;
-  const controller = installNutritionFoodHandoff({ id: food.id, notice, message, retry, resume,
+  const controller = installNutritionFoodHandoff({ id: selected.id, notice, message, retry, resume,
     ready: () => ready, blocked: () => blocked,
-    async request(id) { assert.equal(id, food.id); requests++; return respond(); },
+    async request(id) { assert.equal(id, selected.id); requests++; return respond(); },
     consume() { consumed++; }, open(selected) { opened.push(selected); }, restore() { restored++; } });
   return { notice, message, retry, resume, controller, opened, setReady(value: boolean) { ready = value; }, setBlocked(value: string | null) { blocked = value; },
     setResponse(value: typeof respond) { respond = value; }, get consumed() { return consumed; }, get requests() { return requests; }, get restored() { return restored; } };
@@ -51,4 +52,32 @@ test('a lookup failure is visible and can be retried without automatically creat
 test('an unavailable or mismatched food never reaches the confirmation form', async () => {
   const app = fixture(); app.setReady(true); app.setResponse(async () => ({ food: { ...food, id: 'unavailable' } }));
   app.controller.offerOnce(); await settled(); assert.equal(app.opened.length, 0); assert.match(app.message.textContent!, /当前食物库/);
+});
+
+test('an official kcal-only serving can be prepared without inventing kilojoules', async () => {
+  const selected: ServingFoodItem = { ...(food as ServingFoodItem), id: 'luckin-cn:1',
+    serving: { ...(food as ServingFoodItem).serving, kcal: 179, energyKj: null, energyBasis: 'officialKcal' } };
+  const app = fixture(selected); app.setReady(true); app.controller.offerOnce(); await settled();
+  assert.equal(app.opened.length, 1);
+  assert.deepEqual(app.opened[0], selected);
+  const invalid = fixture(selected); invalid.setReady(true);
+  invalid.setResponse(async () => ({ food: { ...selected, serving: { ...selected.serving, energyBasis: undefined } } }));
+  invalid.controller.offerOnce(); await settled();
+  assert.equal(invalid.opened.length, 0);
+});
+
+const referenceProduct: CatalogOnlyProduct = { basis: 'catalogOnly', id: 'luckin-cn:44', name: '瑞幸泰奶鸳鸯拿铁',
+  aliases: [], category: '拿铁类', state: '官网产品信息',
+  source: { name: '瑞幸官网产品信息', url: 'https://lkcoffee.com/products/thai-yuen-yeung-latte', recordId: '44', version: '官网快照' },
+  reference: { label: '冰/大杯/不另外加糖', protein: 6.5 } };
+
+test('catalog-only products retain unknown heat and explicit reference macros for manual confirmation', async () => {
+  const app = fixture(referenceProduct); app.setReady(true); app.controller.offerOnce(); await settled();
+  assert.deepEqual(app.opened, [referenceProduct]);
+  assert.equal(app.requests, 1);
+  const unspecified = fixture({ ...referenceProduct, reference: { label: null } });
+  unspecified.setReady(true); unspecified.controller.offerOnce(); await settled(); assert.equal(unspecified.opened.length, 1);
+  const invalid = fixture(referenceProduct); invalid.setReady(true);
+  invalid.setResponse(async () => ({ food: { ...referenceProduct, reference: { label: null, protein: -1 } } }));
+  invalid.controller.offerOnce(); await settled(); assert.equal(invalid.opened.length, 0);
 });

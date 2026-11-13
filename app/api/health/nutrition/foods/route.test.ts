@@ -58,20 +58,20 @@ void test('official brand results retain serving units and separate source attri
 void test('the browsing API pages through all retained specifications and exposes only current source metadata', async () => {
   const f = fixture();
   const ids: string[] = [];
-  for (const offset of [0, 50, 100]) {
+  for (const offset of [0, 50, 100, 150]) {
     const response = await f.get(`?offset=${offset}&limit=50`);
     assert.equal(response.status, 200);
     const data = await response.json() as catalog.FoodBrowseResult & { sources: unknown[]; categories: Array<{ name: string; count: number }>; images: Record<string, { src: string; alt: string }> };
-    assert.equal(data.total, 137); assert.equal(data.offset, offset); assert.equal(data.limit, 50);
-    assert.equal(data.sources.length, 1);
-    assert.equal(data.categories.length, 8);
-    assert.equal(data.categories.reduce((sum, category) => sum + category.count, 0), 137);
-    assert.ok(data.foods.every((food) => food.id.startsWith('mcd-cn:')));
+    assert.equal(data.total, 158); assert.equal(data.offset, offset); assert.equal(data.limit, 50);
+    assert.equal(data.sources.length, 2);
+    assert.equal(data.categories.length, 15);
+    assert.equal(data.categories.reduce((sum, category) => sum + category.count, 0), 158);
+    assert.ok(data.foods.every((food) => /^(?:mcd-cn|luckin-cn):/.test(food.id)));
     assert.deepEqual(Object.keys(data.images).sort(), data.foods.map((food) => food.id).sort());
-    assert.ok(Object.values(data.images).every((image) => /^\/food-images\/mcd-cn\/\d+\.png$/.test(image.src) && image.alt.length > 0));
+    assert.ok(Object.values(data.images).every((image) => /^\/food-images\/(?:mcd-cn|luckin-cn)\/\d+\.(?:png|jpe?g)$/.test(image.src) && image.alt.length > 0));
     ids.push(...data.foods.map((food) => food.id));
   }
-  assert.equal(new Set(ids).size, 137);
+  assert.equal(new Set(ids).size, 158);
   const withdrawn = await (await f.get('?q=' + encodeURIComponent('白饭'))).json() as catalog.FoodBrowseResult & { images: object };
   assert.deepEqual(withdrawn.foods, []); assert.equal(withdrawn.total, 0);
   assert.deepEqual(withdrawn.images, {});
