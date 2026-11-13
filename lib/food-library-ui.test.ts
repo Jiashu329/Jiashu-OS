@@ -19,7 +19,6 @@ async function settled(check: () => boolean) {
 }
 function fixture(options: { search?: string; responder?: Responder; catalog?: Array<{id:string;name:string;aliases:string[];category:string}> } = {}) {
   const catalog = options.catalog ?? foods;
-  const catalogCategories = [...new Set(catalog.map((food) => food.category))].map((name) => ({name,count:catalog.filter((food)=>food.category===name).length}));
   const brands = [{id:'mcd-cn',name:'麦当劳中国',count:catalog.filter(food=>food.id.startsWith('mcd-cn:')).length},{id:'luckin-cn',name:'瑞幸咖啡',count:catalog.filter(food=>food.id.startsWith('luckin-cn:')).length}];
   const { window, document } = parseHTML(renderFoodLibraryPage());
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
@@ -43,7 +42,9 @@ function fixture(options: { search?: string; responder?: Responder; catalog?: Ar
     const url = new URL(input, location.origin); requests.push({ url, init });
     const responder = next; next = null; if (responder) return responder(url);
     const query = url.searchParams.get('q') || '', brand=url.searchParams.get('brand')||'', category = url.searchParams.get('category') || '', offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
-    const matches = catalog.filter((food) => (!brand || food.id.startsWith(brand+':')) && (!category || food.category === category) && (!query || food.name.includes(query) || food.aliases.some((alias) => alias.includes(query))));
+    const brandCatalog = catalog.filter((food) => !brand || food.id.startsWith(brand+':'));
+    const catalogCategories = [...new Set(brandCatalog.map((food) => food.category))].map((name) => ({name,count:brandCatalog.filter((food)=>food.category===name).length}));
+    const matches = brandCatalog.filter((food) => (!category || food.category === category) && (!query || food.name.includes(query) || food.aliases.some((alias) => alias.includes(query))));
     return Response.json({ foods: matches.slice(offset, offset + limit), categories:catalogCategories, brands, sources:[mcdSource], total: matches.length, images: Object.fromEntries(matches.map((food) => [food.id, {src:'/food-images/'+food.id.split(':')[0]+'/'+food.id.split(':')[1]+'.png',alt:food.name}])) } satisfies Reply);
   } };
   Object.assign(window, { JiashuAccountSession: session });
@@ -251,8 +252,12 @@ test('brand changes reset pagination and category while preserving search and br
   assert.equal(app.document.querySelectorAll('#food-library-brand option').length,3);
   app.click('next');await app.ready();
   app.changeCategory('汉堡和卷');await app.ready();
-  app.changeBrand('luckin-cn');await app.ready();
+  app.changeBrand('luckin-cn');
+  assert.equal(app.el('category').disabled,true);assert.equal(app.el('category').children.length,1);
+  await app.ready();
   assert.equal(app.el('brand').value,'luckin-cn');assert.equal(app.el('category').value,'');
+  assert.equal(app.el('category').disabled,false);assert.equal(app.el('category').children.length,2);
+  assert.match(app.el('category').textContent??'',/拿铁类（2）/);assert.ok(!app.el('category').textContent?.includes('汉堡和卷'));
   assert.equal(app.el('list').children.length,2);assert.equal(app.el('pagination').hidden,true);
   assert.equal(new URLSearchParams(app.location.search).get('brand'),'luckin-cn');
   assert.equal(new URLSearchParams(app.location.search).has('category'),false);
@@ -260,6 +265,7 @@ test('brand changes reset pagination and category while preserving search and br
   assert.equal(app.requests.at(-1)?.url.searchParams.get('brand'),'luckin-cn');
   app.location.search='?brand=mcd-cn&offset=24';app.window.dispatchEvent(new app.window.Event('popstate'));await app.ready();
   assert.equal(app.el('brand').value,'mcd-cn');assert.equal(app.el('list').children.length,24);
+  assert.equal(app.el('category').children.length,9);assert.ok(!app.el('category').textContent?.includes('拿铁类'));
   assert.equal(app.el('page-number').textContent,'第 2 / 6 页');
   app.click('clear');await app.ready();assert.equal(app.el('brand').value,'');assert.equal(app.el('count').textContent,'共 139 个条目 · 显示 1–24');
 });
@@ -286,4 +292,15 @@ test('a catalog-only product displays unknown heat without inventing serving wei
   assert.doesNotMatch(text,/0 kcal|null|NaN|每 100 克/);
   assert.equal(app.el('record').textContent,'带入手工核对');assert.equal(app.el('record').getAttribute('href'),'/health/nutrition?food=luckin-cn%3A44');
   assert.equal(app.requests.length,1);assert.ok(app.requests.every(item=>item.init.method==='GET'));
+});
+
+
+test('a stale cross-brand category link adopts the normalized category and first page without retaining a foreign option', async () => {
+  const app=fixture({search:'?brand=luckin-cn&category='+encodeURIComponent('汉堡和卷')+'&offset=24',responder:()=>Response.json({foods:[luckinKnown,luckinUnknown],category:'',offset:0,total:2,categories:[{name:'拿铁类',count:2}],brands:[{id:'luckin-cn',name:'瑞幸',count:2}]})});
+  await app.ready();
+  assert.equal(app.el('brand').value,'luckin-cn');assert.equal(app.el('category').value,'');
+  assert.equal(app.el('category').children.length,2);assert.ok(!app.el('category').textContent?.includes('汉堡和卷'));
+  assert.equal(new URLSearchParams(app.location.search).has('category'),false);
+  assert.equal(new URLSearchParams(app.location.search).has('offset'),false);
+  assert.equal(app.el('list').children.length,2);assert.equal(app.requests.length,1);
 });

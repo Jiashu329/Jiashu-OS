@@ -39,6 +39,14 @@ export const FOOD_LIBRARY_BRANDS = Object.freeze([
 ].map((brand) => Object.freeze(brand)));
 export const FOOD_LIBRARY_CATEGORIES = Object.freeze([...new Set(foods.map((food) => food.category))]
   .map((name) => Object.freeze({ name, count: foods.filter((food) => food.category === name).length })));
+/** Category choices describe the selected brand's full catalog, independent of search or page. */
+export function foodLibraryCategories(brand = '') {
+  if (typeof brand !== 'string' || brand && !FOOD_LIBRARY_BRANDS.some((item) => item.id === brand)) throw new Error('请选择有效的品牌。');
+  if (!brand) return FOOD_LIBRARY_CATEGORIES;
+  const brandFoods = foods.filter((food) => foodLibraryBrand(food) === brand);
+  return Object.freeze(FOOD_LIBRARY_CATEGORIES.map(({ name }) => Object.freeze({ name,
+    count: brandFoods.filter((food) => food.category === name).length })).filter((category) => category.count > 0));
+}
 const normalize = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase('en').replace(/\s+/g, '');
 const searchable = foods.map((food, order) => ({ food, order, name: normalize(food.name),
   aliases: [...food.aliases, ...(food.searchAliases ?? [])].map(normalize),
@@ -55,13 +63,18 @@ export function browseFoodLibrary({ query = '', category = '', brand = '', offse
   if (typeof category !== 'string' || category && !FOOD_LIBRARY_CATEGORIES.some((item) => item.name === category)) throw new Error('请选择有效的食品分类。');
   if (typeof brand !== 'string' || brand && !FOOD_LIBRARY_BRANDS.some((item) => item.id === brand)) throw new Error('请选择有效的品牌。');
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('请提交有效的食物分页参数。');
+  // Shared or restored URLs may retain a valid category from another brand.
+  // Clear that incompatible selection and page together instead of showing a false empty catalog.
+  const effectiveCategory = category && !foodLibraryCategories(brand).some((item) => item.name === category) ? '' : category;
+  const effectiveOffset = effectiveCategory !== category ? 0 : offset;
   const needle = normalize(query);
   const matching = searchable.map((item) => ({ ...item, rank: !needle || item.name === needle ? 0
     : item.aliases.includes(needle) ? 1 : item.name.startsWith(needle) ? 2
       : item.aliases.some((alias) => alias.startsWith(needle)) ? 3 : item.name.includes(needle) ? 4
         : item.aliases.some((alias) => alias.includes(needle)) ? 5 : item.category.includes(needle) ? 6
           : item.description.includes(needle) ? 7 : 100 }))
-    .filter((item) => item.rank < 100 && (!category || item.food.category === category) && (!brand || foodLibraryBrand(item.food) === brand))
+    .filter((item) => item.rank < 100 && (!effectiveCategory || item.food.category === effectiveCategory) && (!brand || foodLibraryBrand(item.food) === brand))
     .sort((a, b) => a.rank - b.rank || a.order - b.order);
-  return { foods: matching.slice(offset, offset + limit).map((item) => item.food), total: matching.length, offset, limit };
+  return { foods: matching.slice(effectiveOffset, effectiveOffset + limit).map((item) => item.food), total: matching.length,
+    offset: effectiveOffset, limit, category: effectiveCategory };
 }

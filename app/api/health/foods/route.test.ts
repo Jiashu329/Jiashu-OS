@@ -39,3 +39,27 @@ test('the library rejects duplicate, malformed, unknown and mixed-id query field
   assert.equal((await f.get('?id=tfda:A0550601')).status, 404);
   f.signOut(); assert.equal((await f.get('?brand=luckin-cn')).status, 401);
 });
+
+test('category options and counts follow the selected brand independently of query, category or page', async () => {
+  const f = fixture();
+  for (const [brand, count, length] of [['mcd-cn', 137, 8], ['luckin-cn', 28, 7]] as const) {
+    const base = await (await f.get('?brand=' + brand)).json() as { categories: Array<{ name: string; count: number }> };
+    assert.equal(base.categories.length, length);
+    assert.equal(base.categories.reduce((sum, category) => sum + category.count, 0), count);
+    for (const extra of ['&q=NO_MATCHING_PRODUCT', '&offset=24', '&category=' + encodeURIComponent(base.categories[0].name)]) {
+      const data = await (await f.get('?brand=' + brand + extra)).json() as { categories: typeof base.categories };
+      assert.deepEqual(data.categories, base.categories);
+    }
+  }
+  const all = await (await f.get()).json() as { categories: unknown[] };
+  assert.equal(all.categories.length, 15);
+});
+
+test('a restored cross-brand category resets its response state without returning a false empty result', async () => {
+  const response = await fixture().get('?' + new URLSearchParams({ brand: 'luckin-cn', category: '汉堡和卷', offset: '24' }));
+  assert.equal(response.status, 200);
+  const data = await response.json() as { category: string; offset: number; total: number; foods: library.LibraryFood[]; categories: Array<{ name: string }> };
+  assert.equal(data.category, ''); assert.equal(data.offset, 0); assert.equal(data.total, 28);
+  assert.equal(data.categories.some((category) => category.name === '汉堡和卷'), false);
+  assert.ok(data.foods.length > 0 && data.foods.every((food) => food.id.startsWith('luckin-cn:')));
+});

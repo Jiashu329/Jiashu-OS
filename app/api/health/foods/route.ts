@@ -1,4 +1,4 @@
-import { FOOD_LIBRARY_BRANDS, FOOD_LIBRARY_CATEGORIES, browseFoodLibrary, getLibraryFood } from '../../../../lib/food-library-catalog';
+import { FOOD_LIBRARY_BRANDS, FOOD_LIBRARY_CATEGORIES, browseFoodLibrary, foodLibraryCategories, getLibraryFood } from '../../../../lib/food-library-catalog';
 import { FOOD_CATALOG_SOURCES } from '../../../../lib/food-catalog';
 import { foodCatalogImages } from '../../../../lib/food-catalog-images';
 import { apiUser, json, unauthenticated } from '../../_shared';
@@ -22,8 +22,9 @@ export async function GET(request: Request) {
   const rawOffset = params.get('offset'), rawLimit = params.get('limit');
   if (rawOffset !== null && !/^(?:0|[1-9]\d*)$/.test(rawOffset) || rawLimit !== null && !/^[1-9]\d?$/.test(rawLimit)) return invalid();
   try {
-    const result = browseFoodLibrary({ query: params.get('q') ?? '', category: params.get('category') ?? '', brand: params.get('brand') ?? '',
+    const brand = params.get('brand') ?? '';
+    const result = browseFoodLibrary({ query: params.get('q') ?? '', category: params.get('category') ?? '', brand,
       offset: rawOffset === null ? 0 : Number(rawOffset), limit: rawLimit === null ? 24 : Number(rawLimit) });
-    return json({ ...result, ...metadata, images: foodCatalogImages(result.foods) });
+    return json({ ...result, ...metadata, categories: foodLibraryCategories(brand), images: foodCatalogImages(result.foods) });
   } catch (error) { return invalid(error instanceof Error ? error.message : undefined); }
 }

@@ -15,7 +15,7 @@ import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
-import { FOOD_LIBRARY_BRANDS, FOOD_LIBRARY_CATEGORIES, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
+import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
@@ -159,7 +159,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
     if (parsed.pathname === '/api/health/foods') {
-      const metadata={brands:FOOD_LIBRARY_BRANDS,categories:FOOD_LIBRARY_CATEGORIES,sources:FOOD_CATALOG_SOURCES};
+      const metadata={brands:FOOD_LIBRARY_BRANDS,categories:foodLibraryCategories(parsed.searchParams.get('brand')??''),sources:FOOD_CATALOG_SOURCES};
       if (parsed.searchParams.has('id')) {
         const food=getLibraryFood(parsed.searchParams.get('id')!);
         return food?Response.json({food,...metadata,images:foodCatalogImages([food])}):Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
@@ -193,7 +193,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage };
+  return { window, document, requests, identityRequests, html, sessionStorage, location };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
@@ -496,13 +496,40 @@ test('minified Luckin library restores its brand, shows unknown energy and opens
   const list=f.document.getElementById('food-library-list')!;
   await settle(()=>list.getAttribute('aria-busy')==='false');
   assert.equal((f.document.getElementById('food-library-brand') as unknown as HTMLSelectElement).value,'luckin-cn');
+  const category=f.document.getElementById('food-library-category') as unknown as HTMLSelectElement;
+  assert.equal(category.querySelectorAll('option').length,8);
+  assert.ok(!category.textContent?.includes('汉堡和卷'));
   assert.equal(list.children.length,1);
   assert.match(list.textContent??'',/热量未公布/);
   assert.ok(list.querySelector('img')?.getAttribute('src')?.startsWith('/food-images/luckin-cn/'));
   list.querySelector('[data-food-open]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
   assert.match(f.document.getElementById('food-library-detail')?.textContent??'',/官网未公布此产品的热量/);
   assert.equal(f.document.getElementById('food-library-record')?.textContent,'带入手工核对');
+  const brand=f.document.getElementById('food-library-brand') as unknown as HTMLSelectElement;
+  brand.value='mcd-cn';brand.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+  assert.equal(category.disabled,true);
+  assert.equal(category.querySelectorAll('option').length,1);
+  await settle(()=>list.getAttribute('aria-busy')==='false');
+  assert.equal(category.disabled,false);
+  assert.equal(category.querySelectorAll('option').length,9);
+  assert.ok(category.textContent?.includes('汉堡和卷'));
+  assert.ok(!category.textContent?.includes('拿铁类'));
+  assert.equal(list.children.length,0,'the retained search can be empty while the brand category list stays complete');
   assert.ok(f.requests.every((item)=>item.method==='GET'&&item.path.startsWith('/api/health/foods?')));
+});
+
+test('minified food library normalizes a restored category from a different brand to its first page', { skip: !hasBuild }, async () => {
+  const f=await fixture('id="food-library-page"','/health/foods?brand=luckin-cn&category='+encodeURIComponent('汉堡和卷')+'&offset=24',390);
+  const list=f.document.getElementById('food-library-list')!;
+  await settle(()=>list.getAttribute('aria-busy')==='false');
+  const category=f.document.getElementById('food-library-category') as unknown as HTMLSelectElement;
+  assert.equal(category.value,'');
+  assert.equal(category.querySelectorAll('option').length,8);
+  assert.equal(list.children.length,24);
+  assert.equal(f.document.getElementById('food-library-page-number')?.textContent,'第 1 / 2 页');
+  const query=new URLSearchParams(f.location.search);
+  assert.equal(query.get('brand'),'luckin-cn');assert.equal(query.has('category'),false);assert.equal(query.has('offset'),false);
+  assert.equal(f.requests.length,1);assert.ok(f.requests.every((item)=>item.method==='GET'));
 });
 
 test('minified Luckin handoffs preserve official kcal or unknown energy behind explicit manual confirmation', { skip: !hasBuild }, async () => {

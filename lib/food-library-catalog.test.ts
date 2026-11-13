@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { browseFoodLibrary, getLibraryFood, FOOD_LIBRARY_BRANDS } from './food-library-catalog.ts';
+import { browseFoodLibrary, foodLibraryCategories, getLibraryFood, FOOD_LIBRARY_BRANDS } from './food-library-catalog.ts';
 import { calculateFoodSelection, getFood, searchFoods } from './food-catalog.ts';
 
 test('the library pages through both brands, including seven explicitly unknown nutrition products', () => {
@@ -43,4 +43,30 @@ test('library filtering discovers original product names and refuses withdrawn s
   assert.equal(getLibraryFood('tfda:A0550601'), null);
   assert.equal(browseFoodLibrary({ query: '白饭' }).total, 0);
   for (const options of [{ brand: 'other' }, { category: 'other' }, { offset: -1 }, { limit: 51 }, { query: 'a'.repeat(101) }]) assert.throws(() => browseFoodLibrary(options));
+});
+
+test('brand category choices contain only that brand and count its full catalog', () => {
+  assert.equal(foodLibraryCategories().length, 15);
+  assert.equal(foodLibraryCategories().reduce((sum, category) => sum + category.count, 0), 165);
+  for (const [brand, count, categoryCount] of [['mcd-cn', 137, 8], ['luckin-cn', 28, 7]] as const) {
+    const categories = foodLibraryCategories(brand);
+    const all = browseFoodLibrary({ brand, limit: 50 }).foods;
+    const remainder = browseFoodLibrary({ brand, limit: 50, offset: 50 }).foods.concat(browseFoodLibrary({ brand, limit: 50, offset: 100 }).foods);
+    assert.equal(categories.length, categoryCount);
+    assert.equal(categories.reduce((sum, category) => sum + category.count, 0), count);
+    for (const category of categories) assert.equal(category.count, [...all, ...remainder].filter((food) => food.category === category.name).length);
+  }
+  assert.equal(foodLibraryCategories('luckin-cn').some((category) => category.name === '汉堡和卷'), false);
+  assert.equal(foodLibraryCategories('mcd-cn').some((category) => category.name === '拿铁类'), false);
+  assert.throws(() => foodLibraryCategories('other'));
+});
+
+test('cross-brand category state resets to all categories and the first page while valid filters stay selected', () => {
+  const reset = browseFoodLibrary({ brand: 'luckin-cn', category: '汉堡和卷', offset: 24 });
+  assert.equal(reset.category, ''); assert.equal(reset.offset, 0); assert.equal(reset.total, 28);
+  assert.equal(reset.foods[0].id, browseFoodLibrary({ brand: 'luckin-cn' }).foods[0].id);
+  const valid = browseFoodLibrary({ brand: 'luckin-cn', category: '拿铁类' });
+  assert.equal(valid.category, '拿铁类'); assert.equal(valid.total, 8);
+  assert.ok(valid.foods.every((food) => food.category === '拿铁类'));
+  assert.equal(browseFoodLibrary({ category: '汉堡和卷' }).category, '汉堡和卷');
 });
