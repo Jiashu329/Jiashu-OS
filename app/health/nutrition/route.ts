@@ -14,6 +14,8 @@ export async function GET(request: Request) {
   const query = new URLSearchParams({ date });
   if (source.get('includeDeleted') === '1') query.set('includeDeleted', '1');
   if (source.get('compose') === '1') query.set('compose', '1');
+  const food = source.get('food');
+  if (source.getAll('food').length === 1 && food && food.length <= 120 && /^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(food)) query.set('food', food);
   const user = await requireChatGPTUser('/health/nutrition?' + query);
   return new Response(withPageAccount(renderNutritionPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',

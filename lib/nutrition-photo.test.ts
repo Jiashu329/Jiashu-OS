@@ -57,3 +57,12 @@ test('a stalled upload returns a safe timeout instead of waiting indefinitely',a
   const rejected=assert.rejects(pending,(error:unknown)=>error instanceof NutritionPhotoError&&error.status===408&&error.code==='NUTRITION_PHOTO_UPLOAD_TIMEOUT');
   t.mock.timers.tick(20001);await rejected;
 });
+
+test('photo drafts no longer offer withdrawn TFDA records while preserving explicit AI estimates',()=>{
+  const rice=buildNutritionPhotoDrafts(answer(item({name:'白饭'})),request()).drafts[0];
+  assert.deepEqual(rice.candidates,[]);assert.equal(rice.food,null);
+  assert.equal(rice.calories,'320.0');assert.equal(rice.provenance.calories!.source,'ai');
+  const burger=buildNutritionPhotoDrafts(answer(item({name:'麦当劳巨无霸'})),request()).drafts[0];
+  assert.ok(burger.candidates.length>0);assert.ok(burger.candidates.every((food)=>food.id.startsWith('mcd-cn:')));
+  assert.equal(burger.food,null);assert.equal(burger.provenance.calories!.source,'ai');
+});

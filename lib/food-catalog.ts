@@ -4,6 +4,7 @@ import releaseManifest from '../data/food-catalog-releases.json' with { type: 'j
 import chineseRelease from '../data/food-catalog-releases/tfda-2024-03-29-cn2.json' with { type: 'json' };
 import mcdRelease from '../data/food-catalog-releases/mcd-cn-2025-04-v1.json' with { type: 'json' };
 import mcdSource from '../data/food-catalog-sources/mcd-cn-2025-04.json' with { type: 'json' };
+import currentRelease from '../data/food-catalog-releases/mcd-only-2026-11-13-v1.json' with { type: 'json' };
 
 export interface FoodSource { name: string; url: string; recordId: string; version: string }
 interface FoodItemBase {
@@ -95,15 +96,14 @@ export const ACTIVE_FOOD_CATALOG_RELEASE = releaseManifest.active;
 export const CHINESE_FOOD_CATALOG_RELEASE = chineseRelease.id;
 export const MCD_FOOD_CATALOG_RELEASE = mcdRelease.id;
 export const FOOD_CATALOG_RELEASES = Object.freeze(releaseManifest.releases.map((release) => Object.freeze({ ...release,
-  sourceVersion: release.id === MCD_FOOD_CATALOG_RELEASE ? `${sourceData.version}；${mcdSource.version}` : sourceData.version,
-  sourceSnapshotDate: release.id === MCD_FOOD_CATALOG_RELEASE ? mcdSource.snapshotDate : sourceData.snapshotDate,
+  sourceVersion: release.id === ACTIVE_FOOD_CATALOG_RELEASE ? mcdSource.version
+    : release.id === MCD_FOOD_CATALOG_RELEASE ? `${sourceData.version}；${mcdSource.version}` : sourceData.version,
+  sourceSnapshotDate: [MCD_FOOD_CATALOG_RELEASE, ACTIVE_FOOD_CATALOG_RELEASE].includes(release.id) ? mcdSource.snapshotDate : sourceData.snapshotDate,
   active: release.id === ACTIVE_FOOD_CATALOG_RELEASE })));
-export const FOOD_CATALOG_SOURCE = Object.freeze({ ...sourceData, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE,
-  catalogVersion: chineseRelease.label, catalogUpdatedAt: chineseRelease.publishedAt,
-  description: sourceData.description + chineseRelease.description });
-/** Separate attributions prevent the TFDA open-data license being applied to brand material. */
-export const FOOD_CATALOG_SOURCES = Object.freeze([FOOD_CATALOG_SOURCE,
-  Object.freeze({ ...mcdSource, catalogRelease: MCD_FOOD_CATALOG_RELEASE })]);
+/** Current discovery has one source. Archived sources are retained only to validate captured records. */
+export const FOOD_CATALOG_SOURCE = Object.freeze({ ...mcdSource, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE,
+  catalogVersion: currentRelease.label, catalogUpdatedAt: currentRelease.publishedAt });
+export const FOOD_CATALOG_SOURCES = Object.freeze([FOOD_CATALOG_SOURCE]);
 function freezeFood(food: FoodItem): FoodItem {
   return Object.freeze({ ...food, source: Object.freeze({ ...food.source }),
     ...(isServingFood(food) ? { serving: Object.freeze({ ...food.serving }) } : {}),
@@ -117,39 +117,54 @@ const referenceFoods = new Set(chineseRelease.referencePortionFoodIds);
 const chineseCatalog: FoodItem[] = baseline.map((food) => freezeFood({ ...food, catalogRelease: CHINESE_FOOD_CATALOG_RELEASE,
   searchAliases: additions[food.id] ?? [],
   portions: [...food.portions, ...(referenceFoods.has(food.id) ? chineseRelease.referencePortions : [])] }));
-const catalog: FoodItem[] = [
+const previousCatalog: FoodItem[] = [
   ...chineseCatalog.map((food) => freezeFood({ ...food, catalogRelease: MCD_FOOD_CATALOG_RELEASE })),
   ...(mcdRelease.foods as ServingFoodItem[]).map((food) => freezeFood({ ...food, catalogRelease: MCD_FOOD_CATALOG_RELEASE })),
 ];
+// A withdrawal is a new immutable release; the prior mixed catalog must remain
+// byte-for-byte calculable for stored snapshots, queued commands and backups.
+const previousBrandFoods = new Map(previousCatalog.filter((food) => food.id.startsWith('mcd-cn:')).map((food) => [food.id, food]));
+const catalog: FoodItem[] = currentRelease.foodIds.map((id) => {
+  const food = previousBrandFoods.get(id);
+  if (!food) throw new Error('当前食物库发布清单缺少可信来源。');
+  return freezeFood({ ...food, catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE });
+});
 const releases = new Map<string, Map<string, FoodItem>>([
   [LEGACY_FOOD_CATALOG_RELEASE, new Map(baseline.map((food) => [food.id.toLowerCase(), food]))],
   [CHINESE_FOOD_CATALOG_RELEASE, new Map(chineseCatalog.map((food) => [food.id.toLowerCase(), food]))],
-  [MCD_FOOD_CATALOG_RELEASE, new Map(catalog.map((food) => [food.id.toLowerCase(), food]))],
+  [MCD_FOOD_CATALOG_RELEASE, new Map(previousCatalog.map((food) => [food.id.toLowerCase(), food]))],
+  [ACTIVE_FOOD_CATALOG_RELEASE, new Map(catalog.map((food) => [food.id.toLowerCase(), food]))],
 ]);
+export const FOOD_CATALOG_CATEGORIES = Object.freeze([...new Set(catalog.map((food) => food.category))]
+  .map((name) => Object.freeze({ name, count: catalog.filter((food) => food.category === name).length })));
 const normalize = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase('en').replace(/\s+/g, '');
 const searchable = catalog.map((food) => ({ food, name: normalize(food.name),
   aliases: [...food.aliases, ...(food.searchAliases ?? [])].map(normalize), category: normalize(food.category), description: normalize(food.description ?? '') }));
-const commonFoods = ['白饭', '鸡蛋(白壳)', '全脂鲜乳平均值', '香蕉', '富士苹果', '传统豆腐', '青花菜', '鸡胸肉', '燕麦片'];
 
-/** Bounded, offline lookup; food states remain separate records. */
-export function searchFoods(query: string, limit = 20): FoodItem[] {
+export interface FoodBrowseOptions { query?: string; category?: string; offset?: number; limit?: number }
+export interface FoodBrowseResult { foods: FoodItem[]; total: number; offset: number; limit: number }
+
+/** Bounded current-catalog discovery, independent of immutable historical lookup. */
+export function browseFoods({ query = '', category = '', offset = 0, limit = 20 }: FoodBrowseOptions = {}): FoodBrowseResult {
   if (typeof query !== 'string' || query.length > 100) throw new Error('食物关键词最多100个字符。');
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('每次可返回1至50项食物。');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('食物分页位置需为非负整数。');
+  if (typeof category !== 'string' || (category !== '' && !FOOD_CATALOG_CATEGORIES.some((item) => item.name === category))) throw new Error('请选择有效的食物分类。');
   const needle = normalize(query);
-  if (!needle) {
-    return [...catalog].sort((a, b) => {
-      const ai = commonFoods.indexOf(a.name), bi = commonFoods.indexOf(b.name);
-      return (ai < 0 ? commonFoods.length : ai) - (bi < 0 ? commonFoods.length : bi);
-    }).slice(0, limit);
-  }
-  return searchable.map((item, order) => {
-    const { name, aliases, category, description } = item;
-    const rank = name === needle ? 0 : aliases.includes(needle) ? 1 : name.startsWith(needle) ? 2
+  const matched = searchable.map((item, order) => {
+    const { name, aliases, description } = item;
+    const rank = !needle ? 0 : name === needle ? 0 : aliases.includes(needle) ? 1 : name.startsWith(needle) ? 2
       : aliases.some((value) => value.startsWith(needle)) ? 3 : name.includes(needle) ? 4
-        : aliases.some((value) => value.includes(needle)) ? 5 : category.includes(needle) ? 6 : description.includes(needle) ? 7 : 100;
+        : aliases.some((value) => value.includes(needle)) ? 5 : item.category.includes(needle) ? 6 : description.includes(needle) ? 7 : 100;
     return { food: item.food, rank, order };
-  }).filter((item) => item.rank < 100).sort((a, b) => a.rank - b.rank || a.order - b.order)
-    .slice(0, limit).map((item) => item.food);
+  }).filter((item) => item.rank < 100 && (!category || item.food.category === category))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order);
+  return { foods: matched.slice(offset, offset + limit).map((item) => item.food), total: matched.length, offset, limit };
+}
+
+/** Existing consumers retain their bounded search contract, always using current discovery. */
+export function searchFoods(query: string, limit = 20): FoodItem[] {
+  return browseFoods({ query, limit }).foods;
 }
 
 export function getFood(id: string, catalogRelease = ACTIVE_FOOD_CATALOG_RELEASE): FoodItem | null {

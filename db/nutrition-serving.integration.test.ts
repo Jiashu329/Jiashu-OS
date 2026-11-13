@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { calculateFoodSelection, foodSelectionFromSnapshot, LEGACY_FOOD_CATALOG_RELEASE, searchFoods } from '../lib/food-catalog.ts';
+import { calculateFoodSelection, foodSelectionFromSnapshot, LEGACY_FOOD_CATALOG_RELEASE, getFood, searchFoods } from '../lib/food-catalog.ts';
 import { parseNutritionCreate, presentNutritionEntry } from '../lib/nutrition.ts';
 import { parseNutritionTemplate, parseNutritionTemplatePreview } from '../lib/nutrition-templates.ts';
 import { BACKUP_TABLE_NAMES, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
@@ -48,7 +48,7 @@ void test('official serving food survives save/edit/favorite/template/copy and f
   const copied = await copyNutritionMeal(source.db, 'alice', selection, copyPreview.previewToken, D, LATER);
   assert.equal(copied.entries.length, 2);for (const item of copied.entries) { assert.equal(item.food?.grams, null);assert.equal(item.food?.kcalPer100g, null); }
   // A pre-versioning TFDA entry shares the same complete backup, retaining its original missing release field.
-  const rice = searchFoods('白饭', 20).find((item) => item.basis !== 'perServing');assert.ok(rice);
+  const rice = getFood('tfda:A0550601', LEGACY_FOOD_CATALOG_RELEASE)!;assert.ok(rice);
   const legacy = parseNutritionCreate({ date: DAY, meal: 'breakfast', name: rice.name, calories: null, food: { id: rice.id, amount: 100, unit: 'g' } });
   assert.equal(Object.hasOwn(legacy.food!, 'catalogRelease'), false);
   const legacyBytes = JSON.stringify(legacy.food);await createNutritionEntry(source.db, 'alice', legacy, E, NOW);
@@ -78,7 +78,7 @@ void test('serving backups reject invented grams, invented per-100g values and m
     const bad = structuredClone(backup), row = bad.tables.nutrition_entries[0];row.food_json = JSON.stringify({ ...JSON.parse(row.food_json as string), ...change });
     assert.throws(() => parseDataBackup(bad));
   }
-  const legacyFood = searchFoods('白饭', 20).find((item) => item.basis !== 'perServing');assert.ok(legacyFood);
+  const legacyFood = getFood('tfda:A0550601', LEGACY_FOOD_CATALOG_RELEASE)!;assert.ok(legacyFood);
   const legacySnapshot = calculateFoodSelection({ id: legacyFood.id, amount: 100, unit: 'g', catalogRelease: LEGACY_FOOD_CATALOG_RELEASE });
   assert.equal(Object.hasOwn(legacySnapshot, 'basis'), false);assert.equal(typeof legacySnapshot.grams, 'number');
 });

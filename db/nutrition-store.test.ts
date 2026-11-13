@@ -9,7 +9,7 @@ import { createNutritionEntry, listNutritionEntries, NutritionConflictError, rea
   replaceNutritionEntry, setNutritionEntryDeleted, createNutritionBatch, readNutritionDayStatus, writeNutritionDayStatus, listNutritionDayStatuses, addNutritionFavorite, listNutritionFavorites, removeNutritionFavorite, recentNutritionFoods, readNutritionRangeSnapshot, creationFingerprint } from './nutrition-store.ts';
 import { readNutritionHistory, restoreNutritionRevision } from './nutrition-store.ts';
 import { readNutritionGoals, writeNutritionGoals } from './nutrition-goals-store.ts';
-import { calculateFoodSelection, searchFoods } from '../lib/food-catalog.ts';
+import { calculateFoodSelection, getFood, LEGACY_FOOD_CATALOG_RELEASE } from '../lib/food-catalog.ts';
 
 const NOW = '2026-11-10T04:00:00.000Z';
 const LATER = '2026-11-10T05:00:00.000Z';
@@ -94,7 +94,7 @@ void test('restoring a deleted historical snapshot keeps an explicit restore aud
 });
 
 void test('legacy replacement that removes a catalog selection cannot leave an unverifiable catalog source',async(t)=>{
-  const f=fixture(t),food=searchFoods('米饭')[0];
+  const f=fixture(t),food=getFood('tfda:A0550601',LEGACY_FOOD_CATALOG_RELEASE)!;
   const original=parseNutritionCreate({date:'2026-11-10',meal:'lunch',food:{id:food.id,amount:100,unit:'g'},carbs:null,protein:null,fat:null},Date.parse(NOW));
   const saved=(await createNutritionEntry(f.db,'alice',original,ID,NOW)).entry;assert.equal(saved.provenance?.calories?.source,'catalog');
   const {food:_food,provenance:_provenance,...legacy}=saved;
@@ -140,7 +140,7 @@ void test('macro changes affect single and batch idempotency while unknown value
   const expected = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(legacy)))].map((value) => value.toString(16).padStart(2, '0')).join('');
   assert.equal(await creationFingerprint(original), expected);
   assert.equal(await creationFingerprint({ ...original, carbsTenth: null, proteinTenth: null, fatTenth: null }), expected);
-  const food = calculateFoodSelection({ id: searchFoods('米饭')[0].id, amount: 100, unit: 'g' });
+  const food = calculateFoodSelection({ id: getFood('tfda:A0550601',LEGACY_FOOD_CATALOG_RELEASE)!.id, amount: 100, unit: 'g' });
   const { carbsTenth: _carbs, proteinTenth: _protein, fatTenth: _fat, carbsPer100g: _carbsPer100g, proteinPer100g: _proteinPer100g, fatPer100g: _fatPer100g, ...oldFood } = food;
   assert.equal(await creationFingerprint({ ...original, food }), await creationFingerprint({ ...original, food: oldFood }));
   const first = await createNutritionEntry(f.db, 'alice', input({ carbsTenth: 0, proteinTenth: 25, fatTenth: null }), ID, NOW);
@@ -168,7 +168,7 @@ void test('favorites snapshot grams and recent foods distinguish different macro
 
 void test('legacy food submissions and favorites replay after snapshots gain macro metadata', async (t) => {
   const f = fixture(t);
-  const food = calculateFoodSelection({ id: searchFoods('米饭')[0].id, amount: 100, unit: 'g' });
+  const food = calculateFoodSelection({ id: getFood('tfda:A0550601',LEGACY_FOOD_CATALOG_RELEASE)!.id, amount: 100, unit: 'g' });
   const { carbsTenth: _carbs, proteinTenth: _protein, fatTenth: _fat, carbsPer100g: _carbsPer100g, proteinPer100g: _proteinPer100g, fatPer100g: _fatPer100g, ...oldFood } = food;
   const original = input({ food });
   const digest = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map((value) => value.toString(16).padStart(2, '0')).join('');

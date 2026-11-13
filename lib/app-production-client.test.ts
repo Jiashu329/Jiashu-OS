@@ -14,7 +14,7 @@ import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
-import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
+import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_SOURCES, browseFoods, getFood } from './food-catalog.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -100,7 +100,9 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     get search() { return current.search; }, get hash() { return current.hash; }, get href() { return current.href; },
     replace(path: string) { current = new URL(path, current); },
   };
-  const history = { state: null, replaceState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); } };
+  const history = { state: null,
+    replaceState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); },
+    pushState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); } };
   document.querySelectorAll('dialog').forEach((dialog) => {
     Object.defineProperty(dialog,'open',{configurable:true,get(){return dialog.hasAttribute('open');}});
     Object.assign(dialog, {
@@ -154,7 +156,14 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const selection = parseNutritionQuery(parsed.searchParams);
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
-    if (parsed.pathname === '/api/health/nutrition/foods') return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
+    if (parsed.pathname === '/api/health/nutrition/foods') {
+      if (parsed.searchParams.has('id')) {
+        const food = getFood(parsed.searchParams.get('id')!);
+        return food ? Response.json({food}) : Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
+      }
+      if (location.pathname === '/health/foods') return Response.json({...browseFoods({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??20)}),categories:FOOD_CATALOG_CATEGORIES,sources:FOOD_CATALOG_SOURCES});
+      return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
+    }
     if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
     if (parsed.pathname === '/api/health/nutrition/templates') return Response.json({ templates: [] });
     if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
@@ -416,4 +425,46 @@ test('minified official McDonald serving selection keeps its published SKU, half
   const preview=f.document.getElementById('nutrition-food-preview')!.textContent??'';
   assert.match(preview,/2 份/);assert.match(preview,/未提供可靠克重/);assert.ok(!/NaN|100g|nullg|0g/.test(preview));
   assert.ok(f.requests.every((request)=>request.method==='GET'&&!request.path.includes('/parse')&&!request.path.includes('/photo')));
+});
+
+test('minified food library browses the current catalog, paginates and opens read-only official nutrition details', { skip: !hasBuild }, async () => {
+  const f = await fixture('id="food-library-page"', '/health/foods', 390);
+  const list = f.document.getElementById('food-library-list')!;
+  await settle(() => list.getAttribute('aria-busy') === 'false');
+  assert.equal(list.children.length, 24);
+  assert.match(f.document.getElementById('food-library-count')?.textContent ?? '', /共 137 个规格/);
+  assert.equal(f.document.querySelector('[data-context-path="/health/foods"]')?.getAttribute('aria-current'), 'page');
+  const firstName = list.querySelector('.fl-card-name')?.textContent;
+  list.querySelector('[data-food-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  assert.equal(f.document.getElementById('food-library-dialog')?.hasAttribute('open'), true);
+  assert.equal(f.document.getElementById('food-library-detail-title')?.textContent, firstName);
+  assert.match(f.document.getElementById('food-library-detail')?.textContent ?? '', /钠.*钙.*2026-11-12/);
+  const record = new URL(f.document.getElementById('food-library-record')!.getAttribute('href')!, 'https://synthetic.example');
+  assert.equal(record.pathname, '/health/nutrition');
+  assert.ok(record.searchParams.get('food')?.startsWith('mcd-cn:'));
+  f.document.getElementById('food-library-close')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  f.document.getElementById('food-library-next')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => list.getAttribute('aria-busy') === 'false' && f.document.getElementById('food-library-page-number')?.textContent === '第 2 / 6 页');
+  assert.equal(list.children.length, 24);
+  assert.notEqual(list.querySelector('.fl-card-name')?.textContent, firstName);
+  assert.ok(f.requests.some((item) => new URL(item.path, 'https://synthetic.example').searchParams.get('offset') === '24'));
+  const query = f.document.getElementById('food-library-query') as HTMLInputElement;
+  query.value = '巨无霸';
+  f.document.getElementById('food-library-filter')!.dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle(() => list.getAttribute('aria-busy') === 'false' && list.textContent?.includes('巨无霸') === true);
+  assert.ok(list.children.length > 0 && list.children.length < 24);
+  assert.equal(f.document.getElementById('food-library-pagination')?.hidden, true);
+  assert.ok(!f.document.body.textContent?.includes('台湾'));
+  assert.ok(f.requests.every((item) => item.method === 'GET' && item.path.startsWith('/api/health/nutrition/foods?')));
+});
+
+test('minified food-library handoff prepares a one-serving confirmation without saving', { skip: !hasBuild }, async () => {
+  const f = await fixture('id="nutrition-page"', '/health/nutrition?food=mcd-cn%3A49%3A28', 390);
+  await settle(() => f.document.getElementById('nutrition-dialog')?.hasAttribute('open') === true);
+  assert.match((f.document.getElementById('nutrition-name') as HTMLInputElement).value, /巨无霸/);
+  assert.equal((f.document.getElementById('nutrition-food-quantity') as HTMLInputElement).value, '1');
+  assert.equal((f.document.getElementById('nutrition-food-unit') as unknown as HTMLSelectElement).value, '份');
+  assert.equal((f.document.getElementById('nutrition-calories') as HTMLInputElement).value, '513.0');
+  assert.ok(f.requests.some((item) => item.path.includes('/foods?id=')));
+  assert.ok(f.requests.every((item) => item.method === 'GET'));
 });

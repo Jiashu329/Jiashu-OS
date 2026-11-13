@@ -14,7 +14,7 @@ import { parseSyncPayload } from '../lib/health.ts';
 import { writeHealthRecord } from './health-records-store.ts';
 import { parseHealthRecordCreate } from '../lib/health-records.ts';
 import { parseNutritionCreate } from '../lib/nutrition.ts';
-import { searchFoods } from '../lib/food-catalog.ts';
+import { getFood, LEGACY_FOOD_CATALOG_RELEASE } from '../lib/food-catalog.ts';
 import { createNutritionEntry, createNutritionBatch, addNutritionFavorite, readNutritionDayStatus, writeNutritionDayStatus, replaceNutritionEntry, restoreNutritionRevision, readNutritionHistory } from './nutrition-store.ts';
 import { readNutritionGoals, writeNutritionGoals } from './nutrition-goals-store.ts';
 import { changeFinanceBalance, FinanceBalanceChangeConflictError, previewFinanceBalanceChange } from './finance-balance-changes-store.ts';
@@ -192,7 +192,7 @@ void test('restoring missing finance history invalidates old account previews an
 });
 
 async function seedCatalogNutrition(db:D1Database, owner='alice') {
-  const selected=searchFoods('米饭',1)[0];assert.ok(selected);
+  const selected=getFood('tfda:A0550601',LEGACY_FOOD_CATALOG_RELEASE)!;assert.ok(selected);
   const input=parseNutritionCreate({date:'2026-11-09',meal:'breakfast',food:{id:selected.id,amount:150,unit:'g'},note:'source-backed fixture'},Date.parse(NOW));
   const item=(await createNutritionEntry(db,owner,input,A,NOW)).entry;
   await addNutritionFavorite(db,owner,item.id,NOW);
@@ -372,7 +372,7 @@ void test('published v1 and v2 nutrition backups without macro columns or source
 });
 
 void test('source-backed favorites retain entered macro overrides while snapshots and compatible digests remain verifiable',async(t)=>{
-  const source=fixture(t);const food=searchFoods('米饭',1)[0];
+  const source=fixture(t);const food=getFood('tfda:A0550601',LEGACY_FOOD_CATALOG_RELEASE)!;
   const input=parseNutritionCreate({date:'2026-11-09',meal:'lunch',food:{id:food.id,amount:150,unit:'g'},
     carbs:'30.5',protein:'0',fat:'1.2',note:'核对后的份量营养数据'},Date.parse(NOW));
   await createNutritionEntry(source.db,'alice',input,A,NOW);await addNutritionFavorite(source.db,'alice',A,NOW);

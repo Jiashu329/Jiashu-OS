@@ -7,7 +7,7 @@ import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderNutritionScript } from './nutrition-ui.ts';
 import { parseNutritionCreate } from './nutrition.ts';
 import { parseNutritionTemplate, parseNutritionTemplatePreview, previewNutritionTemplate, type NutritionTemplate } from './nutrition-templates.ts';
-import { calculateFoodSelection, searchFoods } from './food-catalog.ts';
+import { calculateFoodSelection, getFood, CHINESE_FOOD_CATALOG_RELEASE } from './food-catalog.ts';
 
 const DAY = '2026-11-11';
 const NOW = Date.parse(DAY + 'T04:00:00Z');
@@ -93,7 +93,11 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
     }
     if(parsed.pathname.endsWith('/history'))return Response.json({entryId:ID,history:options.history??[]});
     if(parsed.pathname.endsWith('/restore')){const handler=nextRestore;nextRestore=undefined;if(handler)return handler();const current=entries.find(item=>item.id===ID)!;const target=options.history?.find(item=>item.revision===body.revision)?.after;if(!target)return Response.json({error:'找不到这个版本'},{status:404});Object.assign(current,target,{revision:current.revision+1});return Response.json({entry:current,replayed:false});}
-    if (parsed.pathname.endsWith('/foods')) return Response.json({ foods: options.foods ?? [food],...(options.foodSources?{sources:options.foodSources}:{}) });
+    if (parsed.pathname.endsWith('/foods')) {
+      const foods = options.foods ?? [food], id = parsed.searchParams.get('id');
+      if (id) { const selected = foods.find((item) => item.id === id); return selected ? Response.json({ food: selected }) : Response.json({ error: '这项食物已不在当前食物库。', code: 'FOOD_NOT_FOUND' }, { status: 404 }); }
+      return Response.json({ foods,...(options.foodSources?{sources:options.foodSources}:{}) });
+    }
     if (parsed.pathname.endsWith('/photo')) { const handler=nextPhoto;nextPhoto=undefined;if(handler)return handler();return Response.json({drafts:options.drafts??[draft({date:body.date,meal:body.meal})],warnings:[],provider:'MiniMax',model:'synthetic'}); }
     if (parsed.pathname.endsWith('/parse')) return Response.json({ drafts: options.drafts ?? [draft()], warnings: [], provider: 'MiniMax', model: 'synthetic' });
     if (parsed.pathname.endsWith('/batch')) {
@@ -138,7 +142,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   const click = (target: string | Element) => (typeof target === 'string' ? el(target) : target).dispatchEvent(event('click', { button: 0 }));
   const input = (target: string | Element, value: string, kind = 'input') => { const node = typeof target === 'string' ? el(target) : target as unknown as typeof el extends (...args: any[]) => infer R ? R : never; (node as any).value = value; node.dispatchEvent(event(kind)); };
   const submit = (id: string) => el(id).dispatchEvent(event('submit'));
-  return { window, document, requests, entries, favorites, templates, storage, el, click, input, submit, event, get focused() { return focused; },
+  return { window, document, requests, entries, favorites, templates, storage, location, el, click, input, submit, event, get focused() { return focused; },
     nextBatch(handler: () => Promise<Response>) { nextBatch = handler; },
     nextGoal(handler: () => Promise<Response>) { nextGoal = handler; },
     nextRestore(handler: () => Promise<Response>) { nextRestore = handler; },
@@ -239,8 +243,8 @@ test('a recovered template editor draft is never applied or submitted automatica
   const saved=personalTemplate();const durable=new Map<string,any>([['nutrition-template-editor',{id:'nutrition-template-editor',label:'模板草稿',data:saved,updatedAt:NOW,kind:'draft'}]]),app=fixture({durable});await app.ready();assert.equal(app.el('template-dialog').open,false);assert.equal(app.el('template-recovery').hidden,false);assert.equal(app.requests.some(row=>row.url.includes('/templates')&&row.method!=='GET'),false);app.click('template-recover');assert.equal(app.el('template-dialog').open,true);assert.equal(app.el('template-name').value,'测试整餐');assert.equal(app.requests.some(row=>row.url.includes('/templates')&&row.method!=='GET'),false);
 });
 
-test('template catalog rows resolve their pinned release in a fresh session and retain valid sources through batch save',async()=>{
-  const selected=searchFoods('米饭')[0];assert.ok(selected);const selection={id:selected.id,amount:100.125,unit:'g',catalogRelease:selected.catalogRelease},snapshot=calculateFoodSelection(selection);
+test('withdrawn template catalog rows resolve their pinned release in a fresh session and retain valid sources through batch save',async()=>{
+  const selected=getFood('tfda:A0550601',CHINESE_FOOD_CATALOG_RELEASE)!;assert.ok(selected);const selection={id:selected.id,amount:100.125,unit:'g',catalogRelease:selected.catalogRelease},snapshot=calculateFoodSelection(selection);
   const values={calories:(snapshot.caloriesTenth/10).toFixed(1),carbs:snapshot.carbsTenth==null?null:(snapshot.carbsTenth/10).toFixed(1),protein:snapshot.proteinTenth==null?null:(snapshot.proteinTenth/10).toFixed(1),fat:snapshot.fatTenth==null?null:(snapshot.fatTenth/10).toFixed(1)};
   const definition=parseNutritionTemplate({kind:'meal',name:'食物库整餐',note:'',baseServings:'2',totalWeight:'100.125',components:[{name:selected.name,portion:'100.125g',grams:'100.125',...values,food:selection,provenance:Object.fromEntries(Object.entries(values).map(([key,value])=>[key,{source:value===null?'unknown':'catalog'}]))}]});
   const app=fixture({templates:[personalTemplate(definition)]});await app.ready();await openTemplates(app);app.click(app.el('template-list').querySelector('[data-template-use]')!);app.input('template-scale-amount','0.333');app.click('template-preview');await settled(()=>!app.el('template-confirm').disabled);app.click('template-confirm');app.submit('batch-form');await settled(()=>app.entries.length===1);
@@ -1057,4 +1061,44 @@ test('read-only food detail closes back to its card and its edit action or menu 
   f.click(row.querySelector('[data-nutrition-action="edit"]')!);assert.equal(f.el('dialog').open,true);assert.equal(f.el('food-detail-dialog').open,false);
   f.click('dialog-close');f.click(row.querySelector('[data-nutrition-action="favorite"]')!);await settled(()=>f.favorites.length===1);
   assert.equal(f.el('food-detail-dialog').open,false);assert.equal(f.requests.filter(request=>request.method==='PATCH').length,0);
+});
+
+test('a food-library link prepares one serving and waits for explicit save with the current release',async()=>{
+  const selected={...officialServingFood,id:'mcd-cn:handoff:one',catalogRelease:'catalog-2026-11-13-mcd-only-v1'};
+  const app=fixture({foods:[selected],search:'?date='+DAY+'&food='+encodeURIComponent(selected.id)});
+  await app.ready();await settled(()=>app.el('dialog').open);
+  assert.equal(app.entries.length,0);assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);
+  assert.equal(app.el('name').value,selected.name);assert.equal(app.el('food-quantity').value,'1');assert.equal(app.el('food-unit').value,'份');
+  assert.equal(app.el('calories').value,'201.1');assert.match(app.el('form-status').textContent!,/点击保存后/);
+  assert.equal(new URLSearchParams(app.location.search).has('food'),false);
+  app.input('food-quantity','0.5');app.input('meal','lunch','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const saved=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!;
+  assert.deepEqual(saved.body.food,{id:selected.id,amount:0.5,unit:'份',catalogRelease:selected.catalogRelease});assert.equal(saved.body.calories,'100.6');
+});
+
+test('food-library handoff preserves a pending create and its exact idempotency bytes',async()=>{
+  const original={key:ID,body:{date:DAY,meal:'lunch',name:'原待确认食物',portion:'1份',calories:'88.0',note:''}};
+  const serialized=JSON.stringify(original),storage=new Map([['jiashu-nutrition-create:test',serialized]]);
+  const app=fixture({foods:[officialServingFood],storage,search:'?date='+DAY+'&food='+encodeURIComponent(officialServingFood.id)});
+  await app.ready();await settled(()=>!app.el('food-handoff').hidden);
+  assert.equal(app.requests.some(row=>row.url.includes('/foods?')),false);assert.equal(app.el('dialog').open,false);
+  assert.equal(storage.get('jiashu-nutrition-create:test'),serialized);assert.equal(app.el('food-handoff-resume').hidden,false);
+  app.click('food-handoff-resume');assert.equal(app.el('dialog').open,true);assert.equal(app.el('name').value,'原待确认食物');assert.equal(app.el('name').disabled,true);
+  assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);
+});
+
+test('food-library handoff exposes durable draft recovery without replacing the saved draft',async()=>{
+  const saved={id:'nutrition-single',label:'未保存的食物',updatedAt:NOW,data:{date:DAY,meal:'lunch',name:'旧食物草稿',portion:'1份',calories:'66.0',note:''}};
+  const durable=new Map([['nutrition-single',saved]]);
+  const app=fixture({foods:[officialServingFood],durable,search:'?date='+DAY+'&food='+encodeURIComponent(officialServingFood.id)});
+  await app.ready();await settled(()=>!app.el('food-handoff').hidden);
+  assert.equal(app.requests.some(row=>row.url.includes('/foods?')),false);assert.deepEqual(durable.get('nutrition-single'),saved);
+  app.click('food-handoff-resume');assert.equal(app.el('draft-recovery').hidden,false);assert.equal(app.el('draft-recovery').open,true);
+  app.click(app.el('draft-recovery-list').querySelector('[data-recover-nutrition-draft="nutrition-single"]')!);
+  assert.equal(app.el('name').value,'旧食物草稿');assert.equal(app.entries.length,0);
+});
+
+test('an unavailable current catalog selection shows an error without opening or writing a record',async()=>{
+  const app=fixture({foods:[],search:'?date='+DAY+'&food=tfda%3Aremoved'});await app.ready();await settled(()=>app.el('food-handoff-message').textContent?.includes('当前食物库')===true);
+  assert.equal(app.el('dialog').open,false);assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);assert.equal(app.el('food-handoff-retry').hidden,false);
 });

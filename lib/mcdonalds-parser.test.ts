@@ -53,3 +53,12 @@ void test('an unambiguous branded base name resolves but fries with unspecified 
   assert.equal(fries.calorieSource, null);
   assert.ok(fries.candidates.filter((food) => food.basis === 'perServing').length >= 4);
 });
+
+void test('withdrawn TFDA foods are not offered or automatically matched in new text drafts', () => {
+  const rice = parse(150, 'g', '白饭');
+  assert.equal(rice.food, null);
+  assert.equal(rice.calorieSource, null);
+  assert.equal(rice.calories, null);
+  assert.deepEqual(rice.candidates, []);
+  assert.ok(parse(1, '份', '麦当劳巨无霸').candidates.every((food) => food.id.startsWith('mcd-cn:') && food.catalogRelease === ACTIVE_FOOD_CATALOG_RELEASE));
+});

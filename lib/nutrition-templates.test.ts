@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ACTIVE_FOOD_CATALOG_RELEASE, calculateFoodSelection, foodSelectionFromSnapshot, searchFoods } from './food-catalog.ts';
+import { CHINESE_FOOD_CATALOG_RELEASE, getFood, calculateFoodSelection, foodSelectionFromSnapshot, searchFoods } from './food-catalog.ts';
 import { NutritionValidationError, parseNutritionCreate } from './nutrition.ts';
 import { parseNutritionTemplate, parseNutritionTemplateEdit, parseNutritionTemplatePreview, parseNutritionTemplateRevision, previewNutritionTemplate, type NutritionTemplate } from './nutrition-templates.ts';
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -46,13 +46,13 @@ void test('meal templates retain separate foods and packaging/AI provenance afte
   assert.deepEqual(result.rows[1].provenance.calories, { source: 'ai', basis: 'one small bowl', originalValue: '100.0', portion: '200g' });
   for (const row of result.rows) parseNutritionCreate(row);
 });
-void test('catalog components capture a release and scaled rows validate against that immutable release', () => {
-  const food = searchFoods('米', 1)[0]; const snapshot = calculateFoodSelection({ id: food.id, amount: 100, unit: 'g', catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE });
+void test('withdrawn catalog components retain their historical release and scaled rows validate against that immutable release', () => {
+  const food = getFood('tfda:A0550601', CHINESE_FOOD_CATALOG_RELEASE)!; const snapshot = calculateFoodSelection({ id: food.id, amount: 100, unit: 'g', catalogRelease: CHINESE_FOOD_CATALOG_RELEASE });
   const value = template({ components: [component({ name: food.name, food: foodSelectionFromSnapshot(snapshot), calories: null, carbs: null, protein: null, fat: null, provenance: { calories: { source: 'catalog' } } })] });
-  assert.equal(value.components[0].food?.catalogRelease, ACTIVE_FOOD_CATALOG_RELEASE);
+  assert.equal(value.components[0].food?.catalogRelease, CHINESE_FOOD_CATALOG_RELEASE);
   const result = previewNutritionTemplate(value, preview({ amount: '1.333' }));
-  assert.equal(result.rows[0].food?.amount, 133.3); assert.equal(result.rows[0].food?.catalogRelease, ACTIVE_FOOD_CATALOG_RELEASE);
-  assert.equal(result.foods.length, 1); assert.equal(result.foods[0].catalogRelease, ACTIVE_FOOD_CATALOG_RELEASE); assert.equal(result.foods[0].id, food.id);
+  assert.equal(result.rows[0].food?.amount, 133.3); assert.equal(result.rows[0].food?.catalogRelease, CHINESE_FOOD_CATALOG_RELEASE);
+  assert.equal(result.foods.length, 1); assert.equal(result.foods[0].catalogRelease, CHINESE_FOOD_CATALOG_RELEASE); assert.equal(result.foods[0].id, food.id);
   assert.equal(result.rows[0].provenance.calories?.source, 'catalog'); parseNutritionCreate(result.rows[0]);
 });
 void test('validation rejects unknown fields, fabricated catalog/AI sources, unsafe shapes and unsupported amounts', () => {

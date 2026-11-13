@@ -16,8 +16,8 @@ import { creationFingerprint } from '../db/nutrition-store.ts';
 const id = 'mcd-cn:49:28';
 const selection = (amount = 1) => ({ id, amount, unit: '份', catalogRelease: MCD_FOOD_CATALOG_RELEASE });
 
-void test('active catalog adds every pinned official specification without mutating either historical TFDA release', () => {
-  assert.equal(ACTIVE_FOOD_CATALOG_RELEASE, official.id);
+void test('current catalog retains every pinned official specification while historical releases remain immutable', () => {
+  assert.notEqual(ACTIVE_FOOD_CATALOG_RELEASE, official.id);
   assert.equal(official.parent, CHINESE_FOOD_CATALOG_RELEASE);
   assert.equal(official.foods.length, 137);
   assert.equal(new Set(official.foods.map((food) => food.id)).size, 137);
@@ -25,7 +25,7 @@ void test('active catalog adds every pinned official specification without mutat
     const food = getFood(row.id);
     assert.ok(food && isServingFood(food));
     assert.equal(food.basis, 'perServing'); assert.equal(food.grams, null); assert.equal(food.kcalPer100g, null);
-    assert.equal(food.catalogRelease, MCD_FOOD_CATALOG_RELEASE);
+    assert.equal(food.catalogRelease, ACTIVE_FOOD_CATALOG_RELEASE);
     assert.equal(food.source.recordId, row.id.slice('mcd-cn:'.length));
     assert.deepEqual(food.serving, row.serving);
     assert.equal(food.serving.kcal, Math.round(food.serving.energyKj / 4.184));

@@ -10,7 +10,7 @@ import * as nutritionStore from '../../../../db/nutrition-store.ts';
 import * as nutritionGoals from '../../../../lib/nutrition-goals.ts';
 import * as nutritionGoalStore from '../../../../db/nutrition-goals-store.ts';
 import { readWeightPlanSettings } from '../../../../db/weight-plan-store.ts';
-import { searchFoods, calculateFoodSelection } from '../../../../lib/food-catalog.ts';
+import { getFood, LEGACY_FOOD_CATALOG_RELEASE, calculateFoodSelection } from '../../../../lib/food-catalog.ts';
 
 const ORIGIN = 'https://synthetic-nutrition.example';
 const TODAY = shanghaiDay(new Date().toISOString());
@@ -295,8 +295,8 @@ void test('day completion uses revisions and reopens automatically when food rec
   f.signIn('bob'); assert.equal((await f.status().then((response) => response.json()) as { dayStatus: nutritionRules.NutritionDayStatus }).dayStatus.revision, 0);
 });
 
-void test('catalog source snapshots survive saving and forged client calories never override the food library', async (t) => {
-  const f = await fixture(t); const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0];
+void test('withdrawn catalog source snapshots survive saving and forged client calories never override the food library', async (t) => {
+  const f = await fixture(t); const food = getFood('tfda:A0550601', LEGACY_FOOD_CATALOG_RELEASE)!;
   const selection = { id: food.id, amount: 125.5, unit: 'g', catalogRelease: food.catalogRelease };
   const expected = calculateFoodSelection(selection);
   const response = await f.create(input({ name: 'forged', portion: 'forged', calories: '0', food: selection }));

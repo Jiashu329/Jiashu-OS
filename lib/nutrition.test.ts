@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildNutritionReview, NutritionValidationError, parseNutritionCreate, parseNutritionPatch, parseNutritionQuery, presentNutritionEntry, summarizeNutrition, validNutritionId, parseNutritionBatch, parseNutritionStatus } from './nutrition.ts';
 import type { NutritionEntry } from './nutrition.ts';
-import { searchFoods, calculateFoodSelection } from './food-catalog.ts';
+import { getFood, LEGACY_FOOD_CATALOG_RELEASE, calculateFoodSelection } from './food-catalog.ts';
 
 const NOW = new Date('2026-11-10T08:00:00Z');
 function input(patch: Record<string, unknown> = {}) {
@@ -186,8 +186,8 @@ void test('completion requires explicit meal states and never treats an unrecord
   for (const body of [{ ...status, expectedRevision: -1 }, { ...status, complete: 'true' }, { ...status, meals: { ...status.meals, dinner: 'unrecorded' } }, { ...status, date: '2026-11-11' }, { ...status, meals: { ...status.meals, water: 'recorded' } }]) assert.throws(() => parseNutritionStatus(body, NOW), NutritionValidationError);
 });
 
-void test('catalog-backed input always recalculates food identity, portion and calories from the source record', () => {
-  const food = searchFoods('米饭', 1)[0] ?? searchFoods('', 1)[0]; assert.ok(food);
+void test('historical catalog-backed input always recalculates food identity, portion and calories from the source record', () => {
+  const food = getFood('tfda:A0550601', LEGACY_FOOD_CATALOG_RELEASE)!; assert.ok(food);
   const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
   const expected = calculateFoodSelection(selection);
   const parsed = parseNutritionCreate(input({ name: 'forged name', portion: 'forged portion', calories: '0', food: selection }), NOW);
@@ -199,7 +199,7 @@ void test('catalog-backed input always recalculates food identity, portion and c
 });
 
 void test('explicit macro values override catalog totals while empty fields use the known serving calculation', () => {
-  const food = searchFoods('米饭', 1)[0];
+  const food = getFood('tfda:A0550601', LEGACY_FOOD_CATALOG_RELEASE)!;
   const selection = { id: food.id, amount: 150, unit: 'g', catalogRelease: food.catalogRelease };
   const snapshot = calculateFoodSelection(selection);
   const defaults = parseNutritionCreate(input({ food: selection, carbs: null, protein: '', fat: undefined }), NOW);

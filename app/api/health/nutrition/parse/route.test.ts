@@ -8,6 +8,7 @@ import { AISettingsConflictError } from '../../../../../db/ai-settings-store.ts'
 import { SiteAISettingsUnavailableError } from '../../../../../db/site-ai-settings-store.ts';
 import { AISettingsCryptoError } from '../../../../../lib/ai-settings-crypto.ts';
 import { shanghaiDay } from '../../../../../lib/health.ts';
+import { ACTIVE_FOOD_CATALOG_RELEASE } from '../../../../../lib/food-catalog.ts';
 
 const ORIGIN = 'https://synthetic-nutrition-parser.example';
 type Handler = (request: Request) => Promise<Response>;
@@ -84,22 +85,40 @@ test('invalid input, future dates and oversized bodies fail without a model requ
   assert.equal(f.configReads.length, 0); assert.equal(f.quotaUsers.length, 0); assert.equal(f.outgoing.length, 0);
 });
 
-test('a successful parse returns editable drafts with local calories and no persistent writes or private configuration', async () => {
+test('a successful parse returns editable official serving drafts with local calories and no persistent writes or private configuration', async () => {
   const f = fixture();
-  const response = await f.post(); assert.equal(response.status, 200);
+  const body = { text: '午餐吃了0.5份麦当劳巨无霸', date: f.today };
+  f.setAnswer(JSON.stringify({ items: [{ name: '麦当劳巨无霸', amount: 0.5, unit: '份', meal: 'lunch', dateText: null, sourceText: '0.5份麦当劳巨无霸' }] }));
+  const response = await f.post(body); assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const result = await response.json() as { drafts: parser.NutritionDraft[]; model: string; provider: string };
   assert.equal(result.drafts.length, 1); assert.equal(result.drafts[0].date, f.today);
-  assert.equal(result.drafts[0].meal, 'lunch'); assert.ok(result.drafts[0].food);
-  assert.ok(Number(result.drafts[0].calories) > 0);
+  assert.equal(result.drafts[0].meal, 'lunch');
+  assert.deepEqual(result.drafts[0].food, { id: 'mcd-cn:49:28', amount: 0.5, unit: '份', catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE });
+  assert.equal(result.drafts[0].calories, '256.5');
+  assert.equal(result.drafts[0].calorieSource, 'catalog');
+  assert.equal(result.drafts[0].portion, '0.5份');
   assert.equal(result.provider, 'MiniMax');
   assert.equal(f.outgoing.length, 1);
-  assert.deepEqual(f.outgoing[0].input, { text: '午餐吃了150克熟米饭', date: f.today, today: f.today, meal: null });
+  assert.deepEqual(f.outgoing[0].input, { ...body, today: f.today, meal: null });
   assert.ok(f.configReads.every((read) => read.user === 'site-owner' && read.revision === 1));
   assert.deepEqual(f.quotaUsers, ['alice']);
   assert.equal(JSON.stringify(result).includes('PRIVATE-'), false);
-  f.signIn('bob'); assert.equal((await f.post()).status, 200);
+  f.signIn('bob'); assert.equal((await f.post(body)).status, 200);
   assert.equal(f.configReads.at(-1)?.user, 'site-owner'); assert.equal(f.quotaUsers.at(-1), 'bob');
+});
+
+test('new parse responses do not automatically match withdrawn TFDA foods or expose them as candidates', async () => {
+  const f = fixture();
+  const response = await f.post(); assert.equal(response.status, 200);
+  const { drafts } = await response.json() as { drafts: parser.NutritionDraft[] };
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].name, '熟米饭');
+  assert.equal(drafts[0].food, null);
+  assert.equal(drafts[0].calorieSource, null);
+  assert.equal(drafts[0].calories, null);
+  assert.deepEqual(drafts[0].candidates, []);
+  assert.deepEqual(f.quotaUsers, ['alice']);
 });
 
 test('the reported breakfast sentence accepts a date with a time of day and preserves all three food quantities', async () => {

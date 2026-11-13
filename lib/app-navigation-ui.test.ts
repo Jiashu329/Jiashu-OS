@@ -15,12 +15,14 @@ function fixture(pathname: string, search = '') {
     navigate(path: string, query = '') { location.pathname = path; location.search = query; window.dispatchEvent(new window.Event('jiashu-navigation')); } };
 }
 
-test('nutrition has its own primary entry without a second menu, and health/sync contexts restore independently', () => {
+test('nutrition exposes its food library, and health/sync contexts restore independently', () => {
   const f = fixture('/health/nutrition');
   assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'page');
   assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('href'), '/health/nutrition');
   assert.equal(f.sidebar.querySelector('[data-navigation-page="health"]')!.hasAttribute('aria-current'), false);
-  assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 0);
+  assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 1);
+  assert.equal(f.sidebar.querySelector('[data-navigation-group="nutrition"]')!.hasAttribute('hidden'), false);
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.getAttribute('href'), '/health/foods');
   assert.equal(f.sidebar.querySelector('[data-navigation-group="finance"]')!.hasAttribute('hidden'), true);
   f.navigate('/health/weight-plan');
   assert.equal(f.sidebar.querySelector('[data-navigation-page="health"]')!.getAttribute('aria-current'), 'true');
@@ -32,6 +34,19 @@ test('nutrition has its own primary entry without a second menu, and health/sync
   assert.equal(f.sidebar.querySelector('[data-navigation-page="sync"]')!.getAttribute('aria-current'), 'page');
   f.navigate('/');
   assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 0);
+});
+
+test('the food library has a direct contextual entry and retains the nutrition module through navigation', () => {
+  const { document } = parseHTML(renderAppSidebar('foods'));
+  assert.equal(document.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
+  assert.equal(document.querySelector('[data-context-path="/health/foods"]')!.getAttribute('aria-current'), 'page');
+  assert.equal(document.querySelector('[data-navigation-group="nutrition"]')!.hasAttribute('hidden'), false);
+  const f = fixture('/health/foods', '?q=巨无霸&category=汉堡');
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.getAttribute('aria-current'), 'page');
+  f.navigate('/health/nutrition');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/nutrition"]')!.getAttribute('aria-current'), 'page');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.hasAttribute('aria-current'), false);
 });
 
 test('every application shell offers five direct primary destinations and nutrition is active before scripts run', () => {
