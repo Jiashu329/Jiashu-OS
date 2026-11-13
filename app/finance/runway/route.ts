@@ -11,6 +11,7 @@ export async function GET(request: Request) {
   const rawCurrency = source.get('currency') ?? 'CNY';
   const currency = Object.hasOwn(CURRENCIES, rawCurrency) ? rawCurrency : 'CNY';
   const query = new URLSearchParams({ ledger, currency });
+  for (const key of ['book', 'bookRevision']) for (const value of source.getAll(key)) query.append(key, value);
   const user = await requireChatGPTUser('/finance/runway?' + query);
   return new Response(withPageAccount(renderFinanceRunwayPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',

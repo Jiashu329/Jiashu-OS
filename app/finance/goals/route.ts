@@ -12,6 +12,7 @@ export async function GET(request: Request) {
   const currency = rawCurrency === 'all' || Object.hasOwn(CURRENCIES, rawCurrency) ? rawCurrency : 'all';
   const query = new URLSearchParams({ ledger, currency });
   if (source.get('includeArchived') === '1') query.set('includeArchived', '1');
+  for (const key of ['book', 'bookRevision']) for (const value of source.getAll(key)) query.append(key, value);
   const user = await requireChatGPTUser('/finance/goals?' + query);
   return new Response(withPageAccount(renderFinanceGoalsPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',

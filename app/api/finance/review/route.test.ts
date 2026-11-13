@@ -1,3 +1,4 @@
+import { advancedFinanceBookFixture, SHARED_FINANCE_BOOK } from '../../../../tests/fixtures/advanced-finance-book.ts';
 import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -79,19 +80,24 @@ function fixture(t: TestContext) {
   const db = adapter as unknown as Parameters<typeof readFinanceReviewSnapshot>[0];
   const env: { DB?: typeof db } = { DB: db };
   let owner: string | null = 'alice';
+  const bookFixture = advancedFinanceBookFixture(db as D1Database, (options, userId) => {
+    const table = options.goalId ? 'finance_goal_plans' : options.accountId ? 'finance_accounts' : null;
+    if (!table) return undefined;
+    return sqlite.prepare('SELECT ledger FROM ' + table + ' WHERE user_id=? AND id=?').get(userId, options.goalId ?? options.accountId!)?.ledger as 'personal' | 'family' | undefined;
+  }, () => env.DB !== undefined);
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, ...balanceChanges, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError, FinanceMetadataConflictError,
+    ...shared, ...balanceChanges, ...bookFixture, FinanceValidationError, LEDGERS, FinanceIdempotencyConflictError, FinanceMetadataConflictError,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'financeIdempotencyKey', 'guardFinanceWrite', 'invalidFinanceIdempotencyKey']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
-    ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview, FinanceValidationError,
+    ...financeShared, ...bookFixture, env, readFinanceReviewSnapshot, buildFinanceReview, FinanceValidationError,
     readFinanceMonthCloseBundle, financeReviewHash, readFinanceDecisionSummary,
     parseFinanceReviewQuery: (params: URLSearchParams) => parseFinanceReviewQuery(params, NOW),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
   const closeRoute = loadExports(new URL('./close/route.ts', import.meta.url), {
-    ...financeShared, env, readFinanceReviewSnapshot, buildFinanceReview, readFinanceMonthCloseOperation, writeFinanceMonthClose, FinanceValidationError,
+    ...financeShared, ...bookFixture, env, readFinanceReviewSnapshot, buildFinanceReview, readFinanceMonthCloseOperation, writeFinanceMonthClose, FinanceValidationError,
     financeReviewHash, FinanceCloseConflictError,
     parseFinanceCloseInput: (input: unknown) => parseFinanceCloseInput(input, NOW),
   }, ['POST']) as { POST(request: Request): Promise<Response> };
@@ -112,13 +118,13 @@ function fixture(t: TestContext) {
         amountMinor, asOfDate, '', options.createdAt ?? NOW.toISOString());
   }
   return {
-    sqlite, env, queries, account, balance,
+    sqlite, env, queries, account, balance, bookFixture,
     signIn(userId: string | null) { owner = userId; },
     get(query = 'ledger=personal&currency=CNY&month=2026-11') {
       return route.GET(new Request(ORIGIN + '/api/finance/review?' + query));
     },
-    close(body: unknown, key = crypto.randomUUID(), origin = ORIGIN) {
-      return closeRoute.POST(new Request(ORIGIN + '/api/finance/review/close', {
+    close(body: unknown, key = crypto.randomUUID(), origin = ORIGIN, query = '') {
+      return closeRoute.POST(new Request(ORIGIN + '/api/finance/review/close' + (query ? '?' + query : ''), {
         method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body),
       }));
     },
@@ -362,4 +368,24 @@ void test('month closes include effective corrected balances and dated membershi
   const fixed = await readReview(await f.get(query)); assert.equal(fixed.close.version, 2); assert.equal(fixed.snapshot.netMinor, '0');
   assert.equal(fixed.change.membershipNetMinor, '-10000');
   assert.equal((await readReview(await f.get(query + '&version=1'))).snapshot.netMinor, '25000');
+});
+
+void test('shared family review and closes preserve owner scope, preview CAS and the member actor boundary',async(t)=>{
+  const f=fixture(t),book='book='+SHARED_FINANCE_BOOK,query='ledger=family&currency=CNY&month=2026-10&'+book;
+  f.account({id:'family-bank',ledger:'family'});f.balance('family-bank','12300','2026-10-20');
+  f.account({id:'private-bank'});f.balance('private-bank','99900','2026-10-20');
+  f.signIn('bob');f.env.DB={prepare(){throw new Error('Unscoped database must not be used');}} as unknown as D1Database;
+  const preview=await readReview(await f.get(query));assert.equal(preview.snapshot.netMinor,'12300');
+  assert.deepEqual(preview.accounts.map((account)=>account.accountId),['family-bank']);
+  const body={ledger:'family',currency:'CNY',month:'2026-10',expectedVersion:0,previewHash:preview.close.previewHash,reason:''},key=crypto.randomUUID();
+  assert.equal((await f.close(body,key,ORIGIN,book)).status,409);
+  assert.equal((await f.close(body,key,ORIGIN,book+'&bookRevision=2')).status,409);
+  assert.equal((await f.close({...body,previewHash:'0'.repeat(64)},key,ORIGIN,book+'&bookRevision=3')).status,409);
+  assert.equal((await f.close(body,key,ORIGIN,book+'&bookRevision=3')).status,201);
+  assert.equal((await f.close(body,key,ORIGIN,book+'&bookRevision=3')).status,200);
+  const write=f.bookFixture.calls.findLast((call)=>call.options.write);
+  assert.equal(write?.actorUserId,'bob');assert.equal(write?.ownerUserId,'alice');assert.equal(write?.options.write?.action,'review.close');assert.equal(write?.options.write?.operationId,key);
+  assert.equal(f.sqlite.prepare('SELECT user_id FROM finance_month_closes').get()?.user_id,'alice');
+  assert.equal((await f.get('ledger=personal&month=2026-10&'+book)).status,400);
+  f.bookFixture.revoke();assert.equal((await f.get(query)).status,403);assert.equal((await f.close(body,key,ORIGIN,book+'&bookRevision=3')).status,403);
 });

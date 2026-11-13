@@ -1,3 +1,4 @@
+import { advancedFinanceBookFixture, SHARED_FINANCE_BOOK } from '../../../../tests/fixtures/advanced-finance-book.ts';
 import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -63,9 +64,14 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db };
   let owner: string | null = 'alice';
+  const bookFixture = advancedFinanceBookFixture(db as D1Database, (options, userId) => {
+    const table = options.goalId ? 'finance_goal_plans' : options.accountId ? 'finance_accounts' : null;
+    if (!table) return undefined;
+    return sqlite.prepare('SELECT ledger FROM ' + table + ' WHERE user_id=? AND id=?').get(userId, options.goalId ?? options.accountId!)?.ledger as 'personal' | 'family' | undefined;
+  }, () => env.DB !== undefined);
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null }, ['apiUser', 'json', 'isSameOrigin']);
-  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...balanceChanges, ...finance, ...financeStore }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
-  const route = loadExports(new URL('./route.ts', import.meta.url), { ...financeShared, ...finance, ...financeStore, ...runwayRules, ...runwayStore, env }, ['GET', 'PUT']) as { GET(request: Request): Promise<Response>; PUT(request: Request): Promise<Response> };
+  const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...balanceChanges, ...finance, ...financeStore, ...bookFixture }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
+  const route = loadExports(new URL('./route.ts', import.meta.url), { ...financeShared, ...finance, ...financeStore, ...runwayRules, ...runwayStore, ...bookFixture, env }, ['GET', 'PUT']) as { GET(request: Request): Promise<Response>; PUT(request: Request): Promise<Response> };
   for (const [key, currency, type, userId, ledger, amountMinor] of [
     ['cny', 'CNY', 'bank', 'alice', 'personal', '9007199254740993'], ['zero', 'CNY', 'bank', 'alice', 'personal', '0'],
     ['usd', 'USD', 'investment', 'alice', 'personal', '20000'], ['jpy', 'JPY', 'bank', 'alice', 'personal', '500'],
@@ -74,7 +80,7 @@ async function fixture(t: TestContext) {
   ] as const) await financeStore.createFinanceAccount(db, userId, { ledger, currency, type, name: key, note: '', amountMinor, asOfDate: finance.todayShanghai() }, new Date().toISOString(), ids[key]);
   await financeStore.patchFinanceAccount(db, 'alice', ids.archived, { expectedRevision: 1, archived: true }); queries.length = 0;
   return {
-    sqlite, db, env, queries,
+    sqlite, db, env, queries, bookFixture,
     signIn(userId: string | null) { owner = userId; },
     beforeWrite(action: () => void) { beforeWrite = action; },
     get(query = 'ledger=personal&currency=CNY') { return route.GET(new Request(ORIGIN + '/api/finance/runway?' + query)); },
@@ -155,4 +161,20 @@ test('runway returns exact reviewed liquidity contributions without rewriting sa
  const reviewed=await readRunway(await f.get());assert.equal(reviewed.progress!.nominalMinor,'9007199254740993');assert.equal(reviewed.progress!.currentMinor,(BigInt('9007199254740993')*BigInt(3333)/BigInt(10000)).toString());
  f.sqlite.prepare("UPDATE finance_accounts SET liquidity_kind='unreviewed',usable_bps=0 WHERE id=?").run(ids.cny);
  const unreviewed=await readRunway(await f.get());assert.equal(unreviewed.progress!.currentMinor,'0');assert.equal(unreviewed.progress!.unreviewedMinor,'9007199254740993');assert.equal(unreviewed.progress!.excludedMinor,'9007199254740993');assert.equal(unreviewed.settings!.revision,initial.settings!.revision);assert.deepEqual(unreviewed.settings!.accountIds,[ids.cny]);assert.equal(unreviewed.settings!.monthlyExpenseMinor,'10000');assert.equal(unreviewed.settings!.targetMonths,6);
+});
+
+void test('shared family runway reads and writes the book owner while requiring the editor current membership version',async(t)=>{
+  const f=await fixture(t),query='ledger=family&currency=CNY&book='+SHARED_FINANCE_BOOK;
+  await f.put(input({accountIds:[ids.family]}),'ledger=family&currency=CNY');
+  f.signIn('bob');f.env.DB={prepare(){throw new Error('Unscoped database must not be used');}} as unknown as D1Database;
+  const selected=await readRunway(await f.get(query));assert.deepEqual(selected.accounts.map((account)=>account.id),[ids.family]);
+  assert.deepEqual(selected.settings?.accountIds,[ids.family]);
+  const command=input({accountIds:[ids.family],expectedRevision:1,targetMonths:9});
+  assert.equal((await f.put(command,query)).status,409);assert.equal((await f.put(command,query+'&bookRevision=2')).status,409);
+  assert.equal((await f.put(command,query+'&bookRevision=3')).status,200);
+  const write=f.bookFixture.calls.findLast((call)=>call.options.write);
+  assert.equal(write?.actorUserId,'bob');assert.equal(write?.ownerUserId,'alice');assert.equal(write?.options.write?.action,'runway.update');
+  assert.equal(f.sqlite.prepare("SELECT target_months FROM finance_runway_settings WHERE user_id='alice' AND ledger='family'").get()?.target_months,9);
+  assert.equal((await f.get('ledger=personal&book='+SHARED_FINANCE_BOOK)).status,400);
+  f.bookFixture.revoke();assert.equal((await f.get(query)).status,403);assert.equal((await f.put(command,query+'&bookRevision=3')).status,403);
 });

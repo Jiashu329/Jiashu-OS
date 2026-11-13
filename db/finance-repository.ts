@@ -32,51 +32,51 @@ function presentBalance(row: FinanceBalanceRow, currency: Currency) {
   return { ...row, amount: decimalFromMinor(row.amountMinor, currency), amountFormatted: formatMoney(row.amountMinor, currency) };
 }
 
-export async function financeOverview(userId: string, ledger: Ledger, includeArchived = false) {
-  const accounts = (await listFinanceAccounts(database(), userId, ledger, includeArchived)).map(presentAccount);
+export async function financeOverview(userId: string, ledger: Ledger, includeArchived = false, db: D1Database = database()) {
+  const accounts = (await listFinanceAccounts(db, userId, ledger, includeArchived)).map(presentAccount);
   return {
     ledger, accounts, summary: buildFinanceSummary(accounts, ledger),
     meta: { today: todayShanghai(), ledgers: LEDGERS, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES },
   };
 }
 
-export async function financeAccountDetails(userId: string, accountId: string) {
-  const snapshot = await findFinanceAccountSnapshot(database(), userId, accountId);
+export async function financeAccountDetails(userId: string, accountId: string, db: D1Database = database()) {
+  const snapshot = await findFinanceAccountSnapshot(db, userId, accountId);
   const row = snapshot.account;
   if (!row) return null;
   const account = presentAccount(row);
   const balances = snapshot.balances.map((entry) => presentBalance(entry, account.currency));
-  const changes = await financeBalanceChangeHistory(database(), userId, accountId);
+  const changes = await financeBalanceChangeHistory(db, userId, accountId);
   return { account, balances, history: balances, changes, classifications: snapshot.classifications };
 }
 
-export async function previewBalanceChange(userId: string, accountId: string, entryId: string, input: FinanceBalanceChangeInput) {
-  return previewFinanceBalanceChange(database(), userId, accountId, entryId, input);
+export async function previewBalanceChange(userId: string, accountId: string, entryId: string, input: FinanceBalanceChangeInput, db: D1Database = database()) {
+  return previewFinanceBalanceChange(db, userId, accountId, entryId, input);
 }
 
-export async function applyBalanceChange(userId: string, accountId: string, entryId: string, input: FinanceBalanceChangeInput, operationId: string) {
-  if (!await changeFinanceBalance(database(), userId, accountId, entryId, input, operationId)) return null;
-  return financeAccountDetails(userId, accountId);
+export async function applyBalanceChange(userId: string, accountId: string, entryId: string, input: FinanceBalanceChangeInput, operationId: string, db: D1Database = database()) {
+  if (!await changeFinanceBalance(db, userId, accountId, entryId, input, operationId)) return null;
+  return financeAccountDetails(userId, accountId, db);
 }
 
-export async function newFinanceAccount(userId: string, input: NewFinanceAccount, idempotencyKey?: string) {
-  const id = await createFinanceAccount(database(), userId, input, undefined, idempotencyKey);
-  return financeAccountDetails(userId, id);
+export async function newFinanceAccount(userId: string, input: NewFinanceAccount, idempotencyKey?: string, db: D1Database = database()) {
+  const id = await createFinanceAccount(db, userId, input, undefined, idempotencyKey);
+  return financeAccountDetails(userId, id, db);
 }
 
-export async function updateFinanceAccount(userId: string, accountId: string, patch: FinanceAccountPatch) {
-  if (!await patchFinanceAccount(database(), userId, accountId, patch)) return null;
-  return financeAccountDetails(userId, accountId);
+export async function updateFinanceAccount(userId: string, accountId: string, patch: FinanceAccountPatch, db: D1Database = database()) {
+  if (!await patchFinanceAccount(db, userId, accountId, patch)) return null;
+  return financeAccountDetails(userId, accountId, db);
 }
 
-export async function newFinanceBalance(userId: string, accountId: string, input: NewFinanceBalance, idempotencyKey?: string) {
-  const id = await appendFinanceBalance(database(), userId, accountId, input, undefined, idempotencyKey);
+export async function newFinanceBalance(userId: string, accountId: string, input: NewFinanceBalance, idempotencyKey?: string, db: D1Database = database()) {
+  const id = await appendFinanceBalance(db, userId, accountId, input, undefined, idempotencyKey);
   if (!id) return null;
-  return financeAccountDetails(userId, accountId);
+  return financeAccountDetails(userId, accountId, db);
 }
 
-export async function financeExport(userId: string, ledger: Ledger) {
-  const snapshot = await exportFinanceSnapshot(database(), userId, ledger);
+export async function financeExport(userId: string, ledger: Ledger, db: D1Database = database()) {
+  const snapshot = await exportFinanceSnapshot(db, userId, ledger);
   const accounts = snapshot.accounts.map(presentAccount);
   const currencies = new Map(accounts.map((row) => [row.id, row.currency]));
   const balances = snapshot.balances.map((row) => presentBalance(row, currencies.get(row.accountId)!));

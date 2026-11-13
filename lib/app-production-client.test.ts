@@ -91,7 +91,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>> } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   let current = new URL(path, 'https://synthetic-production.example');
@@ -109,7 +109,11 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     });
   });
   // linkedom intentionally omits a browser select value setter.
-  document.querySelectorAll('select').forEach((select) => Object.defineProperty(select, 'value', { writable: true, value: select.getAttribute('value') || select.querySelector('option')?.getAttribute('value') || '' }));
+  document.querySelectorAll('select').forEach((select) => Object.defineProperty(select, 'value', {
+    configurable: true,
+    get() { const option = select.querySelector('option[selected]') ?? select.querySelector('option'); return option?.getAttribute('value') ?? option?.textContent ?? ''; },
+    set(value: string) { for (const option of select.querySelectorAll('option')) { if (option.getAttribute('value') === String(value)) option.setAttribute('selected', ''); else option.removeAttribute('selected'); } },
+  }));
   document.querySelectorAll('form').forEach((form) => Object.assign(form, { reset() {
     form.querySelectorAll('input,textarea,select').forEach((element) => {
       const field = element as unknown as HTMLInputElement;
@@ -140,7 +144,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     }
     requests.push({ path, method });
     if (path === '/api/overview') return Response.json(overview);
-    if (path.startsWith('/api/finance?')) return Response.json({ accounts: [], summary: buildFinanceSummary([], 'personal'), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } });
+    if (path === '/api/finance/books') return Response.json({ books: catalog.financeBooks ?? [{ id: 'own', name: '我的家庭账本', ownerName: 'Synthetic account', role: 'owner', accessRevision: 0, canManageMembers: true, canExport: true }], invitations: [] });
+    if (path.startsWith('/api/finance?')) { const ledger = new URL(path, location.origin).searchParams.get('ledger') === 'family' ? 'family' : 'personal'; return Response.json({ ledger, accounts: [], summary: buildFinanceSummary([], ledger), meta: { today, accountTypes: ACCOUNT_TYPES, currencies: CURRENCIES } }); }
     if (path === '/api/ai/settings') return Response.json({ scope: 'site', canManage: catalog.aiCanManage !== false, settings: { configured: catalog.aiConfigured === true, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     const parsed = new URL(path, location.origin);
@@ -187,6 +192,24 @@ test('production finance initializes its selected ledger and finishes rendering 
   assert.equal(f.document.getElementById('status-banner')?.hidden, true);
   assert.equal(f.requests.filter((item) => item.path.startsWith('/api/finance?')).length, 1);
   assert.ok(f.requests.every((item) => item.method === 'GET'));
+});
+
+test('minified shared family initialization keeps the selected book in reads and navigation without accepting invitations or writing', { skip: !hasBuild }, async () => {
+  const book='11111111-1111-4111-8111-111111111111';
+  const choices=[{id:'own',name:'我的家庭账本',ownerName:'Synthetic account',role:'owner',accessRevision:0,canManageMembers:true,canExport:true},
+    {id:book,name:'家庭账本',ownerName:'另一位家庭拥有人',role:'editor',accessRevision:2,canManageMembers:false,canExport:false}];
+  const f=await fixture('id="account-list"','/finance?ledger=family&currency=CNY&book='+book+'&bookRevision=2',1280,{}, {foods:[],financeBooks:choices});
+  await settle(()=>Boolean(f.document.querySelector('[data-create]')));
+  assert.equal((f.document.getElementById('finance-books-select') as unknown as HTMLSelectElement).value,book);
+  assert.equal(f.document.getElementById('finance-books-manage')?.hidden,true);
+  const read=f.requests.find(item=>item.path.startsWith('/api/finance?'))!;assert.ok(read);
+  assert.equal(new URL(read.path,'https://synthetic.example').searchParams.get('book'),book);
+  assert.equal(new URL(read.path,'https://synthetic.example').searchParams.get('bookRevision'),'2');
+  for(const id of ['finance-review-link','balance-check-link','finance-goals-link','finance-runway-link']){
+    const href=f.document.getElementById(id)?.getAttribute('href');assert.ok(href);
+    assert.equal(new URL(href,'https://synthetic.example').searchParams.get('book'),book);
+  }
+  assert.ok(f.requests.every(item=>item.method==='GET'));
 });
 
 test('production AI settings reads metadata and keeps connection tests behind user action', { skip: !hasBuild }, async () => {

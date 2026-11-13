@@ -150,3 +150,36 @@ test('account-change blocks viewing and deleting original drafts while retaining
   const reopened=fixture({local,owner:'alice'});assert.equal(reopened.manager.storage('alice').getItem(key),original);
   assert.equal((reopened.manager.get('draft')?.data as {name:string}).name,'alice draft');
 });
+
+test('shared finance pending storage retains its exact book target and keeps other books separate', () => {
+  const f=fixture({owner:'alice'}), book='11111111-1111-4111-8111-111111111111', other='22222222-2222-4222-8222-222222222222';
+  const key='jiashu-finance-pending:v1:alice:scope:'+encodeURIComponent(book+':2');
+  const raw=JSON.stringify({key:'33333333-3333-4333-8333-333333333333',path:'/api/finance/accounts?book='+book+'&bookRevision=2',body:{ledger:'family',currency:'CNY',name:'家庭私有草稿'}});
+  const store=f.manager.storage('alice');store.setItem(key,raw);
+  assert.equal(store.getItem(key),raw);
+  assert.equal(store.getItem('jiashu-finance-pending:v1:alice:scope:'+encodeURIComponent(other+':2')),null);
+  const pending=f.manager.list().find(item=>item.kind==='pending')!;
+  const url=new URL(pending.url,'https://synthetic.example');
+  assert.equal(url.searchParams.get('book'),book);assert.equal(url.searchParams.get('bookRevision'),'2');assert.equal(url.searchParams.get('ledger'),'family');
+  assert.throws(()=>store.setItem('jiashu-finance-pending:v1:bob:scope:'+encodeURIComponent(book+':2'),raw));
+  assert.throws(()=>store.setItem('jiashu-finance-pending:v1:alice:scope:'+encodeURIComponent(book+':missing'),raw));
+});
+
+test('a pending family submission does not hide another family book draft from recovery', () => {
+  const f=fixture({owner:'alice'}), book='11111111-1111-4111-8111-111111111111', other='22222222-2222-4222-8222-222222222222';
+  assert.equal(f.manager.save('book-b-draft','另一家庭草稿',{name:'待恢复'},{url:'/finance?ledger=family&book='+other+'&bookRevision=2'}),true);
+  f.manager.storage('alice').setItem('jiashu-finance-goal-create:alice:scope:'+encodeURIComponent(book+':2'),JSON.stringify({body:{ledger:'family',currency:'CNY'}}));
+  assert.ok(f.manager.list().some(item=>item.id==='book-b-draft'));
+});
+
+test('durable form recovery never offers a different family book draft to the same signed-in actor', async () => {
+  const local=storage(),book='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222';
+  const first=fixture({owner:'alice',local});Object.assign(first.window,{JiashuFinanceBooks:{scopeKey:()=>book+':2'}});first.guard();first.dialog.showModal();first.input('name','仅第一家庭的草稿');
+  await settle(()=>first.manager.list().some(item=>item.id.includes(encodeURIComponent(book+':2'))));
+  const second=fixture({owner:'alice',local});Object.assign(second.window,{JiashuFinanceBooks:{scopeKey:()=>other+':2'}});second.guard();second.dialog.showModal();
+  await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.equal(second.form.querySelector('[data-durable-recovery]'),null);assert.equal(second.name.value,'');
+  const reopened=fixture({owner:'alice',local});Object.assign(reopened.window,{JiashuFinanceBooks:{scopeKey:()=>book+':2'}});reopened.guard();reopened.dialog.showModal();
+  await settle(()=>Boolean(reopened.form.querySelector('[data-durable-recovery]')));
+  assert.match(reopened.form.querySelector('[data-durable-recovery]')?.textContent??'',/仅第一家庭的草稿/);
+});

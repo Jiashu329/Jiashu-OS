@@ -422,3 +422,34 @@ export const appAccessOperations = sqliteTable('app_access_operations', {
   grantId: text('grant_id').notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+// Household authorization and attribution stay local to this application and
+// never enter portable finance/health backups. Legacy business user_id is owner.
+export const familyBooks = sqliteTable('family_books', {
+  id: text('id').primaryKey().notNull(), ownerUserId: text('owner_user_id').notNull().unique(),
+  ownerEmail: text('owner_email').notNull(), ownerName: text('owner_name').notNull(), name: text('name').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+});
+export const familyBookMembers = sqliteTable('family_book_members', {
+  id: text('id').primaryKey().notNull(), bookId: text('book_id').notNull().references(() => familyBooks.id),
+  email: text('email').notNull(), userId: text('user_id'), status: text('status').notNull(), revision: integer('revision').notNull(),
+  expiresAt: text('expires_at').notNull(), acceptedAt: text('accepted_at'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('family_members_book_email_idx').on(table.bookId, table.email),
+  uniqueIndex('family_members_book_user_idx').on(table.bookId, table.userId),
+  index('family_members_user_status_idx').on(table.userId, table.status),
+  index('family_members_email_status_idx').on(table.email, table.status),
+  check('family_members_status', sql`${table.status} IN ('pending','active','revoked','declined')`),
+  check('family_members_revision', sql`${table.revision} >= 1`),
+]);
+export const familyBookMemberOperations = sqliteTable('family_book_member_operations', {
+  operationId: text('operation_id').primaryKey().notNull(), actorUserId: text('actor_user_id').notNull(),
+  bookId: text('book_id').notNull().references(() => familyBooks.id), memberId: text('member_id').notNull().references(() => familyBookMembers.id),
+  requestHash: text('request_hash').notNull(), createdAt: text('created_at').notNull(),
+});
+export const familyFinanceCommands = sqliteTable('family_finance_commands', {
+  bookId: text('book_id').notNull().references(() => familyBooks.id), operationId: text('operation_id').notNull(),
+  actorUserId: text('actor_user_id').notNull(), actorName: text('actor_name').notNull(), actorEmail: text('actor_email').notNull(),
+  membershipId: text('membership_id'), accessRevision: integer('access_revision').notNull(), requestHash: text('request_hash').notNull(),
+  action: text('action').notNull(), targetId: text('target_id'), createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.bookId, table.operationId] }), index('family_finance_commands_actor_idx').on(table.actorUserId, table.createdAt)]);

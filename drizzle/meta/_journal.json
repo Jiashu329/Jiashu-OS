@@ -141,6 +141,13 @@
       "when": 1794471272031,
       "tag": "0019_invited_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1794531318959,
+      "tag": "0020_family_books",
+      "breakpoints": true
     }
   ]
 }

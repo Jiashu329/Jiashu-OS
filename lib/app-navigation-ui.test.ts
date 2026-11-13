@@ -83,3 +83,15 @@ test('mouse and keyboard ledger changes on every financial subpage update contex
     assert.equal(f.sidebar.querySelector('[data-context-path="/finance/goals"]')!.getAttribute('href'), '/finance/goals?ledger=personal&currency=USD');
   }
 });
+
+test('family navigation retains an authorized book and generation while personal navigation drops both', () => {
+  const book = '11111111-1111-4111-8111-111111111111';
+  const f = fixture('/finance/goals', '?ledger=family&currency=USD&book='+book+'&bookRevision=2&token=private');
+  const href = f.sidebar.querySelector('[data-context-path="/finance/runway"]')!.getAttribute('href')!;
+  const target = new URL(href, 'https://synthetic.example');
+  assert.equal(target.searchParams.get('book'), book);
+  assert.equal(target.searchParams.get('bookRevision'), '2');
+  assert.equal(target.searchParams.get('token'), null);
+  f.navigate('/finance', '?ledger=personal&currency=CNY&book='+book+'&bookRevision=2');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/finance/goals"]')!.getAttribute('href'), '/finance/goals?ledger=personal&currency=CNY');
+});

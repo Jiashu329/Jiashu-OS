@@ -11,6 +11,7 @@ export async function GET(request: Request) {
   const requestedCurrency = source.get('currency') ?? 'all';
   const currency = requestedCurrency === 'all' || Object.hasOwn(CURRENCIES, requestedCurrency) ? requestedCurrency : 'all';
   const query = new URLSearchParams({ ledger, currency });
+  for (const key of ['book', 'bookRevision']) for (const value of source.getAll(key)) query.append(key, value);
   const user = await requireChatGPTUser('/finance/balances?' + query);
   return new Response(withPageAccount(renderBalanceCheckPage(user.userId), user.userId), { headers: {
     'Content-Type': 'text/html; charset=utf-8',

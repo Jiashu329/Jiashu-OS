@@ -1,3 +1,4 @@
+import { advancedFinanceBookFixture, SHARED_FINANCE_BOOK } from '../../../../tests/fixtures/advanced-finance-book.ts';
 import * as balanceChanges from '../../../../db/finance-balance-changes-store.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -74,13 +75,18 @@ async function fixture(t: TestContext) {
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db };
   let owner: string | null = 'alice';
+  const bookFixture = advancedFinanceBookFixture(db as D1Database, (options, userId) => {
+    const table = options.goalId ? 'finance_goal_plans' : options.accountId ? 'finance_accounts' : null;
+    if (!table) return undefined;
+    return sqlite.prepare('SELECT ledger FROM ' + table + ' WHERE user_id=? AND id=?').get(userId, options.goalId ?? options.accountId!)?.ledger as 'personal' | 'family' | undefined;
+  }, () => env.DB !== undefined);
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'isSameOrigin']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
-    ...shared, ...balanceChanges, ...finance, ...financeStore,
+    ...shared, ...balanceChanges, ...finance, ...financeStore, ...bookFixture,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);
-  const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, ...runwayStore, ...allocationRules, env };
+  const baseBindings = { ...financeShared, ...finance, ...financeStore, ...goalRules, ...goalStore, ...runwayStore, ...allocationRules, ...bookFixture, env };
   const goalsShared = loadExports(new URL('./_shared.ts', import.meta.url), baseBindings, ['goalsDatabase', 'goalsError', 'goalNotFound', 'goalAccounts', 'presentGoal']);
   const bindings = { ...baseBindings, ...goalsShared };
   const route = loadExports(new URL('./route.ts', import.meta.url), bindings, ['GET', 'POST']) as { GET(request: Request): Promise<Response>; POST(request: Request): Promise<Response> };
@@ -104,13 +110,13 @@ async function fixture(t: TestContext) {
     return new Request(ORIGIN + path, { method, headers, body: JSON.stringify(body) });
   }
   return {
-    sqlite, db, env, queries,
+    sqlite, db, env, queries, bookFixture,
     signIn(userId: string | null) { owner = userId; },
     beforeBatch(action: () => void) { beforeNextBatch = action; },
     get(query = 'ledger=personal&currency=all') { return route.GET(new Request(ORIGIN + '/api/finance/goals?' + query)); },
-    post(body: unknown, key: string | undefined = crypto.randomUUID(), origin: string | null = ORIGIN) { return route.POST(request('POST', '/api/finance/goals', body, key, origin)); },
-    patch(id: string, body: unknown, origin: string | null = ORIGIN) { return itemRoute.PATCH(request('PATCH', '/api/finance/goals/' + id, body, undefined, origin), { params: Promise.resolve({ id }) }); },
-    getGoal(id:string) { return itemRoute.GET(new Request(ORIGIN+'/api/finance/goals/'+id), {params:Promise.resolve({id})}); },
+    post(body: unknown, key: string | undefined = crypto.randomUUID(), origin: string | null = ORIGIN, query = '') { return route.POST(request('POST', '/api/finance/goals' + (query ? '?' + query : ''), body, key, origin)); },
+    patch(id: string, body: unknown, origin: string | null = ORIGIN, query = '') { return itemRoute.PATCH(request('PATCH', '/api/finance/goals/' + id + (query ? '?' + query : ''), body, undefined, origin), { params: Promise.resolve({ id }) }); },
+    getGoal(id:string, query='') { return itemRoute.GET(new Request(ORIGIN+'/api/finance/goals/'+id+(query?'?'+query:'')), {params:Promise.resolve({id})}); },
     getAccount(id:string) { return accountRoute.GET(new Request(ORIGIN+'/api/finance/accounts/'+id), {params:Promise.resolve({id})}); },
     patchAccount(id:string,body:unknown) { return accountRoute.PATCH(request('PATCH','/api/finance/accounts/'+id,body), {params:Promise.resolve({id})}); },
     count() { return Number(sqlite.prepare('SELECT count(*) AS total FROM finance_goal_plans').get()?.total); },
@@ -293,4 +299,30 @@ void test('shared progress and current decisions use corrected balances and revi
   const archived = await readList(await f.get('ledger=personal&currency=CNY'));
   assert.equal(archived.goals[0].archivedAccountCount, 1);
   assert.deepEqual(archived.sharing.accounts, []);
+});
+
+void test('shared family goals use the selected owner database while editor identity and access revisions remain separate', async(t)=>{
+  const f=await fixture(t), query='book='+SHARED_FINANCE_BOOK;
+  const goal=(await readGoal(await f.post(input({ledger:'family',accountIds:[ids.family]})))).goal;
+  const personal=(await readGoal(await f.post(input()))).goal;
+  f.signIn('bob'); f.env.DB={prepare(){throw new Error('Unscoped database must not be used');}} as unknown as D1Database;
+  const listed=await readList(await f.get('ledger=family&currency=CNY&'+query));
+  assert.deepEqual(listed.goals.map((item)=>item.id),[goal.id]);
+  assert.deepEqual(listed.accounts.map((account)=>account.id),[ids.family]);
+  assert.equal((await f.getGoal(goal.id,query)).status,200);
+  assert.equal((await f.patch(goal.id,{name:'shared edit',expectedRevision:1},ORIGIN,query)).status,409);
+  assert.equal((await f.patch(goal.id,{name:'shared edit',expectedRevision:1},ORIGIN,query+'&bookRevision=2')).status,409);
+  const patched=await f.patch(goal.id,{name:'shared edit',expectedRevision:1},ORIGIN,query+'&bookRevision=3');
+  assert.equal(patched.status,200); assert.equal((await readGoal(patched)).goal.name,'shared edit');
+  const write=f.bookFixture.calls.findLast((call)=>call.options.write);
+  assert.equal(write?.actorUserId,'bob');assert.equal(write?.ownerUserId,'alice');
+  assert.equal(write?.options.goalId,goal.id);assert.equal(write?.options.write?.action,'goal.update');
+  const key=crypto.randomUUID();
+  assert.equal((await f.post(input({ledger:'family',accountIds:[ids.family],name:'member target'}),key,ORIGIN,query+'&bookRevision=3')).status,201);
+  assert.equal(f.sqlite.prepare('SELECT user_id FROM finance_goal_plans WHERE id=?').get(key)?.user_id,'alice');
+  const create=f.bookFixture.calls.findLast((call)=>call.options.write?.action==='goal.create');
+  assert.equal(create?.options.write?.operationId,key);assert.equal(create?.options.write?.targetId,key);
+  assert.equal((await f.get('ledger=personal&'+query)).status,400);
+  assert.equal((await f.getGoal(personal.id,query)).status,404);
+  f.bookFixture.revoke();assert.equal((await f.getGoal(goal.id,query)).status,403);
 });
