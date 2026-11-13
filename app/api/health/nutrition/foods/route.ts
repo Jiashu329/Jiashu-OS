@@ -1,4 +1,5 @@
 import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_RELEASES, FOOD_CATALOG_SOURCE, FOOD_CATALOG_SOURCES, browseFoods, getFood } from '../../../../../lib/food-catalog';
+import { foodCatalogImages } from '../../../../../lib/food-catalog-images';
 import { apiUser, json, unauthenticated } from '../../../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
     const id = params.get('id')!;
     if (params.size !== 1 || !id.trim() || id.length > 120) return invalid();
     const food = getFood(id);
-    return food ? json({ food, ...metadata })
+    return food ? json({ food, ...metadata, images: foodCatalogImages([food]) })
       : json({ error: '当前食物库中没有这项食品。', code: 'FOOD_NOT_FOUND' }, 404);
   }
   const query = params.get('q') ?? '';
@@ -28,7 +29,8 @@ export async function GET(request: Request) {
     || (rawLimit !== null && !/^[1-9]\d?$/.test(rawLimit))) return invalid();
   const offset = rawOffset === null ? 0 : Number(rawOffset), limit = rawLimit === null ? 20 : Number(rawLimit);
   try {
-    return json({ ...browseFoods({ query, category: params.get('category') ?? '', offset, limit }), ...metadata });
+    const result = browseFoods({ query, category: params.get('category') ?? '', offset, limit });
+    return json({ ...result, ...metadata, images: foodCatalogImages(result.foods) });
   } catch (error) {
     return invalid(error instanceof Error ? error.message : undefined);
   }

@@ -10,7 +10,7 @@ import { FOOD_LIBRARY_CSS, FOOD_LIBRARY_SCRIPT } from './food-library-ui.ts';
 
 const foods = mcd.foods;
 const categories = [...new Set(foods.map((food) => food.category))].map((name) => ({ name, count: foods.filter((food) => food.category === name).length }));
-type Reply = { foods: unknown[]; categories: typeof categories; total: number };
+type Reply = { foods: unknown[]; categories: typeof categories; total: number; images?: Record<string, {src:string;alt:string}> };
 type Responder = (url: URL) => Response | Promise<Response>;
 async function settled(check: () => boolean) {
   for (let count = 0; count < 80; count++) { if (check()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
@@ -40,7 +40,7 @@ function fixture(options: { search?: string; responder?: Responder } = {}) {
     const responder = next; next = null; if (responder) return responder(url);
     const query = url.searchParams.get('q') || '', category = url.searchParams.get('category') || '', offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
     const matches = foods.filter((food) => (!category || food.category === category) && (!query || food.name.includes(query) || food.aliases.some((alias) => alias.includes(query))));
-    return Response.json({ foods: matches.slice(offset, offset + limit), categories, total: matches.length } satisfies Reply);
+    return Response.json({ foods: matches.slice(offset, offset + limit), categories, total: matches.length, images: Object.fromEntries(matches.map((food) => [food.id, {src:'/food-images/mcd-cn/'+food.id.split(':')[1]+'.png',alt:food.name}])) } satisfies Reply);
   } };
   Object.assign(window, { JiashuAccountSession: session });
   runInNewContext(FOOD_LIBRARY_SCRIPT, { window, document, location, history, URL, URLSearchParams, Element: window.Element, AbortController, setTimeout, clearTimeout });
@@ -108,7 +108,7 @@ test('cards and three-dot menu open read-only official serving details and an ex
   assert.equal(app.requests.every((request) => request.init.method === 'GET'), true);
 });
 
-test('zero and missing macros remain distinct, labels are escaped, and rings show energy proportions', async () => {
+test('zero and missing macros remain distinct in details, card labels are escaped, and detail rings show energy proportions', async () => {
   const base = foods[0];
   const app = fixture({ responder: () => Response.json({ foods: [
     { ...base, name: '<img onerror="bad()">', serving: { ...base.serving, carbs: 0, protein: 0, fat: 0, kcal: 0, energyKj: 0 } },
@@ -118,14 +118,56 @@ test('zero and missing macros remain distinct, labels are escaped, and rings sho
   assert.equal(app.el('list').querySelector('img'), null);
   assert.match(app.el('list').textContent || '', /<img onerror="bad\(\)">/);
   const cards = [...app.document.querySelectorAll('.fl-card')];
-  assert.equal(cards[0].querySelector('.fl-ring-missing'), null);
-  assert.match(cards[0].textContent || '', /三项营养素均为0/);
-  assert.ok(cards[1].querySelector('.fl-ring-missing'));
-  assert.equal(cards[1].querySelectorAll('.fl-ring-carbs,.fl-ring-protein,.fl-ring-fat').length, 0);
-  const arcs = [...cards[2].querySelectorAll('.fl-ring-carbs,.fl-ring-protein,.fl-ring-fat')];
+  assert.equal(app.el('list').querySelectorAll('.fl-ring').length, 0);
+  app.click(cards[0].querySelector('[data-food-open]')!);
+  assert.equal(app.el('detail').querySelector('.fl-ring-missing'), null);
+  assert.match(app.el('detail').textContent || '', /三项营养素均为0/);
+  app.click('detail-done');
+  app.click(cards[1].querySelector('[data-food-open]')!);
+  assert.ok(app.el('detail').querySelector('.fl-ring-missing'));
+  assert.equal(app.el('detail').querySelectorAll('.fl-ring-carbs,.fl-ring-protein,.fl-ring-fat').length, 0);
+  app.click('detail-done');
+  app.click(cards[2].querySelector('[data-food-open]')!);
+  const arcs = [...app.el('detail').querySelectorAll('.fl-ring-carbs,.fl-ring-protein,.fl-ring-fat')];
   assert.equal(arcs.length, 3);
   const expected = base.serving.carbs * 4 / (base.serving.carbs * 4 + base.serving.protein * 4 + base.serving.fat * 9) * 100;
   assert.ok(Math.abs(Number(arcs[0].getAttribute('stroke-dasharray')?.split(' ')[0]) - expected) < .001);
+});
+
+test('cards render local official photos with stable dimensions and keep nutrition rings in details', async () => {
+  const app = fixture(); await app.ready();
+  const image = app.el('list').querySelector('img[data-food-image]')!;
+  assert.equal(image.getAttribute('src'), '/food-images/mcd-cn/49.png');
+  assert.match(image.getAttribute('alt') ?? '', /巨无霸/);
+  assert.equal(image.getAttribute('width'), '88');
+  assert.equal(image.getAttribute('height'), '80');
+  assert.equal(image.getAttribute('loading'), 'lazy');
+  assert.equal(image.getAttribute('decoding'), 'async');
+  assert.equal(image.hasAttribute('onerror'), false);
+  assert.equal(image.closest('.fl-product-image')?.querySelector('.fl-image-fallback')?.hasAttribute('hidden'), true);
+  assert.equal(app.el('list').querySelectorAll('.fl-ring').length, 0);
+  assert.equal(app.document.querySelector('.fl-legend'), null);
+  assert.match(app.document.querySelector('.fl-sources')?.textContent ?? '', /图片为官方餐品示意，份量以文字规格为准/);
+  app.click(image);
+  assert.equal(app.el('dialog').open, true);
+  assert.equal(app.el('detail').querySelectorAll('.fl-ring').length, 1);
+  assert.match(app.el('detail').textContent ?? '', /961 mg/);
+});
+
+test('missing or untrusted photos use a placeholder and a failed local photo never retries an external image', async () => {
+  const first = foods[0], second = foods[1];
+  const app = fixture({ responder: () => Response.json({foods:[first, second],total:2,categories,images:{[first.id]:{src:'https://untrusted.example/food.png',alt:'untrusted'}}}) }); await app.ready();
+  assert.equal(app.el('list').querySelectorAll('img').length, 0);
+  assert.equal(app.el('list').querySelectorAll('.fl-image-fallback:not([hidden])').length, 2);
+  assert.equal(app.el('list').querySelectorAll('.fl-ring').length, 0);
+  app.click('clear'); await app.ready();
+  const image = app.el('list').querySelector('img[data-food-image]')!;
+  image.dispatchEvent(new app.window.Event('error'));
+  assert.equal(image.hasAttribute('hidden'), true);
+  assert.equal(image.hasAttribute('src'), false);
+  assert.equal(image.closest('.fl-product-image')?.querySelector('.fl-image-fallback')?.hasAttribute('hidden'), false);
+  assert.equal(app.el('list').querySelectorAll('img[src^="http"]').length, 0);
+  assert.equal(app.requests.length, 2);
 });
 
 test('a late response cannot replace a newer search and failed reads can be retried', async () => {
@@ -167,6 +209,7 @@ test('the page uses three responsive columns with bounded main width and source-
   assert.match(FOOD_LIBRARY_CSS, /grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   assert.match(FOOD_LIBRARY_CSS, /@media\(max-width:500px\)\{\.fl-grid\{grid-template-columns:1fr/);
   assert.match(html, /营养数据更新于 2025 年 4 月/);
+  assert.match(FOOD_LIBRARY_CSS, /object-fit:contain/);
   assert.match(html, /target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"/);
   assert.doesNotMatch(html, /台湾|食药署|data\.gov\.tw/);
 });

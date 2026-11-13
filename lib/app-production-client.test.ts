@@ -15,6 +15,7 @@ import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_SOURCES, browseFoods, getFood } from './food-catalog.ts';
+import { foodCatalogImages } from './food-catalog-images.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -161,7 +162,10 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
         const food = getFood(parsed.searchParams.get('id')!);
         return food ? Response.json({food}) : Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
       }
-      if (location.pathname === '/health/foods') return Response.json({...browseFoods({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??20)}),categories:FOOD_CATALOG_CATEGORIES,sources:FOOD_CATALOG_SOURCES});
+      if (location.pathname === '/health/foods') {
+        const result=browseFoods({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??20)});
+        return Response.json({...result,categories:FOOD_CATALOG_CATEGORIES,sources:FOOD_CATALOG_SOURCES,images:foodCatalogImages(result.foods)});
+      }
       return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
     }
     if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
@@ -432,12 +436,24 @@ test('minified food library browses the current catalog, paginates and opens rea
   const list = f.document.getElementById('food-library-list')!;
   await settle(() => list.getAttribute('aria-busy') === 'false');
   assert.equal(list.children.length, 24);
+  assert.equal(list.querySelectorAll('.fl-product-photo').length, 24);
+  assert.equal(list.querySelectorAll('.fl-ring').length, 0);
+  const photo = list.querySelector('.fl-product-photo')!;
+  assert.equal(photo.getAttribute('src'), '/food-images/mcd-cn/49.png');
+  assert.equal(photo.getAttribute('loading'), 'lazy');
+  assert.equal(photo.getAttribute('width'), '88');
+  assert.equal(photo.getAttribute('height'), '80');
+  assert.ok(photo.getAttribute('alt'));
+  photo.dispatchEvent(new f.window.Event('error'));
+  assert.equal((photo as unknown as HTMLImageElement).hidden, true);
+  assert.equal((photo.parentElement!.querySelector('.fl-image-fallback') as unknown as HTMLElement).hidden, false);
   assert.match(f.document.getElementById('food-library-count')?.textContent ?? '', /共 137 个规格/);
   assert.equal(f.document.querySelector('[data-context-path="/health/foods"]')?.getAttribute('aria-current'), 'page');
   const firstName = list.querySelector('.fl-card-name')?.textContent;
   list.querySelector('[data-food-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   assert.equal(f.document.getElementById('food-library-dialog')?.hasAttribute('open'), true);
   assert.equal(f.document.getElementById('food-library-detail-title')?.textContent, firstName);
+  assert.equal(f.document.querySelectorAll('#food-library-detail .fl-ring').length, 1);
   assert.match(f.document.getElementById('food-library-detail')?.textContent ?? '', /钠.*钙.*2026-11-12/);
   const record = new URL(f.document.getElementById('food-library-record')!.getAttribute('href')!, 'https://synthetic.example');
   assert.equal(record.pathname, '/health/nutrition');
