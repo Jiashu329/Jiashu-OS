@@ -1,5 +1,7 @@
-import { parseDoubanRecord, type DoubanDomain, type DoubanRecordInput } from './douban.ts';
-import { DoubanSourceError, fetchDoubanCollection, fetchDoubanRSS, fetchDoubanSubjectKind } from './douban-source.ts';
+import { normalizeDoubanCover, parseDoubanRecord, type DoubanDomain, type DoubanRecordInput } from './douban.ts';
+import { parseDoubanDetails, type DoubanSubjectDetails } from './douban-details.ts';
+import { fetchDoubanSubjectMetadata, type DoubanSubjectMetadata } from './douban-metadata.ts';
+import { DoubanSourceError, fetchDoubanCollection, fetchDoubanRSS } from './douban-source.ts';
 
 export const DOUBAN_SYNC_DOMAINS = ['screen', 'book', 'music'] as const;
 export type DoubanRunStatus = 'running' | 'completed' | 'partial' | 'failed';
@@ -39,14 +41,14 @@ export interface DoubanRunForSync {
 }
 export interface DoubanSyncDecision {
   items: DoubanRecordInput[];
-  classification?: { domain: 'screen'; subjectId: string; kind: 'movie' | 'series' | null };
+  classification?: { domain: 'screen'; subjectId: string; kind: 'movie' | 'series' | null; coverUrl?: string | null; details?: DoubanSubjectDetails };
   state: DoubanSyncState;
   status: DoubanRunStatus;
 }
 export interface DoubanSyncDependencies {
   collection?: typeof fetchDoubanCollection;
   rss?: typeof fetchDoubanRSS;
-  classify?: typeof fetchDoubanSubjectKind;
+  classify?: (subjectId: string) => Promise<'movie' | 'series' | null | DoubanSubjectMetadata>;
   nextUnclassified(profileId: string, runId: string): Promise<{ subjectId: string } | null>;
   countUnclassified(profileId: string): Promise<number>;
 }
@@ -206,9 +208,11 @@ export async function advanceDoubanSyncStep(run: DoubanRunForSync, dependencies:
       state.phase = 'done'; decision.status = finalStatus(state); return decision;
     }
     try {
-      const kind = await (dependencies.classify ?? fetchDoubanSubjectKind)(record.subjectId);
+      const metadata = dependencies.classify ? await dependencies.classify(record.subjectId) : await fetchDoubanSubjectMetadata('screen', record.subjectId);
+      const kind = typeof metadata === 'object' && metadata !== null ? metadata.kind : metadata;
       if (kind !== null && kind !== 'movie' && kind !== 'series') throw new Error('Invalid classification');
-      decision.classification = { domain: 'screen', subjectId: record.subjectId, kind };
+      decision.classification = { domain: 'screen', subjectId: record.subjectId, kind,
+        ...(typeof metadata === 'object' && metadata !== null ? { coverUrl: normalizeDoubanCover(metadata.coverUrl), details: parseDoubanDetails(metadata.details) } : {}) };
       state.classification.checked++;
       if (kind !== null) { state.classification.classified++; state.classification.unclassified = Math.max(0, state.classification.unclassified - 1); }
     } catch (error) {

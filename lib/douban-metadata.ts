@@ -1,9 +1,12 @@
 import { DOUBAN_HOSTS, doubanSubjectUrl, normalizeDoubanCover, type DoubanDomain } from './douban.ts';
 import { DoubanSourceError, parseDoubanSourceDocument, readDoubanSource, type DoubanFetchOptions } from './douban-source.ts';
+import { createDoubanSubjectDetailsExtractor } from './douban-details-parser.ts';
+import type { DoubanSubjectDetails } from './douban-details.ts';
 
 export interface DoubanSubjectMetadata {
   kind: 'movie' | 'series' | 'book' | 'music' | null;
   coverUrl: string | null;
+  details?: DoubanSubjectDetails;
 }
 const MAX_BYTES = 2 * 1024 * 1024;
 type SubjectDocument = ReturnType<typeof parseDoubanSourceDocument>;
@@ -66,7 +69,7 @@ export function parseDoubanSubjectMetadata(html: string, domain: DoubanDomain, s
     if (!id || id !== subjectId) return invalid();
     canonical = true;
   }
-  const types = new Set<string>(), structuredImages: string[] = [];
+  const types = new Set<string>(), structuredImages: string[] = [], structuredObjects: Record<string, unknown>[] = [];
   let boundObjects = 0;
   for (const script of document.querySelectorAll('script[type]')) {
     if ((script.getAttribute('type') ?? '').split(';')[0].trim().toLowerCase() !== 'application/ld+json') continue;
@@ -91,11 +94,12 @@ export function parseDoubanSubjectMetadata(html: string, domain: DoubanDomain, s
       const bound = !foreignReference && (hasOwnReference || root && !explicit.length && canonical && names.some(name => SUBJECT_TYPES.has(name)));
       if (bound) {
         boundObjects++;
+        structuredObjects.push(object);
         for (const name of names) types.add(name);
         structuredImages.push(...imageValues(object.image), ...imageValues(object.thumbnailUrl));
       }
       if (object['@graph']) visit(object['@graph'], depth + 1, false);
-      if (object.mainEntity) visit(object.mainEntity, depth + 1, canonical);
+      if (object.mainEntity) visit(object.mainEntity, depth + 1, canonical && !foreignReference && (hasOwnReference || root && !explicit.length));
     }
     visit(json, 0, !Array.isArray(json));
   }
@@ -131,7 +135,8 @@ export function parseDoubanSubjectMetadata(html: string, domain: DoubanDomain, s
   }
   for (const anchor of document.querySelectorAll('#mainpic a.nbg[href], .subject .pic a.nbg[href], .subjectwrap .pic a.nbg[href]')) candidates.push(anchor.getAttribute('href'));
   const coverUrl = candidates.map(cover).find((value): value is string => value !== null) ?? null;
-  return { kind, coverUrl };
+  const details = createDoubanSubjectDetailsExtractor().extract(document, domain, subjectId, structuredObjects);
+  return { kind, coverUrl, ...(Object.keys(details).length ? { details } : {}) };
 }
 
 /** Exactly one anonymous fixed-host read; redirects and access challenges stop. */

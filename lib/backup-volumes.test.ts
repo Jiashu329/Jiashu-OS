@@ -13,7 +13,7 @@ large.tables.health_measurements=Array.from({length:20001},(_,index)=>{
 let prepared:ReturnType<typeof splitBackupVolumes>|undefined;
 const fixture=()=>prepared??=splitBackupVolumes(large);
 
-test('a complete set exceeds the old row ceiling while each volume remains bounded and may be selected out of order',async()=>{
+void test('a complete set exceeds the old row ceiling while each volume remains bounded and may be selected out of order',async()=>{
   assert.throws(()=>parseDataBackup(large),BackupValidationError);
   const set=await fixture();assert.equal(set.volumes.length,2);assert.equal(set.manifest.totalRows,20001);
   for(const part of set.volumes)assert.ok(new TextEncoder().encode(JSON.stringify(part)).byteLength<=BACKUP_MAX_BYTES);
@@ -22,21 +22,21 @@ test('a complete set exceeds the old row ceiling while each volume remains bound
   assert.equal(await backupDigest(parsed.backup),set.manifest.setId);
   assert.equal(parsed.backup.tables.health_measurements.find((row)=>row.record_key==='weight:volume-20000')?.measurement_json,large.tables.health_measurements[20000].measurement_json);
 });
-test('missing, duplicated, mixed and modified volumes fail before any database action',async()=>{
+void test('missing, duplicated, mixed and modified volumes fail before any database action',async()=>{
   const set=await fixture();
   await assert.rejects(parseBackupInput({...set,volumes:set.volumes.slice(0,1)}),BackupValidationError);
   await assert.rejects(parseBackupInput({...set,volumes:[set.volumes[0],set.volumes[0]]}),BackupValidationError);
   const mixed=structuredClone(set);mixed.volumes[1].setId='f'.repeat(64);await assert.rejects(parseBackupInput(mixed),BackupValidationError);
   const edited=structuredClone(set);edited.volumes[1].tables.health_measurements[0].day='2026-11-09';await assert.rejects(parseBackupInput(edited),BackupValidationError);
 });
-test('manifest row counts, digests and unsupported fields cannot bypass logical backup validation',async()=>{
+void test('manifest row counts, digests and unsupported fields cannot bypass logical backup validation',async()=>{
   const set=await fixture();
   const forged=structuredClone(set);forged.manifest.totalRows++;await assert.rejects(parseBackupInput(forged),BackupValidationError);
   const badDigest=structuredClone(set);badDigest.manifest.volumes[0].sha256='f'.repeat(64);await assert.rejects(parseBackupInput(badDigest),BackupValidationError);
   await assert.rejects(parseBackupInput({...set,extra:'unsupported'}),BackupValidationError);
 });
 
-test('published 27-table volume digests are verified before adding the new empty action tables',async()=>{
+void test('published 27-table volume digests are verified before adding the new empty action tables',async()=>{
   const tables=Object.fromEntries(BACKUP_PREVIOUS_V2_TABLE_NAMES.map((table)=>[table,table==='health_measurements'?large.tables.health_measurements.slice(0,1):[]]));
   const signed={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables},setId=await backupDigest(signed);
   const volume={kind:'jiashu-os-backup-volume',version:1,setId,exportedAt:EXPORTED,partIndex:1,totalParts:1,tables};
@@ -59,7 +59,7 @@ async function signedSingleVolume(tables: Record<string, unknown[]>) {
   return {kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:EXPORTED,totalRows:rowCount,volumes:[descriptor]},volumes:[volume]};
 }
 
-test('the published 30-table signed shape remains frozen and verifies before adding empty Douban records',async()=>{
+void test('the published 30-table signed shape remains frozen and verifies before adding empty Douban records',async()=>{
   assert.equal(BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.length,30);
   assert.equal(BACKUP_PREVIOUS_V2_TABLE_NAMES.length,27);
   assert.equal(BACKUP_TABLE_NAMES.length,31);
@@ -72,7 +72,7 @@ test('the published 30-table signed shape remains frozen and verifies before add
   assert.notEqual(await backupDigest(parsed.backup),set.manifest.setId,'normalising a prior signed shape must not pretend its original digest covered a new table');
 });
 
-test('valid hashes cannot turn same-length unknown table sets into a supported signed shape',async()=>{
+void test('valid hashes cannot turn same-length unknown table sets into a supported signed shape',async()=>{
   for(const names of [BACKUP_TABLE_NAMES,BACKUP_PRE_DOUBAN_V2_TABLE_NAMES,BACKUP_PREVIOUS_V2_TABLE_NAMES]){
     const tables=Object.fromEntries(names.map(table=>[table,[]]));
     delete tables.health_syncs;tables.unsupported_table=[];
@@ -80,13 +80,24 @@ test('valid hashes cannot turn same-length unknown table sets into a supported s
   }
 });
 
-test('new signed sets include canonical personal Douban records and preserve nullable fields',async()=>{
+void test('new signed sets include canonical personal Douban records and preserve nullable fields',async()=>{
   const backup:DataBackup={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables:Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,[]])) as unknown as DataBackup['tables']};
-  backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
+  backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',details_json:'{}',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
   const set=await splitBackupVolumes(backup);
   assert.equal(Object.keys(set.volumes[0].tables).length,31);
   assert.equal(set.manifest.totalRows,1);
   const parsed=await parseBackupInput(set);
   assert.deepEqual(parsed.backup.tables.douban_items,backup.tables.douban_items);
   assert.equal(await backupDigest(parsed.backup),set.manifest.setId);
+});
+
+void test('published 31-table volume rows without details verify their original signature before normalization',async()=>{
+  const row={profile_id:'synthetic-owner',domain:'book',subject_id:'1234567',kind:'book',title:'合成旧书籍条目',url:'https://book.douban.com/subject/1234567/',cover_url:null,rating:4,marked_date:'2026-11-09',comment:null,published_at:null,source:'import',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED};
+  const tables=Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,table==='douban_items'?[row]:[]]));
+  const set=await signedSingleVolume(tables),parsed=await parseBackupInput(set);
+  assert.equal(Object.keys(parsed.backup.tables).length,31);
+  assert.deepEqual(parsed.backup.tables.douban_items,[{details_json:'{}',...row}]);
+  assert.notEqual(await backupDigest(parsed.backup),set.manifest.setId);
+  const edited=structuredClone(set);(edited.volumes[0].tables.douban_items[0] as Record<string,unknown>).title='被修改的旧记录';
+  await assert.rejects(parseBackupInput(edited),BackupValidationError);
 });

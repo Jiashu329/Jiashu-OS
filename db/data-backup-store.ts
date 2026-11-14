@@ -1,6 +1,7 @@
 import { BACKUP_TABLE_NAMES, BACKUP_TABLES, SINGLE_BACKUP_LIMITS, BackupCapacityError, backupDigest, backupFail, backupRowKey, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
 import type { BackupLimits, BackupRow, BackupTable, DataBackup } from '../lib/data-backup.ts';
 import { parseBackupInput } from '../lib/backup-volumes.ts';
+import { parseDoubanDetails } from '../lib/douban-details.ts';
 
 export type BackupDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export class BackupConflictError extends Error { readonly code = 'BACKUP_CONFLICT'; readonly status = 409; constructor(message = '备份与当前数据有差异，未写入任何记录。请重新预览并处理冲突。') { super(message); this.name = 'BackupConflictError'; } }
@@ -8,6 +9,12 @@ export interface BackupFieldDifference { field: string; current: string; incomin
 export interface BackupTablePreview { table: BackupTable; label: string; incoming: number; added: number; skipped: number; conflicts: number; conflictExamples: Array<{ record:string;reason:string; differences?: BackupFieldDifference[] }> }
 export interface BackupPreview { previewHash: string; backupHash: string; canRestore: boolean; generatedGoalHistoryRows: number; total: { incoming: number; added: number; skipped: number; conflicts: number }; tables: BackupTablePreview[] }
 interface Plan { preview: BackupPreview; current: Record<BackupTable, BackupRow[]>; additions: Record<BackupTable, BackupRow[]> }
+function retainsRicherDoubanDetails(prior: BackupRow, incoming: BackupRow): boolean {
+  const oldDetails = parseDoubanDetails(JSON.parse(String(prior.details_json)));
+  const nextDetails = parseDoubanDetails(JSON.parse(String(incoming.details_json)));
+  return Object.entries(nextDetails).every(([key, value]) => JSON.stringify(value) === JSON.stringify(oldDetails[key as keyof typeof oldDetails]))
+    && comparableBackupRow('douban_items', prior) === comparableBackupRow('douban_items', { ...incoming, details_json: prior.details_json });
+}
 const MAX_RESTORE_QUERIES = 48;
 // D1 bounds an individual string binding/result cell to 2 MiB. JSON escaping
 // can be larger than the original column text, so check encoded arrays too.
@@ -105,11 +112,11 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     for (const row of incoming) {
       const prior = existing.get(backupRowKey(table,row));
       if (!prior) candidates.push(row);
-      else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row)) skipped++;
+      else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row) || table === 'douban_items' && retainsRicherDoubanDetails(prior,row)) skipped++;
       else {
         conflicts++;const example=describe(row,'已有记录内容不同，需要先核对当前记录。');
         if(example) {
-          const display=(value:unknown)=>value===null?'未填写':String(value).slice(0,240)+(String(value).length>240?'…':'');
+          const display=(value:BackupRow[string])=>value===null?'未填写':String(value).slice(0,240)+(String(value).length>240?'…':'');
           example.differences=spec.columns.filter((field)=>field!=='sequence'&&prior[field]!==row[field]).slice(0,8).map((field)=>({field,current:display(prior[field]),incoming:display(row[field])}));
         }
       }

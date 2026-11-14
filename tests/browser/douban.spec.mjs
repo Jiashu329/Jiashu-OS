@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
 import { parseDoubanProfile } from '../../lib/douban.ts';
+import { mergeDoubanDetails } from '../../lib/douban-details.ts';
 
 const PROFILE = 'synthetic-douban-user';
 const STAMP = '2026-11-14T08:00:00.000Z';
@@ -78,7 +79,8 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (state.doubanLoseResetReply) { state.doubanLoseResetReply = false; return route.abort('connectionreset'); }
       return send({ receipt });
     }
-    if ((url.pathname === '/api/life/douban/metadata' && method === 'POST') || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
+    if ((url.pathname === '/api/life/douban/metadata' && ['POST', 'PUT'].includes(method)) || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
+      if (url.pathname.endsWith('/metadata') && (body.expectedDataEpoch ?? 0) !== state.doubanDataEpoch) return fail('书影音资料已清空或重置，旧作品补全已停止。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const item = state.doubanItems.find(value => value.profileId === body.profileId && value.domain === body.domain && value.subjectId === body.subjectId);
       if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
       if (body.expectedUpdatedAt !== item.updatedAt) return fail('条目已更新，请重新核对。', 'DOUBAN_ITEM_CONFLICT');
@@ -89,12 +91,14 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         return send({ item });
       }
       if (body.confirmed !== true) return fail('请明确确认补全此条目。', 'DOUBAN_METADATA_CONFIRMATION_REQUIRED', 400);
-      const metadata = state.doubanMetadataResults.get(item.subjectId);
+      const metadata = method === 'PUT' ? body.metadata : state.doubanMetadataResults.get(item.subjectId);
       if (!metadata || metadata.unavailable) return send({ item, changed: false, metadata: { status: 'unavailable', message: '合成来源暂不可用，原记录仍保留。' } });
       if (metadata.kind) item.kind = metadata.kind;
       if (metadata.coverUrl) item.coverUrl = metadata.coverUrl;
+      const details = mergeDoubanDetails(item.details, metadata.details);
+      if (Object.keys(details).length) item.details = details;
       item.updatedAt = new Date(Date.parse(STAMP) + ++state.doubanMetadataVersion).toISOString();
-      return send({ item, changed: true, metadata: { status: 'complete' } });
+      return send({ item, changed: true, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
     }
     if (url.pathname === '/api/life/douban/cover' && method === 'GET') {
       const item = state.doubanItems.find(value => value.profileId === url.searchParams.get('profileId')
@@ -188,7 +192,8 @@ async function installExtensionMock(context, pages, options = {}) {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 Synthetic Desktop Chrome/130.0.0.0 Safari/537.36' });
     Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { mobile: false } });
     const runId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111', results = new Map();
-    const state = { calls: [], reads: 0, holdStep: options.holdStep ?? null, release: null, pending: false, lostReply: Boolean(options.lostReply) };
+    const state = { calls: [], reads: 0, holdStep: options.holdStep ?? null, release: null, pending: false, lostReply: Boolean(options.lostReply),
+      subjectPending: false, releaseSubject: null, holdSubject: options.holdSubject ?? null };
     window.__doubanExtensionMock = state;
     const progress = step => ({ status: step >= pages.length ? 'completed' : 'running', accountProfileId: 'synthetic-douban-user',
       received: pages.slice(0, step).flat().length, pages: step,
@@ -200,7 +205,18 @@ async function installExtensionMock(context, pages, options = {}) {
     const runtime = { sendMessage(id, body, callback) {
       state.calls.push({ id, body: structuredClone(body) });
       const reply = value => queueMicrotask(() => callback(value));
-      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.3', protocolVersion: 1 } });
+      if (body.action === 'SUBJECT_CANCEL') return reply({ ok: true, data: { cancelled: true } });
+      if (body.action === 'SUBJECT') {
+        const key = body.domain + ':' + body.subjectId, metadata = options.subjects?.[key];
+        const complete = () => {
+          state.subjectPending = false; state.releaseSubject = null;
+          reply(metadata?.error ? { ok: false, error: metadata.error } : { ok: true, data: { requestId: body.requestId, domain: body.domain, subjectId: body.subjectId, metadata: metadata ?? { kind: null, coverUrl: null, details: {} } } });
+        };
+        if (state.holdSubject === key) { state.holdSubject = null; state.subjectPending = true; state.releaseSubject = complete; }
+        else complete();
+        return;
+      }
       if (body.action === 'START') return reply({ ok: true, data: { runId, step: 0, progress: progress(0), done: false } });
       if (body.action === 'CANCEL') return reply({ ok: true, data: { runId, step: state.reads, progress: { ...progress(state.reads), status: 'cancelled' }, done: true } });
       if (body.action !== 'STEP' || body.runId !== runId || !pages[body.step]) return reply({ ok: false, error: { code: 'STEP_CONFLICT', message: '合成扩展进度错误。' } });
@@ -517,7 +533,7 @@ test('metadata completion waits for an explicit batch action and preserves recor
   expect(state.doubanItems).toHaveLength(3);
   expect(metadataRequests().every(request => request.method === 'POST')).toBe(true);
   expect(metadataRequests().map(request => request.body)).toEqual(expect.arrayContaining(['screen', 'book', 'music'].map((domain, index) =>
-    ({ profileId: PROFILE, domain, subjectId: String(9000600 + index), expectedUpdatedAt: STAMP, confirmed: true }))));
+    ({ profileId: PROFILE, domain, subjectId: String(9000600 + index), expectedUpdatedAt: STAMP, expectedDataEpoch: 0, confirmed: true }))));
   await expect(page.locator('#douban-metadata-status')).toContainText('暂无法获取 1 条');
   await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(3);
   await expect(page.locator('#douban-list [data-douban-open="0"] img')).toHaveAttribute('data-douban-cover', 'available');
@@ -739,6 +755,109 @@ test('an old import cannot resurrect cleared data and retrying an unknown clear 
   expect(state.doubanItems.map(item => item.subjectId)).toEqual(['9000932']);
   expect(state.doubanDataEpoch).toBe(2);
   expect(state.doubanConnection.profileId).toBe(PROFILE);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('explicit local work enrichment displays movie, book and music facts separately from personal ratings and preserves existing fields', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [
+    { ...record('movie', 1000), details: { year: 2020, summary: '应保留的原作品简介', genres: ['剧情'] } },
+    { ...record('book', 1001), details: { publisher: '应保留的原出版社' } },
+    record('music', 1002),
+  ];
+  await installExtensionMock(context, [], { subjects: {
+    'screen:9001000': { kind: 'movie', coverUrl: null, details: { directors: ['合成导演'], cast: Array.from({ length: 12 }, (_, index) => '合成演员' + (index + 1)), doubanRating: 8.6, ratingCount: 12000, summary: null, genres: [] } },
+    'book:9001001': { kind: 'book', coverUrl: null, details: { year: 2024, authors: ['合成作者'], publisher: null, publicationDate: '2024-03', pages: 320, isbn: '9787020002207' } },
+    'music:9001002': { kind: 'music', coverUrl: null, details: { artists: ['合成歌手'], albumType: '专辑', tracks: ['第一首合成曲目', '第二首合成曲目'], doubanRating: 9.1 } },
+  } });
+  await openLibrary(page);
+  await page.locator('#douban-list [data-douban-open="0"]').click();
+  await expect(page.locator('[data-douban-details="summary"]')).toContainText('应保留的原作品简介');
+  await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
+  expect(await extensionCalls(page)).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-metadata').click();
+  await expect(page.locator('#douban-metadata-status')).toContainText('本页补全完成');
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(3);
+  const writes = mutations(testInfo);
+  expect(writes).toHaveLength(3);
+  expect(writes.every(request => request.path === '/api/life/douban/metadata' && request.method === 'PUT' && request.body.expectedDataEpoch === 0 && request.body.confirmed === true)).toBe(true);
+  for (const call of await extensionCalls(page, 'SUBJECT')) expect(Object.keys(call.body).sort()).toEqual(['type', 'version', 'action', 'ownerKey', 'profileId', 'requestId', 'domain', 'subjectId'].sort());
+  expect(JSON.stringify(writes)).not.toMatch(/"rating":|"comment":|合成个人短评|cookie|password|rawHTML/i);
+  expect(state.doubanItems.every(item => item.rating === 4 && item.comment === '合成个人短评')).toBe(true);
+  expect(state.doubanItems[0].details.summary).toBe('应保留的原作品简介');
+  expect(state.doubanItems[0].details.genres).toEqual(['剧情']);
+  expect(state.doubanItems[1].details.publisher).toBe('应保留的原出版社');
+  await page.locator('#douban-list [data-douban-open="0"]').click();
+  await expect(page.locator('[data-douban-details="work"]')).toContainText('8.6');
+  await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成导演');
+  await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
+  await expect(page.locator('[data-douban-details="summary"]')).toContainText('应保留的原作品简介');
+  await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成演员12');
+  await page.locator('#douban-detail-dialog').screenshot({ path: testInfo.outputPath('douban-work-details-dialog.png') });
+  await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-list [data-douban-open="1"]').click();
+  await expect(page.locator('[data-douban-details="book"]')).toContainText('合成作者');
+  await expect(page.locator('[data-douban-details="book"]')).toContainText('320 页');
+  await expect(page.locator('[data-douban-details="book"]')).toContainText('应保留的原出版社');
+  await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-list [data-douban-open="2"]').click();
+  await expect(page.locator('[data-douban-details="music"]')).toContainText('合成歌手');
+  await expect(page.locator('[data-douban-details="tracks"] li')).toHaveCount(2);
+  await page.locator('#douban-detail-body').screenshot({ path: testInfo.outputPath('douban-work-details.png') });
+  await fits(page);
+});
+
+test('a local subject challenge stops the batch without server fallback or erasing known work details', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [{ ...record('movie', 1010), details: { summary: '挑战前已保存的作品简介', directors: ['原导演'] } }, record('book', 1011)];
+  await installExtensionMock(context, [], { subjects: { 'screen:9001010': { error: { code: 'DOUBAN_BROWSER_CHALLENGE', message: '豆瓣要求安全验证。' } } } });
+  await openLibrary(page);
+  await page.locator('#douban-metadata').click();
+  await expect(page.locator('#douban-metadata-status')).toContainText('补全已停止');
+  await expect(page.locator('#douban-metadata-status')).toContainText('安全验证');
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  expect(mutations(testInfo)).toEqual([]);
+  expect(state.doubanItems).toHaveLength(2);
+  expect(state.doubanItems[0].details).toEqual({ summary: '挑战前已保存的作品简介', directors: ['原导演'] });
+  await fits(page);
+});
+
+for (const change of ['account', 'epoch']) test('a pending local subject result cannot write after a ' + change + ' change', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('book', 1020)];
+  await installExtensionMock(context, [], { holdSubject: 'book:9001020', subjects: { 'book:9001020': { kind: 'book', coverUrl: null, details: { authors: ['不得写回的旧作者'] } } } });
+  await openLibrary(page);
+  await page.locator('#douban-metadata').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.subjectPending)).toBe(true);
+  if (change === 'account') {
+    state.owner = 'another-synthetic-account';
+    await page.evaluate(() => window.JiashuAccountSession.verify().catch(() => {}));
+    await expect(page.locator('html')).toHaveAttribute('data-account-changed', '');
+    await expect.poll(() => extensionCalls(page, 'SUBJECT_CANCEL').then(calls => calls.length)).toBe(1);
+  } else {
+    state.doubanDataEpoch = 1; state.doubanItems = [];
+    state.doubanConnection = { ...state.doubanConnection, revision: 2 };
+  }
+  await page.evaluate(() => window.__doubanExtensionMock.releaseSubject());
+  await expect(page.locator('#douban-metadata-stop')).toBeHidden();
+  if (change === 'account') {
+    expect(mutations(testInfo)).toEqual([]);
+    expect(state.doubanItems[0]).not.toHaveProperty('details');
+    await expect(page.locator('#douban-metadata')).toBeDisabled();
+  } else {
+    await expect(page.locator('#douban-metadata-status')).toContainText('已清空或重置');
+    const writes = mutations(testInfo);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ path: '/api/life/douban/metadata', method: 'PUT', body: { expectedDataEpoch: 0 } });
+    expect(state.doubanItems).toEqual([]);
+    await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  }
   expect(syncRequests(testInfo)).toEqual([]);
   await fits(page);
 });

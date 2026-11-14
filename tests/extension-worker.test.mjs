@@ -17,24 +17,34 @@ const message = (action, extra = {}) => ({ type: 'JIASHU_DOUBAN', version: 1, ac
 const step = (number = 0, id = requestId, extra = {}) => message('STEP', { runId, step: number, requestId: id, ...extra });
 const record = (domain = 'screen', subjectId = '12345') => ({ domain, subjectId, kind: domain, title: '合成个人收藏', url: 'https://' + ({ screen: 'movie', book: 'book', music: 'music' }[domain]) + '.douban.com/subject/' + subjectId + '/', coverUrl: null, rating: 4, markedDate: '2026-11-14', comment: '合成个人短评', publishedAt: null, source: 'collection' });
 const page = (domain = 'screen', items = [record(domain)], extra = {}) => ({ items, total: items.length, nextStart: null, accountProfileId: 'mine', ...extra });
+const subject = (id = requestId, extra = {}) => message('SUBJECT', { requestId: id, domain: 'screen', subjectId: '12345', ...extra });
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function loadWorker(chromeApi) {
-  const context = { URL, URLSearchParams, structuredClone, crypto: { randomUUID: () => runId }, setTimeout, clearTimeout, ...(chromeApi ? { chrome: chromeApi } : {}) };
-  runInNewContext(workerSource.replace(/^export\s+/gm, '') + '\n;globalThis.testControllerFactory=createDoubanExtensionController;', context);
+  const context = { URL, URLSearchParams, TextEncoder, structuredClone, crypto: { randomUUID: () => runId }, setTimeout, clearTimeout, ...(chromeApi ? { chrome: chromeApi } : {}) };
+  runInNewContext(readFileSync(new URL('details-parser.js', extensionRoot), 'utf8').replace(/^export\s+/gm, ''), context);
+  runInNewContext(workerSource.replace(/^import \{ parseDoubanDetails \} from '\.\/details-parser\.js';\r?\n/m, '').replace(/^export\s+/gm, '')
+    + '\n;globalThis.testControllerFactory=createDoubanExtensionController;globalThis.cloneInjectionResult=value=>JSON.parse(JSON.stringify(value));', context);
   return context;
 }
-function fixture(readPage) {
+function fixture(readPage, readSubject) {
   let clock = 10000, issuedRuns = 0;
-  const calls = { reads: [], created: [], updated: [], scripts: [] };
+  const calls = { reads: [], subjectReads: [], created: [], updated: [], scripts: [] };
   const chromeApi = {
     tabs: { async create(options) { calls.created.push(clone(options)); return { id: 100, ...options }; }, async update(id, options) { calls.updated.push({ id, ...clone(options) }); } },
     scripting: { async executeScript(options) { calls.scripts.push(options); return []; } },
     get storage() { throw new Error('Sync must not persist private records or credentials'); },
     get cookies() { throw new Error('Sync must not access the Cookie API'); },
   };
-  const controller = loadWorker().testControllerFactory(chromeApi, { now: () => clock, randomUUID: () => issuedRuns++ === 0 ? runId : finalRequest, readPage: async (run, domain) => {
+  const worker = loadWorker();
+  const controller = worker.testControllerFactory(chromeApi, { now: () => clock, randomUUID: () => issuedRuns++ === 0 ? runId : finalRequest, readPage: async (run, domain) => {
     calls.reads.push({ runId: run.id, ownerKey: run.ownerKey, profileId: run.profileId, domain, offset: run.sources[domain].start });
     return readPage ? readPage(run, domain) : page(domain);
+  }, readSubject: async job => {
+    calls.subjectReads.push({ requestId: job.requestId, ownerKey: job.ownerKey, profileId: job.profileId, domain: job.domain, subjectId: job.subjectId });
+    const result = readSubject ? await readSubject(job) : { kind: job.domain === 'screen' ? 'series' : job.domain, coverUrl: null,
+      details: { summary: '合成作品简介', doubanRating: 8.6, ratingCount: 321, year: 2026 } };
+    // Chrome serializes an isolated-world result into the service worker realm.
+    return worker.cloneInjectionResult(result);
   } });
   return { controller, chromeApi, calls, advance(ms = 1500) { clock += ms; }, send(body, from = sender) { return controller.handle(body, from); }, async start() { const response = await controller.handle(message('START'), sender); assert.equal(response.ok, true); return response; } };
 }
@@ -42,13 +52,81 @@ function fixture(readPage) {
 test('local Douban extension grants only collection hosts and never asks for Cookie or request interception permissions', () => {
   const manifest = JSON.parse(readFileSync(new URL('manifest.json', extensionRoot), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '1.0.2');
+  assert.equal(manifest.version, '1.0.3');
   assert.deepEqual(manifest.permissions.toSorted(), ['scripting', 'tabs']);
   assert.deepEqual(manifest.host_permissions.toSorted(), ['https://book.douban.com/*', 'https://movie.douban.com/*', 'https://music.douban.com/*']);
   assert.deepEqual(manifest.externally_connectable.matches, [productionOrigin + '/*']);
   assert.equal(manifest.background.service_worker, 'background.js');
   assert.equal(manifest.background.type, 'module');
   assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'");
+});
+
+test('subject reads accept only fixed subject keys and reject URLs, credentials, frames and invalid identities before any read', async () => {
+  const f = fixture();
+  for (const body of [subject(requestId, { url: 'https://evil.example/' }), subject(requestId, { cookie: 'PRIVATE_COOKIE' }),
+    subject(requestId, { domain: 'other' }), subject(requestId, { subjectId: '../secret' }), subject(requestId, { subjectId: ['12345'] }),
+    subject('bad-id'), message('SUBJECT_CANCEL', { requestId: ['bad'] }), subject(requestId, { ownerKey: 'not-a-uuid' })]) {
+    assert.equal((await f.send(body)).error.code, 'INVALID_REQUEST');
+  }
+  assert.equal((await f.send(subject(), { ...sender, frameId: 1 })).error.code, 'FORBIDDEN');
+  assert.equal(f.calls.subjectReads.length + f.calls.created.length + f.calls.scripts.length, 0);
+});
+
+test('subject responses contain public metadata only, replay once, and never reveal cached results across owner, profile or tab', async () => {
+  const f = fixture(), first = await f.send(subject());
+  assert.equal(first.ok, true); assert.equal(first.data.requestId, requestId); assert.equal(first.data.domain, 'screen'); assert.equal(first.data.subjectId, '12345');
+  assert.equal(first.data.metadata.kind, 'series'); assert.equal(first.data.metadata.details.doubanRating, 8.6);
+  assert.deepEqual(Object.keys(first.data).sort(), ['domain', 'metadata', 'requestId', 'subjectId']);
+  assert.deepEqual(clone(await f.send(subject())), clone(first)); assert.equal(f.calls.subjectReads.length, 1);
+  first.data.metadata.details.summary = 'changed by website';
+  assert.equal((await f.send(subject())).data.metadata.details.summary, '合成作品简介');
+  assert.equal((await f.send(subject(requestId, { subjectId: '12346' }))).error.code, 'STEP_CONFLICT');
+  for (const [payload, from] of [[subject(requestId, { ownerKey: secondOwner }), sender], [subject(requestId, { profileId: 'other' }), sender],
+    [subject(), { ...sender, tab: { id: 8 } }]]) assert.equal((await f.send(payload, from)).error.code, 'RUN_NOT_FOUND');
+  assert.equal(f.calls.subjectReads.length, 1);
+});
+
+test('held subject reads are exclusive and cancellation discards their eventual result without crossing ownership', async () => {
+  let resolveRead;
+  const f = fixture(undefined, () => new Promise(resolve => { resolveRead = resolve; }));
+  const pending = f.send(subject());
+  assert.equal((await f.send(subject())).error.code, 'RUN_BUSY');
+  assert.equal((await f.send(subject(nextRequest))).error.code, 'RUN_BUSY');
+  assert.equal((await f.send(message('START'))).error.code, 'RUN_BUSY');
+  assert.equal((await f.send(message('SUBJECT_CANCEL', { requestId, ownerKey: secondOwner }))).error.code, 'RUN_NOT_FOUND');
+  assert.equal((await f.send(message('SUBJECT_CANCEL', { requestId }))).data.cancelled, true);
+  resolveRead({ kind: 'movie', coverUrl: null, details: { summary: 'SHOULD_NOT_RETURN' } });
+  assert.equal((await pending).error.code, 'RUN_NOT_FOUND');
+  assert.equal((await f.send(subject())).error.code, 'RUN_NOT_FOUND');
+  assert.equal(f.calls.subjectReads.length, 1);
+});
+
+test('subject reads share pacing with collection reads and never overlap an unfinished collection run', async () => {
+  const f = fixture(); await f.start();
+  assert.equal((await f.send(subject())).error.code, 'RUN_BUSY');
+  assert.equal(f.calls.subjectReads.length, 0);
+  await f.send(step()); await f.send(message('CANCEL', { runId }));
+  assert.equal((await f.send(subject())).error.code, 'PACING');
+  f.advance(); assert.equal((await f.send(subject())).ok, true);
+  const paced = await f.send(subject(nextRequest, { domain: 'book' }));
+  assert.equal(paced.error.code, 'PACING'); assert.equal(paced.error.retryAfter, 2);
+  f.advance(); assert.equal((await f.send(subject(nextRequest, { domain: 'book' }))).data.metadata.kind, 'book');
+  const restarted = await f.start(); assert.equal((await f.send(step(0, finalRequest, { runId: restarted.data.runId }))).error.code, 'PACING');
+});
+
+test('subject challenge failures are fixed-label cached responses and invalid or personal metadata never leaves the worker', async () => {
+  const f = fixture(undefined, () => { throw { code: 'DOUBAN_BROWSER_CHALLENGE', rawHTML: 'PRIVATE_HTML', message: 'PRIVATE_COOKIE' }; });
+  const failed = await f.send(subject()); assert.equal(failed.error.code, 'DOUBAN_BROWSER_CHALLENGE');
+  assert.equal((await f.send(subject())).error.code, 'DOUBAN_BROWSER_CHALLENGE'); assert.equal(f.calls.subjectReads.length, 1);
+  assert.doesNotMatch(JSON.stringify(failed), /PRIVATE_|rawHTML|cookie/i);
+  for (const metadata of [{ kind: 'movie', coverUrl: null, details: { cookie: 'PRIVATE_COOKIE' } },
+    { kind: 'movie', coverUrl: null, details: {}, comment: 'PRIVATE_COMMENT' },
+    { kind: 'book', coverUrl: null, details: {} }, { kind: 'movie', coverUrl: null, details: { summary: '中'.repeat(6000) } },
+    { kind: 'movie', coverUrl: null, details: { year: -1 } }, { kind: 'movie', coverUrl: null, details: { cast: 3 } },
+    { kind: 'movie', coverUrl: null, details: { summary: '<script>BAD_HTML</script>' } }]) {
+    const invalid = fixture(undefined, () => metadata), result = await invalid.send(subject());
+    assert.equal(result.error.code, 'DOUBAN_BROWSER_INVALID'); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|summary|comment|cookie/i);
+  }
 });
 
 test('worker accepts only the production top-level media page before any collector, tab or login operation', async () => {
@@ -70,7 +148,7 @@ test('worker accepts only the production top-level media page before any collect
   }
   assert.equal(f.calls.reads.length + f.calls.created.length + f.calls.scripts.length, 0);
   const response = await f.send(message('CONNECT'), { ...sender, url: productionOrigin + '/life/douban?kind=book' });
-  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
+  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.3', protocolVersion: 1 } });
 });
 
 test('message schemas reject injected URLs, credentials, non-string identities and malformed step fields', async () => {
@@ -229,7 +307,9 @@ test('an explicit refreshed-page start cancels its old owner without exposing a 
   assert.equal(f.calls.scripts.length, 1); assert.deepEqual(clone(f.calls.scripts[0].args), [runId]);
   resolveRead(page()); assert.equal((await pending).error.code, 'RUN_NOT_FOUND');
   assert.equal((await f.send(message('POLL', { runId }))).error.code, 'RUN_NOT_FOUND');
-  const result = await f.send(step(0, nextRequest, { ownerKey: secondOwner, runId: refreshed.data.runId }));
+  const next = step(0, nextRequest, { ownerKey: secondOwner, runId: refreshed.data.runId });
+  assert.equal((await f.send(next)).error.code, 'PACING'); f.advance();
+  const result = await f.send(next);
   assert.equal(result.ok, true); assert.equal(result.data.items[0].subjectId, '23456'); assert.equal(JSON.stringify(result).includes('12345'), false);
 });
 

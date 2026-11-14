@@ -1,5 +1,6 @@
 import { DOMParser } from 'linkedom/worker';
 import { parseDoubanRecord, type DoubanDomain, type DoubanRecordInput } from './douban.ts';
+import { createDoubanDetailsParser, renderDoubanDetailsParserFactory } from './douban-details.ts';
 
 export const DOUBAN_IMPORT_LIMITS = { bytes: 8 * 1024 * 1024, files: 100, records: 500, htmlBytes: 2 * 1024 * 1024 } as const;
 export interface DoubanImportFile { name: string; text: string; domain?: DoubanDomain; start?: number }
@@ -19,7 +20,7 @@ export class DoubanImportError extends Error {
  * inserts the parsed HTML into a live document. Browser callers inject an inert
  * template-content adapter; native DOMParser's image-loading behaviour is not used.
  */
-export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
+export function createDoubanImportParser(Parser: typeof globalThis.DOMParser, detailsParser: ReturnType<typeof createDoubanDetailsParser>) {
   const limits = { bytes: 8 * 1024 * 1024, files: 100, records: 500, htmlBytes: 2 * 1024 * 1024 };
   const hosts: Record<string, string> = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
   const credentials = /^(?:cookie|cookies|password|passwd|authorization|token|session|accesstoken|refreshtoken|authtoken|sessiontoken|dbcl2|apikey|secret)$/i;
@@ -49,10 +50,14 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
     return raw === null || raw === undefined || raw === '' || typeof raw === 'string'
       && (!raw.trim() || /^(?:null|~|\{\{[^{}]+\}\})$/i.test(raw.trim()));
   }
+  function control(value: string, multiline = false): boolean {
+    for (const char of value) { const code = char.charCodeAt(0); if (code < 32 && !(multiline && [9, 10, 13].includes(code)) || code >= 127 && code <= 159) return true; }
+    return false;
+  }
   function string(raw: unknown, maximum: number, label: string, nullable = false, multiline = false): string | null {
     if (nullable && missing(raw)) return null;
     if (typeof raw !== 'string' || !raw.trim() || raw.length > maximum
-      || (multiline ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/ : /[\u0000-\u001f\u007f-\u009f]/).test(raw)) fail(label + '格式不正确。');
+      || control(raw, multiline)) fail(label + '格式不正确。');
     return raw.trim();
   }
   function profile(raw: unknown): string {
@@ -136,6 +141,57 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
     if (typeof numeric !== 'number' || !Number.isInteger(numeric) || numeric < 1 || numeric > 5) fail('个人评分需为 1–5 星；未评分请留空，不能填写豆瓣站点评分。');
     return numeric as DoubanRecordInput['rating'];
   }
+  function detailList(raw: unknown): unknown {
+    if (missing(raw) || Array.isArray(raw) || typeof raw !== 'string') return raw;
+    const value = raw.trim();
+    if (value.startsWith('[')) {
+      try { return JSON.parse(value); } catch { /* A bounded, flat YAML list is also safe text. */ }
+      if (!value.endsWith(']') || ['[', ']', '{', '}', '"', "'", '!', '&', '*'].some(char => value.slice(1, -1).includes(char))) fail('作品详情的列表格式不正确。');
+      return value.slice(1, -1).split(',').map(item => item.trim()).filter(Boolean);
+    }
+    return value.split(/\s+\/\s+|、/).map(item => item.trim()).filter(Boolean);
+  }
+  function detailNumber(raw: unknown): unknown {
+    if (missing(raw)) return undefined;
+    return typeof raw === 'string' && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+  }
+  function details(raw: Record<string, unknown>, domain: DoubanDomain) {
+    try {
+      if (Object.hasOwn(raw, 'details')) {
+        let value = raw.details;
+        if (typeof value === 'string' && value.trim()) { try { value = JSON.parse(value); } catch { fail('作品详情 details 需要一个 JSON 字段对象。'); } }
+        return detailsParser.parse(value);
+      }
+      const mapped: Record<string, unknown> = {};
+      const set = (key: string, aliases: string[], mode: 'list' | 'number' | 'text' = 'text') => {
+        const rawValue = get(raw, aliases); if (missing(rawValue)) return;
+        mapped[key] = mode === 'list' ? detailList(rawValue) : mode === 'number' ? detailNumber(rawValue) : rawValue;
+      };
+      set('summary', ['summary', 'desc', '简介']);
+      const alternate = ['alternateTitles', 'originalTitle', 'aliases'].flatMap(key => {
+        const value = get(raw, [key]); return missing(value) ? [] : [detailList(value)];
+      });
+      if (alternate.length) mapped.alternateTitles = alternate.flat();
+      for (const [key, aliases] of [['genres', ['genres', 'genre', '类型标签']], ['countries', ['countries', 'country', '国家']], ['languages', ['languages', 'language', '语言']]] as const) set(key, [...aliases], 'list');
+      set('year', ['year', '年份'], 'number'); set('doubanRating', ['doubanRating', 'doubanScore', 'score', '豆瓣评分'], 'number'); set('ratingCount', ['ratingCount', '评分人数'], 'number');
+      if (domain === 'screen') {
+        set('directors', ['directors', 'director', '导演'], 'list'); set('writers', ['writers', 'author', '编剧'], 'list'); set('cast', ['cast', 'actor', 'actors', '主演', '演员'], 'list');
+        set('releaseDates', ['releaseDates', 'datePublished', '上映日期'], 'list'); set('duration', ['duration', 'time', '片长']);
+        set('episodes', ['episodes', 'episode', '集数'], 'number'); set('seasons', ['seasons', '季数'], 'number'); set('episodeDuration', ['episodeDuration', '单集片长']);
+      } else if (domain === 'book') {
+        set('authors', ['authors', 'author', '作者'], 'list'); set('translators', ['translators', 'translator', '译者'], 'list'); set('publisher', ['publisher', '出版社']);
+        set('publicationDate', ['publicationDate', 'datePublished', '出版日期']); set('isbn', ['isbn', 'ISBN']); set('binding', ['binding', '装帧']); set('price', ['price', '定价']);
+        set('seriesTitle', ['seriesTitle', 'series', '丛书']); set('pages', ['pages', 'totalPage', '页数'], 'number');
+      } else {
+        set('artists', ['artists', 'artist', 'actor', '表演者'], 'list'); set('albumType', ['albumType', '专辑类型']); set('medium', ['medium', '介质']);
+        set('label', ['label', 'publisher', '唱片公司']); set('releaseDate', ['releaseDate', 'datePublished', '发行日期']); set('tracks', ['tracks', '曲目'], 'list');
+      }
+      return detailsParser.parse(mapped);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'DoubanImportError') throw error;
+      return fail('作品详情格式不正确，请核对受支持字段、文字长度与豆瓣站点评分。');
+    }
+  }
   function record(raw: unknown, options: DoubanImportOptions, canonical: boolean, warn: (text: string) => void): DoubanRecordInput | null {
     if (!plain(raw)) fail('每条导入记录需要一个字段对象。');
     secretKeys(raw);
@@ -153,7 +209,8 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
     if (missing(state)) warn('部分条目未注明状态，已按你本次“这些条目均已完成”的确认导入。');
     const personal = get(raw, ['myRating', 'personalRating', 'userRating', '个人评分', ...(canonical ? ['rating'] : [])]);
     if (!canonical && Object.keys(raw).some(key => ['rating', 'score', 'doubanrating', '豆瓣评分'].includes(keyName(key)))) warn('rating、score 等站点评分字段未作为个人评分；请使用 myRating 或“个人评分”。');
-    return { ...found, title: string(get(raw, ['title', 'name', '名称', '标题']), 500, '条目名称')!,
+    const subjectDetails = details(raw, found.domain);
+    return { ...found, ...(Object.keys(subjectDetails).length ? { details: subjectDetails } : {}), title: string(get(raw, ['title', 'name', '名称', '标题']), 500, '条目名称')!,
       coverUrl: cover(get(raw, ['coverUrl', 'image', 'cover', '封面'])),
       rating: rating(personal), markedDate: day(get(raw, ['markedDate', 'myCollectionDate', 'collectionDate', '标记日期'])),
       comment: string(get(raw, ['myComment', 'comment', '个人短评', '短评']), 2000, '个人短评', true, true),
@@ -238,7 +295,7 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
       const match = /^\/people\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/collect\/?$/.exec(url.pathname);
       if (url.hostname !== hosts[inferred] || !['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port || !match || match[1] !== options.profileId) fail('保存网页的来源主页与本次导入选择不一致。');
     }
-    const rows = [...doc.querySelectorAll('.item-show, .grid-view > .item')];
+    const rows = [...doc.querySelectorAll('.item-show, .grid-view > .item, .interest-list > .subject-item')];
     if (rows.length > 30) fail('HTML 每页最多支持 30 条收藏，请分页面保存。');
     if (!rows.length) {
       const count = /[（(]\s*(\d+)\s*[)）]/.exec(heading)?.[1] ?? /\/\s*(\d+)/.exec(doc.querySelector('.subject-num')?.textContent ?? '')?.[1];
@@ -246,12 +303,20 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
       return [];
     }
     return rows.map(row => {
-      const anchor = row.querySelector('.title > a, li.title > a, .info .title a');
+      const anchor = row.querySelector('.title > a, li.title > a, .info .title a, .info h2 > a');
       const found = subject(anchor?.getAttribute('href'), null, inferred);
       const title = anchor?.querySelector('em')?.textContent || anchor?.textContent;
       const marked = /\b\d{4}-\d{2}-\d{2}\b/.exec(row.querySelector('.date')?.textContent ?? '')?.[0];
       const star = [...row.querySelectorAll('[class]')].map(node => /(?:^|\s)rating([1-5])-t(?:\s|$)/.exec(node.getAttribute('class') ?? '')?.[1]).find(Boolean);
-      return { ...found, title: string(title, 500, '条目名称')!, coverUrl: cover(row.querySelector('img')?.getAttribute('src'), false),
+      const mapped: Record<string, unknown> = {};
+      const property = (selector: string) => [...row.querySelectorAll(selector)].map(node => (node.getAttribute('content') ?? node.textContent ?? '').trim()).filter(Boolean);
+      const add = (key: string, selector: string, list = false) => { const values = property(selector); if (values.length) mapped[key] = list ? values : values[0]; };
+      add('summary', '[property="v:summary"], [itemprop="description"]'); add('doubanRating', '[property="v:average"], [itemprop="ratingValue"]'); add('ratingCount', '[property="v:votes"], [itemprop="ratingCount"]');
+      if (inferred === 'screen') { add('directors', '[rel="v:directedBy"], [itemprop="director"]', true); add('cast', '[rel="v:starring"], [itemprop="actor"]', true); }
+      if (inferred === 'book') { add('authors', '[itemprop="author"]', true); add('publisher', '[itemprop="publisher"]'); add('isbn', '[itemprop="isbn"]'); }
+      if (inferred === 'music') add('artists', '[itemprop="byArtist"]', true);
+      const subjectDetails = details(mapped, inferred);
+      return { ...found, ...(Object.keys(subjectDetails).length ? { details: subjectDetails } : {}), title: string(title, 500, '条目名称')!, coverUrl: cover(row.querySelector('img')?.getAttribute('src'), false),
         rating: star ? rating(star) : null, markedDate: day(marked), comment: string(row.querySelector('.comment')?.textContent ?? null, 2000, '个人短评', true, true),
         publishedAt: null, source: 'import' as const };
     });
@@ -265,8 +330,8 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
     const warn = (value: string) => { if (!warnings.includes(value) && warnings.length < 12) warnings.push(value); };
     for (const rawFile of files) {
       if (!plain(rawFile) || Object.keys(rawFile).some(key => !['name', 'text', 'domain', 'start'].includes(key))
-        || typeof rawFile.name !== 'string' || !rawFile.name || rawFile.name.length > 200 || /[\\/\u0000-\u001f\u007f]/.test(rawFile.name)
-        || typeof rawFile.text !== 'string' || rawFile.domain !== undefined && !['screen', 'book', 'music'].includes(String(rawFile.domain))
+        || typeof rawFile.name !== 'string' || !rawFile.name || rawFile.name.length > 200 || /[\\/]/.test(rawFile.name) || control(rawFile.name)
+        || typeof rawFile.text !== 'string' || rawFile.domain !== undefined && (typeof rawFile.domain !== 'string' || !['screen', 'book', 'music'].includes(rawFile.domain))
         || rawFile.start !== undefined && (!Number.isSafeInteger(rawFile.start) || Number(rawFile.start) < 0 || Number(rawFile.start) > 100000)) fail('导入文件描述不正确。');
       const file = rawFile as unknown as DoubanImportFile, text = file.text.replace(/^\uFEFF/, '');
       bytes += byteSize(file.text); if (bytes > limits.bytes) fail('一次导入的原始文件合计不能超过 8 MiB。');
@@ -311,7 +376,7 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser) {
 
 export function parseDoubanImportFiles(files: unknown, options: unknown): DoubanImportPreview {
   try {
-    const preview = createDoubanImportParser(DOMParser as unknown as typeof globalThis.DOMParser).parse(files, options);
+    const preview = createDoubanImportParser(DOMParser as unknown as typeof globalThis.DOMParser, createDoubanDetailsParser()).parse(files, options);
     return { ...preview, items: preview.items.map(parseDoubanRecord) };
   } catch (error) {
     if (error instanceof Error && error.name === 'DoubanImportError') throw new DoubanImportError(error.message);
@@ -321,5 +386,5 @@ export function parseDoubanImportFiles(files: unknown, options: unknown): Douban
 
 export function renderDoubanImportParserScript(): string {
   return '<script>window.JiashuDoubanImport=(' + createDoubanImportParser.toString().replace(/<\/script/gi, '<\\/script')
-    + ')(class{parseFromString(raw){const template=document.createElement("template");template.innerHTML=raw;return template.content;}});</script>';
+    + ')(class{parseFromString(raw){const template=document.createElement("template");template.innerHTML=raw;return template.content;}},(' + renderDoubanDetailsParserFactory() + ')());</script>';
 }

@@ -1,4 +1,6 @@
 import type { DoubanDomain, DoubanRecordInput } from './douban.ts';
+import type { DoubanSubjectDetails } from './douban-details.ts';
+import { createDoubanSubjectDetailsExtractor } from './douban-details-parser.ts';
 
 export interface DoubanBrowserCollectionPage {
   items: DoubanRecordInput[];
@@ -7,7 +9,7 @@ export interface DoubanBrowserCollectionPage {
   /** Null means the current navigation did not prove the signed-in account. */
   accountProfileId: string | null;
 }
-export interface DoubanBrowserSubjectMetadata { kind: 'movie' | 'series' | 'book' | 'music' | null; coverUrl: string | null }
+export interface DoubanBrowserSubjectMetadata { kind: 'movie' | 'series' | 'book' | 'music' | null; coverUrl: string | null; details?: DoubanSubjectDetails }
 /** Fixed diagnostic labels only; never include page text, addresses or user data. */
 export type DoubanBrowserCollectorReason = 'input' | 'document' | 'structure_limit' | 'account_navigation' | 'account_mismatch'
   | 'collection_identity' | 'heading' | 'total' | 'rows' | 'item_url' | 'item_title' | 'item_comment' | 'item_rating'
@@ -16,11 +18,11 @@ export type DoubanBrowserCollectorReason = 'input' | 'document' | 'structure_lim
 type ParserDocument = Pick<DocumentFragment, 'querySelector' | 'querySelectorAll'>;
 
 /**
- * This entire closure is shipped as a static extension content script. It reads
- * only whitelisted fields, never fetches, and never attaches parsed markup to a
- * live document. Keep every runtime dependency inside the factory for minifiers.
+ * The renderer embeds this closure and its shared detail extractor in a static
+ * extension content script. Both read only whitelisted fields, never fetch, and
+ * never attach parsed markup to a live document.
  */
-export function createDoubanBrowserCollector(parseHTML?: (html: string) => ParserDocument) {
+export function createDoubanBrowserCollector(parseHTML?: (html: string) => ParserDocument, detailsExtractor = createDoubanSubjectDetailsExtractor()) {
   const limits = { htmlBytes: 2 * 1024 * 1024, pageItems: 30, total: 100000, tokens: 30000 };
   const hosts: Record<string, string> = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
   const messages: Record<string, string> = {
@@ -179,7 +181,7 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
       if (!found || found.subjectId !== subjectId) fail('INVALID', 'subject_identity');
       canonical = true;
     }
-    const types = new Set<string>(), structuredImages: unknown[] = [];
+    const types = new Set<string>(), structuredImages: unknown[] = [], structuredObjects: Record<string, unknown>[] = [];
     let bound = false;
     const supported = ['Movie', 'TVSeries', 'TVSeason', 'TVEpisode', 'Book', 'MusicAlbum', 'MusicRecording', 'MusicRelease'];
     for (const script of doc.querySelectorAll('script[type]')) {
@@ -191,12 +193,14 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
         if (Array.isArray(value)) { if (value.length <= 100) for (const child of value) visit(child, depth + 1, false); return; }
         const object = value as Record<string, unknown>;
         const names = (Array.isArray(object['@type']) ? object['@type'] : [object['@type']]).filter((name): name is string => typeof name === 'string').map(name => name.replace(/^https?:\/\/schema\.org\//i, ''));
-        const references = [object.url, object['@id']].filter((url): url is string => typeof url === 'string');
+        const references = [object.url, object['@id'], typeof object.mainEntityOfPage === 'object' && object.mainEntityOfPage !== null
+          ? (object.mainEntityOfPage as Record<string, unknown>)['@id'] : object.mainEntityOfPage].filter((url): url is string => typeof url === 'string');
         const ids = references.map(raw => { const url = safeURL(raw, base); if (url) url.hash = ''; return url ? subjectURL(url.href, domain)?.subjectId ?? null : null; });
-        const own = ids.includes(subjectId) && !ids.some(value => value !== null && value !== subjectId) || root && !references.length && canonical && names.some(name => supported.includes(name));
-        if (own) { bound = true; for (const name of names) types.add(name); structuredImages.push(object.image, object.thumbnailUrl); }
+        const hasOwnReference = ids.includes(subjectId), foreignReference = ids.some(value => value !== null && value !== subjectId);
+        const own = !foreignReference && (hasOwnReference || root && !references.length && canonical && names.some(name => supported.includes(name)));
+        if (own) { bound = true; structuredObjects.push(object); for (const name of names) types.add(name); structuredImages.push(object.image, object.thumbnailUrl); }
         if (object['@graph']) visit(object['@graph'], depth + 1, false);
-        if (object.mainEntity) visit(object.mainEntity, depth + 1, canonical);
+        if (object.mainEntity) visit(object.mainEntity, depth + 1, canonical && !foreignReference && (hasOwnReference || root && !references.length));
       }
       visit(json, 0, !Array.isArray(json));
     }
@@ -233,10 +237,14 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
     covers.push(...structuredImages.flatMap(value => imageValues(value)));
     let coverUrl = covers.map(cover).find((value): value is string => value !== null) ?? images(doc, '#mainpic img, img[rel="v:image"], .subject .pic img, .subjectwrap .pic img');
     if (!coverUrl) for (const anchor of doc.querySelectorAll('#mainpic a.nbg[href]')) { coverUrl = cover(anchor.getAttribute('href')); if (coverUrl) break; }
-    return { kind, coverUrl };
+    const details = detailsExtractor.extract(doc, domain, subjectId, structuredObjects);
+    return { kind, coverUrl, ...(Object.keys(details).length ? { details } : {}) };
   }
   return { parseCollection, parseSubject, limits };
 }
 
 /** A function expression, not an eval or a remote script loader. */
-export function renderDoubanBrowserCollectorFactory(): string { return '(' + createDoubanBrowserCollector.toString() + ')'; }
+export function renderDoubanBrowserCollectorFactory(): string {
+  return '(function(parseHTML){const createDoubanSubjectDetailsExtractor=' + createDoubanSubjectDetailsExtractor.toString()
+    + ';return (' + createDoubanBrowserCollector.toString() + ')(parseHTML,createDoubanSubjectDetailsExtractor());})';
+}

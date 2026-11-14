@@ -498,6 +498,7 @@ export const doubanItems = sqliteTable('douban_items', {
   coverUrl: text('cover_url'), rating: integer('rating'), markedDate: text('marked_date'), comment: text('comment'),
   publishedAt: text('published_at'), source: text('source').notNull(), observedAt: text('observed_at').notNull(),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), metadataCheckedRunId: text('metadata_checked_run_id'),
+  detailsJson: text('details_json').notNull().default('{}'),
 }, table => [primaryKey({ columns: [table.userId, table.profileId, table.domain, table.subjectId] }),
   index('douban_items_owner_date_idx').on(table.userId, table.markedDate, table.observedAt),
   index('douban_items_owner_profile_kind_idx').on(table.userId, table.profileId, table.kind),

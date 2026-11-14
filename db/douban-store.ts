@@ -1,4 +1,5 @@
-import { doubanSubjectUrl, parseDoubanProfile, parseDoubanRecord, type DoubanDomain, type DoubanRecordInput } from '../lib/douban.ts';
+import { doubanSubjectUrl, normalizeDoubanCover, parseDoubanProfile, parseDoubanRecord, type DoubanDomain, type DoubanRecordInput, type DoubanSubjectDetails } from '../lib/douban.ts';
+import { mergeDoubanDetails, parseDoubanDetails } from '../lib/douban-details.ts';
 import { readDoubanDataEpoch } from './douban-reset-store.ts';
 export { readDoubanDataEpoch } from './douban-reset-store.ts';
 
@@ -15,6 +16,7 @@ export interface DoubanRun {
   createdAt: string; updatedAt: string; finishedAt: string | null;
 }
 interface RunRow extends Omit<DoubanRun, 'state'> { stateJson: string }
+export interface DoubanStoredRecord extends Omit<DoubanRecord, 'details'> { detailsJson: string }
 export interface DoubanListOptions { profileId?: string; kind?: DoubanKind | 'all'; query?: string; offset?: number; limit?: number }
 export class DoubanStoreError extends Error {
   readonly code: string;
@@ -23,7 +25,7 @@ export class DoubanStoreError extends Error {
 }
 const itemColumns = `profile_id AS profileId,domain,subject_id AS subjectId,kind,title,url,cover_url AS coverUrl,rating,
   marked_date AS markedDate,comment,published_at AS publishedAt,source,observed_at AS observedAt,
-  created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId`;
+  created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson`;
 const runColumns = `id,profile_id AS profileId,connection_revision AS connectionRevision,revision,status,state_json AS stateJson,
   added,updated,unchanged,created_at AS createdAt,updated_at AS updatedAt,finished_at AS finishedAt`;
 const kinds = ['screen', 'movie', 'series', 'book', 'music'] as const;
@@ -59,21 +61,33 @@ function runView(row: RunRow | null): DoubanRun | null {
   const { stateJson, ...run } = row;
   return { ...run, state: JSON.parse(stateJson) };
 }
-function equal(a: DoubanRecordInput, b: DoubanRecordInput) { return portableFields.every(key => a[key] === b[key]); }
+export function doubanDetailsJson(details: unknown): string {
+  try { return JSON.stringify(parseDoubanDetails(details)); } catch { return invalid('豆瓣作品详情含有不支持或超出限制的字段。'); }
+}
+function mergedDetails(old: unknown, incoming: unknown): DoubanSubjectDetails {
+  try { return mergeDoubanDetails(old, incoming); } catch { return invalid('合并后的豆瓣作品详情超出限制，请精简后重试。'); }
+}
+export function presentDoubanStoredRecord(row: DoubanStoredRecord): DoubanRecord {
+  const { detailsJson, ...item } = row;
+  try { const details = parseDoubanDetails(JSON.parse(detailsJson)); return { ...item, ...(Object.keys(details).length ? { details } : {}) }; }
+  catch { throw new DoubanStoreError('豆瓣作品详情暂时无法读取，请稍后重试。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
+}
+function equal(a: DoubanRecordInput, b: DoubanRecordInput) { return portableFields.every(key => a[key] === b[key]) && doubanDetailsJson(a.details) === doubanDetailsJson(b.details); }
 function chosenKind(item: DoubanRecord | undefined) { return item?.metadataCheckedRunId === 'manual-kind' && (item.kind === 'movie' || item.kind === 'series'); }
 function merge(old: DoubanRecord | undefined, input: DoubanRecordInput): DoubanRecordInput {
   if (!old) return input;
+  const details = mergedDetails(old.details, input.details), detailFields = Object.keys(details).length ? { details } : {};
   const frozenRss = input.source === 'rss' && (old.source !== 'rss' || input.publishedAt === null
     || old.publishedAt !== null && input.publishedAt <= old.publishedAt);
   if (frozenRss) return {
     domain: old.domain, subjectId: old.subjectId, kind: old.kind, title: old.title, url: old.url,
     coverUrl: old.coverUrl ?? input.coverUrl, rating: old.rating, markedDate: old.markedDate, comment: old.comment,
-    publishedAt: old.publishedAt ?? input.publishedAt, source: old.source,
+    publishedAt: old.publishedAt ?? input.publishedAt, source: old.source, ...detailFields,
   };
   const privateImport = old.source === 'import' && input.source !== 'import';
   const unknownPersonalFields = input.source === 'rss' || input.source === 'import';
   return {
-    ...input,
+    ...input, ...detailFields,
     kind: chosenKind(old) || (input.kind === 'screen' || privateImport) && (old.kind === 'movie' || old.kind === 'series') ? old.kind : input.kind,
     coverUrl: input.coverUrl ?? old.coverUrl,
     rating: privateImport && old.rating !== null || unknownPersonalFields && input.rating === null ? old.rating : input.rating,
@@ -122,7 +136,7 @@ export async function listDoubanRecords(db: DoubanDatabase, userId: string, opti
   ]);
   const counts = { all: 0, screen: 0, movie: 0, series: 0, book: 0, music: 0 };
   for (const row of results[0].results as unknown as Array<{ kind: DoubanKind; n: number }>) { counts[row.kind] = row.n; counts.all += row.n; }
-  const total = kind === 'all' ? counts.all : counts[kind], items = results[1].results as unknown as DoubanRecord[];
+  const total = kind === 'all' ? counts.all : counts[kind], items = (results[1].results as unknown as DoubanStoredRecord[]).map(presentDoubanStoredRecord);
   return { items, total, counts, offset, limit, hasMore: offset + items.length < total };
 }
 
@@ -131,8 +145,9 @@ export interface DoubanRecordKey { profileId: string; domain: DoubanDomain; subj
 export async function readDoubanRecord(db: DoubanDatabase, userId: string, key: DoubanRecordKey): Promise<DoubanRecord | null> {
   const profileId = parseDoubanProfile(key.profileId).profileId;
   doubanSubjectUrl(key.domain, key.subjectId);
-  return db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain=? AND subject_id=?`)
-    .bind(userId, profileId, key.domain, key.subjectId).first<DoubanRecord>();
+  const row = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain=? AND subject_id=?`)
+    .bind(userId, profileId, key.domain, key.subjectId).first<DoubanStoredRecord>();
+  return row ? presentDoubanStoredRecord(row) : null;
 }
 
 export async function readDoubanRun(db: DoubanDatabase, userId: string, id?: string): Promise<DoubanRun | null> {
@@ -166,7 +181,7 @@ const frozenRssRow = `(excluded.source='rss' AND (douban_items.source<>'rss' OR 
   OR (douban_items.published_at IS NOT NULL AND excluded.published_at<=douban_items.published_at)))`;
 export interface DoubanStep {
   runId: string; expectedRevision: number; connectionRevision: number; items: DoubanRecordInput[];
-  classification?: { domain: 'screen'; subjectId: string; kind: 'movie' | 'series' | null };
+  classification?: { domain: 'screen'; subjectId: string; kind: 'movie' | 'series' | null; coverUrl?: string | null; details?: DoubanSubjectDetails };
   state: unknown; status: DoubanRunStatus; now?: string;
 }
 /** One bounded page/detail commit. Every mutation shares the same owner, binding and run CAS guard. */
@@ -179,15 +194,15 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
   const classification = command.classification;
   if (classification && (classification.domain !== 'screen'
     || classification.kind !== null && classification.kind !== 'movie' && classification.kind !== 'series')) invalid('影视分类结果不正确。');
-  if (classification) doubanSubjectUrl('screen', classification.subjectId);
+  if (classification) { doubanSubjectUrl('screen', classification.subjectId); normalizeDoubanCover(classification.coverUrl); doubanDetailsJson(classification.details); }
   const run = await readDoubanRun(db, userId, command.runId);
   const connection = await readDoubanConnection(db, userId);
   if (!run || run.status !== 'running' || run.revision !== command.expectedRevision || run.connectionRevision !== command.connectionRevision
     || connection.revision !== command.connectionRevision || connection.profileId !== run.profileId) throw new DoubanStoreError('配置或同步进度已更新，本次结果未写入，请读取最新进度。');
   const keys = [...parsed.keys()]; if (classification) keys.push('screen:' + classification.subjectId);
   const oldRows = keys.length ? await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=?
-    AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`).bind(userId, run.profileId, JSON.stringify(keys)).all<DoubanRecord>() : { results: [] };
-  const old = new Map(oldRows.results.map(item => [item.domain + ':' + item.subjectId, item]));
+    AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`).bind(userId, run.profileId, JSON.stringify(keys)).all<DoubanStoredRecord>() : { results: [] };
+  const old = new Map(oldRows.results.map(presentDoubanStoredRecord).map(item => [item.domain + ':' + item.subjectId, item]));
   const snapshots = businessSnapshots([...new Set(keys)], old);
   const guardValues = [userId, run.id, run.revision, run.connectionRevision];
   let added = 0, updated = 0, unchanged = 0;
@@ -196,20 +211,26 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
     .bind(...guardValues, JSON.stringify(snapshots), userId, run.profileId, userId, run.id, run.revision)];
   for (const [key, input] of parsed) {
     const existing = old.get(key), desired = merge(existing, input);
-    if (classification && key === 'screen:' + classification.subjectId && classification.kind && !chosenKind(existing) && !(existing?.source === 'import' && existing.kind !== 'screen')) desired.kind = classification.kind;
+    if (classification && key === 'screen:' + classification.subjectId) {
+      if (classification.kind && !chosenKind(existing) && !(existing?.source === 'import' && existing.kind !== 'screen')) desired.kind = classification.kind;
+      desired.coverUrl = normalizeDoubanCover(classification.coverUrl) ?? desired.coverUrl;
+      const details = mergedDetails(desired.details, classification.details); if (Object.keys(details).length) desired.details = details;
+    }
     const incomingKind = classification && key === 'screen:' + classification.subjectId && classification.kind ? classification.kind : input.kind;
+    const incomingCover = classification && key === 'screen:' + classification.subjectId ? normalizeDoubanCover(classification.coverUrl) ?? input.coverUrl : input.coverUrl;
     if (!existing) added++; else if (equal(existing, desired)) unchanged++; else updated++;
     // Merge against the transactional row too, so a just-restored known field
     // cannot be erased by an RSS record that did not publish that field.
     commands.push(db.prepare(`INSERT INTO douban_items
-      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${activeGuard}
+      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${activeGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET
         kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') OR ${frozenRssRow}
           OR (excluded.kind='screen' OR douban_items.source='import' AND excluded.source<>'import') AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
         title=CASE WHEN ${frozenRssRow} THEN douban_items.title ELSE excluded.title END,
         url=CASE WHEN ${frozenRssRow} THEN douban_items.url ELSE excluded.url END,
         cover_url=CASE WHEN ${frozenRssRow} THEN COALESCE(douban_items.cover_url,excluded.cover_url) ELSE COALESCE(excluded.cover_url,douban_items.cover_url) END,
+        details_json=excluded.details_json,
         rating=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.rating IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.rating IS NULL THEN douban_items.rating ELSE excluded.rating END,
         marked_date=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.marked_date IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.marked_date IS NULL THEN douban_items.marked_date ELSE excluded.marked_date END,
         comment=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.comment IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.comment IS NULL THEN douban_items.comment ELSE excluded.comment END,
@@ -217,21 +238,26 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
         source=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' OR excluded.source='rss' AND douban_items.source<>'rss' THEN douban_items.source ELSE excluded.source END,
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),
         updated_at=CASE WHEN ${frozenRssRow} THEN CASE WHEN douban_items.cover_url IS NULL AND excluded.cover_url IS NOT NULL
-          OR douban_items.published_at IS NULL AND excluded.published_at IS NOT NULL THEN MAX(douban_items.observed_at,excluded.observed_at) ELSE douban_items.updated_at END
+          OR douban_items.published_at IS NULL AND excluded.published_at IS NOT NULL OR douban_items.details_json<>excluded.details_json THEN MAX(douban_items.observed_at,excluded.observed_at) ELSE douban_items.updated_at END
           ELSE MAX(douban_items.updated_at,?) END,
         metadata_checked_run_id=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' THEN douban_items.metadata_checked_run_id ELSE COALESCE(excluded.metadata_checked_run_id,douban_items.metadata_checked_run_id) END`)
-      .bind(userId, run.profileId, input.domain, input.subjectId, incomingKind, input.title, input.url, input.coverUrl, input.rating, input.markedDate, input.comment,
+      .bind(userId, run.profileId, input.domain, input.subjectId, incomingKind, input.title, input.url, incomingCover, input.rating, input.markedDate, input.comment,
         input.publishedAt, input.source, now, now, now, classification && key === 'screen:' + classification.subjectId ? run.id : null,
+        doubanDetailsJson(desired.details),
         ...guardValues, existing && equal(existing, desired) ? existing.updatedAt : [existing?.observedAt ?? now, now].sort().at(-1)!));
   }
   if (classification && !parsed.has('screen:' + classification.subjectId)) {
     const existing = old.get('screen:' + classification.subjectId);
-    if (existing && classification.kind && classification.kind !== existing.kind && !chosenKind(existing) && !(existing.source === 'import' && existing.kind !== 'screen')) updated++;
-    commands.push(db.prepare(`UPDATE douban_items SET kind=CASE WHEN (source='import' OR metadata_checked_run_id='manual-kind') AND kind IN ('movie','series') THEN kind ELSE COALESCE(?,kind) END,
-      metadata_checked_run_id=CASE WHEN metadata_checked_run_id='manual-kind' THEN metadata_checked_run_id ELSE ? END,
-      updated_at=CASE WHEN ? IS NOT NULL AND kind<>? AND NOT((source='import' OR metadata_checked_run_id='manual-kind') AND kind IN ('movie','series')) THEN MAX(observed_at,?) ELSE updated_at END,observed_at=MAX(observed_at,?)
-      WHERE user_id=? AND profile_id=? AND domain='screen' AND subject_id=? AND ${activeGuard}`)
-      .bind(classification.kind, run.id, classification.kind, classification.kind, now, now, userId, run.profileId, classification.subjectId, ...guardValues));
+    if (existing) {
+      const kind = classification.kind && !chosenKind(existing) && !(existing.source === 'import' && existing.kind !== 'screen') ? classification.kind : existing.kind;
+      const desired = { ...existing, kind, coverUrl: normalizeDoubanCover(classification.coverUrl) ?? existing.coverUrl, details: mergedDetails(existing.details, classification.details) };
+      const changed = !equal(existing, desired); if (changed) updated++;
+      const updatedAt = changed ? new Date(Math.max(Date.parse(now), Date.parse(existing.updatedAt) + 1)).toISOString() : existing.updatedAt;
+      commands.push(db.prepare(`UPDATE douban_items SET kind=?,cover_url=?,details_json=?,
+        metadata_checked_run_id=CASE WHEN metadata_checked_run_id='manual-kind' THEN metadata_checked_run_id ELSE ? END,
+        updated_at=?,observed_at=MAX(observed_at,?) WHERE user_id=? AND profile_id=? AND domain='screen' AND subject_id=? AND ${activeGuard}`)
+        .bind(kind, desired.coverUrl, doubanDetailsJson(desired.details), run.id, updatedAt, now, userId, run.profileId, classification.subjectId, ...guardValues));
+    }
   }
   commands.push(db.prepare(`UPDATE douban_sync_runs SET revision=revision+1,state_json=?,status=?,added=added+?,updated=updated+?,unchanged=unchanged+?,
     updated_at=MAX(updated_at,?),finished_at=CASE WHEN ?='running' THEN NULL ELSE MAX(updated_at,?) END
@@ -247,8 +273,8 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
       throw new DoubanStoreError('配置或同步进度已更新，本次结果未写入，请读取最新进度。');
     }
     const currentRows = keys.length ? await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=?
-      AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`).bind(userId, run.profileId, JSON.stringify(keys)).all<DoubanRecord>() : { results: [] };
-    if (JSON.stringify(businessSnapshots([...new Set(keys)], new Map(currentRows.results.map(item => [keyOf(item), item])))) !== JSON.stringify(snapshots)) {
+      AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`).bind(userId, run.profileId, JSON.stringify(keys)).all<DoubanStoredRecord>() : { results: [] };
+    if (JSON.stringify(businessSnapshots([...new Set(keys)], new Map(currentRows.results.map(presentDoubanStoredRecord).map(item => [keyOf(item), item])))) !== JSON.stringify(snapshots)) {
       throw new DoubanStoreError('豆瓣记录已在其他操作中更新，本次结果未写入，请读取最新进度。');
     }
     throw error;
@@ -260,9 +286,10 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
 
 export async function nextUnclassifiedRecord(db: DoubanDatabase, userId: string, profileId: string, runId: string): Promise<DoubanRecord | null> {
   const profile = parseDoubanProfile(profileId).profileId;
-  return db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain='screen' AND kind='screen'
+  const row = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain='screen' AND kind='screen'
     AND source IN ('collection','rss') AND (metadata_checked_run_id IS NULL OR metadata_checked_run_id<>?)
-    ORDER BY observed_at DESC,subject_id LIMIT 1`).bind(userId, profile, runId).first<DoubanRecord>();
+    ORDER BY observed_at DESC,subject_id LIMIT 1`).bind(userId, profile, runId).first<DoubanStoredRecord>();
+  return row ? presentDoubanStoredRecord(row) : null;
 }
 
 export async function countUnclassifiedDoubanRecords(db: DoubanDatabase, userId: string, profileId: string): Promise<number> {
@@ -276,11 +303,11 @@ export interface DoubanImportInput { profileId: string; items: DoubanRecordInput
 export interface DoubanImportPreview { profileId: string; dataEpoch: number; snapshotHash: string; total: number; added: number; updated: number; unchanged: number }
 export interface DoubanImportReceipt { profileId: string; dataEpoch: number; requestId: string; total: number; added: number; updated: number; unchanged: number }
 export interface DoubanImportCommand extends DoubanImportInput { expectedSnapshotHash: string; requestId: string; now?: string }
-type ImportSnapshot = Record<string, string | number | boolean | null> & { domain: string; subjectId: string; exists: number; manualKind: boolean };
+type ImportSnapshot = Record<string, string | number | boolean | null> & { domain: string; subjectId: string; exists: number; manualKind: boolean; detailsJson: string };
 function businessSnapshots(keys: string[], old: Map<string, DoubanRecord>): ImportSnapshot[] {
   return keys.map(key => {
     const [domain, subjectId] = key.split(':'), before = old.get(key);
-    return { ...Object.fromEntries(portableFields.map(field => [field, before?.[field] ?? null])), domain, subjectId, exists: before ? 1 : 0, manualKind: before?.metadataCheckedRunId === 'manual-kind' };
+    return { ...Object.fromEntries(portableFields.map(field => [field, before?.[field] ?? null])), domain, subjectId, exists: before ? 1 : 0, manualKind: before?.metadataCheckedRunId === 'manual-kind', detailsJson: doubanDetailsJson(before?.details) };
   });
 }
 interface ImportPlan {
@@ -319,8 +346,8 @@ async function planDoubanImport(db: DoubanDatabase, userId: string, input: Douba
   await assertImportEpoch(db, userId, expectedDataEpoch);
   const result = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=?
     AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`)
-    .bind(userId, profileId, JSON.stringify(items.map(keyOf))).all<DoubanRecord>();
-  const old = new Map(result.results.map(item => [keyOf(item), item]));
+    .bind(userId, profileId, JSON.stringify(items.map(keyOf))).all<DoubanStoredRecord>();
+  const old = new Map(result.results.map(presentDoubanStoredRecord).map(item => [keyOf(item), item]));
   const snapshots = businessSnapshots(items.map(keyOf), old);
   const desired = items.map(item => merge(old.get(keyOf(item)), item));
   let added = 0, updated = 0, unchanged = 0;
@@ -356,6 +383,7 @@ const importBusinessColumns: Record<(typeof portableFields)[number], string> = {
 const importSnapshotGuard = `NOT EXISTS(SELECT 1 FROM json_each(?) s LEFT JOIN douban_items i
   ON i.user_id=? AND i.profile_id=? AND i.domain=json_extract(s.value,'$.domain') AND i.subject_id=json_extract(s.value,'$.subjectId')
   WHERE (CASE WHEN i.subject_id IS NULL THEN 0 ELSE 1 END) IS NOT json_extract(s.value,'$.exists')
+    OR COALESCE(i.details_json,'{}') IS NOT json_extract(s.value,'$.detailsJson')
     OR (CASE WHEN i.metadata_checked_run_id='manual-kind' THEN 1 ELSE 0 END) IS NOT json_extract(s.value,'$.manualKind') OR `
   + portableFields.filter(field => field !== 'domain' && field !== 'subjectId')
     .map(field => `i.${importBusinessColumns[field]} IS NOT json_extract(s.value,'$.${field}')`).join(' OR ') + ')';
@@ -378,29 +406,33 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
   const statements: D1PreparedStatement[] = [db.prepare(`INSERT INTO douban_import_receipts (user_id,request_id,request_hash,receipt_json,created_at)
     VALUES (?,?,?,CASE WHEN ${importEpochGuard} THEN ? ELSE NULL END,?) ON CONFLICT(user_id,request_id) DO NOTHING`)
     .bind(userId, requestId, requestHash, userId, dataEpoch, JSON.stringify(receipt), now)];
-  for (let offset = 0; offset < plan.inputs.length; offset += 100) {
-    const snapshots = plan.snapshots.slice(offset, offset + 100);
-    const rows = plan.desired.slice(offset, offset + 100).map(item => {
-      const before = plan.old.get(keyOf(item));
-      return { ...item, observedAt: now, createdAt: now,
-        updatedAt: before && equal(before, item) ? before.updatedAt : [before?.observedAt ?? now, now].sort().at(-1)! };
-    });
+  for (let offset = 0; offset < plan.inputs.length;) {
+    const rows: string[] = [], snapshots: string[] = []; let rowBytes = 2, snapshotBytes = 2;
+    while (offset < plan.inputs.length && rows.length < 100) {
+      const item = plan.desired[offset], before = plan.old.get(keyOf(item)), { details: _details, ...portable } = item;
+      const row = JSON.stringify({ ...portable, detailsJson: doubanDetailsJson(item.details), observedAt: now, createdAt: now,
+        updatedAt: before && equal(before, item) ? before.updatedAt : [before?.observedAt ?? now, now].sort().at(-1)! });
+      const snapshot = JSON.stringify(plan.snapshots[offset]), rowSize = new TextEncoder().encode(row).byteLength + 1, snapshotSize = new TextEncoder().encode(snapshot).byteLength + 1;
+      if (rowSize + 2 > 1024 * 1024 || snapshotSize + 2 > 1024 * 1024) invalid('单条豆瓣作品详情超出保存上限。');
+      if (rowBytes + rowSize > 1024 * 1024 || snapshotBytes + snapshotSize > 1024 * 1024) break;
+      rows.push(row); snapshots.push(snapshot); rowBytes += rowSize; snapshotBytes += snapshotSize; offset++;
+    }
     // A failed NULL-safe snapshot guard deliberately violates this receipt's
     // NOT NULL constraint. D1 batch rolls every earlier chunk back atomically.
     statements.push(db.prepare(`UPDATE douban_import_receipts SET receipt_json=CASE WHEN request_hash=? AND ${importEpochGuard} AND ${importSnapshotGuard}
       THEN receipt_json ELSE NULL END WHERE user_id=? AND request_id=?`)
-      .bind(requestHash, userId, dataEpoch, JSON.stringify(snapshots), userId, plan.preview.profileId, userId, requestId));
+      .bind(requestHash, userId, dataEpoch, '[' + snapshots.join(',') + ']', userId, plan.preview.profileId, userId, requestId));
     statements.push(db.prepare(`INSERT INTO douban_items
-      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at)
+      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,details_json)
       SELECT ?,?,json_extract(value,'$.domain'),json_extract(value,'$.subjectId'),json_extract(value,'$.kind'),json_extract(value,'$.title'),
         json_extract(value,'$.url'),json_extract(value,'$.coverUrl'),json_extract(value,'$.rating'),json_extract(value,'$.markedDate'),
-        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),'import',json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt')
+        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),'import',json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt'),json_extract(value,'$.detailsJson')
       FROM json_each(?) WHERE ${importEpochGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
-        title=excluded.title,url=excluded.url,cover_url=excluded.cover_url,
+        title=excluded.title,url=excluded.url,cover_url=excluded.cover_url,details_json=excluded.details_json,
         rating=excluded.rating,marked_date=excluded.marked_date,comment=excluded.comment,published_at=excluded.published_at,source='import',
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),updated_at=MAX(douban_items.updated_at,excluded.updated_at)`)
-      .bind(userId, plan.preview.profileId, JSON.stringify(rows), userId, dataEpoch));
+      .bind(userId, plan.preview.profileId, '[' + rows.join(',') + ']', userId, dataEpoch));
   }
   try { await db.batch(statements); }
   catch {

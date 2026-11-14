@@ -54,6 +54,37 @@ JSON可使用同样字段的数组：
 
 个人评分读取 `myRating`、`personalRating`、`userRating` 或“个人评分”，范围1–5星；未评分留空或 `null`。普通文件中的 `score`、`rating` 或“豆瓣评分”可能是站点评分，故不当作个人评分。需要采用本站规范的 `rating` 字段时，使用显式清单 `{"format":"jiashu-douban-import-v1","items":[...]}`，仍需每条完成状态或用户对缺失状态的明确确认。
 
+## 导入作品资料
+
+JSON 每条记录可增加 `details` 对象；CSV 可将同一对象作为经过 CSV 引号转义的 JSON `details` 列。详情只接受白名单字段，不保存原始 HTML。提供 `details` 时，以该对象为作品资料，不再混用顶层旧插件字段。空详情省略；未知字段、脚本标记、错误类型或超长内容会拒绝整个预览。
+
+```json
+{
+  "title": "我的书籍记录",
+  "url": "https://book.douban.com/subject/2345678/",
+  "state": "读过",
+  "myRating": 5,
+  "details": {
+    "authors": ["合成作者"],
+    "publisher": "合成出版社",
+    "publicationDate": "2001-09",
+    "isbn": "9780000000001",
+    "pages": 321,
+    "summary": "作品内容简介",
+    "doubanRating": 8.8,
+    "ratingCount": 1234
+  }
+}
+```
+
+通用详情支持 `summary`、`alternateTitles`、`year`、`genres`、`countries`、`languages`、`doubanRating`、`ratingCount`。影视支持 `directors`、`writers`、`cast`、`releaseDates`、`duration`、`episodes`、`seasons`、`episodeDuration`；书籍支持 `authors`、`translators`、`publisher`、`publicationDate`、`isbn`、`binding`、`price`、`seriesTitle`、`pages`；音乐支持 `artists`、`albumType`、`medium`、`label`、`releaseDate`、`tracks`。人名、类型和曲目等复数字段使用文字数组；单项文字不超过相应字段限制。单条详情 JSON 最多 16 KiB，简介最多 12,000 字符。个人标签 `tags`、`myTags` 本版不导入。
+
+普通 Obsidian／CSV／JSON 旧字段也按来源明确映射：`score` 为豆瓣平均分（0–10），与 `myRating` 的个人星级独立；`desc` 为作品简介，与个人短评独立。影视 `director`、`actor`、`author` 分别表示导演、演员、编剧；书籍 `author`、`translator`、`publisher`、`isbn`、`totalPage` 表示作者、译者、出版社、ISBN、页数；音乐 `actor`、`publisher` 表示表演者、唱片公司。`datePublished` 按来源进入上映日期、出版日期或发行日期，不替代收藏日期。人名列表兼容数组、简单扁平 YAML 列表及插件常见的“甲 / 乙”分隔格式，保留 `AC/DC` 这类姓名／组合名内部的斜线。
+
+保存的 HTML 仍须为已完成收藏列表。只有每条记录内明确标记的结构化作者、出版社、ISBN、导演、演员、简介或站点评分才会成为详情；合并在一行的作者／出版信息不猜测拆分。单个作品详情页不能代替已完成状态证明。
+
+完整备份仍为 31 张业务表，作品详情随 `douban_items.details_json` 导出。旧备份缺少该列时按空详情兼容。恢复不会用旧文件缺失的详情擦去已有丰富资料；存在不同的已填写内容时会要求处理冲突，预览后作品详情变化也会使原恢复确认失效。
+
 标记日期读取 `markedDate`、`myCollectionDate`、`collectionDate` 或“标记日期”，不拿出版日期或文件创建时间代替。评分、标记日期和短评可以未知；不把未知填成0。所有条目链接需为豆瓣电影、书籍或音乐条目的规范链接。
 
 同一来源主页中按“来源域＋条目ID”去重。相同条目内容完全相同会合并；不同文件给出冲突评分、短评或其他内容时，会要求先保留正确的一份再预览，避免静默覆盖。

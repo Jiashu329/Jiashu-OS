@@ -7,6 +7,7 @@ import { compileFunction } from 'node:vm';
 import * as store from '../../../../../db/douban-store.ts';
 import * as metadataStore from '../../../../../db/douban-metadata-store.ts';
 import * as model from '../../../../../lib/douban.ts';
+import * as details from '../../../../../lib/douban-details.ts';
 import * as sync from '../../../../../lib/douban-sync.ts';
 import { DoubanSourceError } from '../../../../../lib/douban-source.ts';
 import type { DoubanSubjectMetadata } from '../../../../../lib/douban-metadata.ts';
@@ -23,6 +24,8 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:'); t.after(() => sqlite.close());
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0024_douban.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../../../../drizzle/0025_douban_data_resets.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../../../../drizzle/0027_douban_subject_details.sql', import.meta.url), 'utf8'));
   const queries: string[] = [], outgoing: Array<{ domain: string; subjectId: string }> = [];
   const db = { prepare(sql: string) {
     queries.push(sql); const statement = sqlite.prepare(sql); let values: SQLInputValue[] = [];
@@ -35,34 +38,35 @@ function fixture(t: TestContext) {
   let beforeFetch: (() => void) | undefined;
   const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env, ...shared, ...store, ...model, ...sync }, ['doubanDatabase', 'doubanGuard', 'doubanBody', 'doubanError']);
-  const bindings = { ...shared, ...helpers, ...store, ...model, ...sync, ...metadataStore, DoubanSourceError,
+  const bindings = { ...shared, ...helpers, ...store, ...model, ...sync, ...details, ...metadataStore, DoubanSourceError,
     fetchDoubanSubjectMetadata: async (domain: string, subjectId: string) => { outgoing.push({ domain, subjectId }); beforeFetch?.(); if (answer instanceof Error) throw answer; return answer; } };
-  const post = load(new URL('./route.ts', import.meta.url), bindings, ['POST']).POST;
+  const metadataRoutes = load(new URL('./route.ts', import.meta.url), bindings, ['POST', 'PUT']), post = metadataRoutes.POST, browserPut = metadataRoutes.PUT;
   const put = load(new URL('../classification/route.ts', import.meta.url), bindings, ['PUT']).PUT;
   function seed(owner = 'alice', patch: Partial<store.DoubanRecord> = {}) {
     const item: store.DoubanRecord = { profileId: KEY.profileId, domain: 'screen', subjectId: KEY.subjectId, kind: 'screen', title: owner + '-private-title',
       url: 'https://movie.douban.com/subject/' + KEY.subjectId + '/', coverUrl: null, rating: 5, markedDate: '2026-11-01', comment: owner + '-private-comment',
       publishedAt: null, source: 'import', observedAt: T1, createdAt: T1, updatedAt: T1, metadataCheckedRunId: null, ...patch };
-    sqlite.prepare(`INSERT INTO douban_items (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(owner, item.profileId, item.domain, item.subjectId, item.kind, item.title, item.url,
-      item.coverUrl, item.rating, item.markedDate, item.comment, item.publishedAt, item.source, item.observedAt, item.createdAt, item.updatedAt, item.metadataCheckedRunId);
+    sqlite.prepare(`INSERT INTO douban_items (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(owner, item.profileId, item.domain, item.subjectId, item.kind, item.title, item.url,
+      item.coverUrl, item.rating, item.markedDate, item.comment, item.publishedAt, item.source, item.observedAt, item.createdAt, item.updatedAt, item.metadataCheckedRunId, store.doubanDetailsJson(item.details));
     return item;
   }
-  function request(handler: Handler, method: string, body: unknown, options: { origin?: string | null; type?: string; raw?: boolean; length?: string } = {}) {
+  function request(handler: Handler, method: string, body: unknown, options: { origin?: string | null; type?: string; raw?: boolean; length?: string } = {}, target?: string) {
     const headers = new Headers({ 'Content-Type': options.type ?? 'application/json' });
     if (options.origin !== null) headers.set('Origin', options.origin ?? ORIGIN);
     if (options.length) headers.set('Content-Length', options.length);
-    return handler(new Request(ORIGIN + '/api/life/douban/' + (method === 'POST' ? 'metadata' : 'classification'), { method, headers,
+    return handler(new Request(ORIGIN + '/api/life/douban/' + (target ?? (method === 'POST' ? 'metadata' : 'classification')), { method, headers,
       body: options.raw ? String(body) : JSON.stringify(body) }));
   }
   return { db, env, sqlite, queries, outgoing, seed,
     signIn(value: string | null) { user = value; }, metadata(value: typeof answer) { answer = value; }, beforeFetch(callback: () => void) { beforeFetch = callback; },
     post(body: unknown = { ...KEY, confirmed: true }, options?: Parameters<typeof request>[3]) { return request(post, 'POST', body, options); },
     put(body: unknown = { ...KEY, kind: 'series' }, options?: Parameters<typeof request>[3]) { return request(put, 'PUT', body, options); },
+    browser(body: unknown = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: {} } }, options?: Parameters<typeof request>[3]) { return request(browserPut, 'PUT', body, options, 'metadata'); },
   };
 }
 interface ApiResponse {
-  item: store.DoubanRecord; changed: boolean; metadata: { status: 'complete' | 'unavailable'; message?: string }; code?: string;
+  item: store.DoubanRecord; changed: boolean; dataEpoch?: number; metadata: { status: 'complete' | 'unavailable'; message?: string }; code?: string;
 }
 async function body(response: Response): Promise<ApiResponse> { return await response.json() as ApiResponse; }
 
@@ -152,4 +156,61 @@ void test('manual classification is local and its explicit choice survives subse
   const changed = await body(await f.put({ ...KEY, expectedUpdatedAt: refreshed.item.updatedAt, kind: 'series' }));
   assert.equal(changed.item.kind, 'series'); assert.equal(changed.item.rating, old.rating); assert.equal(changed.item.comment, old.comment);
   assert.equal(changed.item.source, old.source); assert.equal(f.outgoing.length, 1);
+});
+
+void test('browser-read metadata requires an authenticated same-origin actor, strict normalized fields and an explicit data epoch', async t => {
+  const f = fixture(t); f.signIn(null); assert.equal((await f.browser()).status, 401); f.signIn('alice');
+  for (const options of [{ origin: null }, { origin: 'https://elsewhere.example' }, { type: 'text/plain' }]) assert.equal((await f.browser(undefined, options)).status, options.type ? 415 : 403);
+  const base = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: {} } };
+  const { expectedDataEpoch: _epoch, ...missingEpoch } = base;
+  for (const value of [missingEpoch, { ...base, expectedDataEpoch: null }, { ...base, expectedDataEpoch: -1 }, { ...base, expectedDataEpoch: '0' },
+    { ...base, confirmed: false }, { ...base, userId: 'bob' }, { ...base, metadata: { ...base.metadata, rating: 1 } },
+    { ...base, metadata: { ...base.metadata, details: { cookie: 'PRIVATE' } } }, { ...base, metadata: { ...base.metadata, details: { summary: '<script>unsafe()</script>' } } },
+    { ...base, metadata: { ...base.metadata, details: { summary: 'x'.repeat(12001) } } },
+    { ...base, metadata: { ...base.metadata, kind: 'book' } }, { ...base, metadata: { ...base.metadata, coverUrl: 'https://evil.example/private' } }]) assert.equal((await f.browser(value)).status, 400);
+  assert.equal((await f.browser(base, { length: String(4 * 1024 * 1024 + 1) })).status, 413);
+  assert.equal((await f.post({ ...KEY, confirmed: true, metadata: base.metadata })).status, 400, 'server-fetch POST does not accept client metadata');
+  assert.deepEqual(f.queries, []); assert.deepEqual(f.outgoing, []);
+});
+
+void test('browser metadata saves public work details locally while preserving all personal fields and manual classification', async t => {
+  const f = fixture(t), old = f.seed('alice', { kind: 'movie', metadataCheckedRunId: 'manual-kind', details: { summary: '旧简介', directors: ['导演甲'] } }), bob = f.seed('bob');
+  const metadata = { kind: 'series', coverUrl: COVER, details: { summary: '新作品简介', cast: ['演员甲'], doubanRating: 8.7, ratingCount: 12345, episodes: 12 } };
+  const response = await f.browser({ ...KEY, expectedDataEpoch: 0, confirmed: true, metadata }); assert.equal(response.status, 200); assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  const result = await body(response); assert.equal(result.dataEpoch, 0); assert.equal(result.changed, true); assert.equal(result.item.kind, 'movie'); assert.equal(result.item.metadataCheckedRunId, 'manual-kind');
+  assert.deepEqual(result.item.details, { ...metadata.details, directors: ['导演甲'] });
+  for (const field of ['title', 'rating', 'markedDate', 'comment', 'publishedAt', 'source', 'createdAt'] as const) assert.equal(result.item[field], old[field]);
+  assert.deepEqual(await store.readDoubanRecord(f.db, 'bob', KEY), bob); assert.deepEqual(f.outgoing, []);
+  const unchanged = await body(await f.browser({ ...KEY, expectedUpdatedAt: result.item.updatedAt, expectedDataEpoch: 0, confirmed: true, metadata: { kind: null, coverUrl: null, details: {} } }));
+  assert.equal(unchanged.changed, false); assert.deepEqual(unchanged.item.details, result.item.details);
+});
+
+void test('browser metadata cannot address another owner, source profile or stale content version', async t => {
+  const f = fixture(t); f.seed('alice'); f.signIn('bob'); assert.equal((await f.browser()).status, 404); f.signIn('alice');
+  const base = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: { summary: '作品简介' } } };
+  assert.equal((await f.browser({ ...base, profileId: 'other-profile' })).status, 404);
+  const stale = await f.browser({ ...base, expectedUpdatedAt: T2 }); assert.equal(stale.status, 409); assert.equal((await body(stale)).code, 'DOUBAN_RECORD_CONFLICT');
+  assert.deepEqual(f.outgoing, []); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+});
+
+void test('details alone make a server metadata response useful, and the optional expected epoch stops old reads before fetch', async t => {
+  const f = fixture(t); f.seed('alice'); f.metadata({ kind: null, coverUrl: null, details: { summary: '可靠的作品简介', writers: ['编剧甲'] } });
+  const response = await f.post({ ...KEY, confirmed: true, expectedDataEpoch: 0 }); assert.equal(response.status, 200);
+  const result = await body(response); assert.equal(result.dataEpoch, 0); assert.equal(result.changed, true); assert.equal(result.metadata.status, 'complete'); assert.equal(result.item.details?.summary, '可靠的作品简介'); assert.equal(result.item.kind, 'screen');
+  f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
+  const before = f.outgoing.length;
+  const stale = await f.post({ ...KEY, expectedUpdatedAt: result.item.updatedAt, confirmed: true, expectedDataEpoch: 0 }); assert.equal(stale.status, 409); assert.equal((await body(stale)).code, 'DOUBAN_DATA_EPOCH_CONFLICT'); assert.equal(f.outgoing.length, before);
+  const staleBrowser = await f.browser({ ...KEY, expectedUpdatedAt: result.item.updatedAt, expectedDataEpoch: 0, confirmed: true, metadata: { kind: null, coverUrl: null, details: { summary: '旧世代简介' } } });
+  assert.equal(staleBrowser.status, 409); assert.equal((await body(staleBrowser)).code, 'DOUBAN_DATA_EPOCH_CONFLICT'); assert.equal((await store.readDoubanRecord(f.db, 'alice', KEY))?.details?.summary, '可靠的作品简介');
+});
+
+void test('a reset during the external metadata read does not write to a newly imported same-key same-time row', async t => {
+  const f = fixture(t); f.seed('alice');
+  f.metadata({ kind: 'series', coverUrl: COVER, details: { summary: '迟到的旧请求详情' } });
+  f.beforeFetch(() => {
+    f.sqlite.prepare("DELETE FROM douban_items WHERE user_id='alice'").run(); f.seed('alice', { comment: '重建后的个人短评', details: { summary: '新世代已保存详情' } });
+    f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
+  });
+  const response = await f.post({ ...KEY, confirmed: true, expectedDataEpoch: 0 }); assert.equal(response.status, 409); assert.equal((await body(response)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
+  const current = (await store.readDoubanRecord(f.db, 'alice', KEY))!; assert.equal(current.updatedAt, T1); assert.equal(current.details?.summary, '新世代已保存详情'); assert.equal(current.comment, '重建后的个人短评'); assert.equal(current.coverUrl, null); assert.equal(current.kind, 'screen');
 });

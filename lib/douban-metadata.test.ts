@@ -3,6 +3,7 @@ import test from 'node:test';
 import { parseDoubanSubjectMetadata, fetchDoubanSubjectMetadata } from './douban-metadata.ts';
 import { DoubanSourceError, fetchDoubanSubjectKind } from './douban-source.ts';
 import { doubanSubjectUrl, type DoubanDomain } from './douban.ts';
+import { parseDoubanDetails } from './douban-details.ts';
 
 const id = '1234567';
 const image = 'https://img3.doubanio.com/view/photo/s_ratio_poster/public/p1234567.jpg';
@@ -46,7 +47,7 @@ void test('JSON-LD types and images must belong to the requested subject, not a 
   const unrelated = { '@type': 'TVSeries', url: 'https://movie.douban.com/subject/9999999/', image };
   const actual = { '@type': 'Movie', '@id': doubanSubjectUrl('screen', id) + '#movie', image: { '@type': 'ImageObject', contentUrl: image } };
   const parsed = parseDoubanSubjectMetadata(subject('screen', info('片长', '112分钟'), schema({ '@graph': [unrelated, actual] })), 'screen', id);
-  assert.deepEqual(parsed, { kind: 'movie', coverUrl: image });
+  assert.deepEqual(parsed, { kind: 'movie', coverUrl: image, details: { duration: '112分钟' } });
   assert.deepEqual(parseDoubanSubjectMetadata(subject('screen', '', schema(unrelated)), 'screen', id), { kind: null, coverUrl: null });
   const noReference = { '@type': 'TVSeries', image };
   assert.equal(parseDoubanSubjectMetadata(subject('screen', '', schema({ '@graph': [noReference] })), 'screen', id).kind, null);
@@ -135,4 +136,105 @@ void test('the legacy sync classifier delegates to the corrected metadata parser
   assert.equal(await fetchDoubanSubjectKind(id, { fetch: async () => { calls++; return htmlResponse(subject('screen', info('集数', '24'), movie())); } }), 'series');
   assert.equal(calls, 1);
   assert.equal(await fetchDoubanSubjectKind(id, { fetch: async () => htmlResponse(subject('screen', '', movie())) }), null);
+});
+
+function information(fields: Array<[string, string]>) {
+  return '<div id="info">' + fields.map(([label, value]) => '<span class="pl">' + label + ':</span>' + value + '<br>').join('') + '</div>';
+}
+function scores(value = '8.7', count = '2,345') {
+  return '<div id="interest_sectl"><div class="rating_self"><strong property="v:average">' + value + '</strong></div><div class="rating_sum"><span property="v:votes">' + count + '</span></div></div>';
+}
+
+void test('screen subject details retain common metadata, full summary, credits and television fields', () => {
+  const body = '<h1><span class="year">(2026)</span></h1>' + information([
+    ['导演', '<a>导演甲</a> / <a>导演乙</a>'], ['编剧', '编剧甲 / 编剧乙'], ['主演', '<a>演员甲</a> / <a>演员乙</a>'],
+    ['类型', '剧情 / 犯罪'], ['制片国家/地区', '中国大陆 / 美国'], ['语言', '汉语普通话 / 英语'], ['又名', '别名甲 / 别名乙'],
+    ['首播', '2026-11-01(中国大陆) / 2026-11-14(美国)'], ['片长', '120分钟'], ['集数', '24'], ['季数', '2'], ['单集片长', '45分钟'],
+  ]) + '<div id="link-report"><span class="short"><div class="intro">节选简介</div></span><span class="all hidden"><div class="intro"><p>完整简介第一段。</p><p>完整简介第二段。</p></div></span></div>' + scores();
+  const metadata = parseDoubanSubjectMetadata(subject('screen', body, movie()), 'screen', id);
+  assert.equal(metadata.kind, 'series');
+  assert.deepEqual(metadata.details, { summary: '完整简介第一段。\n完整简介第二段。', alternateTitles: ['别名甲', '别名乙'], year: 2026,
+    genres: ['剧情', '犯罪'], countries: ['中国大陆', '美国'], languages: ['汉语普通话', '英语'], doubanRating: 8.7, ratingCount: 2345,
+    directors: ['导演甲', '导演乙'], writers: ['编剧甲', '编剧乙'], cast: ['演员甲', '演员乙'],
+    releaseDates: ['2026-11-01(中国大陆)', '2026-11-14(美国)'], duration: '120分钟', episodes: 24, seasons: 2, episodeDuration: '45分钟' });
+  assert.deepEqual(parseDoubanDetails(metadata.details), metadata.details);
+});
+
+void test('book details parse labeled authors, translators and publication data without confusing personal stars', () => {
+  const body = information([['作者', '<a>作者甲</a> / <a>作者乙</a>'], ['译者', '<a>译者甲</a>'], ['出版社', '合成出版社'],
+    ['出版年', '2025-10'], ['页数', '320'], ['ISBN', '9781234567890'], ['装帧', '精装'], ['定价', '88.00元'], ['丛书', '<a>合成丛书</a>'], ['原作名', 'Original Title']])
+    + '<div id="link-report"><div class="intro"><p>图书简介。</p></div></div>' + scores('9.1', '100');
+  const details = parseDoubanSubjectMetadata(subject('book', body), 'book', id).details;
+  assert.deepEqual(details, { summary: '图书简介。', alternateTitles: ['Original Title'], year: 2025, doubanRating: 9.1, ratingCount: 100,
+    authors: ['作者甲', '作者乙'], translators: ['译者甲'], publisher: '合成出版社', publicationDate: '2025-10', pages: 320,
+    isbn: '9781234567890', binding: '精装', price: '88.00元', seriesTitle: '合成丛书' });
+  assert.deepEqual(parseDoubanDetails(details), details);
+});
+
+void test('music details include performers and ordered tracks alongside medium and release information', () => {
+  const body = information([['表演者', '<a>AC/DC</a> / <a>合成乐队</a>'], ['流派', '摇滚 / 流行'], ['专辑类型', '专辑'], ['介质', 'CD'],
+    ['出版者', '合成唱片'], ['发行时间', '2024-06-01']]) + '<div id="link-report"><span property="v:summary">专辑简介。</span></div>'
+    + '<div id="track-list">01. 第一首<br>02. 第二首<br>03. 第三首</div>';
+  const details = parseDoubanSubjectMetadata(subject('music', body), 'music', id).details;
+  assert.deepEqual(details, { summary: '专辑简介。', year: 2024, genres: ['摇滚', '流行'], artists: ['AC/DC', '合成乐队'],
+    albumType: '专辑', medium: 'CD', label: '合成唱片', releaseDate: '2024-06-01', tracks: ['01. 第一首', '02. 第二首', '03. 第三首'] });
+  assert.deepEqual(parseDoubanDetails(details), details);
+});
+
+void test('only current subject JSON-LD contributes details and nested recommendations cannot pollute them', () => {
+  const actual = { '@type': 'Movie', url: '/subject/' + id + '/', description: '本作品简介', alternateName: ['别名', '别名'], datePublished: '2020-10-01',
+    genre: ['剧情', '悬疑'], countryOfOrigin: { name: '中国大陆' }, inLanguage: ['汉语普通话'], director: [{ name: '本片导演' }], actor: [{ name: '本片演员' }],
+    duration: 'PT1H52M', aggregateRating: { ratingValue: '8.6', ratingCount: '1234', bestRating: 10 },
+    subjectOf: { '@type': 'TVSeries', url: '/subject/9999999/', description: 'RELATED_PRIVATE', actor: [{ name: 'RELATED_ACTOR' }] } };
+  const unrelated = { '@type': 'TVSeries', url: '/subject/9999999/', description: 'RELATED_PRIVATE', actor: [{ name: 'RELATED_ACTOR' }] };
+  const body = '<aside class="recommendations"><span property="v:summary">RELATED_SUMMARY</span><strong class="rating_num">1.1</strong></aside>';
+  const metadata = parseDoubanSubjectMetadata(subject('screen', body, schema({ '@graph': [unrelated, actual] })), 'screen', id);
+  assert.equal(metadata.kind, null, 'duration in JSON-LD alone retains conservative classification');
+  assert.deepEqual(metadata.details, { summary: '本作品简介', alternateTitles: ['别名'], year: 2020, genres: ['剧情', '悬疑'], countries: ['中国大陆'],
+    languages: ['汉语普通话'], doubanRating: 8.6, ratingCount: 1234, directors: ['本片导演'], cast: ['本片演员'], releaseDates: ['2020-10-01'], duration: '112分钟' });
+  assert.doesNotMatch(JSON.stringify(metadata), /RELATED_/);
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('screen', '', schema({ '@graph': [unrelated] })), 'screen', id), { kind: null, coverUrl: null });
+  const foreignPage = { '@type': 'WebPage', url: '/subject/9999999/', mainEntity: { '@type': 'TVSeries', description: 'RELATED_PRIVATE', actor: [{ name: 'RELATED_ACTOR' }] } };
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('screen', '', schema(foreignPage)), 'screen', id), { kind: null, coverUrl: null });
+});
+
+void test('structured book and album fields provide sparse fallbacks and reject invalid or oversized candidates', () => {
+  const book = { '@type': 'Book', url: '/subject/' + id + '/', author: [{ name: '作者甲' }], translator: { name: '译者乙' }, publisher: { name: '出版社' },
+    datePublished: '2021-01', numberOfPages: 500, isbn: '9781234567890', bookFormat: '精装', offers: { price: '100.00', priceCurrency: 'CNY' }, isPartOf: { name: '丛书' } };
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('book', '', schema(book)), 'book', id).details, { year: 2021, authors: ['作者甲'], translators: ['译者乙'],
+    publisher: '出版社', publicationDate: '2021-01', pages: 500, isbn: '9781234567890', binding: '精装', price: '100.00 CNY', seriesTitle: '丛书' });
+  const album = { '@type': 'MusicAlbum', url: '/subject/' + id + '/', byArtist: [{ name: '合成乐队' }], albumProductionType: '录音室专辑', musicReleaseFormat: 'CD',
+    recordLabel: { name: '合成唱片' }, datePublished: '2022-02-02', track: { '@type': 'ItemList', itemListElement: [{ '@type': 'ListItem', item: { name: '第一首' } }, { name: '第二首' }] } };
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('music', '', schema(album)), 'music', id).details, { year: 2022, artists: ['合成乐队'], albumType: '录音室专辑',
+    medium: 'CD', label: '合成唱片', releaseDate: '2022-02-02', tracks: ['第一首', '第二首'] });
+  const bad = { ...book, description: '<img src="https://private.invalid">', author: [{ name: 'a'.repeat(201) }], numberOfPages: 1000001,
+    alternateName: ['x'.repeat(501)], isbn: 'x'.repeat(65), aggregateRating: { ratingValue: 8.75, ratingCount: -1 } };
+  const details = parseDoubanSubjectMetadata(subject('book', '', schema(bad)), 'book', id).details;
+  assert.ok(details); assert.equal(details.summary, undefined); assert.equal(details.authors, undefined); assert.equal(details.pages, undefined);
+  assert.equal(details.isbn, undefined); assert.equal(details.doubanRating, undefined); assert.equal(details.ratingCount, undefined);
+  assert.deepEqual(parseDoubanDetails(details), details);
+  const huge = parseDoubanSubjectMetadata(subject('book', '', schema({ ...book, description: '字'.repeat(12000) })), 'book', id).details;
+  assert.ok(huge); assert.equal(huge.summary, undefined); assert.ok(new TextEncoder().encode(JSON.stringify(huge)).byteLength <= 16 * 1024);
+  assert.deepEqual(parseDoubanDetails(huge), huge);
+});
+
+void test('a related review rating wrapper cannot stand in for the subject rating area', () => {
+  const related = '<section id="related-reviews"><div class="rating_wrap"><div class="rating_self"><strong class="rating_num">9.9</strong></div>'
+    + '<div class="rating_sum"><span property="v:votes">88</span></div></div></section>';
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('book', related), 'book', id), { kind: 'book', coverUrl: null });
+  const own = schema({ '@type': 'Book', url: '/subject/' + id + '/', aggregateRating: { ratingValue: 8.6, ratingCount: 1234, bestRating: 10 } });
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('book', related, own), 'book', id).details, { doubanRating: 8.6, ratingCount: 1234 });
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('book', related + scores('8.1', '77'), own), 'book', id).details, { doubanRating: 8.1, ratingCount: 77 });
+});
+
+void test('album tracks exclude review playlists and require the main track block or its verified heading', () => {
+  const related = '<section id="related-reviews"><h2>曲目</h2><div class="track-list">REVIEW_PLAYLIST_SENTINEL</div></section>';
+  const article = (contents: string) => '<div id="content"><div class="article">' + contents + '</div></div>';
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('music', article(related)), 'music', id), { kind: 'music', coverUrl: null });
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('music', article(related.replace('class="track-list"', 'id="track-list"'))), 'music', id), { kind: 'music', coverUrl: null });
+  const structured = schema({ '@type': 'MusicAlbum', url: '/subject/' + id + '/', track: [{ name: '结构化第一首' }, { name: '结构化第二首' }] });
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('music', article(related), structured), 'music', id).details, { tracks: ['结构化第一首', '结构化第二首'] });
+  const primary = '<div class="related_info"><h2>曲目 · · · · · ·</h2><div class="indent"><div class="track-list">01. 第一首<br>02. 第二首</div></div></div>';
+  const details = parseDoubanSubjectMetadata(subject('music', article(primary + related), structured), 'music', id).details;
+  assert.deepEqual(details, { tracks: ['01. 第一首', '02. 第二首'] }); assert.doesNotMatch(JSON.stringify(details), /REVIEW_PLAYLIST_SENTINEL/);
 });

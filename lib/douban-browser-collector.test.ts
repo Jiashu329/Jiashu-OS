@@ -5,6 +5,8 @@ import { parseHTML } from 'linkedom/worker';
 import { minify } from 'vite';
 import { createDoubanBrowserCollector, renderDoubanBrowserCollectorFactory, type DoubanBrowserCollectorReason } from './douban-browser-collector.ts';
 import { parseDoubanRecord, type DoubanDomain } from './douban.ts';
+import { parseDoubanSubjectMetadata } from './douban-metadata.ts';
+import { parseDoubanDetails } from './douban-details.ts';
 
 const parser = createDoubanBrowserCollector(html => parseHTML(html).document);
 const hosts = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
@@ -199,4 +201,65 @@ void test('serialized and minified factories remain self-contained and use an un
   runInNewContext('globalThis.result=(' + original.factory.toString() + ')().parseCollection(payload,"mine","book");', sandbox);
   assert.deepEqual(JSON.parse(JSON.stringify(sandbox.result)), parser.parseCollection(payload, 'mine', 'book'));
   assert.equal(sandbox.EXECUTED, undefined); assert.equal(document.querySelectorAll('iframe,script,img,style').length, 0); assert.ok(document.getElementById('existing'));
+  const detailPayload = '<link rel="canonical" href="https://book.douban.com/subject/1234567/"><h1>图书</h1><div id="info"><span class="pl">作者:</span><a>作者甲</a><br><span class="pl">页数:</span>320<br></div>'
+    + '<div id="link-report"><div class="intro"><p>完整图书简介。</p><p>第二段。</p></div></div><iframe src="https://private.invalid/frame"></iframe>';
+  const detailedSandbox = { document, URL, TextEncoder, payload: detailPayload, result: undefined as unknown };
+  runInNewContext('globalThis.result=(' + original.factory.toString() + ')().parseSubject(payload,"book","1234567");', detailedSandbox);
+  const detailed = JSON.parse(JSON.stringify(detailedSandbox.result));
+  assert.deepEqual(detailed, parser.parseSubject(detailPayload, 'book', '1234567'));
+  assert.deepEqual(detailed.details, { summary: '完整图书简介。\n第二段。', authors: ['作者甲'], pages: 320 });
+  assert.equal(document.querySelectorAll('iframe,script,img,style').length, 0);
+});
+
+void test('browser and server share subject detail extraction for all domains, including sparse structured fallbacks', () => {
+  for (const domain of ['screen', 'book', 'music'] as const) {
+    const own = 'https://' + hosts[domain] + '/subject/1234567/';
+    const details = domain === 'screen' ? { '@type': 'TVSeries', numberOfEpisodes: 24, numberOfSeasons: 2, director: [{ name: '导演甲' }], actor: [{ name: '演员甲' }], duration: 'PT45M' }
+      : domain === 'book' ? { '@type': 'Book', author: [{ name: '作者甲' }], translator: { name: '译者甲' }, publisher: { name: '出版社' }, numberOfPages: 320, isbn: '9781234567890' }
+        : { '@type': 'MusicAlbum', byArtist: [{ name: '歌手甲' }], albumProductionType: '专辑', musicReleaseFormat: 'CD', recordLabel: { name: '唱片公司' }, track: [{ name: '第一首' }, { name: '第二首' }] };
+    const actual = { ...details, mainEntityOfPage: { '@id': own }, description: '作品完整简介。\n第二段。', genre: ['合成类型'], alternateName: ['别名'], datePublished: '2021-01-01',
+      aggregateRating: { ratingValue: 8.8, ratingCount: 1234 } };
+    const raw = '<link rel="canonical" href="' + own + '"><h1>作品</h1><script type="application/ld+json">' + JSON.stringify(actual) + '</script>';
+    const result = parser.parseSubject(raw, domain, '1234567');
+    assert.deepEqual(result, parseDoubanSubjectMetadata(raw, domain, '1234567'));
+    assert.ok(result.details); assert.deepEqual(parseDoubanDetails(result.details), result.details);
+    assert.equal(result.details.summary, '作品完整简介。\n第二段。');
+  }
+});
+
+void test('related subject detail blocks and foreign WebPage mainEntity cannot enter the current subject', () => {
+  const own = '<link rel="canonical" href="https://movie.douban.com/subject/1234567/"><h1>本作品</h1>';
+  const foreign = { '@type': 'WebPage', url: '/subject/9999999/', mainEntity: { '@type': 'TVSeries', description: 'RELATED_PRIVATE', director: { name: 'RELATED_DIRECTOR' } } };
+  const json = '<script type="application/ld+json">' + JSON.stringify(foreign) + '</script>';
+  assert.deepEqual(parser.parseSubject(own + json, 'screen', '1234567'), { kind: null, coverUrl: null });
+  const actual = { '@type': 'Movie', url: '/subject/1234567/', description: '本作品简介', director: { name: '本作品导演' } };
+  const mixed = own + '<aside><span property="v:summary">RELATED_SUMMARY</span><strong class="rating_num">1.1</strong></aside>'
+    + '<script type="application/ld+json">' + JSON.stringify({ '@graph': [foreign, actual] }) + '</script>';
+  const parsed = parser.parseSubject(mixed, 'screen', '1234567');
+  assert.deepEqual(parsed.details, { summary: '本作品简介', directors: ['本作品导演'] }); assert.doesNotMatch(JSON.stringify(parsed), /RELATED_/);
+});
+
+void test('related rating wrappers stay excluded while bound JSON-LD and the primary rating area remain usable', () => {
+  const own = '<link rel="canonical" href="https://book.douban.com/subject/1234567/"><h1>本作品</h1>';
+  const related = '<section id="related-reviews"><div class="rating_wrap"><div class="rating_self"><strong class="rating_num">9.9</strong></div>'
+    + '<div class="rating_sum"><span property="v:votes">88</span></div></div></section>';
+  assert.deepEqual(parser.parseSubject(own + related, 'book', '1234567'), { kind: 'book', coverUrl: null });
+  const structured = '<script type="application/ld+json">' + JSON.stringify({ '@type': 'Book', url: '/subject/1234567/', aggregateRating: { ratingValue: 8.6, ratingCount: 1234 } }) + '</script>';
+  assert.deepEqual(parser.parseSubject(own + related + structured, 'book', '1234567').details, { doubanRating: 8.6, ratingCount: 1234 });
+  const primary = '<div id="interest_sectl"><div class="rating_self"><strong property="v:average">8.1</strong></div><div class="rating_sum"><span property="v:votes">77</span></div></div>';
+  assert.deepEqual(parser.parseSubject(own + related + structured + primary, 'book', '1234567').details, { doubanRating: 8.1, ratingCount: 77 });
+});
+
+void test('album track lists require the primary block or main article heading and never use a review playlist', () => {
+  const own = '<link rel="canonical" href="https://music.douban.com/subject/1234567/"><h1>本专辑</h1>';
+  const related = '<section id="related-reviews"><h2>曲目</h2><div class="track-list">REVIEW_PLAYLIST_SENTINEL</div></section>';
+  const article = (contents: string) => '<div id="content"><div class="article">' + contents + '</div></div>';
+  assert.deepEqual(parser.parseSubject(own + article(related), 'music', '1234567'), { kind: 'music', coverUrl: null });
+  assert.deepEqual(parser.parseSubject(own + article(related.replace('class="track-list"', 'id="track-list"')), 'music', '1234567'), { kind: 'music', coverUrl: null });
+  const structured = '<script type="application/ld+json">' + JSON.stringify({ '@type': 'MusicAlbum', url: '/subject/1234567/', track: [{ name: '结构化曲目' }] }) + '</script>';
+  assert.deepEqual(parser.parseSubject(own + article(related) + structured, 'music', '1234567').details, { tracks: ['结构化曲目'] });
+  const primary = '<div class="related_info"><h2>曲目 · · · · · ·</h2><div class="indent"><div class="track-list">01. 第一首<br>02. 第二首</div></div></div>';
+  const details = parser.parseSubject(own + article(primary + related) + structured, 'music', '1234567').details;
+  assert.deepEqual(details, { tracks: ['01. 第一首', '02. 第二首'] }); assert.doesNotMatch(JSON.stringify(details), /REVIEW_PLAYLIST_SENTINEL/);
+  assert.deepEqual(parser.parseSubject(own + '<div id="track-list">主曲目</div>', 'music', '1234567').details, { tracks: ['主曲目'] });
 });

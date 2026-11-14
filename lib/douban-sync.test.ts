@@ -134,6 +134,15 @@ test('a subject verification/login block stops further classification while keep
   assert.equal(presentDoubanRun(current).classification.blocked, true); assert.doesNotMatch(JSON.stringify(current.state), /PRIVATE-COOKIE/);
 });
 
+test('one public subject read retains rich metadata alongside classification without adding another external step', async () => {
+  const state = createDoubanSyncState(); state.phase = 'classification'; let calls = 0;
+  const details = { summary: '合成剧集简介', doubanRating: 8.6, ratingCount: 320, directors: ['合成导演'], episodes: 12 };
+  const result = await advance(run(state), dependencies({ nextUnclassified: async () => ({ subjectId: '12345' }), countUnclassified: async () => 1,
+    classify: async () => { calls++; return { kind: 'series', coverUrl: null, details }; } }));
+  assert.equal(calls, 1); assert.deepEqual(result.classification, { domain: 'screen', subjectId: '12345', kind: 'series', coverUrl: null, details });
+  assert.equal(result.state.classification.classified, 1); assert.equal(result.items.length, 0);
+});
+
 test('bounded collection segments preserve the continuation offset and resume only limited domains', async () => {
   const state = createDoubanSyncState(); state.sources.screen.start = 30000; state.sources.screen.pages = 1000; state.sources.screen.segmentPages = 1000;
   state.sources.book.status = 'complete'; state.sources.music.status = 'complete';

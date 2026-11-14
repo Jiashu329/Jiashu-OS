@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { doubanSubjectUrl, type DoubanRecordInput } from '../lib/douban.ts';
+import { DoubanValidationError, doubanSubjectUrl, parseDoubanRecord, type DoubanRecordInput } from '../lib/douban.ts';
 import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRecord, readDoubanRun,
   startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
 import { commitDoubanReset, previewDoubanReset, readDoubanDataEpoch } from './douban-reset-store.ts';
@@ -12,14 +12,15 @@ function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../drizzle/0024_douban.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0025_douban_data_resets.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0027_douban_subject_details.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   let nextBatch: (() => void) | undefined, failStatement = -1;
-  const batchSizes: number[] = [];
+  const batchSizes: number[] = [], bindingSizes: number[] = [];
   const db = {
     prepare(sql: string) {
       const statement = sqlite.prepare(sql); let values: SQLInputValue[] = [];
       const bound = {
-        bind(...parameters: unknown[]) { values = parameters as SQLInputValue[]; return bound; },
+        bind(...parameters: unknown[]) { values = parameters as SQLInputValue[]; bindingSizes.push(parameters.reduce<number>((sum, value) => sum + (typeof value === 'string' ? new TextEncoder().encode(value).byteLength : 8), 0)); return bound; },
         async first<T>() { return (statement.get(...values) as T | undefined) ?? null; },
         async all<T>() { return { results: statement.all(...values) as T[] }; },
         execute() { return { results: statement.columns().length ? statement.all(...values) : (statement.run(...values), []) }; },
@@ -33,7 +34,7 @@ function fixture(t: TestContext) {
       catch (error) { sqlite.exec('ROLLBACK'); throw error; }
     },
   } as unknown as DoubanDatabase;
-  return { db, sqlite, batchSizes, beforeBatch(callback: () => void) { nextBatch = callback; }, failAt(index: number) { failStatement = index; } };
+  return { db, sqlite, batchSizes, bindingSizes, beforeBatch(callback: () => void) { nextBatch = callback; }, failAt(index: number) { failStatement = index; } };
 }
 function record(subjectId = '1', kind: DoubanRecordInput['kind'] = 'screen', patch: Partial<DoubanRecordInput> = {}): DoubanRecordInput {
   const domain = kind === 'movie' || kind === 'series' ? 'screen' : kind;
@@ -491,4 +492,61 @@ void test('clear after the import batch but before its response prevents a stale
   await assert.rejects(commitDoubanImport(racing, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID() }), epochConflict);
   assert.equal((await listDoubanRecords(f.db, 'alice')).total, 0); assert.equal(await readDoubanDataEpoch(f.db, 'alice'), 1);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM douban_import_receipts').get()?.n, 0);
+});
+
+void test('work details round-trip through imports and public refresh without erasing personal fields or manual kind', async t => {
+  const f = fixture(t);
+  const details = { summary: '作品简介', directors: ['导演甲'], genres: ['剧情'], doubanRating: 8.5, ratingCount: 123 };
+  await importRecords(f.db, [privateRecord('1', 'movie', { details })]);
+  f.sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  let run = await connected(f.db);
+  run = await commitDoubanStep(f.db, 'alice', step(run, [record('1', 'series', { rating: null, comment: null, markedDate: null, details: { countries: ['中国'] } })]));
+  let saved = (await listDoubanRecords(f.db, 'alice')).items[0];
+  assert.deepEqual(saved.details, { ...details, countries: ['中国'] }); assert.equal(saved.kind, 'movie'); assert.equal(saved.rating, 4); assert.equal(saved.comment, '自己的短评'); assert.equal(saved.source, 'import');
+  await importRecords(f.db, [privateRecord('1', 'screen', { details: { summary: '更新的作品简介', directors: [] }, rating: null, comment: null, markedDate: null })], { now: T3 });
+  saved = (await listDoubanRecords(f.db, 'alice')).items[0]; assert.equal(saved.details?.summary, '更新的作品简介'); assert.deepEqual(saved.details?.directors, ['导演甲']); assert.equal(saved.kind, 'movie');
+  assert.equal(JSON.stringify(saved).includes('detailsJson'), false);
+  run = await commitDoubanStep(f.db, 'alice', step(run, [record('1', 'screen', { details: {} })], { now: T3 }));
+  assert.equal((await listDoubanRecords(f.db, 'alice')).items[0].details?.summary, '更新的作品简介');
+});
+
+void test('public classification saves same-response details and cover even when type is unknown, retaining a manual kind', async t => {
+  const f = fixture(t); let run = await connected(f.db);
+  run = await commitDoubanStep(f.db, 'alice', step(run, [record('1', 'screen')]));
+  const coverUrl = 'https://img1.doubanio.com/view/subject/s/public/s1.jpg';
+  run = await commitDoubanStep(f.db, 'alice', step(run, [], { classification: { domain: 'screen', subjectId: '1', kind: null, coverUrl, details: { summary: '已确认的简介', cast: ['演员甲'] } } }));
+  let saved = (await listDoubanRecords(f.db, 'alice')).items[0]; assert.equal(saved.kind, 'screen'); assert.equal(saved.coverUrl, coverUrl); assert.equal(saved.details?.summary, '已确认的简介'); assert.equal(saved.metadataCheckedRunId, run.id); assert.equal(run.updated, 1);
+  f.sqlite.prepare("UPDATE douban_items SET kind='movie',metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  run = await commitDoubanStep(f.db, 'alice', step(run, [], { classification: { domain: 'screen', subjectId: '1', kind: 'series', details: { episodes: 12 } }, now: T3 }));
+  saved = (await listDoubanRecords(f.db, 'alice')).items[0]; assert.equal(saved.kind, 'movie'); assert.equal(saved.details?.episodes, 12); assert.deepEqual(saved.details?.cast, ['演员甲']); assert.equal(saved.metadataCheckedRunId, 'manual-kind');
+});
+
+void test('a concurrent work-details change fences public and import snapshots even if content timestamps remain unchanged', async t => {
+  const f = fixture(t); await importRecords(f.db, [privateRecord('1', 'movie', { details: { summary: '原简介' } })]);
+  const input = { profileId: 'alice_douban', items: [privateRecord('1', 'movie', { details: { year: 2020 } }), privateRecord('2', 'book')] };
+  const preview = await previewDoubanImport(f.db, 'alice', input);
+  f.beforeBatch(() => { f.sqlite.prepare("UPDATE douban_items SET details_json=? WHERE user_id='alice' AND subject_id='1'").run(JSON.stringify({ summary: '另一个已确认的简介' })); });
+  await assert.rejects(commitDoubanImport(f.db, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID() }), conflict);
+  const saved = await listDoubanRecords(f.db, 'alice'); assert.equal(saved.total, 1); assert.equal(saved.items[0].details?.summary, '另一个已确认的简介');
+  const run = await connected(f.db);
+  f.beforeBatch(() => { f.sqlite.prepare("UPDATE douban_items SET details_json=? WHERE user_id='alice'").run(JSON.stringify({ summary: '第三份简介' })); });
+  await assert.rejects(commitDoubanStep(f.db, 'alice', step(run, [record('1', 'screen', { details: { year: 2022 } }), record('3')])), conflict);
+  assert.equal((await listDoubanRecords(f.db, 'alice')).total, 1);
+});
+
+void test('rich Unicode imports split by encoded binding size while retaining sparse known details', async t => {
+  const f = fixture(t);
+  const items = Array.from({ length: 150 }, (_, index) => privateRecord(String(10000 + index), 'book', { title: '书'.repeat(500), comment: '评'.repeat(2000), details: { summary: 's'.repeat(12000), authors: ['作者甲'] } }));
+  const first = await importRecords(f.db, items); assert.equal(first.receipt.added, 150);
+  const second = await importRecords(f.db, items.map(({ details: _details, ...item }) => item), { now: T2 }); assert.equal(second.receipt.unchanged, 150);
+  assert.ok(f.bindingSizes.every(size => size < 2 * 1024 * 1024), 'each D1 statement stays below 2 MiB even when details and personal text are rich');
+  assert.equal((await listDoubanRecords(f.db, 'alice')).items[0].details?.summary?.length, 12000);
+});
+
+void test('record validation keeps empty details optional and maps detail violations to the existing public input error', () => {
+  const item = privateRecord('1', 'book');
+  assert.deepEqual(parseDoubanRecord({ ...item, details: { summary: ' ', authors: [] } }), parseDoubanRecord(item));
+  for (const details of [{ cookie: 'PRIVATE' }, { myRating: 1 }, { summary: '<script>unsafe()</script>' }, { pages: -1 }, { doubanRating: '8.5' }]) {
+    assert.throws(() => parseDoubanRecord({ ...item, details }), error => error instanceof DoubanValidationError && error.code === 'INVALID_DOUBAN_INPUT' && error.status === 400);
+  }
 });

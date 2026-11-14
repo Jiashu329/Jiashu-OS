@@ -15,7 +15,7 @@ test('the authenticated extension download contains the exact static runtime and
     entries.push([name, bytes]); offset += 30 + nameLength + size;
   }
   assert.equal(result.archive.readUInt32LE(offset), 0x02014b50);
-  assert.deepEqual(entries.map(([name]) => name), ['manifest.json', 'background.js', 'collector-parser.js', 'collector.js', 'README.md']);
+  assert.deepEqual(entries.map(([name]) => name), ['manifest.json', 'background.js', 'details-parser.js', 'collector-parser.js', 'collector.js', 'README.md']);
   for (let i = 0; i < entries.length; i++) assert.deepEqual(entries[i][1], result.files[i][1]);
   const manifest = JSON.parse(entries[0][1].toString('utf8'));
   assert.equal(manifest.permissions.includes('cookies'), false);

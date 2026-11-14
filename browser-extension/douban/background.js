@@ -1,6 +1,7 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
+import { parseDoubanDetails } from './details-parser.js';
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.2';
+export const EXTENSION_VERSION = '1.0.3';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -18,7 +19,7 @@ const MESSAGES = {
   DOUBAN_BROWSER_BLOCKED: '豆瓣限制了该来源的访问，已停止该来源。',
   DOUBAN_BROWSER_RATE_LIMITED: '豆瓣正在限制访问频率，本次同步已停止，请稍后重试。',
   DOUBAN_BROWSER_PROFILE_MISMATCH: '豆瓣当前账户或页面与填写的主页不一致，已停止读取。',
-  DOUBAN_BROWSER_INVALID: '豆瓣收藏页面未能确认，已停止该来源，避免同步错误记录。',
+  DOUBAN_BROWSER_INVALID: '豆瓣页面未能确认，已停止本次读取，避免保存错误资料。',
   DOUBAN_BROWSER_TOO_LARGE: '豆瓣收藏页面超过读取上限，已停止该来源。',
   DOUBAN_BROWSER_TIMEOUT: '豆瓣页面读取超时，已停止该来源。',
   DOUBAN_BROWSER_NETWORK: '豆瓣页面暂时无法读取，已停止该来源。',
@@ -42,15 +43,33 @@ function permittedSender(sender) {
 }
 function validRequest(message) {
   if (!plain(message) || message.type !== 'JIASHU_DOUBAN' || message.version !== 1
-    || !['CONNECT', 'STATUS', 'LOGIN', 'START', 'STEP', 'POLL', 'CANCEL'].includes(message.action)
+    || !['CONNECT', 'STATUS', 'LOGIN', 'START', 'STEP', 'POLL', 'CANCEL', 'SUBJECT', 'SUBJECT_CANCEL'].includes(message.action)
     || typeof message.ownerKey !== 'string' || !UUID.test(message.ownerKey)
     || typeof message.profileId !== 'string' || !PROFILE.test(message.profileId)) return false;
   const keys = ['type', 'version', 'action', 'ownerKey', 'profileId'];
   if (['STEP', 'POLL', 'CANCEL'].includes(message.action)) keys.push('runId');
   if (message.action === 'STEP') keys.push('step', 'requestId');
+  if (message.action === 'SUBJECT') keys.push('requestId', 'domain', 'subjectId');
+  if (message.action === 'SUBJECT_CANCEL') keys.push('requestId');
   if (Object.keys(message).some(key => !keys.includes(key))) return false;
+  if (['SUBJECT', 'SUBJECT_CANCEL'].includes(message.action)
+    && (typeof message.requestId !== 'string' || !UUID.test(message.requestId))) return false;
+  if (message.action === 'SUBJECT' && (!DOMAINS.includes(message.domain) || typeof message.subjectId !== 'string'
+    || !/^[1-9]\d{0,15}$/.test(message.subjectId))) return false;
   if (['STEP', 'POLL', 'CANCEL'].includes(message.action) && (typeof message.runId !== 'string' || !UUID.test(message.runId))) return false;
   return message.action !== 'STEP' || Number.isSafeInteger(message.step) && message.step >= 0 && typeof message.requestId === 'string' && UUID.test(message.requestId);
+}
+
+// Only the public subject fields leave the isolated reader. Personal collection
+// values and arbitrary content-script properties never enter this response.
+function normalizeSubjectMetadata(value, domain) {
+  if (!plain(value) || Object.keys(value).some(key => !['kind', 'coverUrl', 'details'].includes(key))
+    || value.kind !== null && !(domain === 'screen' ? ['movie', 'series'].includes(value.kind) : value.kind === domain)
+    || value.coverUrl !== null && (typeof value.coverUrl !== 'string' || value.coverUrl.length > 2048)
+    || !plain(value.details ?? {})) throw { code: 'DOUBAN_BROWSER_INVALID' };
+  let details;
+  try { details = parseDoubanDetails(value.details); } catch { throw { code: 'DOUBAN_BROWSER_INVALID' }; }
+  return { kind: value.kind, coverUrl: value.coverUrl, details };
 }
 
 /** Kept exportable so protocol and navigation boundaries can be tested without a real Chrome account. */
@@ -58,7 +77,11 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
   const now = options.now ?? Date.now;
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
   const readPage = options.readPage ?? ((run, domain) => readOwnedPage(chromeApi, run, domain));
-  let active = null;
+  const readSubject = options.readSubject ?? (job => readOwnedSubject(chromeApi, job));
+  let active = null, subject = null, lastExternalReadAt = null;
+  function subjectOwner(job, message, sender) {
+    return job && job.ownerKey === message.ownerKey && job.profileId === message.profileId && job.websiteTabId === sender.tab.id;
+  }
   function owns(run, message, sender) {
     return run && run.id === message.runId && run.ownerKey === message.ownerKey && run.profileId === message.profileId && run.websiteTabId === sender.tab.id;
   }
@@ -81,9 +104,44 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
     if (!permittedSender(sender)) return failure('FORBIDDEN');
     if (!validRequest(message)) return failure('INVALID_REQUEST');
     if (message.action === 'CONNECT' || message.action === 'STATUS') return { ok: true, data: { extensionVersion: EXTENSION_VERSION, protocolVersion: 1 } };
+    if (message.action === 'SUBJECT_CANCEL') {
+      if (!subjectOwner(subject, message, sender) || subject.requestId !== message.requestId) return failure('RUN_NOT_FOUND');
+      const job = subject; job.status = 'cancelled'; job.response = null;
+      await stopRead(job);
+      return { ok: true, data: { cancelled: true } };
+    }
+    if (message.action === 'SUBJECT') {
+      if (subject?.requestId === message.requestId) {
+        if (!subjectOwner(subject, message, sender)) return failure('RUN_NOT_FOUND');
+        if (subject.domain !== message.domain || subject.subjectId !== message.subjectId) return failure('STEP_CONFLICT');
+        if (subject.status === 'cancelled') return failure('RUN_NOT_FOUND');
+        return subject.response ? structuredClone(subject.response) : failure('RUN_BUSY');
+      }
+      if (subject?.status === 'running' || active?.status === 'running') return failure('RUN_BUSY');
+      const lastRead = lastExternalReadAt ?? -Infinity;
+      if (now() - lastRead < 1500) return failure('PACING', Math.ceil((1500 - (now() - lastRead)) / 1000));
+      const prior = subject;
+      const job = { id: message.requestId, requestId: message.requestId, ownerKey: message.ownerKey, profileId: message.profileId,
+        websiteTabId: sender.tab.id, domain: message.domain, subjectId: message.subjectId, status: 'running',
+        tabs: subjectOwner(prior, message, sender) ? { ...prior.tabs } : {}, response: null, attentionTabId: null };
+      subject = job; lastExternalReadAt = now();
+      let response;
+      try {
+        const metadata = normalizeSubjectMetadata(await readSubject(job), job.domain);
+        if (subject !== job || job.status !== 'running') return failure('RUN_NOT_FOUND');
+        response = { ok: true, data: { requestId: job.requestId, domain: job.domain, subjectId: job.subjectId, metadata } };
+      } catch (error) {
+        if (subject !== job || job.status !== 'running') return failure('RUN_NOT_FOUND');
+        const code = SAFE_CODES.has(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID';
+        if (['DOUBAN_BROWSER_LOGIN_REQUIRED', 'DOUBAN_BROWSER_CHALLENGE', 'DOUBAN_BROWSER_BLOCKED', 'DOUBAN_BROWSER_RATE_LIMITED'].includes(code)) job.attentionTabId = job.tabs[job.domain] ?? null;
+        response = failure(code);
+      }
+      job.status = 'completed'; job.response = structuredClone(response);
+      return response;
+    }
     if (message.action === 'LOGIN') {
       const owned = active && active.ownerKey === message.ownerKey && active.profileId === message.profileId && active.websiteTabId === sender.tab.id;
-      const tabId = owned ? active.attentionTabId : null;
+      const tabId = subjectOwner(subject, message, sender) && subject.attentionTabId !== null ? subject.attentionTabId : owned ? active.attentionTabId : null;
       if (tabId !== null && tabId !== undefined) {
         try { await chromeApi.tabs.update(tabId, { active: true }); return { ok: true, data: { opened: true } }; }
         catch { /* The user may have closed that normal tab; use the fixed login page below. */ }
@@ -93,6 +151,7 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
       return { ok: true, data: { opened: true } };
     }
     if (message.action === 'START') {
+      if (subject?.status === 'running') return failure('RUN_BUSY');
       let interrupted = null;
       if (active?.status === 'running') {
         // A page reload creates a new owner marker. An explicit new start may
@@ -120,11 +179,12 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
     }
     if (run.busy) return failure('RUN_BUSY');
     if (run.step !== message.step || run.status !== 'running') return failure('STEP_CONFLICT');
-    if (run.lastReadAt !== null && now() - run.lastReadAt < 1500) return failure('PACING', Math.ceil((1500 - (now() - run.lastReadAt)) / 1000));
+    const lastRead = lastExternalReadAt ?? -Infinity;
+    if (now() - lastRead < 1500) return failure('PACING', Math.ceil((1500 - (now() - lastRead)) / 1000));
     const domain = DOMAINS.find(key => run.sources[key].status === 'pending');
     if (!domain) { finalize(run); return { ok: true, data: { ...view(run), items: [] } }; }
     const source = run.sources[domain];
-    run.busy = true; run.lastReadAt = now();
+    run.busy = true; run.lastReadAt = now(); lastExternalReadAt = run.lastReadAt;
     let items = [];
     try {
       const page = await readPage(run, domain);
@@ -208,25 +268,59 @@ async function readOwnedPage(chromeApi, run, domain) {
   if (!result?.ok) throw { code: SAFE_CODES.has(result?.errorCode) ? result.errorCode : 'DOUBAN_BROWSER_INVALID', reason: safeReason(result?.errorReason) ?? (plain(result) ? undefined : 'result_shape') };
   return result.page;
 }
+async function readOwnedSubject(chromeApi, job) {
+  const domain = job.domain, url = 'https://' + HOSTS[domain] + '/subject/' + job.subjectId + '/';
+  let firstPage = false;
+  if (job.tabs[domain] !== undefined) {
+    try { await chromeApi.tabs.get(job.tabs[domain]); }
+    catch { delete job.tabs[domain]; }
+  }
+  if (job.tabs[domain] === undefined) {
+    const tab = await chromeApi.tabs.create({ url, active: false });
+    if (!Number.isInteger(tab.id)) throw { code: 'DOUBAN_BROWSER_NETWORK' };
+    job.tabs[domain] = tab.id; firstPage = true;
+  }
+  if (job.status !== 'running') throw { code: 'DOUBAN_BROWSER_INVALID' };
+  const tabId = job.tabs[domain], tab = await readyTab(chromeApi, tabId);
+  let here;
+  try { here = new URL(tab.url); } catch { throw { code: 'DOUBAN_BROWSER_LOGIN_REQUIRED' }; }
+  if (here.protocol !== 'https:' || here.hostname !== HOSTS[domain] || here.port || here.username || here.password
+    || !/^\/subject\/[1-9]\d{0,15}\/?$/.test(here.pathname)) throw { code: 'DOUBAN_BROWSER_LOGIN_REQUIRED', reason: 'document_position' };
+  if (job.status !== 'running') throw { code: 'DOUBAN_BROWSER_INVALID' };
+  try { await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', files: ['collector-parser.js', 'collector.js'] }); }
+  catch { throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'script_unavailable' }; }
+  if (job.status !== 'running') throw { code: 'DOUBAN_BROWSER_INVALID' };
+  let results;
+  try { results = await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: collectOwnedPage,
+    args: [{ runId: job.id, profileId: job.profileId, domain, subjectId: job.subjectId, mode: 'subject', url, firstPage }] }); }
+  catch { throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'document_unavailable' }; }
+  const result = results?.[0]?.result;
+  if (!result?.ok) throw { code: SAFE_CODES.has(result?.errorCode) ? result.errorCode : 'DOUBAN_BROWSER_INVALID', reason: safeReason(result?.errorReason) };
+  return result.page;
+}
 function cancelOwnedRead(runId) {
   if (globalThis.__jiashuDoubanRead?.runId === runId) globalThis.__jiashuDoubanRead.controller.abort();
 }
 /** Serialized by Chrome; every dependency intentionally stays inside this function. */
 async function collectOwnedPage(request) {
   const allowed = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
-  const expected = new URL(request.url); let controller; let timer;
+  const expected = new URL(request.url), subject = request.mode === 'subject'; let controller; let timer;
   const invalid = (code, reason) => { throw { code, reason }; };
   try {
+    const permittedPath = subject ? '/subject/' + request.subjectId + '/' : '/people/' + request.profileId + '/collect';
+    const positioned = subject ? /^\/subject\/[1-9]\d{0,15}\/?$/.test(location.pathname)
+      : [expected.pathname, expected.pathname + '/'].includes(location.pathname);
     if (location.protocol !== 'https:' || location.hostname !== allowed[request.domain] || location.port || location.username || location.password
-      || expected.origin !== location.origin || expected.pathname !== '/people/' + request.profileId + '/collect'
-      || ![expected.pathname, expected.pathname + '/'].includes(location.pathname)) invalid('DOUBAN_BROWSER_LOGIN_REQUIRED', 'document_position');
-    if (typeof globalThis.JiashuDoubanCollector?.parseCollection !== 'function') invalid('DOUBAN_BROWSER_INVALID', 'script_unavailable');
+      || expected.origin !== location.origin || expected.pathname !== permittedPath || !positioned
+      || subject && !/^[1-9]\d{0,15}$/.test(request.subjectId)) invalid('DOUBAN_BROWSER_LOGIN_REQUIRED', 'document_position');
+    if (typeof globalThis.JiashuDoubanCollector?.[subject ? 'parseSubject' : 'parseCollection'] !== 'function') invalid('DOUBAN_BROWSER_INVALID', 'script_unavailable');
     controller = new AbortController(); globalThis.__jiashuDoubanRead = { runId: request.runId, controller };
     const timeout = new Promise((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject({ code: 'DOUBAN_BROWSER_TIMEOUT' }); }, 15000); });
     const read = async () => {
       let html;
       if (request.firstPage) {
-        if (Number(new URL(location.href).searchParams.get('start') ?? '0') !== request.start) invalid('DOUBAN_BROWSER_INVALID', 'document_position');
+        if (subject ? ![expected.pathname, expected.pathname.slice(0, -1)].includes(location.pathname)
+          : Number(new URL(location.href).searchParams.get('start') ?? '0') !== request.start) invalid('DOUBAN_BROWSER_INVALID', 'document_position');
         if (typeof document.documentElement?.outerHTML !== 'string') invalid('DOUBAN_BROWSER_INVALID', 'document_unavailable');
         html = document.documentElement.outerHTML;
       } else {
@@ -248,7 +342,8 @@ async function collectOwnedPage(request) {
         } finally { controller.signal.removeEventListener('abort', stop); reader.releaseLock(); }
       }
       if (controller.signal.aborted) invalid('DOUBAN_BROWSER_TIMEOUT');
-      const page = globalThis.JiashuDoubanCollector.parseCollection(html, request.profileId, request.domain, request.start);
+      const page = subject ? globalThis.JiashuDoubanCollector.parseSubject(html, request.domain, request.subjectId)
+        : globalThis.JiashuDoubanCollector.parseCollection(html, request.profileId, request.domain, request.start);
       return { ok: true, page };
     };
     return await Promise.race([read(), timeout]);

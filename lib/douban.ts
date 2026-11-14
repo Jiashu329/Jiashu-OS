@@ -1,4 +1,6 @@
 /** Data imported from a person's explicit completed collection; no login credentials. */
+import { parseDoubanDetails, type DoubanSubjectDetails } from './douban-details.ts';
+export type { DoubanSubjectDetails } from './douban-details.ts';
 export const DOUBAN_DOMAINS = ['screen', 'book', 'music'] as const;
 export type DoubanDomain = typeof DOUBAN_DOMAINS[number];
 export type DoubanKind = 'screen' | 'movie' | 'series' | 'book' | 'music';
@@ -15,6 +17,8 @@ export interface DoubanRecordInput {
   /** RSS publication timestamp, never substituted for a collection marking date. */
   publishedAt: string | null;
   source: 'collection' | 'rss' | 'import';
+  /** Public work information, separate from this person's rating and comment. */
+  details?: DoubanSubjectDetails;
 }
 export class DoubanValidationError extends Error {
   readonly code = 'INVALID_DOUBAN_INPUT';
@@ -69,7 +73,7 @@ export function normalizeDoubanCover(raw: unknown): string | null {
 }
 export function parseDoubanRecord(raw: unknown): DoubanRecordInput {
   const fields = ['domain', 'subjectId', 'title', 'url', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'];
-  if (!plain(raw) || Reflect.ownKeys(raw).some(key => typeof key !== 'string' || !fields.includes(key))
+  if (!plain(raw) || Reflect.ownKeys(raw).some(key => typeof key !== 'string' || !fields.includes(key) && key !== 'details')
     || fields.some(key => !Object.hasOwn(raw, key))) throw new DoubanValidationError('豆瓣条目需要完整且受支持的字段。');
   if (typeof raw.domain !== 'string' || !DOUBAN_DOMAINS.includes(raw.domain as DoubanDomain)) throw new DoubanValidationError('请选择影视、书籍或音乐分类。');
   const domain = raw.domain as DoubanDomain;
@@ -90,7 +94,10 @@ export function parseDoubanRecord(raw: unknown): DoubanRecordInput {
   }
   if (!['collection', 'rss', 'import'].includes(String(raw.source))) throw new DoubanValidationError('豆瓣条目来源不正确。');
   if (raw.source === 'rss' && raw.markedDate !== null) throw new DoubanValidationError('RSS 发布时间不能代替标记日期。');
+  let details: DoubanSubjectDetails;
+  try { details = parseDoubanDetails(raw.details); } catch { throw new DoubanValidationError('豆瓣作品详情含有不支持或超出限制的字段。'); }
   return { domain, subjectId: raw.subjectId, title: raw.title.trim(), url, kind: raw.kind as DoubanKind,
     coverUrl: normalizeDoubanCover(raw.coverUrl), rating: raw.rating as DoubanRecordInput['rating'], markedDate: raw.markedDate as string | null,
-    comment: typeof raw.comment === 'string' && raw.comment.trim() ? raw.comment.trim() : null, publishedAt, source: raw.source as DoubanRecordInput['source'] };
+    comment: typeof raw.comment === 'string' && raw.comment.trim() ? raw.comment.trim() : null, publishedAt, source: raw.source as DoubanRecordInput['source'],
+    ...(Object.keys(details).length ? { details } : {}) };
 }

@@ -11,6 +11,7 @@ const OWNER_KEY = '11111111-2222-4333-8444-555555555555';
 const RAW_SECRET = 'PRIVATE-HTML-MUST-STAY-IN-DOUBAN-TAB';
 const COOKIE_SECRET = 'SYNTHETIC-BROWSER-LOGIN-NEVER-UPLOAD';
 const hosts = { screen: 'movie', book: 'book', music: 'music' };
+const SUBJECT_IDS = { screen: '9400000', book: '9500000', music: '9600000' };
 const assetTypes = {
   '/favicon.ico': 'image/x-icon', '/apple-touch-icon.png': 'image/png', '/manifest.webmanifest': 'application/manifest+json',
   '/brand/logo-192.png': 'image/png', '/brand/favicon-32.png': 'image/png', '/brand/icon-192.png': 'image/png',
@@ -44,6 +45,25 @@ function collectionHTML(domain, start = 0) {
     + inert + '</body></html>';
 }
 
+function subjectHTML(domain, subjectId, inert = false) {
+  const url = 'https://' + hosts[domain] + '.douban.com/subject/' + subjectId + '/';
+  const title = { screen: '合成电影作品', book: '合成图书作品', music: '合成音乐作品' }[domain];
+  const type = { screen: 'Movie', book: 'Book', music: 'MusicAlbum' }[domain];
+  const info = domain === 'screen' ? '<span class="pl">导演:</span> 合成导演<br><span class="pl">编剧:</span> 合成编剧<br><span class="pl">主演:</span> 合成演员<br><span class="pl">类型:</span> 剧情<br><span class="pl">制片国家/地区:</span> 中国大陆<br><span class="pl">语言:</span> 汉语普通话<br><span class="pl">上映日期:</span> 2024-02-10(中国大陆)<br><span class="pl">片长:</span> 120分钟<br>'
+    : domain === 'book' ? '<span class="pl">作者:</span> 合成作者<br><span class="pl">译者:</span> 合成译者<br><span class="pl">出版社:</span> 合成出版社<br><span class="pl">出版年:</span> 2024-03<br><span class="pl">页数:</span> 320<br><span class="pl">ISBN:</span> 9787020002207<br><span class="pl">装帧:</span> 平装<br>'
+      : '<span class="pl">表演者:</span> 合成歌手<br><span class="pl">流派:</span> 民谣<br><span class="pl">专辑类型:</span> 专辑<br><span class="pl">介质:</span> CD<br><span class="pl">发行时间:</span> 2024-06-01<br><span class="pl">出版者:</span> 合成唱片<br>';
+  return '<!doctype html><html><head><title>' + title + '</title><link rel="icon" href="data:,"><link rel="canonical" href="' + url + '"><meta property="og:url" content="' + url + '">'
+    + '<meta property="og:image" content="https://img1.doubanio.com/view/subject/s/public/s' + subjectId + '.jpg">'
+    + '<script type="application/ld+json">' + JSON.stringify({ '@type': type, url, name: title, datePublished: '2024-02-10', aggregateRating: { '@type': 'AggregateRating', ratingValue: 8.6, ratingCount: 12345 } }) + '</script></head><body>'
+    + '<h1><span property="v:itemreviewed">' + title + '</span><span class="year">(2024)</span></h1><div id="info">' + info + '</div>'
+    + '<div class="rating_self"><strong class="rating_num" property="v:average">8.6</strong><span property="v:votes">12345</span></div>'
+    + '<div id="link-report"><span property="v:summary">合成作品简介，只有公开资料。</span></div>'
+    + (domain === 'music' ? '<div id="tracklist"><div class="track-list">01. 第一首合成曲目<br>02. 第二首合成曲目</div></div>' : '')
+    + (inert ? '<p>' + RAW_SECRET + '</p><img src="https://private-import.invalid/subject-pixel"><iframe src="https://private-import.invalid/subject-frame"></iframe>'
+      + '<style>body{background:url(https://private-import.invalid/subject-style)}</style>'
+      + '<script>globalThis.__doubanSubjectRawExecuted=true;fetch("https://private-import.invalid/subject-script")</script>' : '') + '</body></html>';
+}
+
 const test = base.extend({
   extension: async ({ playwright: _playwright }, provide, testInfo) => {
     if (process.env.SITES_MANAGED_LINUX_CONTAINER === '1') throw new Error('Real MV3 acceptance is CI/local-only; never launch a browser inside managed Sites.');
@@ -52,6 +72,8 @@ const test = base.extend({
     const extensionPath = resolve(import.meta.dirname, '../../browser-extension/douban');
     const fixtureHosts = [new URL(ORIGIN).hostname, 'not-jiashu.invalid', ...Object.values(hosts).map(host => host + '.douban.com')];
     const fixtureOrigins = new Set(fixtureHosts.map(host => 'https://' + host));
+    const subjects = new Map(Object.entries(SUBJECT_IDS).map(([domain, subjectId]) => [domain + ':' + subjectId, subjectHTML(domain, subjectId)]));
+    subjects.set('screen:9400001', subjectHTML('screen', '9400001', true));
     // Start the transport before Chrome, so even its first extension-created tab
     // is synthetic. Playwright request routes attach too late for that navigation.
     const offline = await startOfflineProxy({
@@ -68,6 +90,8 @@ const test = base.extend({
         if (url.origin === ORIGIN && url.pathname === '/life/douban') return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: renderBrowserFixture('/life/douban') };
         if ((url.origin === ORIGIN && url.pathname === '/not-the-douban-page') || (url.origin === 'https://not-jiashu.invalid' && url.pathname === '/life/douban')) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: '<!doctype html><title>Synthetic denied origin</title><link rel="icon" href="data:,"><p>Not an authorized extension caller</p>' };
         const domain = Object.keys(hosts).find(key => url.hostname === hosts[key] + '.douban.com');
+        const subjectId = /^\/subject\/([1-9]\d*)\/$/.exec(url.pathname)?.[1];
+        if (domain && subjectId && subjects.has(domain + ':' + subjectId)) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: subjects.get(domain + ':' + subjectId) };
         if (domain && url.pathname === '/people/' + PROFILE + '/collect') {
           const start = Number(url.searchParams.get('start') ?? 0);
           if ((domain === 'screen' && [0, 15].includes(start)) || (domain !== 'screen' && start === 0)) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: collectionHTML(domain, start) };
@@ -96,7 +120,7 @@ const test = base.extend({
       const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
       expect(new URL(worker.url()).hostname).toBe(EXTENSION_ID);
       page = await context.newPage();
-      await provide({ context, page, worker, requests, unexpected });
+      await provide({ context, page, worker, requests, unexpected, subjects });
     }
     finally {
       await Promise.allSettled([page && !page.isClosed() ? page.screenshot({ path: testInfo.outputPath('extension-page.png'), fullPage: true }) : undefined,
@@ -117,14 +141,16 @@ async function bridge(page, payload) {
     });
   }), { id: EXTENSION_ID, payload });
 }
-const collectionRequests = requests => requests.filter(request => Object.values(hosts).some(host => new URL(request.url).hostname === host + '.douban.com'));
+const collectionRequests = requests => requests.filter(request => Object.values(hosts).some(host => new URL(request.url).hostname === host + '.douban.com') && new URL(request.url).pathname.startsWith('/people/'));
+const subjectRequests = requests => requests.filter(request => new URL(request.url).pathname.startsWith('/subject/'));
 
 test('the actual MV3 package accepts only the production media page handshake without reading Douban automatically', async ({ extension }) => {
   const { page, requests, context } = extension;
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
+  expect(subjectRequests(requests)).toEqual([]);
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.3', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
@@ -132,6 +158,57 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await denied.goto('https://not-jiashu.invalid/life/douban');
   expect(await bridge(denied, message('CONNECT'))).not.toMatchObject({ ok: true });
   expect(collectionRequests(requests)).toEqual([]);
+});
+
+test('native subject reads reuse browser login for movies, books and music and return public work fields without private HTML', async ({ extension }) => {
+  const { page, context, requests } = extension;
+  await page.goto(ORIGIN + '/life/douban');
+  await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
+  expect(subjectRequests(requests)).toEqual([]);
+  const results = [];
+  for (const [index, domain] of ['screen', 'book', 'music'].entries()) {
+    const payload = message('SUBJECT', { requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-' + String(100 + index).padStart(12, '0'), domain, subjectId: SUBJECT_IDS[domain] });
+    const result = await bridge(page, payload);
+    expect(result).toMatchObject({ ok: true, data: { requestId: payload.requestId, domain, subjectId: SUBJECT_IDS[domain], metadata: {
+      kind: domain === 'screen' ? 'movie' : domain, details: { doubanRating: 8.6, ratingCount: 12345, summary: '合成作品简介，只有公开资料。' } } } });
+    expect(Object.keys(result.data.metadata).sort()).toEqual(['kind', 'coverUrl', 'details'].sort());
+    expect(result.data.metadata).not.toHaveProperty('rating');
+    expect(result.data.metadata).not.toHaveProperty('comment');
+    results.push(result);
+    if (index === 0) {
+      expect(await bridge(page, payload)).toEqual(result);
+      const conflict = await bridge(page, { ...payload, subjectId: '9400001' });
+      expect(conflict).toMatchObject({ ok: false, error: { code: 'STEP_CONFLICT' } });
+      expect(subjectRequests(requests)).toHaveLength(1);
+    }
+    if (index < 2) await page.waitForTimeout(1600);
+  }
+  expect(results[0].data.metadata.details).toMatchObject({ directors: ['合成导演'], duration: '120分钟' });
+  expect(results[1].data.metadata.details).toMatchObject({ authors: ['合成作者'], publisher: '合成出版社', pages: 320, isbn: '9787020002207' });
+  expect(results[2].data.metadata.details).toMatchObject({ artists: ['合成歌手'], albumType: '专辑', label: '合成唱片' });
+  expect(subjectRequests(requests).map(request => request.nativeLogin)).toEqual([true, true, true]);
+  await page.waitForTimeout(1600);
+  // A different subject on the same owned tab is fetched and parsed inertly.
+  const followup = await bridge(page, message('SUBJECT', { requestId: 'cccccccc-dddd-4eee-8fff-111111111111', domain: 'screen', subjectId: '9400001' }));
+  expect(followup).toMatchObject({ ok: true, data: { metadata: { kind: 'movie', details: { doubanRating: 8.6 } } } });
+  results.push(followup);
+  expect(subjectRequests(requests)).toHaveLength(4);
+  expect(subjectRequests(requests)[3].nativeLogin).toBe(true);
+  expect(JSON.stringify(results)).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));
+  for (const sourcePage of context.pages().filter(tab => /\.douban\.com\/subject\//.test(tab.url()))) expect(await sourcePage.evaluate(() => globalThis.__doubanSubjectRawExecuted)).toBeUndefined();
+  expect(requests.filter(request => new URL(request.url).origin === ORIGIN && request.method !== 'GET')).toEqual([]);
+});
+
+test('a native subject challenge returns a safe fixed error and does not expose or activate its response', async ({ extension }) => {
+  const { page, requests, subjects } = extension;
+  subjects.set('screen:' + SUBJECT_IDS.screen, '<!doctype html><title>安全验证</title><link rel="icon" href="data:,"><p>' + RAW_SECRET + '</p>');
+  await page.goto(ORIGIN + '/life/douban');
+  await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
+  const result = await bridge(page, message('SUBJECT', { requestId: 'bbbbbbbb-cccc-4ddd-8eee-111111111111', domain: 'screen', subjectId: SUBJECT_IDS.screen }));
+  expect(result).toMatchObject({ ok: false, error: { code: 'DOUBAN_BROWSER_CHALLENGE' } });
+  expect(subjectRequests(requests)).toHaveLength(1);
+  expect(subjectRequests(requests)[0].nativeLogin).toBe(true);
+  expect(JSON.stringify(result)).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<script'));
 });
 
 test('native collection follows the real fifteen-item type-all movie pagination and mine navigation without activating raw HTML', async ({ extension }) => {
