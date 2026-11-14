@@ -57,6 +57,7 @@ export const DOUBAN_EXTENSION_SCRIPT = String.raw`
    state.saved+=receipt.total;state.added+=receipt.added;state.updated+=receipt.updated;state.unchanged+=receipt.unchanged;state.pages++;state.page=null;
   }
   function summary(){return '已处理 '+state.pages+' 步，已保存 '+state.saved+' 条（新增 '+state.added+'、更新 '+state.updated+'、未变化 '+state.unchanged+'）。';}
+  function completionNote(){return state.run?.done&&state.pages>0&&state.run.progress?.accountProfileId==null?' 本次仅完成当前可访问记录；未能确认豆瓣登录账户，私密记录可能未包含，请点击“登录豆瓣”后重新同步。':'';}
   async function connect(){if(outsideLocked()||state.busy||!profileOK(options.getConnection()?.profileId))return;state.busy=true;notify();message('正在检测浏览器扩展连接…');try{const data=await send(envelope('CONNECT'));if(accountChanged())return;if(data?.protocolVersion!==1||typeof data.extensionVersion!=='string')throw new Error('扩展版本不兼容，请重新下载并加载最新版。');state.connected=true;message('浏览器扩展可连接。实际同步时会核对豆瓣账号和读取权限。');}catch(error){if(!accountChanged())message(error.message,true);}finally{state.busy=false;notify();}}
   async function login(){if(outsideLocked()||state.busy||pending()||!supported()||!profileOK(options.getConnection()?.profileId))return;state.busy=true;notify();message('正在打开普通豆瓣登录页…');try{const result=await send(envelope('LOGIN',{profileId:options.getConnection().profileId}));if(result?.opened!==true)throw new Error('登录页打开结果未能确认，请手动打开豆瓣登录。');if(!accountChanged())message('已打开豆瓣登录页。请在该标签页完成登录，再回本站点击“通过浏览器同步”。');}catch(error){if(!accountChanged())message(error.message||'未能打开登录页，请在普通浏览器标签页手动登录豆瓣。',true);}finally{state.busy=false;notify();}}
   async function reconcileOriginal(){
@@ -79,7 +80,7 @@ export const DOUBAN_EXTENSION_SCRIPT = String.raw`
      if(state.stop||state.run.done)break;if(step<19)await new Promise(resolve=>setTimeout(resolve,1500));
     }
    }catch(error){if(!state.run&&!pending())state.pin=null;if(error?.code==='RUN_NOT_FOUND'&&!state.page){state.run=null;state.pendingStep=null;state.pin=null;}errorText=error.message||'本次同步结果尚未确认，请保留本页重试。';}
-   finally{state.busy=false;const paused=state.stop;state.stop=false;if(!accountChanged()){if(state.pages>0)await options.onSaved();message(errorText?errorText+(state.page?.commit?' 请点击“重试并继续浏览器同步”核对原保存提交。':''):state.run?.done?(state.run.progress?.status==='completed'?'浏览器同步完成。':'浏览器同步部分完成，请查看各来源的读取结果。')+' '+summary():paused?'已暂停浏览器同步，当前页已保存。'+summary():'本批同步已完成，仍有后续页面。点击“继续浏览器同步”继续。'+summary(),Boolean(errorText));}notify();}
+   finally{state.busy=false;const paused=state.stop;state.stop=false;if(!accountChanged()){if(state.pages>0)await options.onSaved();message(errorText?errorText+(state.page?.commit?' 请点击“重试并继续浏览器同步”核对原保存提交。':''):state.run?.done?(state.run.progress?.status==='completed'?'浏览器同步完成。':'浏览器同步部分完成，请查看各来源的读取结果。')+' '+summary()+completionNote():paused?'已暂停浏览器同步，当前页已保存。'+summary():'本批同步已完成，仍有后续页面。点击“继续浏览器同步”继续。'+summary(),Boolean(errorText));}notify();}
   }
   function cancel(){if(!state.run)return;const body=envelope('CANCEL',{runId:state.run.runId});send(body).catch(()=>{});}
   function resetData(){state.run=null;state.pin=null;state.pendingStep=null;state.page=null;state.saved=0;state.added=0;state.updated=0;state.unchanged=0;state.pages=0;el('progress').hidden=true;}

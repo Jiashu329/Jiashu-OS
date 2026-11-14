@@ -2,6 +2,7 @@ import { test as base, expect, chromium } from '@playwright/test';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { renderBrowserFixture, BROWSER_FIXTURE_OWNER } from '../../scripts/browser-fixture.mjs';
+import { startOfflineProxy } from './offline-proxy.mjs';
 
 const ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
 const EXTENSION_ID = 'gbcgjkicjfbaakippafhhpadfkfifaeb';
@@ -10,6 +11,11 @@ const OWNER_KEY = '11111111-2222-4333-8444-555555555555';
 const RAW_SECRET = 'PRIVATE-HTML-MUST-STAY-IN-DOUBAN-TAB';
 const COOKIE_SECRET = 'SYNTHETIC-BROWSER-LOGIN-NEVER-UPLOAD';
 const hosts = { screen: 'movie', book: 'book', music: 'music' };
+const assetTypes = {
+  '/favicon.ico': 'image/x-icon', '/apple-touch-icon.png': 'image/png', '/manifest.webmanifest': 'application/manifest+json',
+  '/brand/logo-192.png': 'image/png', '/brand/favicon-32.png': 'image/png', '/brand/icon-192.png': 'image/png',
+  '/brand/icon-512.png': 'image/png', '/brand/icon-maskable-512.png': 'image/png',
+};
 
 function collectionHTML(domain, start = 0) {
   const label = { screen: '看过的电影', book: '读过的书', music: '听过的音乐' }[domain];
@@ -39,43 +45,50 @@ const test = base.extend({
     const profilePath = testInfo.outputPath('chromium-profile');
     await mkdir(profilePath, { recursive: true });
     const extensionPath = resolve(import.meta.dirname, '../../browser-extension/douban');
-    const context = await chromium.launchPersistentContext(profilePath, { channel: 'chromium', headless: true,
-      viewport: { width: 1440, height: 1000 }, locale: 'zh-CN', timezoneId: 'Asia/Shanghai',
-      args: ['--disable-extensions-except=' + extensionPath, '--load-extension=' + extensionPath] });
-    const requests = [], unexpected = [];
-    await context.tracing.start({ screenshots: true, snapshots: true });
-    await context.addCookies([{ name: 'synthetic_native_login', value: COOKIE_SECRET, domain: '.douban.com', path: '/', secure: true, httpOnly: true }]);
-    await context.route('**/*', async route => {
-      const request = route.request(), url = new URL(request.url());
-      if (url.protocol === 'chrome-extension:') return route.continue();
-      requests.push({ url: url.href, method: request.method(), body: request.postDataJSON() ?? null });
-      const send = data => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': BROWSER_FIXTURE_OWNER }, body: JSON.stringify(data) });
-      if (url.origin === ORIGIN && url.pathname === '/api/session') return send({ userId: BROWSER_FIXTURE_OWNER });
-      if (url.origin === ORIGIN && url.pathname === '/api/life/douban' && request.method() === 'GET') {
-        return send({ connection: { profileId: PROFILE, profileUrl: 'https://www.douban.com/people/' + PROFILE + '/', revision: 1, updatedAt: null },
-          items: [], total: 0, counts: { all: 0, movie: 0, series: 0, screen: 0, book: 0, music: 0 }, offset: 0, limit: 24, hasMore: false, lastRun: null });
-      }
-      if (url.origin === ORIGIN && url.pathname === '/life/douban') return route.fulfill({ status: 200, contentType: 'text/html', body: renderBrowserFixture('/life/douban') });
-      if ((url.origin === ORIGIN && url.pathname === '/not-the-douban-page') || url.origin === 'https://not-jiashu.invalid') return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Synthetic denied origin</title><link rel="icon" href="data:,"><p>Not an authorized extension caller</p>' });
-      const domain = Object.keys(hosts).find(key => url.hostname === hosts[key] + '.douban.com');
-      if (domain && url.protocol === 'https:' && url.pathname === '/people/' + PROFILE + '/collect' && request.method() === 'GET') {
-        const start = Number(url.searchParams.get('start') ?? 0);
-        if ((domain === 'screen' && [0, 1].includes(start)) || (domain !== 'screen' && start === 0)) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: collectionHTML(domain, start) });
-      }
-      if (url.origin === ORIGIN && (url.pathname.startsWith('/brand/') || ['/favicon.ico', '/site.webmanifest'].includes(url.pathname))) {
-        try { return route.fulfill({ status: 200, contentType: url.pathname.endsWith('.svg') ? 'image/svg+xml' : 'image/png', body: await readFile(resolve(import.meta.dirname, '../../public', '.' + url.pathname)) }); } catch { /* An unknown asset remains blocked below. */ }
-      }
-      unexpected.push(url.href);
-      return route.abort('blockedbyclient');
+    // Start the transport before Chrome, so even its first extension-created tab
+    // is synthetic. Playwright request routes attach too late for that navigation.
+    const offline = await startOfflineProxy({
+      allowedHosts: [new URL(ORIGIN).hostname, 'not-jiashu.invalid', ...Object.values(hosts).map(host => host + '.douban.com')],
+      nativeLoginCookie: { name: 'synthetic_native_login', value: COOKIE_SECRET },
+      respond: async (url, method) => {
+        if (method !== 'GET') return null;
+        const send = data => ({ headers: { 'Content-Type': 'application/json', 'X-Account-Owner': BROWSER_FIXTURE_OWNER }, body: JSON.stringify(data) });
+        if (url.origin === ORIGIN && url.pathname === '/api/session') return send({ userId: BROWSER_FIXTURE_OWNER });
+        if (url.origin === ORIGIN && url.pathname === '/api/life/douban') {
+          return send({ connection: { profileId: PROFILE, profileUrl: 'https://www.douban.com/people/' + PROFILE + '/', revision: 1, updatedAt: null },
+            items: [], total: 0, counts: { all: 0, movie: 0, series: 0, screen: 0, book: 0, music: 0 }, offset: 0, limit: 24, hasMore: false, lastRun: null });
+        }
+        if (url.origin === ORIGIN && url.pathname === '/life/douban') return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: renderBrowserFixture('/life/douban') };
+        if ((url.origin === ORIGIN && url.pathname === '/not-the-douban-page') || (url.origin === 'https://not-jiashu.invalid' && url.pathname === '/life/douban')) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: '<!doctype html><title>Synthetic denied origin</title><link rel="icon" href="data:,"><p>Not an authorized extension caller</p>' };
+        const domain = Object.keys(hosts).find(key => url.hostname === hosts[key] + '.douban.com');
+        if (domain && url.pathname === '/people/' + PROFILE + '/collect') {
+          const start = Number(url.searchParams.get('start') ?? 0);
+          if ((domain === 'screen' && [0, 1].includes(start)) || (domain !== 'screen' && start === 0)) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: collectionHTML(domain, start) };
+        }
+        if (url.origin === ORIGIN && Object.hasOwn(assetTypes, url.pathname)) return { headers: { 'Content-Type': assetTypes[url.pathname] }, body: await readFile(resolve(import.meta.dirname, '../../public', '.' + url.pathname)) };
+        return null;
+      },
     });
-    const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
-    expect(new URL(worker.url()).hostname).toBe(EXTENSION_ID);
-    const page = await context.newPage();
-    try { await provide({ context, page, worker, requests, unexpected }); }
+    const { requests, unexpected } = offline;
+    let context, page, tracing = false;
+    try {
+      context = await chromium.launchPersistentContext(profilePath, { channel: 'chromium', headless: true,
+        viewport: { width: 1440, height: 1000 }, locale: 'zh-CN', timezoneId: 'Asia/Shanghai', ignoreHTTPSErrors: true,
+        proxy: { server: offline.proxy, bypass: '<-loopback>' },
+        args: ['--disable-extensions-except=' + extensionPath, '--load-extension=' + extensionPath,
+          '--ignore-certificate-errors', '--disable-quic', '--disable-background-networking',
+          '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'] });
+      await context.tracing.start({ screenshots: true, snapshots: true }); tracing = true;
+      await context.addCookies([{ name: 'synthetic_native_login', value: COOKIE_SECRET, domain: '.douban.com', path: '/', secure: true, httpOnly: true }]);
+      const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+      expect(new URL(worker.url()).hostname).toBe(EXTENSION_ID);
+      page = await context.newPage();
+      await provide({ context, page, worker, requests, unexpected });
+    }
     finally {
-      if (!page.isClosed()) await page.screenshot({ path: testInfo.outputPath('extension-page.png'), fullPage: true });
-      await context.tracing.stop({ path: testInfo.outputPath('extension-trace.zip') });
-      await context.close();
+      await Promise.allSettled([page && !page.isClosed() ? page.screenshot({ path: testInfo.outputPath('extension-page.png'), fullPage: true }) : undefined,
+        tracing ? context.tracing.stop({ path: testInfo.outputPath('extension-trace.zip') }) : undefined]);
+      try { await context?.close(); } finally { await offline.close(); }
       expect(unexpected, 'Every HTTP response must be synthetic; the collector must never activate fetched raw HTML resources').toEqual([]);
     }
   },
@@ -140,6 +153,7 @@ test('native isolated-world collection returns normalized completed pages, repla
   expect(poll).toMatchObject({ ok: true, data: { done: true, step: 4 } });
   expect(poll.data).not.toHaveProperty('items');
   expect(collectionRequests(requests)).toHaveLength(4);
+  expect(collectionRequests(requests).map(request => request.nativeLogin)).toEqual([true, true, true, true]);
   expect(JSON.stringify({ results, replayedFirst, poll })).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));
   const sourcePage = context.pages().find(tab => tab.url().startsWith('https://movie.douban.com/people/'));
   expect(sourcePage).toBeTruthy();

@@ -1,8 +1,8 @@
 import { defineConfig } from '@playwright/test';
 import { resolve } from 'node:path';
 
-// This isolated suite loads the actual MV3 package. It serves every HTTP response
-// through Playwright routes, without starting an application or contacting users.
+// This isolated suite loads the actual MV3 package. A loopback-only HTTPS proxy
+// serves synthetic responses, including extension-created tabs' first navigation.
 export default defineConfig({
   testDir: '.',
   testMatch: '**/*.spec.mjs',
