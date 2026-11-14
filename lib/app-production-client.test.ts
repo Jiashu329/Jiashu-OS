@@ -158,7 +158,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       assert.equal(id, 'gbcgjkicjfbaakippafhhpadfkfifaeb'); doubanExtensionMessages.push(structuredClone(body));
       const data = body.action === 'START' ? { runId: '11111111-1111-4111-8111-111111111111', step: 0, done: false, progress: progress() }
         : body.action === 'STEP' ? { runId: body.runId, step: Number(body.step) + 1, done: true, items: imported, progress: progress(true) }
-          : { extensionVersion: '1.0.1', protocolVersion: 1 };
+          : { extensionVersion: '1.0.2', protocolVersion: 1 };
       queueMicrotask(() => callback({ ok: true, data }));
     } } } });
   }

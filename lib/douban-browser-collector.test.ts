@@ -75,6 +75,27 @@ void test('declared collection identity and every next link must stay on the sel
   }
 });
 
+void test('actual movie collection pagination uses unfiltered type=all and may omit rating=all', () => {
+  const ids = Array.from({ length: 15 }, (_, index) => String(1234567 + index));
+  const next = 'https://movie.douban.com/people/mine/collect?start=15&amp;sort=time&amp;type=all&amp;filter=all&amp;mode=grid';
+  const canonical = '<link rel="canonical" href="https://movie.douban.com/people/mine/collect?start=0&amp;sort=time&amp;type=all&amp;filter=all&amp;mode=grid">';
+  const html = page('screen', ids, 30, 15, 'grid', canonical).replace(/<a href="https:\/\/movie\.douban\.com\/people\/mine\/collect\?[^"]+">下一页<\/a>/, '<a href="' + next + '">下一页</a>');
+  assert.ok(html.includes('<a href="' + next + '">下一页</a>'));
+  const result = parser.parseCollection(html, 'mine', 'screen');
+  assert.equal(result.items.length, 15); assert.equal(result.total, 30); assert.equal(result.nextStart, 15); assert.equal(result.accountProfileId, null);
+  assert.equal(result.items.every(item => item.domain === 'screen' && item.kind === 'screen'), true);
+  for (const key of ['type', 'filter']) {
+    for (const raw of [html.replace(next, next.replace(key + '=all', key + '=1')), html.replace(canonical, canonical.replace(key + '=all', key + '=1')),
+      html.replaceAll(key + '=all', key + '=all&amp;' + key + '=all')]) {
+      assert.throws(() => parser.parseCollection(raw, 'mine', 'screen'), (error: unknown) => {
+        assert.ok(error instanceof Error && 'code' in error && 'reason' in error);
+        assert.equal(error.code, 'DOUBAN_BROWSER_INVALID'); assert.equal(error.reason, 'pagination_query');
+        return true;
+      });
+    }
+  }
+});
+
 void test('wish/doing, ambiguous empty, duplicate rows and broken pagination never become success', () => {
   assert.deepEqual(parser.parseCollection(page('music', [], 0), 'mine', 'music'), { items: [], nextStart: null, total: 0, accountProfileId: null });
   for (const raw of [page().replaceAll('看过的电影', '想看的电影'), page().replaceAll('看过的电影', '在看的电影'), page('screen', [], 1),

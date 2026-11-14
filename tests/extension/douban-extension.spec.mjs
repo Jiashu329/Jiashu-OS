@@ -19,23 +19,28 @@ const assetTypes = {
 
 function collectionHTML(domain, start = 0) {
   const label = { screen: '看过的电影', book: '读过的书', music: '听过的音乐' }[domain];
-  const total = domain === 'screen' ? 2 : 1;
-  const subjectId = String({ screen: 9100000, book: 9200000, music: 9300000 }[domain] + start);
-  const title = '扩展合成' + { screen: '影视', book: '图书', music: '音乐' }[domain] + start;
+  const total = domain === 'screen' ? 16 : 1;
+  const count = domain === 'screen' && start === 0 ? 15 : 1;
   const collection = 'https://' + hosts[domain] + '.douban.com/people/' + PROFILE + '/collect';
+  const canonical = domain === 'screen' ? collection + '?start=' + start + '&sort=time&type=all&filter=all&mode=grid' : collection;
+  const rows = Array.from({ length: count }, (_, index) => {
+    const subjectId = String({ screen: 9100000, book: 9200000, music: 9300000 }[domain] + start + index);
+    const title = '扩展合成' + { screen: '影视', book: '图书', music: '音乐' }[domain] + (start + index);
+    return '<div class="item"><div class="pic"><img data-original="https://img1.doubanio.com/view/subject/s/public/s' + subjectId + '.jpg"></div>'
+      + '<div class="info"><ul><li class="title"><a href="https://' + hosts[domain] + '.douban.com/subject/' + subjectId + '/"><em>' + title + '</em></a></li>'
+      + '<li><span class="rating4-t"></span><span class="date">2026-11-12</span></li><li class="comment">扩展合成个人短评</li></ul></div></div>';
+  }).join('');
   // Only a fetched subsequent page contains active-resource markup. The real
   // isolated-world parser must inspect it through an unattached template.
   const inert = start ? '<p>' + RAW_SECRET + '</p><img src="https://private-import.invalid/pixel">'
     + '<iframe src="https://private-import.invalid/frame" srcdoc="<img src=https://private-import.invalid/srcdoc>"></iframe>'
     + '<link rel="stylesheet" href="https://private-import.invalid/style"><style>@import url(https://private-import.invalid/import);body{background:url(https://private-import.invalid/background)}</style>'
     + '<script>globalThis.__doubanExtensionRawExecuted=true;fetch("https://private-import.invalid/script")</script>' : '';
-  return '<!doctype html><html><head><title>合成用户' + label + '(' + total + ')</title><link rel="icon" href="data:,"><link rel="canonical" href="' + collection + '"></head><body>'
+  return '<!doctype html><html><head><title>合成用户' + label + '(' + total + ')</title><link rel="icon" href="data:,"><link rel="canonical" href="' + canonical + '"></head><body>'
     + '<div id="db-global-nav"><div class="nav-user-account"><a href="https://www.douban.com/mine/">个人主页</a></div></div>'
-    + '<h1>合成用户' + label + '(' + total + ')</h1><span class="subject-num">' + (start + 1) + '-' + (start + 1) + ' / ' + total + '</span>'
-    + '<div class="grid-view"><div class="item"><div class="pic"><img data-original="https://img1.doubanio.com/view/subject/s/public/s' + subjectId + '.jpg"></div>'
-    + '<div class="info"><ul><li class="title"><a href="https://' + hosts[domain] + '.douban.com/subject/' + subjectId + '/"><em>' + title + '</em></a></li>'
-    + '<li><span class="rating4-t"></span><span class="date">2026-11-12</span></li><li class="comment">扩展合成个人短评</li></ul></div></div></div>'
-    + (domain === 'screen' && start === 0 ? '<div class="paginator"><span class="next"><a href="' + collection + '?start=1">后页</a></span></div>' : '')
+    + '<h1>合成用户' + label + '(' + total + ')</h1><span class="subject-num">' + (start + 1) + '-' + (start + count) + ' / ' + total + '</span>'
+    + '<div class="grid-view">' + rows + '</div>'
+    + (domain === 'screen' && start === 0 ? '<div class="paginator"><span class="next"><a href="' + collection + '?start=15&sort=time&type=all&filter=all&mode=grid">后页</a></span></div>' : '')
     + inert + '</body></html>';
 }
 
@@ -65,7 +70,7 @@ const test = base.extend({
         const domain = Object.keys(hosts).find(key => url.hostname === hosts[key] + '.douban.com');
         if (domain && url.pathname === '/people/' + PROFILE + '/collect') {
           const start = Number(url.searchParams.get('start') ?? 0);
-          if ((domain === 'screen' && [0, 1].includes(start)) || (domain !== 'screen' && start === 0)) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: collectionHTML(domain, start) };
+          if ((domain === 'screen' && [0, 15].includes(start)) || (domain !== 'screen' && start === 0)) return { headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: collectionHTML(domain, start) };
         }
         if (url.origin === ORIGIN && Object.hasOwn(assetTypes, url.pathname)) return { headers: { 'Content-Type': assetTypes[url.pathname] }, body: await readFile(resolve(import.meta.dirname, '../../public', '.' + url.pathname)) };
         return null;
@@ -119,7 +124,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.1', protocolVersion: 1 } });
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
@@ -129,7 +134,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   expect(collectionRequests(requests)).toEqual([]);
 });
 
-test('native collection with the real mine navigation returns all three sources only to the owning page without activating raw HTML', async ({ extension }) => {
+test('native collection follows the real fifteen-item type-all movie pagination and mine navigation without activating raw HTML', async ({ extension }) => {
   const { page, context, worker, requests } = extension;
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
@@ -142,7 +147,7 @@ test('native collection with the real mine navigation returns all three sources 
     const payload = message('STEP', { runId, step, requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-' + String(step + 1).padStart(12, '0') });
     const result = await bridge(page, payload);
     expect(result).toMatchObject({ ok: true, data: { runId, step: step + 1, progress: { accountProfileId: null } } });
-    expect(result.data.items).toHaveLength(1);
+    expect(result.data.items).toHaveLength(step === 0 ? 15 : 1);
     results.push(result);
     if (step === 0) {
       const anotherOwner = await bridge(page, { ...payload, ownerKey: '22222222-3333-4444-8555-666666666666' });
@@ -156,16 +161,19 @@ test('native collection with the real mine navigation returns all three sources 
     if (step < 3) await page.waitForTimeout(1600);
   }
   const items = results.flatMap(result => result.data.items);
-  expect(items.map(item => item.domain)).toEqual(['screen', 'screen', 'book', 'music']);
-  expect(items.map(item => item.kind)).toEqual(['screen', 'screen', 'book', 'music']);
+  expect(items.map(item => item.domain)).toEqual([...Array(16).fill('screen'), 'book', 'music']);
+  expect(items.map(item => item.kind)).toEqual([...Array(16).fill('screen'), 'book', 'music']);
+  expect(new Set(items.map(item => item.domain + ':' + item.subjectId)).size).toBe(18);
+  expect(items[15].subjectId).toBe('9100015');
   expect(items.every(item => item.source === 'import' && item.rating === 4 && item.markedDate === '2026-11-12' && item.comment === '扩展合成个人短评')).toBe(true);
-  expect(items.map(item => Object.keys(item).sort())).toEqual(Array.from({ length: 4 }, () => ['domain', 'subjectId', 'url', 'title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'].sort()));
-  expect(results.at(-1)).toMatchObject({ data: { done: true, progress: { status: 'completed', received: 4, pages: 4, accountProfileId: null,
-    sources: { screen: { status: 'complete', received: 2 }, book: { status: 'complete', received: 1 }, music: { status: 'complete', received: 1 } } } } });
+  expect(items.map(item => Object.keys(item).sort())).toEqual(Array.from({ length: 18 }, () => ['domain', 'subjectId', 'url', 'title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'].sort()));
+  expect(results.at(-1)).toMatchObject({ data: { done: true, progress: { status: 'completed', received: 18, pages: 4, accountProfileId: null,
+    sources: { screen: { status: 'complete', received: 16 }, book: { status: 'complete', received: 1 }, music: { status: 'complete', received: 1 } } } } });
   const poll = await bridge(page, message('POLL', { runId }));
   expect(poll).toMatchObject({ ok: true, data: { done: true, step: 4 } });
   expect(poll.data).not.toHaveProperty('items');
   expect(collectionRequests(requests)).toHaveLength(4);
+  expect(collectionRequests(requests).map(request => Number(new URL(request.url).searchParams.get('start')))).toEqual([0, 15, 0, 0]);
   expect(collectionRequests(requests).every(request => new URL(request.url).pathname === '/people/' + PROFILE + '/collect')).toBe(true);
   expect(collectionRequests(requests).map(request => request.nativeLogin)).toEqual([true, true, true, true]);
   expect(JSON.stringify({ results, replayedFirst, poll })).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));

@@ -1,6 +1,6 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.1';
+export const EXTENSION_VERSION = '1.0.2';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -25,7 +25,7 @@ const MESSAGES = {
 };
 const SAFE_CODES = new Set(Object.keys(MESSAGES));
 // Diagnostics are fixed labels, never text, URLs, HTML, or browser exceptions.
-const ERROR_REASONS = new Set(['input', 'document', 'structure_limit', 'account_link', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
+const ERROR_REASONS = new Set(['input', 'document', 'structure_limit', 'account_navigation', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
   'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity',
   'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page']);
 function safeReason(value) { return typeof value === 'string' && ERROR_REASONS.has(value) ? value : undefined; }
@@ -33,7 +33,8 @@ function failure(code, retryAfter) { return { ok: false, error: { code, message:
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function sourceProgress() { return { status: 'pending', start: 0, pages: 0, segmentPages: 0, received: 0, total: null, lastPageIds: null, errorCode: null }; }
 function collectionUrl(profileId, domain, start) {
-  return 'https://' + HOSTS[domain] + '/people/' + profileId + '/collect?' + new URLSearchParams({ start: String(start), sort: 'time', rating: 'all', filter: 'all', mode: 'grid' });
+  const all = domain === 'screen' ? { type: 'all' } : { rating: 'all' };
+  return 'https://' + HOSTS[domain] + '/people/' + profileId + '/collect?' + new URLSearchParams({ start: String(start), sort: 'time', ...all, filter: 'all', mode: 'grid' });
 }
 function permittedSender(sender) {
   if (!Number.isInteger(sender?.tab?.id) || sender.tab.id < 0 || sender.frameId !== undefined && sender.frameId !== 0 || typeof sender.url !== 'string') return false;
@@ -253,7 +254,7 @@ async function collectOwnedPage(request) {
     return await Promise.race([read(), timeout]);
   } catch (error) {
     const safe = ['INVALID', 'TOO_LARGE', 'LOGIN_REQUIRED', 'CHALLENGE', 'BLOCKED', 'PROFILE_MISMATCH', 'RATE_LIMITED', 'NETWORK', 'TIMEOUT'].map(code => 'DOUBAN_BROWSER_' + code);
-    const reasons = ['input', 'document', 'structure_limit', 'account_link', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
+    const reasons = ['input', 'document', 'structure_limit', 'account_navigation', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
       'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity',
       'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page'];
     return { ok: false, errorCode: safe.includes(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID',

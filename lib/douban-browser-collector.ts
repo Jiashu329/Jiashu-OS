@@ -60,7 +60,7 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
   function collectionLocation(raw: unknown, domain: DoubanDomain, profileId: string, base: string): URL {
     const url = safeURL(raw, base), path = '/people/' + profileId + '/collect';
     if (!url || url.protocol !== 'https:' || url.hostname !== hosts[domain] || ![path, path + '/'].includes(url.pathname) || url.hash) fail('PROFILE_MISMATCH', 'collection_identity');
-    const allowed: Record<string, RegExp> = { start: /^(0|[1-9]\d*)$/, sort: /^time$/, rating: /^all$/, filter: /^all$/, mode: /^(?:grid|list)$/ };
+    const allowed: Record<string, RegExp> = { start: /^(0|[1-9]\d*)$/, sort: /^time$/, rating: /^all$/, type: /^all$/, filter: /^all$/, mode: /^(?:grid|list)$/ };
     for (const [key, value] of url.searchParams) if (!Object.hasOwn(allowed, key) || url.searchParams.getAll(key).length !== 1 || !allowed[key].test(value)) fail('INVALID', 'pagination_query');
     return url;
   }

@@ -42,7 +42,7 @@ function fixture(readPage) {
 test('local Douban extension grants only collection hosts and never asks for Cookie or request interception permissions', () => {
   const manifest = JSON.parse(readFileSync(new URL('manifest.json', extensionRoot), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '1.0.1');
+  assert.equal(manifest.version, '1.0.2');
   assert.deepEqual(manifest.permissions.toSorted(), ['scripting', 'tabs']);
   assert.deepEqual(manifest.host_permissions.toSorted(), ['https://book.douban.com/*', 'https://movie.douban.com/*', 'https://music.douban.com/*']);
   assert.deepEqual(manifest.externally_connectable.matches, [productionOrigin + '/*']);
@@ -70,7 +70,7 @@ test('worker accepts only the production top-level media page before any collect
   }
   assert.equal(f.calls.reads.length + f.calls.created.length + f.calls.scripts.length, 0);
   const response = await f.send(message('CONNECT'), { ...sender, url: productionOrigin + '/life/douban?kind=book' });
-  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.1', protocolVersion: 1 } });
+  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
 });
 
 test('message schemas reject injected URLs, credentials, non-string identities and malformed step fields', async () => {
@@ -153,7 +153,7 @@ test('login, challenge and upstream errors remain explicit partial results and n
 });
 
 test('worker exposes only documented diagnostic reason enums and never raw error messages or HTML', async () => {
-  const reasons = ['input', 'document', 'structure_limit', 'account_link', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment', 'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity', 'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page'];
+  const reasons = ['input', 'document', 'structure_limit', 'account_navigation', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment', 'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity', 'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page'];
   for (const reason of reasons) {
     const f = fixture(() => { throw { code: 'DOUBAN_BROWSER_INVALID', reason, message: 'PRIVATE_RAW_HTML<script>unsafe()</script>' }; });
     await f.start(); const response = await f.send(step()); const source = response.data.progress.sources.screen;
@@ -162,7 +162,7 @@ test('worker exposes only documented diagnostic reason enums and never raw error
     assert.deepEqual(clone(await f.send(step())), clone(response), 'lost-response replay keeps the same safe diagnostic');
     assert.equal(f.calls.reads.length, 1);
   }
-  for (const reason of ['PRIVATE_RAW_HTML<script>unsafe()</script>', 'unknown_reason', { text: 'PRIVATE_RAW_HTML' }, ['account_link'], null, 1]) {
+  for (const reason of ['PRIVATE_RAW_HTML<script>unsafe()</script>', 'unknown_reason', { text: 'PRIVATE_RAW_HTML' }, ['account_navigation'], null, 1]) {
     const f = fixture(() => { throw { code: 'DOUBAN_BROWSER_INVALID', reason, message: 'PRIVATE_RAW_HTML<script>unsafe()</script>' }; });
     await f.start(); const response = await f.send(step());
     assert.equal(response.data.progress.sources.screen.errorReason == null, true);
@@ -174,15 +174,15 @@ test('a later invalid page keeps earlier successful data and finishes partial ra
   const f = fixture((run, domain) => {
     if (domain !== 'screen') return page(domain, []);
     if (run.sources.screen.start === 0) return page(domain, [record(domain)], { total: 2, nextStart: 1 });
-    throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'account_link', message: 'PRIVATE_RAW_HTML' };
+    throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'account_navigation', message: 'PRIVATE_RAW_HTML' };
   });
   await f.start(); const first = await f.send(step()); assert.equal(first.data.items.length, 1); assert.equal(first.data.items[0].subjectId, '12345');
   f.advance(); const invalid = await f.send(step(1, nextRequest)); assert.equal(invalid.data.items.length, 0); assert.equal(invalid.data.done, false);
   const source = invalid.data.progress.sources.screen;
-  assert.equal(source.status, 'failed'); assert.equal(source.errorReason, 'account_link'); assert.equal(source.pages, 1); assert.equal(source.received, 1); assert.equal(source.total, 2); assert.equal(source.start, 1);
+  assert.equal(source.status, 'failed'); assert.equal(source.errorReason, 'account_navigation'); assert.equal(source.pages, 1); assert.equal(source.received, 1); assert.equal(source.total, 2); assert.equal(source.start, 1);
   f.advance(); await f.send(step(2, finalRequest));
   f.advance(); const last = await f.send(step(3, '77777777-7777-4777-8777-777777777777'));
-  assert.equal(last.data.done, true); assert.equal(last.data.progress.status, 'partial'); assert.equal(last.data.progress.received, 1); assert.equal(last.data.progress.sources.screen.errorReason, 'account_link'); assert.equal(last.data.items.length, 0);
+  assert.equal(last.data.done, true); assert.equal(last.data.progress.status, 'partial'); assert.equal(last.data.progress.received, 1); assert.equal(last.data.progress.sources.screen.errorReason, 'account_navigation'); assert.equal(last.data.items.length, 0);
   assert.deepEqual(f.calls.reads.map(call => [call.domain, call.offset]), [['screen', 0], ['screen', 1], ['book', 0], ['music', 0]]);
   assert.equal(JSON.stringify([first, invalid, last]).includes('PRIVATE_RAW_HTML'), false);
 });
@@ -261,6 +261,25 @@ test('default collector refuses a tab navigated to another origin or another pro
   }
 });
 
+test('default collection tabs use screen type=all and retain book/music rating=all', async () => {
+  let clock = 10000;
+  const tabs = new Map(), created = [], requests = [];
+  const chromeApi = {
+    tabs: { async create(options) { const id = 100 + created.length; created.push(options); tabs.set(id, options.url); return { id }; }, async get(id) { return { id, status: 'complete', url: tabs.get(id) }; } },
+    scripting: { async executeScript(options) { if (options.files) return []; requests.push(options.args[0]); return [{ result: { ok: true, page: page(options.args[0].domain) } }]; } },
+  };
+  const controller = loadWorker().testControllerFactory(chromeApi, { now: () => clock, randomUUID: () => runId });
+  await controller.handle(message('START'), sender);
+  for (const [number, id] of [[0, requestId], [1, nextRequest], [2, finalRequest]]) { assert.equal((await controller.handle(step(number, id), sender)).ok, true); clock += 1500; }
+  assert.equal(created.length, 3); assert.deepEqual(requests.map(request => request.domain), ['screen', 'book', 'music']);
+  for (let index = 0; index < created.length; index++) {
+    const url = new URL(created[index].url), domain = ['screen', 'book', 'music'][index];
+    assert.equal(url.hostname, { screen: 'movie', book: 'book', music: 'music' }[domain] + '.douban.com'); assert.equal(url.pathname, '/people/mine/collect');
+    assert.deepEqual(Object.fromEntries(url.searchParams), { start: '0', sort: 'time', ...(domain === 'screen' ? { type: 'all' } : { rating: 'all' }), filter: 'all', mode: 'grid' });
+    assert.equal(requests[index].url, created[index].url); assert.equal(requests[index].firstPage, true);
+  }
+});
+
 test('Chrome injection failures expose fixed diagnostic enums without leaking private exception text', async () => {
   for (const [stage, reason] of [['files', 'script_unavailable'], ['function', 'document_unavailable'], ['result', 'result_shape']]) {
     const chromeApi = {
@@ -282,13 +301,14 @@ test('Chrome injection failures expose fixed diagnostic enums without leaking pr
 test('serialized page runtime parses locally, fetches only a fixed same-origin continuation and returns normalized items', async () => {
   let clock = 10000, parserCalls = 0;
   const reads = [], injected = [], created = [], rawMarker = '<html>LOCAL_PRIVATE_RAW_HTML<script>untrusted challenge text</script></html>';
-  const url = 'https://movie.douban.com/people/mine/collect?start=0';
+  const url = 'https://movie.douban.com/people/mine/collect?start=0&sort=time&type=all&filter=all&mode=grid';
   const location = new URL(url);
   const pageContext = {
     URL, AbortController, TextDecoder, setTimeout, clearTimeout, location, document: { documentElement: { outerHTML: rawMarker } },
     JiashuDoubanCollector: { parseCollection(html, profile, domain, start) {
       assert.equal(profile, 'mine'); assert.equal(domain, 'screen'); assert.equal(html, rawMarker); parserCalls++;
-      return page(domain, [record(domain, String(12345 + start))], { nextStart: start === 0 ? 1 : null, total: 2 });
+      assert.ok(start === 0 || start === 15);
+      return page(domain, Array.from({ length: start === 0 ? 15 : 2 }, (_, index) => record(domain, String(12345 + start + index))), { nextStart: start === 0 ? 15 : null, total: 17 });
     } },
     async fetch(target, init) { reads.push({ target, init }); return new Response(rawMarker, { headers: { 'Content-Type': 'text/html' } }); },
   };
@@ -303,16 +323,18 @@ test('serialized page runtime parses locally, fetches only a fixed same-origin c
     } },
   };
   const controller = loadWorker().testControllerFactory(chromeApi, { now: () => clock, randomUUID: () => runId });
-  await controller.handle(message('START'), sender); const first = await controller.handle(step(), sender); assert.equal(reads.length, 0); assert.equal(first.data.items.length, 1);
-  clock += 1500; const second = await controller.handle(step(1, nextRequest), sender); assert.equal(second.data.items.length, 1); assert.equal(reads.length, 1); assert.equal(parserCalls, 2);
-  assert.equal(new URL(reads[0].target).origin, 'https://movie.douban.com'); assert.equal(new URL(reads[0].target).pathname, '/people/mine/collect'); assert.equal(new URL(reads[0].target).searchParams.get('start'), '1');
+  await controller.handle(message('START'), sender); const first = await controller.handle(step(), sender); assert.equal(reads.length, 0); assert.equal(first.data.items.length, 15);
+  clock += 1500; const second = await controller.handle(step(1, nextRequest), sender); assert.equal(second.data.items.length, 2); assert.equal(reads.length, 1); assert.equal(parserCalls, 2);
+  assert.equal(new URL(reads[0].target).origin, 'https://movie.douban.com'); assert.equal(new URL(reads[0].target).pathname, '/people/mine/collect');
+  assert.deepEqual(Object.fromEntries(new URL(reads[0].target).searchParams), { start: '15', sort: 'time', type: 'all', filter: 'all', mode: 'grid' });
+  assert.deepEqual(Object.fromEntries(new URL(created[0].url).searchParams), { start: '0', sort: 'time', type: 'all', filter: 'all', mode: 'grid' });
   assert.equal(reads[0].init.credentials, 'same-origin'); assert.equal(reads[0].init.redirect, 'manual'); assert.equal(new Headers(reads[0].init.headers).has('Cookie'), false);
   assert.equal(created.length, 1); assert.equal(injected.length, 4); assert.equal(JSON.stringify([first, second]).includes(rawMarker), false); assert.equal(JSON.stringify([first, second]).includes('untrusted challenge'), false);
   assert.equal(pageContext.__jiashuDoubanRead, undefined);
 });
 
 test('serialized runtime and owned-page bridge preserve a safe parser reason while discarding unknown or scripted diagnostics', async () => {
-  for (const reason of ['account_link', 'pagination_query', 'PRIVATE_RAW_HTML<script>unsafe()</script>', { reason: 'item_url' }, ['account_link']]) {
+  for (const reason of ['account_navigation', 'pagination_query', 'PRIVATE_RAW_HTML<script>unsafe()</script>', { reason: 'item_url' }, ['account_navigation']]) {
     let parses = 0, requests = 0;
     const url = 'https://movie.douban.com/people/mine/collect?start=0';
     const pageContext = {
@@ -331,7 +353,7 @@ test('serialized runtime and owned-page bridge preserve a safe parser reason whi
     await controller.handle(message('START'), sender); const response = await controller.handle(step(), sender);
     const source = response.data.progress.sources.screen;
     assert.equal(source.errorCode, 'DOUBAN_BROWSER_INVALID'); assert.equal(response.data.items.length, 0); assert.equal(parses, 1); assert.equal(requests, 0);
-    if (typeof reason === 'string' && ['account_link', 'pagination_query'].includes(reason)) assert.equal(source.errorReason, reason);
+    if (typeof reason === 'string' && ['account_navigation', 'pagination_query'].includes(reason)) assert.equal(source.errorReason, reason);
     else assert.equal(source.errorReason == null, true);
     assert.equal(JSON.stringify(response).includes('PRIVATE_RAW_HTML'), false); assert.equal(JSON.stringify(response).includes('<script>'), false); assert.equal(pageContext.__jiashuDoubanRead, undefined);
   }

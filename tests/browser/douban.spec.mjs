@@ -173,7 +173,7 @@ async function installExtensionMock(context, pages, options = {}) {
     const runtime = { sendMessage(id, body, callback) {
       state.calls.push({ id, body: structuredClone(body) });
       const reply = value => queueMicrotask(() => callback(value));
-      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: '1.0.1', protocolVersion: 1 } });
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: '1.0.2', protocolVersion: 1 } });
       if (body.action === 'START') return reply({ ok: true, data: { runId, step: 0, progress: progress(0), done: false } });
       if (body.action === 'CANCEL') return reply({ ok: true, data: { runId, step: state.reads, progress: { ...progress(state.reads), status: 'cancelled' }, done: true } });
       if (body.action !== 'STEP' || body.runId !== runId || !pages[body.step]) return reply({ ok: false, error: { code: 'STEP_CONFLICT', message: '合成扩展进度错误。' } });
