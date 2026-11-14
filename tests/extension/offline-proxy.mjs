@@ -13,6 +13,9 @@ const listen = server => new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(server.address().port); });
 });
 const close = server => new Promise(resolve => server.close(resolve));
+// Observed Chromium bootstrap destinations, never fixture/application origins.
+// These receive a local refusal, not a tunnel or an upstream connection.
+const chromeBootstrapHosts = new Set(['www.google.com', 'accounts.google.com', 'content-autofill.googleapis.com', 'android.clients.google.com']);
 
 /**
  * Chrome may navigate an extension-created tab before Playwright attaches to it.
@@ -21,7 +24,7 @@ const close = server => new Promise(resolve => server.close(resolve));
  */
 export async function startOfflineProxy({ allowedHosts, respond, nativeLoginCookie }) {
   if (process.env.SITES_MANAGED_LINUX_CONTAINER === '1') throw new Error('The isolated extension transport is CI/local-only, never a managed Sites preview substitute.');
-  const allowed = new Set(allowedHosts), requests = [], unexpected = [], tunnels = [];
+  const allowed = new Set(allowedHosts), requests = [], unexpected = [], tunnels = [], blockedBootstrap = [];
   const sockets = new Set();
   const track = socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); };
   const certificateDir = await mkdtemp(join(tmpdir(), 'jiashu-mv3-offline-'));
@@ -62,6 +65,15 @@ export async function startOfflineProxy({ allowedHosts, respond, nativeLoginCook
     tlsServer.on('connection', track);
     const tlsPort = await listen(tlsServer);
     proxyServer = createHTTPServer((request, response) => {
+      let url;
+      try { url = new URL(request.url); } catch { /* Rejected below. */ }
+      if (request.method === 'GET' && url?.origin === 'http://clients2.google.com' && url.pathname === '/time/1/current'
+        && !url.username && !url.password && !url.hash
+        && [...url.searchParams.keys()].every(key => ['cup2key', 'cup2hreq'].includes(key) && url.searchParams.getAll(key).length === 1)) {
+        blockedBootstrap.push('HTTP clients2.google.com/time/1/current');
+        response.writeHead(403).end('Chromium bootstrap traffic is blocked locally');
+        return;
+      }
       unexpected.push('non-CONNECT proxy request: ' + request.url);
       response.writeHead(403).end('Only synthetic HTTPS tunnels are permitted');
     });
@@ -70,7 +82,13 @@ export async function startOfflineProxy({ allowedHosts, respond, nativeLoginCook
       clientSocket.on('error', () => {});
       let target;
       try { target = new URL('https://' + request.url); } catch { /* Rejected below. */ }
-      if (!target || !allowed.has(target.hostname) || target.port || target.username || target.password || target.pathname !== '/' || target.search || target.hash) {
+      const validAuthority = target && !target.port && !target.username && !target.password && target.pathname === '/' && !target.search && !target.hash;
+      if (validAuthority && chromeBootstrapHosts.has(target.hostname)) {
+        blockedBootstrap.push('CONNECT ' + target.hostname);
+        clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        return;
+      }
+      if (!validAuthority || !allowed.has(target.hostname)) {
         unexpected.push('unrecognized CONNECT: ' + request.url);
         clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         return;
@@ -89,6 +107,6 @@ export async function startOfflineProxy({ allowedHosts, respond, nativeLoginCook
       clientSocket.once('close', () => upstream.destroy());
     });
     const proxyPort = await listen(proxyServer);
-    return { proxy: 'http://127.0.0.1:' + proxyPort, requests, unexpected, tunnels, close: cleanup };
+    return { proxy: 'http://127.0.0.1:' + proxyPort, requests, unexpected, tunnels, blockedBootstrap, close: cleanup };
   } catch (error) { await cleanup(); throw error; }
 }

@@ -45,10 +45,12 @@ const test = base.extend({
     const profilePath = testInfo.outputPath('chromium-profile');
     await mkdir(profilePath, { recursive: true });
     const extensionPath = resolve(import.meta.dirname, '../../browser-extension/douban');
+    const fixtureHosts = [new URL(ORIGIN).hostname, 'not-jiashu.invalid', ...Object.values(hosts).map(host => host + '.douban.com')];
+    const fixtureOrigins = new Set(fixtureHosts.map(host => 'https://' + host));
     // Start the transport before Chrome, so even its first extension-created tab
     // is synthetic. Playwright request routes attach too late for that navigation.
     const offline = await startOfflineProxy({
-      allowedHosts: [new URL(ORIGIN).hostname, 'not-jiashu.invalid', ...Object.values(hosts).map(host => host + '.douban.com')],
+      allowedHosts: fixtureHosts,
       nativeLoginCookie: { name: 'synthetic_native_login', value: COOKIE_SECRET },
       respond: async (url, method) => {
         if (method !== 'GET') return null;
@@ -78,6 +80,12 @@ const test = base.extend({
         args: ['--disable-extensions-except=' + extensionPath, '--load-extension=' + extensionPath,
           '--ignore-certificate-errors', '--disable-quic', '--disable-background-networking',
           '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'] });
+      // Browser-process bootstrap requests are locally refused separately by the
+      // proxy. Any page or worker request to those same hosts is still a failure.
+      context.on('request', request => {
+        const url = new URL(request.url());
+        if (['http:', 'https:'].includes(url.protocol) && !fixtureOrigins.has(url.origin)) unexpected.push('application request outside fixture: ' + url.origin + url.pathname);
+      });
       await context.tracing.start({ screenshots: true, snapshots: true }); tracing = true;
       await context.addCookies([{ name: 'synthetic_native_login', value: COOKIE_SECRET, domain: '.douban.com', path: '/', secure: true, httpOnly: true }]);
       const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
