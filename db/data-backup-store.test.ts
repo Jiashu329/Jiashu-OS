@@ -66,7 +66,7 @@ function semantic(backup:DataBackup){return Object.fromEntries(BACKUP_TABLE_NAME
 void test('complete backup roundtrips old records, real import receipts, edits, deleted nutrition and exact ordered finance history',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);
   assert.equal(backup.tables.health_measurements[0].day,'2024-01-01');assert.equal(backup.tables.health_import_batches.length,2);assert.equal(JSON.parse(backup.tables.health_import_batches[1].receipt_json as string).imported,0);
-  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,30);
+  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,31);
   for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations','nutrition_batches','nutrition_day_status'] as const) assert.ok(backup.tables[table].length>0);
   assert.equal(JSON.stringify(backup).includes('user_id'),false);assert.equal(JSON.stringify(backup).includes('synthetic-token-hash'),false);
   const target=fixture(t);let preview=await previewDataRestore(target.db,'restored-owner',backup);assert.equal(preview.canRestore,true);assert.ok(preview.total.added>0);
@@ -350,7 +350,7 @@ void test('published v1 and v2 nutrition backups without macro columns or source
   for(const version of [1,2]){
     const backup=structuredClone(current) as unknown as {version:number;tables:Record<string,Array<Record<string,unknown>>>};
     backup.version=version;
-    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations','health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications'])delete backup.tables[name];
+    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations','health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications','douban_items'])delete backup.tables[name];
     if(version===1){for(const name of ['health_goal_versions','health_sync_attempts','nutrition_copy_operations','health_sync_diagnostics','health_weekly_actions','finance_month_closes'])delete backup.tables[name];}
     for(const row of backup.tables.nutrition_entries){
       for(const key of ['carbs_tenth','protein_tenth','fat_tenth'])delete row[key];
@@ -523,9 +523,94 @@ void test('the canonical complete backup includes per-metric checks, weekly feed
 void test('published 27-table v2 single files remain valid and gain empty action tables without losing existing business fields',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite);
   const backup=await exportDataBackup(source.db,'alice',NOW),legacy=structuredClone(backup) as unknown as {tables:Record<string,unknown>};
-  for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes'])delete legacy.tables[table];
+  for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes','douban_items'])delete legacy.tables[table];
   assert.equal(Object.keys(legacy.tables).length,27);
   const parsed=parseDataBackup(legacy);for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes'] as const)assert.deepEqual(parsed.tables[table],[]);
   const target=fixture(t),preview=await previewDataRestore(target.db,'restored',legacy);assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',legacy,preview.previewHash);
   assert.deepEqual(semantic(await exportDataBackup(target.db,'restored',NOW)),semantic(parsed));
+});
+
+const doubanRow = (overrides: Record<string,string|number|null> = {}) => ({
+  profile_id:'synthetic-profile',domain:'screen',subject_id:'1292052',kind:'series',title:'合成豆瓣剧集',
+  url:'https://movie.douban.com/subject/1292052/',cover_url:null,rating:5,marked_date:'2026-11-09',
+  comment:'本人标记的合成短评',published_at:null,source:'collection',observed_at:NOW,created_at:NOW,updated_at:NOW,...overrides,
+});
+function seedDouban(sqlite: DatabaseSync, owner: string, row = doubanRow(), checkedRun: string | null = null) {
+  const columns=Object.keys(row);
+  sqlite.prepare(`INSERT INTO douban_items (user_id,${columns.join(',')},metadata_checked_run_id) VALUES (${Array(columns.length+2).fill('?').join(',')})`)
+    .run(owner,...columns.map(column=>row[column as keyof typeof row]),checkedRun);
+}
+
+void test('Douban collection backups restore only personal source records without connections, run state or another owner’s data',async(t)=>{
+  const source=fixture(t);
+  seedDouban(source.sqlite,'alice',doubanRow(),A);
+  seedDouban(source.sqlite,'alice',doubanRow({domain:'book',subject_id:'1234567',kind:'book',title:'合成书籍',url:'https://book.douban.com/subject/1234567/',rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss'}),B);
+  seedDouban(source.sqlite,'bob',doubanRow({comment:'BOB-PRIVATE-COMMENT'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(backup.tables.douban_items.length,2);
+  assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE-COMMENT|metadata_checked_run_id|douban_connections|douban_sync_runs|user_id/);
+  assert.deepEqual(backup.tables.douban_items.find(row=>row.domain==='book')?.rating,null);
+  const target=fixture(t);
+  seedDouban(target.sqlite,'bob',doubanRow({comment:'BOB-PRIVATE-COMMENT'}));
+  const preview=await previewDataRestore(target.db,'restored',backup);
+  assert.equal(preview.canRestore,true);assert.equal(preview.total.added,2);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  const restored=await exportDataBackup(target.db,'restored',NOW);
+  assert.deepEqual(restored.tables.douban_items,backup.tables.douban_items);
+  assert.equal(target.sqlite.prepare('SELECT comment FROM douban_items WHERE user_id=?').get('bob')?.comment,'BOB-PRIVATE-COMMENT');
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_connections').get()?.n,0);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_sync_runs').get()?.n,0);
+  assert.ok(target.sqlite.prepare('SELECT metadata_checked_run_id FROM douban_items WHERE user_id=?').all('restored').every(row=>row.metadata_checked_run_id===null));
+  const repeat=await previewDataRestore(target.db,'restored',backup);assert.equal(repeat.total.added,0);assert.equal(repeat.total.conflicts,0);
+});
+
+void test('Douban business changes are previewed as conflicts while a newer unchanged observation is retained',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  const target=fixture(t);seedDouban(target.sqlite,'alice',doubanRow({comment:'较新的本人短评',rating:4}));
+  const conflict=await previewDataRestore(target.db,'alice',backup);
+  assert.equal(conflict.canRestore,false);assert.equal(conflict.total.conflicts,1);
+  const example=conflict.tables.find(table=>table.table==='douban_items')?.conflictExamples[0];
+  assert.equal(example?.record,'合成豆瓣剧集');assert.ok(example?.differences?.some(field=>field.field==='comment'));
+  await assert.rejects(restoreDataBackup(target.db,'alice',backup,conflict.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT comment FROM douban_items WHERE user_id=?').get('alice')?.comment,'较新的本人短评');
+  target.sqlite.prepare('UPDATE douban_items SET comment=?,rating=?,observed_at=? WHERE user_id=?').run('本人标记的合成短评',5,'2026-11-11T04:00:00.000Z','alice');
+  const unchanged=await previewDataRestore(target.db,'alice',backup);
+  assert.equal(unchanged.canRestore,true);assert.equal(unchanged.total.added,0);assert.equal(unchanged.total.skipped,1);
+  await restoreDataBackup(target.db,'alice',backup,unchanged.previewHash);
+  assert.equal(target.sqlite.prepare('SELECT observed_at FROM douban_items WHERE user_id=?').get('alice')?.observed_at,'2026-11-11T04:00:00.000Z');
+});
+
+void test('a concurrent Douban edit during restoration aborts the complete batch and preserves the latest comment',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');seedDouban(source.sqlite,'alice',doubanRow({subject_id:'1234567',title:'另一合成影视',url:'https://movie.douban.com/subject/1234567/'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);seedDouban(target.sqlite,'alice');
+  const preview=await previewDataRestore(target.db,'alice',backup);assert.equal(preview.total.added,1);
+  target.mutateNextBatch(()=>target.sqlite.prepare('UPDATE douban_items SET comment=? WHERE user_id=?').run('恢复预览后刚修改的短评','alice'));
+  await assert.rejects(restoreDataBackup(target.db,'alice',backup,preview.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items WHERE user_id=?').get('alice')?.n,1);
+  assert.equal(target.sqlite.prepare('SELECT comment FROM douban_items WHERE user_id=?').get('alice')?.comment,'恢复预览后刚修改的短评');
+});
+
+void test('Douban backup validation rejects spoofed sources, malformed records, owner fields and sync-control metadata',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  const changes:Array<(row:Record<string,string|number|null>)=>void>=[
+    row=>{row.profile_id='https://elsewhere.invalid/people/example/';},row=>{row.domain='book';},row=>{row.kind='book';},
+    row=>{row.url='https://movie.douban.com.evil.invalid/subject/1292052/';},row=>{row.subject_id='7654321';},
+    row=>{row.rating=0;},row=>{row.rating=6;},row=>{row.marked_date='2026-02-30';},row=>{row.published_at='not a timestamp';},
+    row=>{row.source='official-api';},row=>{row.user_id='bob';},row=>{row.metadata_checked_run_id=A;},
+    row=>{row.updated_at=OLD;},row=>{row.observed_at=OLD;},row=>{row.title=' ';},row=>{row.comment='invalid\u0000comment';},
+  ];
+  for(const change of changes){const invalid=structuredClone(backup);change(invalid.tables.douban_items[0]);assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+  const duplicate=structuredClone(backup);duplicate.tables.douban_items.push({...duplicate.tables.douban_items[0]});assert.throws(()=>parseDataBackup(duplicate),BackupValidationError);
+});
+
+void test('published 30-table single backups gain empty Douban records and never implicitly restore a connection',async(t)=>{
+  const source=fixture(t);await seed(source.db,source.sqlite);
+  const current=await exportDataBackup(source.db,'alice',NOW);
+  const old=structuredClone(current) as unknown as {tables:Record<string,unknown>};delete old.tables.douban_items;
+  assert.equal(Object.keys(old.tables).length,30);
+  const parsed=parseDataBackup(old);assert.deepEqual(parsed.tables.douban_items,[]);
+  const target=fixture(t);const preview=await previewDataRestore(target.db,'restored',old);
+  assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',old,preview.previewHash);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,0);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_connections').get()?.n,0);
 });

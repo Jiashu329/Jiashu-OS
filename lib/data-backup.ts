@@ -11,13 +11,14 @@ import { parseFinanceGoalCreate } from './finance-goals.ts';
 import { parseFinanceRunwayInput } from './finance-runway.ts';
 import { parseSyncAttemptSummary, SYNC_ATTEMPT_STATUSES, SYNC_FAILURES } from './sync-diagnostics.ts';
 import { parseStoredFinanceReview } from './finance-review-close.ts';
+import { parseDoubanProfile, parseDoubanRecord } from './douban.ts';
 
 export const BACKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const BACKUP_MAX_ROWS = 20000;
 export interface BackupLimits { maxBytes: number; maxRows: number }
 export const SINGLE_BACKUP_LIMITS: BackupLimits = { maxBytes: BACKUP_MAX_BYTES, maxRows: BACKUP_MAX_ROWS };
 export const VOLUME_BACKUP_LIMITS: BackupLimits = { maxBytes: 16 * 1024 * 1024, maxRows: 40000 };
-export const BACKUP_EXCLUDED = ['AI 凭据与调用计数', '同步设备与连接密钥'] as const;
+export const BACKUP_EXCLUDED = ['AI 凭据与调用计数', '同步设备与连接密钥', '豆瓣连接配置与同步诊断'] as const;
 export type BackupRow = Record<string, string | number | null>;
 interface TableSpec { label: string; columns: readonly string[]; keys: readonly string[]; sequence?: boolean; globalId?: boolean }
 // Identifiers are application constants. File input never becomes a SQL identifier.
@@ -52,15 +53,24 @@ export const BACKUP_TABLES = {
   health_sync_diagnostics: { label: '逐指标同步核对', columns: ['scope','received_at','exported_at','submitted_count','imported_count','skipped_count','first_day','last_day'], keys: ['scope'] },
   health_weekly_actions: { label: '每周行动与反馈', columns: ['week_start','text','status','feedback','revision','created_at','updated_at'], keys: ['week_start'] },
   finance_month_closes: { label: '已确认月结与重结历史', columns: ['ledger','currency','month','version','operation_id','request_hash','snapshot_json','reason','closed_at'], keys: ['ledger','currency','month','version'] },
+  douban_items: { label: '豆瓣书影音收藏', columns: ['profile_id','domain','subject_id','kind','title','url','cover_url','rating','marked_date','comment','published_at','source','observed_at','created_at','updated_at'], keys: ['profile_id','domain','subject_id'] },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
 const P1_BACKUP_TABLES = ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations'] as const;
 const P2_BACKUP_TABLES = ['health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications'] as const;
 const ACTION_BACKUP_TABLES = ['health_sync_diagnostics','health_weekly_actions','finance_month_closes'] as const;
+/** The exact published 30-table shape, before collection records were added. */
+export const BACKUP_PRE_DOUBAN_V2_TABLE_NAMES = [
+  'health_measurements','health_syncs','health_import_batches','health_sync_attempts','health_goal_settings','health_goal_versions',
+  'health_weight_plan_settings','health_weight_plan_cycles','health_weight_plan_operations','health_record_changes','health_record_overrides',
+  'nutrition_entry_history','nutrition_entries','nutrition_goal_settings','nutrition_restore_operations','nutrition_favorites','nutrition_templates',
+  'nutrition_template_operations','nutrition_day_status','nutrition_batches','nutrition_copy_operations','finance_accounts','finance_account_classifications',
+  'finance_balance_entries','finance_balance_changes','finance_goal_plans','finance_runway_settings','health_sync_diagnostics','health_weekly_actions','finance_month_closes',
+] as const satisfies readonly BackupTable[];
 /** Published v2 volume sets used these 27 tables; their signed shape must remain verifiable. */
-export const BACKUP_PREVIOUS_V2_TABLE_NAMES = BACKUP_TABLE_NAMES.filter((table) => !(ACTION_BACKUP_TABLES as readonly string[]).includes(table));
-const BACKUP_LEGACY_V2_TABLE_NAMES = BACKUP_TABLE_NAMES.filter((table) => !([...P1_BACKUP_TABLES,...P2_BACKUP_TABLES,...ACTION_BACKUP_TABLES] as readonly string[]).includes(table));
+export const BACKUP_PREVIOUS_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !(ACTION_BACKUP_TABLES as readonly string[]).includes(table));
+const BACKUP_LEGACY_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !([...P1_BACKUP_TABLES,...P2_BACKUP_TABLES,...ACTION_BACKUP_TABLES] as readonly string[]).includes(table));
 export const BACKUP_V1_TABLE_NAMES = ['health_measurements','health_syncs','health_import_batches','health_goal_settings','health_weight_plan_settings','health_record_changes','health_record_overrides','nutrition_entries','finance_accounts','finance_balance_entries','finance_balance_changes','finance_goal_plans','finance_runway_settings'] as const;
 const REVISION_SETTINGS: readonly BackupTable[] = ['health_goal_settings','health_weight_plan_settings','finance_runway_settings'];
 export interface DataBackup { kind: 'jiashu-os-backup'; version: 2; exportedAt: string; tables: Record<BackupTable, BackupRow[]> }
@@ -173,8 +183,17 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
   for (const [key, value] of Object.entries(r)) {
     if (value !== null && !['string','number'].includes(typeof value)) backupFail('备份数据库字段类型无效。');
     if (typeof value === 'number' && !Number.isFinite(value)) backupFail('备份中含无效数字。');
-    if (key.endsWith('_at')) { timestamp(value, ['archived_at','deleted_at','reverted_at'].includes(key)); if (value !== null && Date.parse(value as string) > now + 5*60000) backupFail('备份记录时间不能晚于当前时间。'); }
+    if (key.endsWith('_at')) { timestamp(value, ['archived_at','deleted_at','reverted_at','published_at'].includes(key)); if (value !== null && Date.parse(value as string) > now + 5*60000) backupFail('备份记录时间不能晚于当前时间。'); }
     if (['note','reason','revert_reason'].includes(key) && value !== null) text(value);
+  }
+  if (table === 'douban_items') {
+    const profile = parseDoubanProfile(r.profile_id);
+    if (profile.profileId !== r.profile_id) backupFail('豆瓣来源主页标识不是规范格式。');
+    const record = { domain:r.domain,subjectId:r.subject_id,kind:r.kind,title:r.title,url:r.url,coverUrl:r.cover_url,
+      rating:r.rating,markedDate:r.marked_date,comment:r.comment,publishedAt:r.published_at,source:r.source };
+    const parsed = parseDoubanRecord(record);
+    if (Object.keys(record).some(key => record[key as keyof typeof record] !== parsed[key as keyof typeof parsed])) backupFail('豆瓣收藏字段不是规范格式。');
+    if (Date.parse(String(r.created_at)) > Date.parse(String(r.updated_at)) || Date.parse(String(r.updated_at)) > Date.parse(String(r.observed_at))) backupFail('豆瓣收藏创建、修改与观察时间顺序无效。');
   }
   if (table === 'health_measurements') rawHealth({ recordKey:r.record_key, metric:r.metric, day:r.day, measurementJson:r.measurement_json, exportedAt:r.exported_at, receivedAt:r.received_at },now);
   if (table === 'health_syncs') { hash(r.payload_hash); integer(r.measurement_count, 0, 1000); }
@@ -317,7 +336,7 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
   if (table === 'finance_runway_settings') { integer(r.revision); parseLedger(r.ledger); parseCurrency(r.currency); minor(r.monthly_expense_minor, true); parseFinanceRunwayInput({ monthlyExpenseAmount:decimalFromMinor(r.monthly_expense_minor as string, r.currency as string), targetMonths:r.target_months, accountIds:parsedJson(r.account_ids_json) }, r.currency as Parameters<typeof parseFinanceRunwayInput>[1]); }
 }
 export function backupRowKey(table: BackupTable, row: BackupRow): string { return JSON.stringify((BACKUP_TABLES[table].keys as readonly string[]).map((k) => row[k])); }
-export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && ['balance_revision','metadata_revision'].includes(k)) && !(table==='finance_account_classifications'&&row.origin==='baseline'&&k==='recorded_at') && !(table === 'finance_goal_plans' && k === 'revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k))).map((k) => [k,row[k]]))); }
+export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && ['balance_revision','metadata_revision'].includes(k)) && !(table==='finance_account_classifications'&&row.origin==='baseline'&&k==='recorded_at') && !(table === 'finance_goal_plans' && k === 'revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k)) && !(table==='douban_items'&&k==='observed_at')).map((k) => [k,row[k]]))); }
 
 export function parseDataBackup(input: unknown, now = Date.now(), limits: BackupLimits = SINGLE_BACKUP_LIMITS): DataBackup {
   try {

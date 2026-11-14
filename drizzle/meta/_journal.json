@@ -169,6 +169,13 @@
       "when": 1794616473424,
       "tag": "0023_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794648618951,
+      "tag": "0024_douban",
+      "breakpoints": true
     }
   ]
 }

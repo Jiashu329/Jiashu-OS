@@ -97,7 +97,7 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     const conflictExamples: BackupTablePreview['conflictExamples'] = [];
     const describe = (row: BackupRow, reason: string) => {
       if (conflictExamples.length >= 5) return;
-      const example: BackupTablePreview['conflictExamples'][number] = {record:String(row.name ?? row.record_key ?? row.date ?? row.as_of_date ?? row.id ?? (row.ledger ? String(row.ledger)+' / '+row.currency : spec.label)),reason};
+      const example: BackupTablePreview['conflictExamples'][number] = {record:String(row.name ?? row.title ?? row.record_key ?? row.date ?? row.as_of_date ?? row.id ?? (row.ledger ? String(row.ledger)+' / '+row.currency : spec.label)),reason};
       conflictExamples.push(example);return example;
     };
     const spec = BACKUP_TABLES[table];

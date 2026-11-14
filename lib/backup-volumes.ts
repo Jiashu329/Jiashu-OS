@@ -1,4 +1,4 @@
-import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, VOLUME_BACKUP_LIMITS, SINGLE_BACKUP_LIMITS, backupDigest, backupFail, parseDataBackup } from './data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, VOLUME_BACKUP_LIMITS, SINGLE_BACKUP_LIMITS, backupDigest, backupFail, parseDataBackup } from './data-backup.ts';
 import type { BackupLimits, BackupRow, BackupTable, DataBackup } from './data-backup.ts';
 
 export interface BackupVolume {
@@ -68,7 +68,10 @@ export async function parseBackupInput(input: unknown, now = Date.now()): Promis
     if(!sourceNames){
       if(!part.tables||typeof part.tables!=='object'||Array.isArray(part.tables))backupFail('分卷数据表无效。');
       const names=Object.keys(part.tables);
-      sourceNames=names.length===BACKUP_PREVIOUS_V2_TABLE_NAMES.length?BACKUP_PREVIOUS_V2_TABLE_NAMES:BACKUP_TABLE_NAMES;
+      const supported: readonly (readonly BackupTable[])[] = [BACKUP_TABLE_NAMES,BACKUP_PRE_DOUBAN_V2_TABLE_NAMES,BACKUP_PREVIOUS_V2_TABLE_NAMES];
+      const shape = supported.find(shape => names.length === shape.length && shape.every(table => Object.hasOwn(part.tables as object, table)));
+      if (!shape) backupFail('分卷含缺失或不支持的数据表。');
+      sourceNames=[...shape];
       tables=Object.fromEntries(sourceNames.map((table)=>[table,[]])) as unknown as Record<BackupTable,BackupRow[]>;
     }
     const rows = record(part.tables, sourceNames);

@@ -1,0 +1,295 @@
+import { test, expect } from '@playwright/test';
+import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
+import { parseDoubanProfile } from '../../lib/douban.ts';
+
+const PROFILE = 'synthetic-douban-user';
+const STAMP = '2026-11-14T08:00:00.000Z';
+const RUN_ID = '11111111-2222-4333-8444-555555555555';
+const KINDS = ['movie', 'series', 'book', 'music', 'screen'];
+
+function record(kind, index = 0, profileId = PROFILE) {
+  const domain = kind === 'movie' || kind === 'series' || kind === 'screen' ? 'screen' : kind;
+  const subjectId = String(9000000 + index), host = domain === 'screen' ? 'movie' : domain;
+  return { profileId, domain, subjectId, kind, title: '合成' + ({ movie: '电影', series: '电视剧', book: '图书', music: '音乐', screen: '待分类影视' }[kind]) + index,
+    url: 'https://' + host + '.douban.com/subject/' + subjectId + '/', coverUrl: null, rating: 4,
+    markedDate: '2026-11-12', comment: '合成个人短评', publishedAt: null, source: 'collection',
+    observedAt: STAMP, createdAt: STAMP, updatedAt: STAMP };
+}
+function source(status = 'pending', received = 0) {
+  return { status, pages: received ? 1 : 0, received, total: status === 'complete' ? received : null, errorCode: status === 'blocked' ? 'DOUBAN_ACCESS_DENIED' : null };
+}
+function newRun(connection) {
+  return { id: RUN_ID, profileId: connection.profileId, connectionRevision: connection.revision, revision: 0,
+    status: 'running', phase: 'collections', sources: { screen: source(), book: source(), music: source() },
+    rss: { status: 'pending', received: 0, errorCode: null }, classification: { checked: 0, unclassified: 0, blocked: false, errorCode: null },
+    added: 0, updated: 0, unchanged: 0, message: '公开记录同步已准备好，等待读取第一页。',
+    createdAt: STAMP, startedAt: STAMP, updatedAt: STAMP, finishedAt: null };
+}
+function listResult(state, params) {
+  const scope = params.get('profile') ?? 'all', kind = params.get('kind') ?? '', query = (params.get('q') ?? '').trim().toLowerCase();
+  const owned = state.doubanItems.filter(item => scope !== 'current' || item.profileId === state.doubanConnection.profileId);
+  const filtered = owned.filter(item => (!kind || kind === 'all' || item.kind === kind) && (!query || item.title.toLowerCase().includes(query)));
+  const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
+  return { connection: state.doubanConnection, items: filtered.slice(offset, offset + limit), total: filtered.length,
+    counts: Object.fromEntries(['all', ...KINDS].map(key => [key, key === 'all' ? owned.length : owned.filter(item => item.kind === key).length])),
+    offset, limit, hasMore: offset + limit < filtered.length, lastRun: state.doubanRun };
+}
+const mutations = info => info.synthetic.requests.filter(request => request.path.startsWith('/api/life/douban') && request.method !== 'GET');
+const syncRequests = info => mutations(info).filter(request => request.path === '/api/life/douban/sync');
+
+test.beforeEach(async ({ context, page }, testInfo) => {
+  const state = syntheticState();
+  state.doubanConnection = { profileId: null, profileUrl: null, revision: 0, updatedAt: null };
+  state.doubanItems = []; state.doubanRun = null; state.doubanHoldStep = false; state.doubanStepPending = false;
+  state.doubanImportPreview = null; state.doubanImportReceipts = new Map(); state.doubanLoseImportReply = false;
+  testInfo.synthetic = state;
+  await interceptSyntheticAPI(context, state);
+  await page.route('**/api/life/douban**', async route => {
+    const request = route.request(), url = new URL(request.url()), method = request.method(), body = request.postDataJSON() ?? null;
+    state.requests.push({ path: url.pathname, search: url.search, method, body });
+    const send = (value, status = 200) => route.fulfill({ status, contentType: 'application/json',
+      headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': state.owner }, body: JSON.stringify(value) });
+    const fail = (message, code, status = 409) => send({ error: message, code }, status);
+    if (url.pathname === '/api/life/douban' && method === 'GET') return send(listResult(state, url.searchParams));
+    if (url.pathname === '/api/life/douban/import' && method === 'POST') {
+      const profile = parseDoubanProfile(body.profile), items = body.items;
+      if (!Array.isArray(items) || !items.length || items.some(item => item.source !== 'import')) return fail('请提交本地解析后的本人资料。', 'SYNTHETIC_IMPORT_INVALID', 400);
+      const snapshotHash = 'a'.repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items });
+      if (body.action === 'preview') {
+        state.doubanImportPreview = { snapshotHash, payload };
+        return send({ preview: { ...profile, snapshotHash, total: items.length, added: items.length, updated: 0, unchanged: 0 } });
+      }
+      const replay = state.doubanImportReceipts.get(body.requestId);
+      if (replay) return replay.payload === payload ? send({ receipt: replay.receipt }) : fail('原操作内容已变化。', 'DOUBAN_IMPORT_CONFLICT');
+      if (body.action !== 'commit' || body.confirmed !== true || !/^[0-9a-f-]{36}$/i.test(body.requestId)
+        || body.expectedSnapshotHash !== state.doubanImportPreview?.snapshotHash || payload !== state.doubanImportPreview?.payload) {
+        return fail('导入预览已变化，请重新预览。', 'DOUBAN_IMPORT_CONFLICT');
+      }
+      state.doubanItems.push(...items.map(item => ({ ...item, profileId: profile.profileId, observedAt: STAMP, createdAt: STAMP, updatedAt: STAMP })));
+      const receipt = { profileId: profile.profileId, requestId: body.requestId, total: items.length, added: items.length, updated: 0, unchanged: 0 };
+      state.doubanImportReceipts.set(body.requestId, { payload, receipt });
+      if (state.doubanLoseImportReply) { state.doubanLoseImportReply = false; return route.abort('connectionreset'); }
+      return send({ receipt });
+    }
+    if (url.pathname === '/api/life/douban/connection' && method === 'PUT') {
+      if (body.expectedRevision !== state.doubanConnection.revision) return fail('请读取最新配置后再保存。', 'DOUBAN_CONNECTION_CONFLICT');
+      const profile = body.profile === null ? { profileId: null, profileUrl: null } : parseDoubanProfile(body.profile);
+      state.doubanConnection = { ...profile, revision: state.doubanConnection.revision + 1, updatedAt: STAMP };
+      state.doubanRun = null;
+      return send({ connection: state.doubanConnection });
+    }
+    if (url.pathname === '/api/life/douban/sync' && method === 'POST') {
+      if (body.expectedConnectionRevision !== state.doubanConnection.revision) return fail('绑定配置已更新。', 'DOUBAN_CONNECTION_CONFLICT');
+      if (!body.runId) {
+        state.doubanRun ??= newRun(state.doubanConnection);
+      } else {
+        if (body.runId !== state.doubanRun?.id || body.expectedRunRevision !== state.doubanRun.revision) return fail('同步进度已更新，请读取最新进度。', 'DOUBAN_RUN_CONFLICT');
+        if (state.doubanHoldStep) {
+          state.doubanHoldStep = false; state.doubanStepPending = true;
+          await new Promise(resolve => { state.doubanReleaseStep = resolve; });
+          state.doubanStepPending = false;
+        }
+        state.doubanRun.revision++;
+        if (state.doubanRun.revision === 1) {
+          state.doubanItems = [record('movie', 1), record('screen', 2)];
+          state.doubanRun.sources.screen = source('complete', 2); state.doubanRun.added = 2;
+          state.doubanRun.message = '已读取公开影视记录，可继续同步其余分类。';
+        } else {
+          state.doubanItems = [record('movie', 1), record('screen', 2), record('book', 3), record('music', 4)];
+          Object.assign(state.doubanRun, { status: 'partial', phase: 'done', added: 4, finishedAt: STAMP,
+            sources: { screen: source('complete', 2), book: source('blocked'), music: source('complete', 1) },
+            rss: { status: 'complete', received: 1, errorCode: null },
+            classification: { checked: 1, unclassified: 1, blocked: true, errorCode: 'DOUBAN_ACCESS_DENIED' },
+            message: '部分完成：图书公开页面受访问限制，已保留已有记录并补充近期 RSS；这不代表历史全量。' });
+        }
+      }
+      return send({ connection: state.doubanConnection, run: state.doubanRun, more: state.doubanRun.status === 'running' });
+    }
+    return fail('不支持的合成测试请求。', 'SYNTHETIC_DOUBAN_REQUEST', 400);
+  });
+});
+test.afterEach(async ({ page }, testInfo) => {
+  testInfo.synthetic.doubanReleaseStep?.();
+  expect(testInfo.synthetic.externalRequests, 'Synthetic library records must not contact Douban or another external service').toEqual([]);
+  if (!page.isClosed()) await page.screenshot({ path: testInfo.outputPath('douban-acceptance.png'), fullPage: true });
+});
+async function openLibrary(page) {
+  await page.goto('/life/douban');
+  await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
+}
+async function fits(page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'The book and media library must fit desktop and 390px layouts').toBe(true);
+}
+function bind(state) {
+  state.doubanConnection = { profileId: PROFILE, profileUrl: 'https://www.douban.com/people/' + PROFILE + '/', revision: 1, updatedAt: STAMP };
+}
+
+test('a personal profile is saved separately from explicit public syncing and limited sources remain visibly partial', async ({ page }, testInfo) => {
+  await openLibrary(page);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-profile').fill('https://www.douban.com/people/' + PROFILE + '/');
+  await page.locator('#douban-save').click();
+  await expect.poll(() => testInfo.synthetic.doubanConnection.profileId).toBe(PROFILE);
+  expect(syncRequests(testInfo)).toEqual([]);
+  expect(mutations(testInfo)[0].body).toEqual({ profile: 'https://www.douban.com/people/' + PROFILE + '/', expectedRevision: 0 });
+  await page.locator('#douban-sync').click();
+  await expect.poll(() => testInfo.synthetic.doubanRun?.status).toBe('partial');
+  await expect(page.locator('#douban-sync-status')).toContainText(/部分|受限|限制/);
+  await expect(page.locator('#douban-run-summary')).toContainText(/RSS|近期/);
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(4);
+  expect(syncRequests(testInfo)[0].body).toEqual({ expectedConnectionRevision: 1 });
+  expect(syncRequests(testInfo).slice(1).every(request => request.body.runId === RUN_ID && Number.isInteger(request.body.expectedRunRevision))).toBe(true);
+  expect(JSON.stringify(mutations(testInfo).map(request => request.body))).not.toMatch(/cookie|password|userId|synthetic-owner/);
+  await fits(page);
+  await page.locator('#douban-list').screenshot({ path: testInfo.outputPath('douban-library-cards.png') });
+});
+
+test('movies, series, books, music and unclassified screen records stay searchable and paginated in the personal library', async ({ page }, testInfo) => {
+  bind(testInfo.synthetic);
+  testInfo.synthetic.doubanItems = [...KINDS.map((kind, index) => record(kind, index + 10)), ...Array.from({ length: 26 }, (_, index) => record('book', index + 100))];
+  await openLibrary(page);
+  await expect(page.locator('#douban-next')).toBeEnabled();
+  await page.locator('#douban-next').click();
+  await expect.poll(() => testInfo.synthetic.requests.some(request => request.path === '/api/life/douban' && Number(new URLSearchParams(request.search).get('offset')) > 0)).toBe(true);
+  for (const kind of KINDS) {
+    await page.locator('#douban-kind').selectOption(kind);
+    await expect.poll(() => page.locator('#douban-list [data-douban-open]').count()).toBeGreaterThan(0);
+    await expect(page.locator('#douban-list')).toContainText('合成' + ({ movie: '电影', series: '电视剧', book: '图书', music: '音乐', screen: '待分类影视' }[kind]));
+  }
+  await page.locator('#douban-kind').selectOption('');
+  await page.locator('#douban-query').fill('合成电视剧11');
+  await page.locator('#douban-search').click();
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  await page.locator('#douban-list [data-douban-open]').click();
+  await expect(page.locator('#douban-detail-dialog')).toBeVisible();
+  await expect(page.locator('#douban-detail-title')).toHaveText('合成电视剧11');
+  await expect(page.locator('#douban-detail-body')).toContainText('合成个人短评');
+  await page.locator('#douban-detail-close').click();
+  expect(mutations(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('pausing finishes only the current step and a page reload waits for an explicit resume', async ({ page }, testInfo) => {
+  bind(testInfo.synthetic); testInfo.synthetic.doubanHoldStep = true;
+  await openLibrary(page); await page.locator('#douban-sync').click();
+  await expect.poll(() => testInfo.synthetic.doubanStepPending).toBe(true);
+  await page.locator('#douban-stop').click();
+  testInfo.synthetic.doubanReleaseStep();
+  await expect(page.locator('#douban-sync')).toBeEnabled();
+  expect(testInfo.synthetic.doubanRun.status).toBe('running');
+  const beforeReload = syncRequests(testInfo).length;
+  await page.reload();
+  await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
+  expect(syncRequests(testInfo)).toHaveLength(beforeReload);
+  await page.locator('#douban-sync').click();
+  await expect.poll(() => testInfo.synthetic.doubanRun.status).toBe('partial');
+  expect(testInfo.synthetic.doubanItems).toHaveLength(4);
+  await fits(page);
+});
+
+test('an account change keeps the old-page profile draft local and blocks sending it as the next account', async ({ page }, testInfo) => {
+  bind(testInfo.synthetic); await openLibrary(page);
+  await page.locator('#douban-profile-settings > summary').click();
+  const draft = 'https://www.douban.com/people/keep-this-profile-draft/';
+  await page.locator('#douban-profile').fill(draft);
+  testInfo.synthetic.owner = 'another-synthetic-account';
+  await page.locator('#douban-save').click();
+  await expect(page.locator('html')).toHaveAttribute('data-account-changed', '');
+  await expect(page.locator('#douban-profile')).toHaveValue(draft);
+  await expect(page.locator('#douban-save')).toBeDisabled();
+  await expect(page.locator('#douban-sync')).toBeDisabled();
+  expect(mutations(testInfo)).toEqual([]);
+  expect(testInfo.synthetic.doubanConnection.profileId).toBe(PROFILE);
+  await fits(page);
+});
+
+test('private files are normalized locally, previewed without writes and imported only after explicit confirmation', async ({ page }, testInfo) => {
+  await openLibrary(page);
+  await page.locator('#douban-import-panel > summary').click();
+  await page.locator('#douban-import-profile').fill(PROFILE);
+  const rawItems = [{ title: '私密导入测试电影', url: 'https://movie.douban.com/subject/1234567/', type: 'movie',
+    state: '看过', myRating: 4, collectionDate: '2026-11-12', myComment: '只属于本人的导入短评', score: 9.8,
+    unrelatedPrivateData: 'PRIVATE-DO-NOT-UPLOAD' }];
+  await page.locator('#douban-import-files').setInputFiles({ name: 'private-douban-records.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rawItems)) });
+  await page.locator('#douban-import-completed').check();
+  expect(mutations(testInfo)).toEqual([]);
+  expect(testInfo.synthetic.doubanItems).toEqual([]);
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-result')).toBeVisible();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  expect(testInfo.synthetic.doubanItems).toEqual([]);
+  const imports = () => mutations(testInfo).filter(request => request.path === '/api/life/douban/import');
+  expect(imports()).toHaveLength(1);
+  expect(imports()[0].body.action).toBe('preview');
+  const expectedItem = { domain: 'screen', subjectId: '1234567', kind: 'movie', title: rawItems[0].title, url: rawItems[0].url,
+    coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: rawItems[0].myComment, publishedAt: null, source: 'import' };
+  expect(imports()[0].body.items).toEqual([expectedItem]);
+  expect(JSON.stringify(imports()[0].body)).not.toMatch(/private-douban-records\.json|myRating|myComment|collectionDate|"score"|9\.8|unrelatedPrivateData|PRIVATE-DO-NOT-UPLOAD|rawFile|rawText|cookie|password|userId/);
+  await page.locator('#douban-import-completed').uncheck();
+  await expect(page.locator('#douban-import-confirm')).toBeDisabled();
+  expect(testInfo.synthetic.doubanItems).toEqual([]);
+  await page.locator('#douban-import-completed').check();
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  testInfo.synthetic.doubanLoseImportReply = true;
+  await page.locator('#douban-import-confirm').click();
+  await expect.poll(() => testInfo.synthetic.doubanItems.length).toBe(1);
+  await expect(page.locator('#douban-import-retry')).toBeVisible();
+  await expect(page.locator('#douban-import-profile')).toBeDisabled();
+  await page.locator('#douban-import-retry').click();
+  await expect(page.locator('#douban-list')).toContainText(rawItems[0].title);
+  const commits = imports().filter(request => request.body.action === 'commit');
+  expect(commits).toHaveLength(2);
+  expect(commits[1].body).toEqual(commits[0].body);
+  expect(testInfo.synthetic.doubanItems).toHaveLength(1);
+  expect(commits[0].body).toMatchObject({ items: [expectedItem], expectedSnapshotHash: 'a'.repeat(64), confirmed: true });
+  expect(parseDoubanProfile(commits[0].body.profile).profileId).toBe(PROFILE);
+  expect(commits[0].body.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(testInfo.synthetic.doubanConnection.profileId).toBeNull();
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+  await page.locator('#douban-import-panel').screenshot({ path: testInfo.outputPath('douban-private-import-confirmed.png') });
+});
+
+test('saved private HTML stays inert while only normalized book records reach the preview and import requests', async ({ page }, testInfo) => {
+  await openLibrary(page);
+  await page.locator('#douban-import-panel > summary').click();
+  await page.locator('#douban-import-profile').fill(PROFILE);
+  const savedHTML = `<!DOCTYPE html><html><head><title>本人读过的书(1)</title>
+<link rel="canonical" href="https://book.douban.com/people/${PROFILE}/collect">
+<link rel="stylesheet" href="https://private-import.invalid/saved-page.css">
+<style>@import url("https://private-import.invalid/import.css"); .saved-private { background-image:url("https://private-import.invalid/background.png") }</style>
+<script>window.__privateDoubanHTMLExecuted=true;fetch("https://private-import.invalid/inline-script")</script>
+</head><body class="saved-private"><h1>本人读过的书(1)</h1>
+<img src="https://private-import.invalid/outside.png" srcset="https://private-import.invalid/large.png 2x">
+<iframe src="https://private-import.invalid/frame" srcdoc="&lt;script&gt;fetch('https://private-import.invalid/srcdoc-script')&lt;/script&gt;"></iframe>
+<div class="grid-view"><div class="item"><img src="https://private-import.invalid/private-cover.png">
+<ul><li class="title"><a href="https://book.douban.com/subject/7654321/"><em>私密HTML导入测试书</em></a></li>
+<li><span class="rating4-t"></span><span class="date">2026-11-11</span></li>
+<li class="comment">只保留本人的书籍短评</li></ul></div></div></body></html>`;
+  await page.locator('#douban-import-files').setInputFiles({ name: 'my-private-book-collect.html', mimeType: 'text/html', buffer: Buffer.from(savedHTML) });
+  await page.locator('#douban-import-completed').check();
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-result')).toBeVisible();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  expect(testInfo.synthetic.doubanItems).toEqual([]);
+  const expectedItem = { domain: 'book', subjectId: '7654321', kind: 'book', title: '私密HTML导入测试书',
+    url: 'https://book.douban.com/subject/7654321/', coverUrl: null, rating: 4, markedDate: '2026-11-11',
+    comment: '只保留本人的书籍短评', publishedAt: null, source: 'import' };
+  const imports = () => mutations(testInfo).filter(request => request.path === '/api/life/douban/import');
+  expect(imports()).toHaveLength(1);
+  expect(imports()[0].body.items).toEqual([expectedItem]);
+  expect(await page.evaluate(() => window.__privateDoubanHTMLExecuted)).toBeUndefined();
+  expect(testInfo.synthetic.externalRequests).toEqual([]);
+  expect(JSON.stringify(imports()[0].body)).not.toMatch(/private-import\.invalid|<script|<iframe|srcdoc|DOCTYPE|saved-private|my-private-book-collect\.html/);
+  await page.locator('#douban-import-confirm').click();
+  await expect(page.locator('#douban-list')).toContainText(expectedItem.title);
+  expect(testInfo.synthetic.doubanItems).toHaveLength(1);
+  expect(imports().filter(request => request.body.action === 'commit')[0].body.items).toEqual([expectedItem]);
+  expect(await page.evaluate(() => window.__privateDoubanHTMLExecuted)).toBeUndefined();
+  expect(testInfo.synthetic.externalRequests).toEqual([]);
+  expect(testInfo.synthetic.doubanConnection.profileId).toBeNull();
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});

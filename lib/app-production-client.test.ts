@@ -18,6 +18,7 @@ import { calculateNutritionNeeds, parseNutritionNeedsInput, type NutritionNeedsI
 import { buildHealthWeeklyReview, parseHealthWeekQuery, type HealthWeeklyReview } from './health-weekly.ts';
 import { buildHealthWeeklyFocus } from './health-weekly-focus.ts';
 import { emptyGoalSettings } from './health-goals.ts';
+import type { DoubanRecord, DoubanConnection } from '../db/douban-store.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
@@ -102,7 +103,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; lastRun?: unknown; allowImportPreview?: boolean } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
@@ -142,6 +143,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const requests: Array<{ path: string; method: string }> = [];
   const identityRequests: Array<{ path: string; method: string }> = [];
   const needsBodies: NutritionNeedsInput[] = [];
+  const doubanImportBodies: Array<Record<string, unknown>> = [];
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] }, nutrition: { entries: [], statuses: [], goals: EMPTY_NUTRITION_GOALS } });
   const fetch = async (url: string | URL, options?: RequestInit) => {
@@ -155,6 +157,15 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       return Response.json({ estimate: calculateNutritionNeeds(input), ai: catalog.nutritionNeeds === 'ready'
         ? { status: 'ready', text: '静息代谢与日常维持需求不同，活动程度会影响估算。', message: null, provider: 'MiniMax', model: 'MiniMax-M3' }
         : { status: 'unavailable', text: null, message: 'AI 解读暂不可用，公式估算仍可参考。' } });
+    }
+    if (method === 'POST' && path === '/api/life/douban/import' && catalog.douban?.allowImportPreview) {
+      requests.push({ path, method });
+      const body = JSON.parse(String(options?.body));
+      doubanImportBodies.push(body);
+      assert.equal(body.action, 'preview', 'the production fixture never commits imported private records');
+      assert.ok(Array.isArray(body.items));
+      return Response.json({ preview: { profileId: body.profile, profileUrl: 'https://www.douban.com/people/' + body.profile + '/',
+        snapshotHash: 'a'.repeat(64), total: body.items.length, added: body.items.length, updated: 0, unchanged: 0 } });
     }
     if (method !== 'GET') { requests.push({ path, method }); throw new Error('Unexpected automatic production write: ' + method + ' ' + path); }
     // The account chrome now performs an independent identity read. Preserve
@@ -172,6 +183,18 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     if (path === '/api/ai/settings') return Response.json({ scope: 'site', canManage: catalog.aiCanManage !== false, settings: { configured: catalog.aiConfigured === true, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     const parsed = new URL(path, location.origin);
+    if (parsed.pathname === '/api/life/douban') {
+      const connection = catalog.douban?.connection ?? { profileId: null, revision: 0, updatedAt: null };
+      const query = parsed.searchParams.get('q') ?? '', kind = parsed.searchParams.get('kind') ?? '';
+      const rows = (catalog.douban?.items ?? []).filter(item => (parsed.searchParams.get('profile') !== 'current' || item.profileId === connection.profileId)
+        && (item.title.includes(query) || (item.comment ?? '').includes(query)));
+      const counts = { all: rows.length, movie: 0, series: 0, screen: 0, book: 0, music: 0 };
+      for (const item of rows) counts[item.kind]++;
+      const filtered = rows.filter(item => !kind || kind === 'all' || item.kind === kind);
+      const offset = Number(parsed.searchParams.get('offset') ?? 0), limit = Number(parsed.searchParams.get('limit') ?? 24);
+      return Response.json({ connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
+        items: filtered.slice(offset, offset + limit), total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
+    }
     if (parsed.pathname === '/api/health/review') {
       const review = catalog.weeklyReview ?? buildHealthWeeklyReview([], emptyGoalSettings(), parseHealthWeekQuery(parsed.searchParams));
       return Response.json({ ...review, focus: buildHealthWeeklyFocus(review) });
@@ -213,7 +236,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       context: { version: 1, timezone: 'Asia/Shanghai', range: { from: today, to: today, today, days: 7 }, health: [], nutrition: { recordedDays: 0, days: [] }, limitations: ['暂无合成测试记录'] }, sources: [] });
     throw new Error('Unexpected production client request: ' + method + ' ' + path);
   };
-  const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, URLSearchParams, TextEncoder, AbortController,
+  const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, DOMParser: window.DOMParser,
     crypto: webcrypto, Intl, Date, Event: window.Event, Element: window.Element, innerWidth: width,
     Headers, setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
   for (const [index, script] of [...document.querySelectorAll('script')].entries()) {
@@ -222,7 +245,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, location };
+  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, location };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
@@ -473,6 +496,74 @@ for (const [width, ai] of [[390, 'ready'], [1280, 'unavailable']] as const) {
     assert.equal((get('goal-calories') as HTMLInputElement).value, targets.calories, 'invalidating a preview must retain the separate goal draft');
   });
 }
+
+for (const width of [390, 1280]) {
+  test('minified personal media library reads saved records and filters categories without starting a sync at ' + width + 'px', { skip: !hasBuild }, async () => {
+    const timestamp = '2026-11-14T00:00:00.000Z';
+    const items: DoubanRecord[] = (['movie', 'series', 'book', 'music', 'screen'] as const).map((kind, index) => {
+      const domain = kind === 'book' || kind === 'music' ? kind : 'screen';
+      const subjectId = String(123450 + index);
+      return { profileId: 'synthetic-profile', domain, subjectId, kind, title: '合成书影音 ' + kind + ' <img src=x>',
+        url: 'https://' + (domain === 'screen' ? 'movie' : domain) + '.douban.com/subject/' + subjectId + '/',
+        coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p123450.jpg', rating: kind === 'music' ? null : 4,
+        markedDate: '2026-11-10', comment: '合成私人短评', publishedAt: null, source: 'import', observedAt: timestamp,
+        createdAt: timestamp, updatedAt: timestamp, metadataCheckedRunId: null };
+    });
+    const f = await fixture('id="douban-page"', '/life/douban', width, {}, { foods: [], douban: {
+      connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: timestamp }, items,
+    } });
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 5);
+    assert.match(f.document.getElementById('douban-total')?.textContent ?? '', /共 5 条/);
+    assert.equal(f.document.querySelectorAll('#douban-list img').length, 0, 'private imported cover URLs must not start external image requests');
+    assert.match(f.document.querySelector('#douban-list h3')?.textContent ?? '', /<img src=x>/);
+    assert.ok(f.requests.every(request => request.method === 'GET' && !request.path.includes('/sync')));
+    f.document.querySelector('#douban-list [data-douban-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    assert.equal(f.document.getElementById('douban-detail-dialog')?.hasAttribute('open'), true);
+    assert.match(f.document.getElementById('douban-detail-body')?.textContent ?? '', /合成私人短评/);
+    f.document.getElementById('douban-detail-close')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    const kind = f.document.getElementById('douban-kind') as unknown as HTMLSelectElement;
+    kind.value = 'book'; kind.dispatchEvent(new f.window.Event('change', { bubbles: true }));
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 1);
+    assert.match(f.document.querySelector('#douban-list h3')?.textContent ?? '', /book/);
+    assert.ok(f.requests.every(request => request.method === 'GET'), 'opening, reading and filtering must not import or contact Douban');
+    assert.ok(f.document.getElementById('douban-import-files'), 'private-file import remains available without a public-source fetch');
+  });
+}
+
+test('minified private media file parser previews normalized personal fields without uploading the raw file or saving records', { skip: !hasBuild }, async () => {
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: null, revision: 0, updatedAt: null }, items: [], allowImportPreview: true,
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  const get = (id: string) => f.document.getElementById('douban-' + id)!;
+  (get('import-profile') as HTMLInputElement).value = 'synthetic-private-profile';
+  get('import-profile').dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  const raw = [{ title: '私密合成书籍', url: 'https://book.douban.com/subject/1234567/', state: '读过', myRating: 4,
+    myComment: '合成私人短评', collectionDate: '2026-11-12', score: 9.8, unrelatedPrivateData: 'RAW-DO-NOT-UPLOAD' }];
+  const file = new File([JSON.stringify(raw)], 'synthetic-private-notes.json', { type: 'application/json' });
+  Object.defineProperty(get('import-files'), 'files', { configurable: true, value: [file] });
+  get('import-files').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  (get('import-completed') as HTMLInputElement).checked = true;
+  get('import-completed').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  assert.equal(f.doubanImportBodies.length, 0);
+  get('import-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle(() => get('import-result').hidden === false);
+  assert.equal(f.doubanImportBodies.length, 1);
+  const body = f.doubanImportBodies[0];
+  assert.equal(body.action, 'preview');
+  const items = body.items as Array<Record<string, unknown>>;
+  assert.equal(items[0].rating, 4);
+  assert.equal(items[0].comment, '合成私人短评');
+  assert.equal(items[0].source, 'import');
+  assert.equal(items[0].markedDate, '2026-11-12');
+  assert.doesNotMatch(JSON.stringify(body), /RAW-DO-NOT-UPLOAD|unrelatedPrivateData|synthetic-private-notes|myRating|score|9\.8/);
+  assert.doesNotMatch(JSON.stringify(f.localStorage.snapshot()) + JSON.stringify(f.sessionStorage.snapshot()), /合成私人短评|RAW-DO-NOT-UPLOAD/);
+  assert.equal((get('import-confirm') as HTMLButtonElement).disabled, false);
+  (get('import-completed') as HTMLInputElement).checked = false;
+  get('import-completed').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  assert.equal((get('import-confirm') as HTMLButtonElement).disabled, true);
+  assert.ok(f.requests.filter(request => request.method === 'POST').every(request => request.path === '/api/life/douban/import'));
+});
 
 for (const width of [390, 1280]) {
   test('minified weekly review leads with a verified priority and explicitly fills an unsaved action at ' + width + 'px', { skip: !hasBuild }, async () => {

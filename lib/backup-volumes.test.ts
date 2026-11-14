@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKUP_MAX_BYTES, BACKUP_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, BackupValidationError, backupDigest, parseDataBackup } from './data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_TABLE_NAMES, BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, BackupValidationError, backupDigest, parseDataBackup } from './data-backup.ts';
 import type { DataBackup } from './data-backup.ts';
 import { parseBackupInput, splitBackupVolumes } from './backup-volumes.ts';
 
@@ -44,8 +44,49 @@ test('published 27-table volume digests are verified before adding the new empty
   const set={kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:EXPORTED,totalRows:1,volumes:[descriptor]},volumes:[volume]};
   const parsed=await parseBackupInput(set);
   assert.equal(parsed.backup.tables.health_measurements.length,1);
-  assert.equal(Object.keys(parsed.backup.tables).length,30);
+  assert.equal(Object.keys(parsed.backup.tables).length,31);
   assert.deepEqual(parsed.backup.tables.health_weekly_actions,[]);assert.deepEqual(parsed.backup.tables.finance_month_closes,[]);
+  assert.deepEqual(parsed.backup.tables.douban_items,[]);
   const changed=structuredClone(set);changed.volumes[0].tables.health_measurements[0].received_at='2026-11-11T00:00:00.000Z';
   await assert.rejects(parseBackupInput(changed),BackupValidationError);
+});
+
+async function signedSingleVolume(tables: Record<string, unknown[]>) {
+  const signed={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables},setId=await backupDigest(signed);
+  const volume={kind:'jiashu-os-backup-volume',version:1,setId,exportedAt:EXPORTED,partIndex:1,totalParts:1,tables};
+  const rowCount=Object.values(tables).reduce((sum,rows)=>sum+rows.length,0);
+  const descriptor={partIndex:1,rowCount,byteLength:new TextEncoder().encode(JSON.stringify(volume)).byteLength,sha256:await backupDigest(volume)};
+  return {kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:EXPORTED,totalRows:rowCount,volumes:[descriptor]},volumes:[volume]};
+}
+
+test('the published 30-table signed shape remains frozen and verifies before adding empty Douban records',async()=>{
+  assert.equal(BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.length,30);
+  assert.equal(BACKUP_PREVIOUS_V2_TABLE_NAMES.length,27);
+  assert.equal(BACKUP_TABLE_NAMES.length,31);
+  assert.equal((BACKUP_PRE_DOUBAN_V2_TABLE_NAMES as readonly string[]).includes('douban_items'),false);
+  const tables=Object.fromEntries(BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.map(table=>[table,table==='health_measurements'?large.tables.health_measurements.slice(0,1):[]]));
+  const set=await signedSingleVolume(tables);
+  const parsed=await parseBackupInput(set);
+  assert.equal(parsed.backup.tables.health_measurements.length,1);
+  assert.deepEqual(parsed.backup.tables.douban_items,[]);
+  assert.notEqual(await backupDigest(parsed.backup),set.manifest.setId,'normalising a prior signed shape must not pretend its original digest covered a new table');
+});
+
+test('valid hashes cannot turn same-length unknown table sets into a supported signed shape',async()=>{
+  for(const names of [BACKUP_TABLE_NAMES,BACKUP_PRE_DOUBAN_V2_TABLE_NAMES,BACKUP_PREVIOUS_V2_TABLE_NAMES]){
+    const tables=Object.fromEntries(names.map(table=>[table,[]]));
+    delete tables.health_syncs;tables.unsupported_table=[];
+    await assert.rejects(parseBackupInput(await signedSingleVolume(tables)),BackupValidationError);
+  }
+});
+
+test('new signed sets include canonical personal Douban records and preserve nullable fields',async()=>{
+  const backup:DataBackup={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables:Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,[]])) as unknown as DataBackup['tables']};
+  backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
+  const set=await splitBackupVolumes(backup);
+  assert.equal(Object.keys(set.volumes[0].tables).length,31);
+  assert.equal(set.manifest.totalRows,1);
+  const parsed=await parseBackupInput(set);
+  assert.deepEqual(parsed.backup.tables.douban_items,backup.tables.douban_items);
+  assert.equal(await backupDigest(parsed.backup),set.manifest.setId);
 });

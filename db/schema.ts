@@ -486,3 +486,41 @@ export const notificationPreferences = sqliteTable('notification_preferences', {
   userId: text('user_id').primaryKey().notNull(), settingsJson: text('settings_json').notNull(),
   revision: integer('revision').notNull(), updatedAt: text('updated_at').notNull(),
 }, (table) => [check('notification_preferences_revision', sql`${table.revision} >= 1`)]);
+
+// Source-bound personal collections; configuration and diagnostic runs are not portable credentials.
+export const doubanConnections = sqliteTable('douban_connections', {
+  userId: text('user_id').primaryKey().notNull(), profileId: text('profile_id'),
+  revision: integer('revision').notNull(), updatedAt: text('updated_at').notNull(),
+}, table => [check('douban_connections_revision', sql`${table.revision} >= 1`)]);
+export const doubanItems = sqliteTable('douban_items', {
+  userId: text('user_id').notNull(), profileId: text('profile_id').notNull(), domain: text('domain').notNull(),
+  subjectId: text('subject_id').notNull(), kind: text('kind').notNull(), title: text('title').notNull(), url: text('url').notNull(),
+  coverUrl: text('cover_url'), rating: integer('rating'), markedDate: text('marked_date'), comment: text('comment'),
+  publishedAt: text('published_at'), source: text('source').notNull(), observedAt: text('observed_at').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), metadataCheckedRunId: text('metadata_checked_run_id'),
+}, table => [primaryKey({ columns: [table.userId, table.profileId, table.domain, table.subjectId] }),
+  index('douban_items_owner_date_idx').on(table.userId, table.markedDate, table.observedAt),
+  index('douban_items_owner_profile_kind_idx').on(table.userId, table.profileId, table.kind),
+  check('douban_items_domain', sql`${table.domain} IN ('screen','book','music')`),
+  check('douban_items_kind', sql`${table.kind} IN ('screen','movie','series','book','music')`),
+  check('douban_items_rating', sql`${table.rating} IS NULL OR ${table.rating} BETWEEN 1 AND 5`),
+  check('douban_items_source', sql`${table.source} IN ('collection','rss','import')`),
+  check('douban_items_domain_kind', sql`(${table.domain}='screen' AND ${table.kind} IN ('screen','movie','series')) OR ${table.domain}=${table.kind}`)]);
+export const doubanSyncRuns = sqliteTable('douban_sync_runs', {
+  userId: text('user_id').notNull(), id: text('id').notNull(), profileId: text('profile_id').notNull(),
+  connectionRevision: integer('connection_revision').notNull(), revision: integer('revision').notNull().default(0),
+  status: text('status').notNull(), stateJson: text('state_json').notNull(),
+  added: integer('added').notNull().default(0), updated: integer('updated').notNull().default(0), unchanged: integer('unchanged').notNull().default(0),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), finishedAt: text('finished_at'),
+}, table => [primaryKey({ columns: [table.userId, table.id] }),
+  uniqueIndex('douban_runs_one_active_idx').on(table.userId, table.connectionRevision).where(sql`${table.status}='running'`),
+  index('douban_runs_owner_created_idx').on(table.userId, table.createdAt, table.id),
+  check('douban_sync_runs_revision', sql`${table.revision} >= 0`),
+  check('douban_sync_runs_status', sql`${table.status} IN ('running','completed','partial','failed')`),
+  check('douban_sync_runs_added', sql`${table.added} >= 0`), check('douban_sync_runs_updated', sql`${table.updated} >= 0`),
+  check('douban_sync_runs_unchanged', sql`${table.unchanged} >= 0`)]);
+// Import receipts contain counters only; neither uploaded documents nor private item content is duplicated here.
+export const doubanImportReceipts = sqliteTable('douban_import_receipts', {
+  userId: text('user_id').notNull(), requestId: text('request_id').notNull(), requestHash: text('request_hash').notNull(),
+  receiptJson: text('receipt_json').notNull(), createdAt: text('created_at').notNull(),
+}, table => [primaryKey({ columns: [table.userId, table.requestId] })]);
