@@ -109,6 +109,10 @@ function storage(seed: Record<string,string> = {}) {
 async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata> } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
+  // Linkedom delegates host globals between windows. Browser capabilities are
+  // opt-in per fixture, so an earlier extension mock cannot affect fallback.
+  Object.defineProperty(window, 'chrome', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'navigator', { configurable: true, value: {} });
   Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
   let current = new URL(path, 'https://synthetic-production.example');
   const location = {
@@ -670,7 +674,8 @@ for (const width of [390, 1280]) void test('minified work enrichment explicitly 
   await settle(() => get('page').getAttribute('aria-busy') === 'false');
   assert.equal(f.doubanExtensionMessages.length, 0); assert.equal(f.doubanMetadataBodies.length, 0);
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => get('metadata-status').textContent?.includes('本页补全完成') === true);
+  await settle(() => /本页补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
+  assert.match(get('metadata-status').textContent ?? '', /本页补全完成/, 'local enrichment must complete: ' + get('metadata-status').textContent);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'SUBJECT']);
   assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: item.domain, subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 2, confirmed: true, metadata }]);
   assert.deepEqual(f.requests.filter(request => request.path === '/api/life/douban/metadata'), [{ path: '/api/life/douban/metadata', method: 'PUT' }]);
@@ -736,7 +741,8 @@ test('minified media enrichment and manual classification only write after their
   assert.equal(f.doubanMetadataBodies.length, 0);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^data:image\/svg\+xml/);
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => get('metadata-status').textContent?.includes('本页补全完成') === true);
+  await settle(() => /本页补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
+  assert.match(get('metadata-status').textContent ?? '', /本页补全完成/, 'fallback enrichment must complete: ' + get('metadata-status').textContent);
   assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: 'screen', subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 0, confirmed: true }]);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^\/api\/life\/douban\/cover\?/);
   assert.match(f.document.querySelector('#douban-list .db-meta')?.textContent ?? '', /电视剧/);
@@ -814,10 +820,11 @@ test('minified private media file parser previews normalized personal fields wit
   assert.equal(body.expectedDataEpoch, 0);
   const items = body.items as Array<Record<string, unknown>>;
   assert.equal(items[0].rating, 4);
+  assert.deepEqual(items[0].details, { doubanRating: 9.8 }, 'site score is public work data and never replaces the personal four-star rating');
   assert.equal(items[0].comment, '合成私人短评');
   assert.equal(items[0].source, 'import');
   assert.equal(items[0].markedDate, '2026-11-12');
-  assert.doesNotMatch(JSON.stringify(body), /RAW-DO-NOT-UPLOAD|unrelatedPrivateData|synthetic-private-notes|myRating|score|9\.8/);
+  assert.doesNotMatch(JSON.stringify(body), /RAW-DO-NOT-UPLOAD|unrelatedPrivateData|synthetic-private-notes|myRating|"score"/);
   assert.doesNotMatch(JSON.stringify(f.localStorage.snapshot()) + JSON.stringify(f.sessionStorage.snapshot()), /合成私人短评|RAW-DO-NOT-UPLOAD/);
   assert.equal((get('import-confirm') as HTMLButtonElement).disabled, false);
   (get('import-completed') as HTMLInputElement).checked = false;

@@ -341,9 +341,11 @@ test('private files are normalized locally, previewed without writes and importe
   expect(imports()).toHaveLength(1);
   expect(imports()[0].body.action).toBe('preview');
   const expectedItem = { domain: 'screen', subjectId: '1234567', kind: 'movie', title: rawItems[0].title, url: rawItems[0].url,
-    coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: rawItems[0].myComment, publishedAt: null, source: 'import' };
+    coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: rawItems[0].myComment, publishedAt: null, source: 'import', details: { doubanRating: 9.8 } };
   expect(imports()[0].body.items).toEqual([expectedItem]);
-  expect(JSON.stringify(imports()[0].body)).not.toMatch(/private-douban-records\.json|myRating|myComment|collectionDate|"score"|9\.8|unrelatedPrivateData|PRIVATE-DO-NOT-UPLOAD|rawFile|rawText|cookie|password|userId/);
+  expect(imports()[0].body.items[0].rating).toBe(4);
+  expect(imports()[0].body.items[0].details.doubanRating).toBe(9.8);
+  expect(JSON.stringify(imports()[0].body)).not.toMatch(/private-douban-records\.json|myRating|myComment|collectionDate|"score"|unrelatedPrivateData|PRIVATE-DO-NOT-UPLOAD|rawFile|rawText|cookie|password|userId/);
   await page.locator('#douban-import-completed').uncheck();
   await expect(page.locator('#douban-import-confirm')).toBeDisabled();
   expect(testInfo.synthetic.doubanItems).toEqual([]);
