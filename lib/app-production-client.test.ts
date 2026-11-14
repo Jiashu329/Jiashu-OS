@@ -647,7 +647,7 @@ void test('minified media reset previews before confirmation, retains its bindin
   get('reset-panel').setAttribute('open', '');
   get('reset-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
   await settle(() => !(get('reset-confirm') as HTMLButtonElement).disabled);
-  assert.deepEqual(f.doubanResetBodies, [{ action: 'preview' }]); assert.equal(library.dataEpoch, 0); assert.equal(library.items.length, 2);
+  assert.deepEqual([...f.doubanResetBodies], [{ action: 'preview' }]); assert.equal(library.dataEpoch, 0); assert.equal(library.items.length, 2);
   assert.match(get('reset-counts').textContent ?? '', /2 条记录/); assert.equal(f.document.querySelectorAll('#douban-list .db-card').length, 2, 'preview keeps all saved cards');
   get('reset-confirm').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => get('reset-status').textContent?.includes('绑定主页保留') === true && get('page').getAttribute('aria-busy') === 'false');
