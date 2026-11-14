@@ -22,7 +22,7 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const changedAccount=()=>Boolean(window.JiashuAccountSession?.changed);
 const profileDirty=()=>el('profile').value!==state.profileBaseline;
-let guard=null,importGuard=null,detailGuard=null;
+let guard=null,importGuard=null,detailGuard=null,browserSync=null;
 function canonicalProfile(id){return typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)?'https://www.douban.com/people/'+id+'/':null;}
 function subjectURL(item){const domain={screen:'movie',book:'book',music:'music'}[item?.domain];return domain&&typeof item.subjectId==='string'&&/^[1-9][0-9]{0,15}$/.test(item.subjectId)?'https://'+domain+'.douban.com/subject/'+item.subjectId+'/':null;}
 function coverURL(item){if(!canonicalProfile(item?.profileId)||!subjectURL(item)||typeof item.coverUrl!=='string'||!item.coverUrl.trim())return null;return '/api/life/douban/cover?'+new URLSearchParams({profileId:item.profileId,domain:item.domain,subjectId:item.subjectId});}
@@ -31,7 +31,7 @@ function dateText(value){if(typeof value!=='string'||!value)return'未提供';co
 function rating(value){return Number.isInteger(value)&&value>=1&&value<=5?'个人评分 '+value+' / 5':'未评分';}
 function status(message,error=false){el('status').textContent=message||'';el('status').classList.toggle('error',error);el('retry').hidden=!error;}
 function profileStatus(message,error=false){el('profile-status').textContent=message||'';el('profile-status').classList.toggle('error',error);}
-function mutationLocked(){return changedAccount()||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending);}
+function mutationLocked(){return Boolean(browserSync?.isLocked())||changedAccount()||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending);}
 function classificationDirty(){return Boolean(state.detailItem?.domain==='screen'&&el('classification-kind').value!==(state.detailItem.kind==='screen'?'':state.detailItem.kind));}
 function classificationStatus(message,error=false){el('classification-status').textContent=message||'';el('classification-status').classList.toggle('error',error);}
 function controls(){
@@ -42,7 +42,7 @@ function controls(){
  el('stop').textContent=state.stop?'暂停中…':'暂停';el('reload-profile').disabled=locked;
  el('metadata').disabled=locked||state.loading||state.items.length===0;el('metadata').textContent=metadataState.busy?'正在补全本页…':'补全本页封面与分类';el('metadata-stop').hidden=!metadataState.busy;el('metadata-stop').disabled=metadataState.stop;el('metadata-stop').textContent=metadataState.stop?'暂停中…':'暂停补全';
  el('classification-kind').disabled=locked||state.detailConflict;el('classification-save').disabled=locked||state.detailConflict||state.detailItem?.domain!=='screen'||!['movie','series'].includes(el('classification-kind').value);el('classification-save').textContent=state.detailBusy?'正在保存…':'保存分类';
- el('previous').disabled=state.loading||metadataState.busy||state.syncing||state.offset===0;el('next').disabled=state.loading||metadataState.busy||state.syncing||!state.hasMore;for(const id of ['query','kind','scope','search','retry'])el(id).disabled=state.syncing||metadataState.busy||changedAccount();importControls();
+ el('previous').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||state.offset===0;el('next').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||!state.hasMore;for(const id of ['query','kind','scope','search','retry'])el(id).disabled=state.syncing||metadataState.busy||Boolean(browserSync?.isBusy())||changedAccount();importControls();browserSync?.update();
 }
 function resetProfile(connection){state.profileBaseline=canonicalProfile(connection.profileId)||'';state.profileRevision=connection.revision;state.profileConflict=false;el('profile').value=state.profileBaseline;guard?.reset();el('reload-profile').hidden=true;}
 function presentConnection(connection,preserve){
@@ -171,16 +171,16 @@ function recoverSourceImport(domain){
  const panel=el('import-panel');panel.open=true;panel.setAttribute('open','');panel.scrollIntoView?.({behavior:'smooth',block:'start'});
  if(changedAccount()){importStatus('登录账号已变化，原导入资料已保留。请刷新后继续。',true);return;}
  if(importState.pending){importStatus('原导入结果尚未确认，资料和提交已保留。请先点击“重试原导入”，不会替换为另一类记录。',true);return;}
- if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy){importStatus('当前操作仍在进行，已有导入填写已保留。请等待完成后再选择导入来源。',true);return;}
+ if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||browserSync?.isLocked()){importStatus('当前操作仍在进行，已有导入填写已保留。请等待完成后再选择导入来源。',true);return;}
  if(importDirty()){importStatus('已有未保存的导入资料，原主页、类型和文件已保留。请先完成或清空本次资料，再选择另一类记录。',true);return;}
  const profileId=recoveryProfile(state.run);if(!profileId){importStatus('这次同步结果与当前连接的来源主页未能核对。请先确认自己的豆瓣连接，原导入填写未修改。',true);return;}
  invalidateImport();importState.touched=true;el('import-profile').value=canonicalProfile(profileId);el('import-domain').value=domain;el('import-form').dispatchEvent(new Event('input',{bubbles:true}));controls();
  const label={screen:'看过的影视',book:'读过的书',music:'听过的音乐'}[domain];importStatus('已选择“'+label+'”的来源主页和 HTML 类型。请在本人豆瓣账号中保存对应收藏页，选择文件并预览；尚未发送或保存导入记录。');el('import-files').focus();
 }
 function importControls(){
- const pending=Boolean(importState.pending),locked=importState.busy||pending||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||changedAccount();
+ const pending=Boolean(importState.pending),locked=importState.busy||pending||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||Boolean(browserSync?.isLocked())||changedAccount();
  for(const id of ['import-profile','import-files','import-domain','import-completed'])el(id).disabled=locked;
- el('import-preview').disabled=locked;el('import-clear').disabled=locked;el('import-retry').hidden=!pending;el('import-retry').disabled=importState.busy||state.syncing||metadataState.busy||state.detailBusy||changedAccount();
+ el('import-preview').disabled=locked;el('import-clear').disabled=locked;el('import-retry').hidden=!pending;el('import-retry').disabled=importState.busy||state.syncing||metadataState.busy||state.detailBusy||Boolean(browserSync?.isLocked())||changedAccount();
  el('import-confirm').disabled=locked||!importState.preview||importState.fingerprint!==importFingerprint()||!el('import-completed').checked;
 }
 function invalidateImport(){if(importState.pending)return;importState.sequence++;importState.items=null;importState.profileId=null;importState.preview=null;importState.fingerprint=null;el('import-result').hidden=true;for(const id of ['import-counts','import-sample','import-warnings'])el(id).textContent='';importControls();}
@@ -222,7 +222,7 @@ async function previewImport(){
  finally{importState.busy=false;controls();}
 }
 async function commitImport(retry=false){
- if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||changedAccount())return;
+ if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||browserSync?.isLocked()||changedAccount())return;
  if(!retry){if(!importState.preview||!importState.items||importState.fingerprint!==importFingerprint()||!el('import-completed').checked)return;try{const body={action:'commit',profile:importState.profileId,items:importState.items,expectedSnapshotHash:importState.preview.snapshotHash,requestId:crypto.randomUUID(),confirmed:true};importBodyFits(body);importState.pending=JSON.parse(JSON.stringify(body));}catch(error){importStatus(error.message||'无法创建安全的导入提交，请保留本页重试。',true);return;}}
  const body=importState.pending;if(!body)return;importState.busy=true;controls();importStatus(retry?'正在重试原导入，不会新建重复提交…':'正在保存已确认的导入记录…');
  try{
@@ -245,13 +245,15 @@ el('retry').addEventListener('click',()=>{if(!state.syncing&&!changedAccount())l
 el('sources').addEventListener('click',event=>{const button=event.target?.closest?.('[data-douban-import-source]');if(button&&el('sources').contains(button))recoverSourceImport(button.dataset.doubanImportSource);});
 el('import-form').addEventListener('submit',event=>{event.preventDefault();previewImport();});el('import-confirm').addEventListener('click',()=>commitImport(false));el('import-retry').addEventListener('click',()=>commitImport(true));el('import-clear').addEventListener('click',()=>{clearImport();importStatus('本次文件和预览已从本页清空。');});
 for(const id of ['import-profile','import-files','import-domain','import-completed'])for(const eventName of ['input','change'])el(id).addEventListener(eventName,()=>{if(importState.pending)return;importState.touched=true;invalidateImport();importStatus('资料或导入选项已修改，请重新预览。');});
-el('search-form').addEventListener('submit',event=>{event.preventDefault();if(metadataState.busy||state.syncing||changedAccount())return;state.query=el('query').value.trim().slice(0,100);state.kind=Object.hasOwn(kinds,el('kind').value)?el('kind').value:'';state.scope=el('scope').value==='current'?'current':'all';state.offset=0;syncUrl(true);load(true);});
-for(const id of ['kind','scope'])el(id).addEventListener('change',()=>{if(metadataState.busy||state.syncing||changedAccount())return;state.kind=Object.hasOwn(kinds,el('kind').value)?el('kind').value:'';state.scope=el('scope').value==='current'?'current':'all';state.offset=0;syncUrl(true);load(true);});
-el('previous').addEventListener('click',()=>{if(state.loading||metadataState.busy||state.syncing||state.offset===0||changedAccount())return;state.offset=Math.max(0,state.offset-pageSize);syncUrl(true);load(true);});el('next').addEventListener('click',()=>{if(state.loading||metadataState.busy||state.syncing||!state.hasMore||changedAccount())return;state.offset+=pageSize;syncUrl(true);load(true);});
+el('search-form').addEventListener('submit',event=>{event.preventDefault();if(metadataState.busy||state.syncing||browserSync?.isBusy()||changedAccount())return;state.query=el('query').value.trim().slice(0,100);state.kind=Object.hasOwn(kinds,el('kind').value)?el('kind').value:'';state.scope=el('scope').value==='current'?'current':'all';state.offset=0;syncUrl(true);load(true);});
+for(const id of ['kind','scope'])el(id).addEventListener('change',()=>{if(metadataState.busy||state.syncing||browserSync?.isBusy()||changedAccount())return;state.kind=Object.hasOwn(kinds,el('kind').value)?el('kind').value:'';state.scope=el('scope').value==='current'?'current':'all';state.offset=0;syncUrl(true);load(true);});
+el('previous').addEventListener('click',()=>{if(state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||state.offset===0||changedAccount())return;state.offset=Math.max(0,state.offset-pageSize);syncUrl(true);load(true);});el('next').addEventListener('click',()=>{if(state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||!state.hasMore||changedAccount())return;state.offset+=pageSize;syncUrl(true);load(true);});
 el('list').addEventListener('click',event=>{const button=event.target.closest('[data-douban-open]');if(button&&el('list').contains(button))showDetail(Number(button.dataset.doubanOpen),button);});
 el('classification-form').addEventListener('submit',event=>{event.preventDefault();saveClassification();});el('classification-kind').addEventListener('change',()=>{if(state.detailBusy||state.detailConflict)return;classificationStatus('分类选择尚未保存。');controls();});
 el('detail-close').addEventListener('click',closeDetail);el('detail-dialog').addEventListener('cancel',event=>{event.preventDefault();closeDetail();});el('detail-dialog').addEventListener('close',()=>{if(state.trigger?.isConnected)state.trigger.focus();});
-window.addEventListener('popstate',()=>{if(metadataState.busy||state.syncing||changedAccount())return;readLocation();load(true);});document.addEventListener('jiashu-account-changed',()=>{state.stop=true;metadataState.stop=true;state.controller?.abort();state.loadSequence++;importState.sequence++;state.loading=false;el('page').setAttribute('aria-busy','false');status('登录账号已变化，请刷新后继续。',true);metadataStatus('登录账号已变化，补全已停止，请刷新后继续。',true);controls();});
+window.addEventListener('popstate',()=>{if(metadataState.busy||state.syncing||browserSync?.isBusy()||changedAccount())return;readLocation();load(true);});document.addEventListener('jiashu-account-changed',()=>{state.stop=true;metadataState.stop=true;browserSync?.accountChanged();state.controller?.abort();state.loadSequence++;importState.sequence++;state.loading=false;el('page').setAttribute('aria-busy','false');status('登录账号已变化，请刷新后继续。',true);metadataStatus('登录账号已变化，补全已停止，请刷新后继续。',true);controls();});
+browserSync=window.JiashuDoubanExtensionUI?.create({el:id=>el('browser-'+id),requestJSON,getConnection:()=>state.connection,isAccountChanged:changedAccount,isLocked:()=>changedAccount()||state.loading||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending)||state.profileConflict||profileDirty(),validItem:item=>Boolean(subjectURL(item)&&typeof item.title==='string'&&Object.hasOwn(kinds,item.kind)),onChange:controls,onSaved:()=>load(true)})||null;
+if(browserSync)window.JiashuDraftGuards?.register({form:el('browser-form'),label:'浏览器同步与待确认保存',durable:false,isDirty:()=>browserSync.hasPending(),isBusy:()=>browserSync.isBusy(),isBlocked:()=>browserSync.isBusy(),canSave:()=>false,onDiscard:()=>browserSync.discard()});
 readLocation();load(false);
 })();
 `;

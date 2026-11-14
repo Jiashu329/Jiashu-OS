@@ -150,10 +150,59 @@ async function fits(page) {
 function bind(state) {
   state.doubanConnection = { profileId: PROFILE, profileUrl: 'https://www.douban.com/people/' + PROFILE + '/', revision: 1, updatedAt: STAMP };
 }
+function extensionItem(kind, index) {
+  const { profileId: _profileId, observedAt: _observedAt, createdAt: _createdAt, updatedAt: _updatedAt, ...item } = record(kind, index);
+  return { ...item, source: 'import' };
+}
+async function installExtensionMock(context, pages, options = {}) {
+  await context.addInitScript(({ pages, options }) => {
+    // The narrow project also exercises a resized desktop extension window.
+    // Real iPhone/Safari support is deliberately not implied by this mock.
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 Synthetic Desktop Chrome/130.0.0.0 Safari/537.36' });
+    Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { mobile: false } });
+    const runId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111', results = new Map();
+    const state = { calls: [], reads: 0, holdStep: options.holdStep ?? null, release: null, pending: false, lostReply: Boolean(options.lostReply) };
+    window.__doubanExtensionMock = state;
+    const progress = step => ({ status: step >= pages.length ? 'completed' : 'running', accountProfileId: 'synthetic-douban-user',
+      received: pages.slice(0, step).flat().length, pages: step,
+      sources: Object.fromEntries(['screen', 'book', 'music'].map(domain => {
+        const items = pages.slice(0, step).flat().filter(item => item.domain === domain);
+        return [domain, { status: step >= pages.length ? 'complete' : 'pending', start: items.length, pages: items.length ? 1 : 0,
+          segmentPages: items.length ? 1 : 0, received: items.length, total: step >= pages.length ? items.length : null, lastPageIds: null, errorCode: null }];
+      })) });
+    const runtime = { sendMessage(id, body, callback) {
+      state.calls.push({ id, body: structuredClone(body) });
+      const reply = value => queueMicrotask(() => callback(value));
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: '1.0.0', protocolVersion: 1 } });
+      if (body.action === 'START') return reply({ ok: true, data: { runId, step: 0, progress: progress(0), done: false } });
+      if (body.action === 'CANCEL') return reply({ ok: true, data: { runId, step: state.reads, progress: { ...progress(state.reads), status: 'cancelled' }, done: true } });
+      if (body.action !== 'STEP' || body.runId !== runId || !pages[body.step]) return reply({ ok: false, error: { code: 'STEP_CONFLICT', message: '合成扩展进度错误。' } });
+      const key = body.step + ':' + body.requestId;
+      if (!results.has(key)) {
+        state.reads++;
+        results.set(key, { ok: true, data: { runId, step: body.step + 1, progress: progress(body.step + 1), done: body.step + 1 === pages.length, items: pages[body.step] } });
+      }
+      const complete = () => {
+        state.pending = false; state.release = null;
+        if (state.lostReply) { state.lostReply = false; queueMicrotask(() => { runtime.lastError = { message: 'Synthetic reply was lost after reading' }; callback(); delete runtime.lastError; }); }
+        else reply(structuredClone(results.get(key)));
+      };
+      if (state.holdStep === body.step) { state.holdStep = null; state.pending = true; state.release = complete; }
+      else complete();
+    } };
+    window.chrome = window.chrome || {};
+    window.chrome.runtime = runtime;
+  }, { pages, options });
+}
+async function extensionCalls(page, action) {
+  return page.evaluate(action => window.__doubanExtensionMock.calls.filter(call => !action || call.body.action === action), action);
+}
 
 test('a personal profile is saved separately from explicit public syncing and limited sources remain visibly partial', async ({ page }, testInfo) => {
   await openLibrary(page);
   expect(mutations(testInfo)).toEqual([]);
+  await expect(page.locator('#douban-browser-sync')).toBeDisabled();
+  if (testInfo.project.name === 'mobile-390-chromium') await expect(page.locator('#douban-browser-status')).toContainText('手机或当前浏览器暂不支持扩展同步');
   await page.locator('#douban-profile').fill('https://www.douban.com/people/' + PROFILE + '/');
   await page.locator('#douban-save').click();
   await expect.poll(() => testInfo.synthetic.doubanConnection.profileId).toBe(PROFILE);
@@ -482,5 +531,96 @@ test('manual movie or series classification is an explicit saved choice and an a
   expect(state.requests.filter(request => request.path === '/api/life/douban/metadata')).toEqual([]);
   expect(syncRequests(testInfo)).toEqual([]);
   expect(state.externalRequests).toEqual([]);
+  await fits(page);
+});
+
+test('desktop browser extension syncing starts explicitly and saves only normalized completed pages without persisting the private records', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const pages = [[{ ...extensionItem('screen', 800), rawHTML: 'PRIVATE-RAW-EXTENSION-PAGE' }], [extensionItem('book', 801), extensionItem('music', 802)]];
+  await installExtensionMock(context, pages);
+  await openLibrary(page);
+  expect(await extensionCalls(page)).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-browser-connect').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器扩展可连接');
+  expect((await extensionCalls(page)).map(call => call.body.action)).toEqual(['CONNECT']);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(3);
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['screen', 'book', 'music']);
+  const calls = await extensionCalls(page);
+  expect(calls.map(call => call.body.action)).toEqual(['CONNECT', 'START', 'STEP', 'STEP']);
+  expect(calls.every(call => call.id === 'gbcgjkicjfbaakippafhhpadfkfifaeb' && call.body.type === 'JIASHU_DOUBAN' && call.body.version === 1 && call.body.profileId === PROFILE)).toBe(true);
+  expect(new Set(calls.map(call => call.body.ownerKey)).size).toBe(1);
+  expect(calls[0].body.ownerKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  const imported = mutations(testInfo);
+  expect(imported.map(request => request.body.action)).toEqual(['preview', 'commit', 'preview', 'commit']);
+  expect(imported.every(request => request.path === '/api/life/douban/import' && request.body.profile === PROFILE && request.body.items.every(item => item.source === 'import'))).toBe(true);
+  expect(Object.keys(imported[0].body.items[0]).sort()).toEqual(Object.keys(extensionItem('screen', 800)).sort());
+  expect(JSON.stringify(imported)).not.toMatch(/PRIVATE-RAW-EXTENSION-PAGE|rawHTML|ownerKey|cookie|password|authorization/i);
+  expect(await page.evaluate(() => JSON.stringify({ local: Object.entries(localStorage), session: Object.entries(sessionStorage) }))).not.toMatch(/合成待分类影视800|合成图书801|合成音乐802|合成个人短评|PRIVATE-RAW-EXTENSION-PAGE/);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+  await page.locator('#douban-browser-progress').screenshot({ path: testInfo.outputPath('douban-browser-extension-progress.png') });
+});
+
+test('an unknown extension step waits for explicit retry and reuses its original operation without reading or saving twice', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  await installExtensionMock(context, [[extensionItem('book', 810)]], { lostReply: true });
+  await openLibrary(page);
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-sync')).toHaveText('重试并继续浏览器同步');
+  await expect(page.locator('#douban-browser-sync')).toBeEnabled();
+  await expect(page.locator('#douban-save')).toBeDisabled();
+  expect(mutations(testInfo)).toEqual([]);
+  const original = (await extensionCalls(page, 'STEP'))[0];
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  expect(await extensionCalls(page, 'STEP')).toEqual([original, original]);
+  expect(await extensionCalls(page, 'START')).toHaveLength(1);
+  expect(await page.evaluate(() => window.__doubanExtensionMock.reads)).toBe(1);
+  expect(mutations(testInfo).map(request => request.body.action)).toEqual(['preview', 'commit']);
+  expect(state.doubanItems).toHaveLength(1);
+  await expect(page.locator('#douban-list')).toContainText('合成图书810');
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('pausing saves only the current browser page and switching website accounts cancels the next return while retaining a file draft', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  await installExtensionMock(context, [[extensionItem('book', 820)], [extensionItem('music', 821)]], { holdStep: 0 });
+  await openLibrary(page);
+  await page.locator('#douban-import-panel > summary').click();
+  await page.locator('#douban-import-profile').fill('keep-local-file-draft');
+  await page.locator('#douban-import-files').setInputFiles({ name: 'keep-local-draft.json', mimeType: 'application/json', buffer: Buffer.from('[{"title":"尚未提交的本人草稿","url":"https://book.douban.com/subject/9999820/","state":"读过"}]') });
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.pending)).toBe(true);
+  await page.locator('#douban-browser-stop').click();
+  await page.evaluate(() => window.__doubanExtensionMock.release());
+  await expect(page.locator('#douban-browser-status')).toContainText('已暂停浏览器同步');
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  expect(state.doubanItems).toHaveLength(1);
+  expect(mutations(testInfo).map(request => request.body.action)).toEqual(['preview', 'commit']);
+  await page.evaluate(() => { window.__doubanExtensionMock.holdStep = 1; });
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.pending)).toBe(true);
+  state.owner = 'another-synthetic-account';
+  await page.evaluate(() => window.JiashuAccountSession.verify().catch(() => {}));
+  await expect(page.locator('html')).toHaveAttribute('data-account-changed', '');
+  await expect.poll(() => extensionCalls(page, 'CANCEL').then(calls => calls.length)).toBe(1);
+  await page.evaluate(() => window.__doubanExtensionMock.release());
+  await expect(page.locator('#douban-browser-stop')).toBeHidden();
+  await expect(page.locator('#douban-browser-sync')).toBeDisabled();
+  await expect(page.locator('#douban-browser-status')).toContainText('后续返回不会保存');
+  await expect(page.locator('#douban-import-profile')).toHaveValue('keep-local-file-draft');
+  expect(await page.locator('#douban-import-files').evaluate(input => input.files[0]?.name)).toBe('keep-local-draft.json');
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['book']);
+  expect(mutations(testInfo).map(request => request.body.action)).toEqual(['preview', 'commit']);
+  expect(syncRequests(testInfo)).toEqual([]);
   await fits(page);
 });

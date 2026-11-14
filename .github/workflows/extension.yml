@@ -1,0 +1,30 @@
+name: Douban extension acceptance
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  synthetic-mv3-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: node scripts/package-douban-extension.mjs --check
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test -c tests/extension/playwright.config.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-extension-evidence
+          path: |
+            outputs/extension-report
+            outputs/extension-results
+          retention-days: 7
+          if-no-files-found: ignore
