@@ -238,3 +238,31 @@ void test('album tracks exclude review playlists and require the main track bloc
   const details = parseDoubanSubjectMetadata(subject('music', article(primary + related), structured), 'music', id).details;
   assert.deepEqual(details, { tracks: ['01. 第一首', '02. 第二首'] }); assert.doesNotMatch(JSON.stringify(details), /REVIEW_PLAYLIST_SENTINEL/);
 });
+
+void test('movie runtime microdata works with inside or outside label colons without using the work title', () => {
+  const targetId = '36154853', cover = 'https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2915454411.webp';
+  const own = '<link rel="canonical" href="https://movie.douban.com/subject/' + targetId + '/"><meta property="og:type" content="video.movie">'
+    + '<meta property="og:image" content="' + cover + '"><h1>好东西</h1>'
+    + schema({ '@type': 'Movie', url: '/subject/' + targetId + '/', duration: 'PT123M' });
+  for (const label of ['<span class="pl">片长:</span>', '<span class="pl">片长</span>:', '<span class="pl">片长</span> ： ']) {
+    // No release date is present here: the external-colon runtime is the only corroborating film detail.
+    const raw = own + '<div id="info">' + label + '<span property="v:runtime" content="123">123分钟</span><br></div>';
+    const metadata = parseDoubanSubjectMetadata(raw, 'screen', targetId);
+    assert.equal(metadata.kind, 'movie'); assert.equal(metadata.coverUrl, cover); assert.equal(metadata.details?.duration, '123分钟');
+    assert.equal(parseDoubanSubjectMetadata(raw.replace('<h1>好东西</h1>', '<h1>任意公开作品名称</h1>'), 'screen', targetId).kind, 'movie');
+  }
+  const standard = own + '<div id="info"><span class="pl">上映日期:</span><span property="v:initialReleaseDate" content="2024-11-22">2024-11-22(中国大陆)</span><br>'
+    + '<span class="pl">片长:</span><span property="v:runtime" content="123">123分钟</span><br></div>';
+  assert.equal(parseDoubanSubjectMetadata(standard, 'screen', targetId).kind, 'movie');
+  assert.equal(parseDoubanSubjectMetadata(own, 'screen', targetId).kind, null, 'a known title and generic Movie JSON-LD still do not establish film classification');
+});
+
+void test('outside-colon episode evidence overrides generic Movie while premiere-only TV hints remain unclassified', () => {
+  for (const [label, value] of [['集数', '24'], ['季数', '2'], ['单集片长', '45分钟']]) for (const colon of [':', ' ： ']) {
+    const body = '<div id="info"><span class="pl">首播</span>:<span property="v:initialReleaseDate">2024-11-22(中国大陆)</span><br>'
+      + '<span class="pl">' + label + '</span>' + colon + value + '<br><span class="pl">片长:</span>123分钟<br></div>';
+    assert.equal(parseDoubanSubjectMetadata(subject('screen', body, movie()), 'screen', id).kind, 'series');
+  }
+  const premiere = '<div id="info"><span class="pl">首播</span>:2024-11-22<br><span class="pl">片长:</span>123分钟<br></div>';
+  assert.equal(parseDoubanSubjectMetadata(subject('screen', premiere, movie()), 'screen', id).kind, null);
+});

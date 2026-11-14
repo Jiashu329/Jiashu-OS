@@ -263,3 +263,34 @@ void test('album track lists require the primary block or main article heading a
   assert.deepEqual(details, { tracks: ['01. 第一首', '02. 第二首'] }); assert.doesNotMatch(JSON.stringify(details), /REVIEW_PLAYLIST_SENTINEL/);
   assert.deepEqual(parser.parseSubject(own + '<div id="track-list">主曲目</div>', 'music', '1234567').details, { tracks: ['主曲目'] });
 });
+
+void test('browser film classification reads standard runtime microdata and span-external colons identically to the server', () => {
+  const targetId = '36154853', cover = 'https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2915454411.webp';
+  const own = '<link rel="canonical" href="https://movie.douban.com/subject/' + targetId + '/"><meta property="og:type" content="video.movie">'
+    + '<meta property="og:image" content="' + cover + '"><h1>好东西</h1><script type="application/ld+json">'
+    + JSON.stringify({ '@type': 'Movie', url: '/subject/' + targetId + '/', duration: 'PT123M' }) + '</script>';
+  for (const label of ['<span class="pl">片长:</span>', '<span class="pl">片长</span>:', '<span class="pl">片长</span> ： ']) {
+    const raw = own + '<div id="info">' + label + '<span property="v:runtime" content="123">123分钟</span><br></div>';
+    const metadata = parser.parseSubject(raw, 'screen', targetId);
+    assert.equal(metadata.kind, 'movie'); assert.equal(metadata.coverUrl, cover); assert.equal(metadata.details?.duration, '123分钟');
+    assert.deepEqual(metadata, parseDoubanSubjectMetadata(raw, 'screen', targetId));
+    assert.equal(parser.parseSubject(raw.replace('<h1>好东西</h1>', '<h1>任意公开作品名称</h1>'), 'screen', targetId).kind, 'movie');
+  }
+  const standard = own + '<div id="info"><span class="pl">上映日期:</span><span property="v:initialReleaseDate" content="2024-11-22">2024-11-22(中国大陆)</span><br>'
+    + '<span class="pl">片长:</span><span property="v:runtime" content="123">123分钟</span><br></div>';
+  assert.equal(parser.parseSubject(standard, 'screen', targetId).kind, 'movie');
+  assert.equal(parser.parseSubject(own, 'screen', targetId).kind, null);
+});
+
+void test('browser episode counts and durations outside labels take TV priority without treating premiere-only as proven TV', () => {
+  const own = '<link rel="canonical" href="https://movie.douban.com/subject/1234567/"><h1>合成影视</h1>'
+    + '<script type="application/ld+json">{"@type":"Movie","url":"/subject/1234567/"}</script>';
+  for (const [label, value] of [['集数', '24'], ['季数', '2'], ['单集片长', '45分钟']]) for (const colon of [':', ' ： ']) {
+    const raw = own + '<div id="info"><span class="pl">首播</span>:<span property="v:initialReleaseDate">2024-11-22(中国大陆)</span><br>'
+      + '<span class="pl">' + label + '</span>' + colon + value + '<br><span class="pl">片长:</span>123分钟<br></div>';
+    assert.equal(parser.parseSubject(raw, 'screen', '1234567').kind, 'series');
+    assert.deepEqual(parser.parseSubject(raw, 'screen', '1234567'), parseDoubanSubjectMetadata(raw, 'screen', '1234567'));
+  }
+  const premiere = own + '<div id="info"><span class="pl">首播</span>:2024-11-22<br><span class="pl">片长:</span>123分钟<br></div>';
+  assert.equal(parser.parseSubject(premiere, 'screen', '1234567').kind, null);
+});

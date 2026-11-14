@@ -1,4 +1,4 @@
-import { commitDoubanImport, previewDoubanImport } from '../../../../../db/douban-store';
+import { commitDoubanImport, previewDoubanImport, readDoubanImportRecords } from '../../../../../db/douban-store';
 import { parseDoubanProfile, parseDoubanRecord } from '../../../../../lib/douban';
 import { DoubanSyncError } from '../../../../../lib/douban-sync';
 import { apiUser, json, unauthenticated } from '../../../_shared';
@@ -16,11 +16,12 @@ export async function POST(request: Request) {
     const raw = body as Record<string, unknown>;
     const fields = raw.action === 'preview' ? ['action', 'profile', 'items'] : raw.action === 'commit'
       ? ['action', 'profile', 'items', 'expectedSnapshotHash', 'requestId', 'confirmed'] : [];
-    if (!fields.length || Object.keys(raw).some(key => !fields.includes(key) && key !== 'expectedDataEpoch') || fields.some(key => !Object.hasOwn(raw, key))
+    if (!fields.length || Object.keys(raw).some(key => !fields.includes(key) && key !== 'expectedDataEpoch' && !(key === 'returnRecords' && raw.action === 'commit')) || fields.some(key => !Object.hasOwn(raw, key))
       || Object.hasOwn(raw, 'expectedDataEpoch') && (!Number.isSafeInteger(raw.expectedDataEpoch) || Number(raw.expectedDataEpoch) < 0)
       || typeof raw.profile !== 'string' || !Array.isArray(raw.items) || raw.items.length < 1 || raw.items.length > 500) {
       throw new DoubanSyncError('导入操作字段不正确，每次可提交 1–500 条已预览明细。');
     }
+    if (Object.hasOwn(raw, 'returnRecords') && (raw.returnRecords !== true || raw.items.length > 30)) throw new DoubanSyncError('只有每次不超过30条的导入提交可以请求当前已保存记录。');
     const { profileId, profileUrl } = parseDoubanProfile(raw.profile), items = raw.items.map(parseDoubanRecord);
     if (items.some(item => item.source !== 'import')) throw new DoubanSyncError('文件导入只接收明确标为本人导入的规范化条目。');
     if (raw.action === 'preview') {
@@ -31,8 +32,12 @@ export async function POST(request: Request) {
       || typeof raw.requestId !== 'string' || !REQUEST_ID.test(raw.requestId)) {
       throw new DoubanSyncError('请核对导入预览、勾选确认，并使用原提交标识保存。');
     }
-    const receipt = await commitDoubanImport(doubanDatabase(), user.userId, { profileId, items,
+    const db = doubanDatabase(), receipt = await commitDoubanImport(db, user.userId, { profileId, items,
       expectedSnapshotHash: raw.expectedSnapshotHash, requestId: raw.requestId.toLowerCase(), expectedDataEpoch: raw.expectedDataEpoch as number | undefined });
+    if (raw.returnRecords === true) {
+      const records = await readDoubanImportRecords(db, user.userId, { profileId, items, expectedDataEpoch: receipt.dataEpoch });
+      return json({ receipt, records });
+    }
     return json({ receipt });
   } catch (error) {
     if (error instanceof RangeError) return json({ error: '导入明细不能超过 4 MiB，请分批预览后导入。', code: 'DOUBAN_IMPORT_TOO_LARGE' }, 413);

@@ -49,7 +49,7 @@ function labelValue(label: SubjectElement): { name: string; value: string } {
     if (sibling.nodeType === 1 && /(?:^|\s)pl(?:\s|$)/.test((sibling as unknown as { getAttribute(name: string): string | null }).getAttribute('class') ?? '')) break;
     parts.push(sibling.textContent ?? '');
   }
-  return { name, value: compact(parts.join(' ')).slice(0, 250) };
+  return { name, value: compact(parts.join(' ')).replace(/^[:：]\s*/, '').slice(0, 250) };
 }
 
 /**

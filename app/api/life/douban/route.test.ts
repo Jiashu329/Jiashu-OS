@@ -372,3 +372,27 @@ void test('a changed reset preview rejects without deleting and clear during a p
   const late = await f.post({ expectedConnectionRevision: 1, runId: started.run.id, expectedRunRevision: started.run.revision }); assert.equal(late.status, 409);
   const library = await body(await f.get()); assert.equal(library.total, 0); assert.equal(library.dataEpoch, 1); assert.equal(library.connection.revision, 2); assert.equal(library.lastRun, null);
 });
+
+void test('returnRecords is an explicit commit-only option for at most thirty normalized imports', async t => {
+  const f = fixture(t), items = [record('screen', '11111', 'import')], profile = 'private-source';
+  const base = { action: 'commit', profile, items, expectedSnapshotHash: 'a'.repeat(64), requestId: crypto.randomUUID(), confirmed: true };
+  for (const input of [{ action: 'preview', profile, items, returnRecords: true }, { ...base, returnRecords: false },
+    { ...base, returnRecords: 'true' }, { ...base, returnRecords: true, items: Array.from({ length: 31 }, (_, index) => record('screen', String(10000 + index), 'import')) }]) {
+    assert.equal((await f.import(input)).status, 400);
+  }
+  assert.deepEqual(f.queries, []); assert.deepEqual(f.outgoing, []);
+});
+
+void test('small browser commits and receipt retries return current persisted records separately from the original receipt', async t => {
+  const f = fixture(t), profile = 'private-source', items = [record('screen', '11111', 'import')];
+  const { preview } = await body(await f.import({ action: 'preview', profile, items, expectedDataEpoch: 0 }));
+  const command = { action: 'commit', profile, items, expectedDataEpoch: 0, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), confirmed: true, returnRecords: true };
+  const firstResponse = await f.import(command); assert.equal(firstResponse.status, 200); const first = await body(firstResponse);
+  assert.equal(first.records.length, 1); assert.equal(first.records[0].subjectId, '11111'); assert.equal(first.records[0].profileId, profile); assert.equal(typeof first.records[0].updatedAt, 'string'); assert.equal(first.receipt.records, undefined);
+  f.sqlite.prepare("UPDATE douban_items SET kind='movie',updated_at=?,details_json=? WHERE user_id='alice'").run('2026-11-15T00:00:00.000Z', JSON.stringify({ summary: '随后已补全的作品资料' }));
+  const replay = await body(await f.import(command)); assert.deepEqual(replay.receipt, first.receipt); assert.equal(replay.records[0].kind, 'movie'); assert.equal(replay.records[0].updatedAt, '2026-11-15T00:00:00.000Z'); assert.equal(replay.records[0].details.summary, '随后已补全的作品资料');
+  const { returnRecords: _returnRecords, ...ordinary } = command;
+  const fileCompatible = await body(await f.import(ordinary)); assert.equal(Object.hasOwn(fileCompatible, 'records'), false); assert.deepEqual(fileCompatible.receipt, first.receipt);
+  await resetViaAPI(f); const stale = await f.import(command); assert.equal(stale.status, 409); assert.equal((await body(stale)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
+  assert.deepEqual(f.outgoing, []);
+});

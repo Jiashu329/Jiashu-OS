@@ -519,7 +519,7 @@ globalThis.JiashuDoubanCollectorFactory = (function(parseHTML){const createDouba
                     break;
                 values.push(sibling.textContent ?? '');
             }
-            return { name: (match?.[1] ?? text).trim(), value: compact(values.join(' ')).slice(0, 250) };
+            return { name: (match?.[1] ?? text).trim(), value: compact(values.join(' ')).replace(/^[:：]\s*/, '').slice(0, 250) };
         });
         const count = (name) => fields.some(field => field.name === name && /^[1-9]\d{0,3}(?!\d)/.test(field.value));
         const duration = (name) => fields.some(field => field.name === name && /^[1-9]\d{0,2}\s*(?:分钟|min(?:ute)?s?)(?:\s|$|[/（(])/i.test(field.value));

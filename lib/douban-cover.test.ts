@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DOUBAN_COVER_MAX_BYTES, DoubanCoverError, fetchDoubanCover } from './douban-cover.ts';
+import { DOUBAN_COVER_MAX_BYTES, DOUBAN_COVER_TIMEOUT_MS, DoubanCoverError, fetchDoubanCover } from './douban-cover.ts';
 import { TINY_JPEG_DATA_URL } from '../tests/fixtures/nutrition-photo.ts';
 
 const URL = 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p123.jpg';
@@ -101,6 +101,34 @@ test('client cancellation after headers cancels the body even when the fetch stu
 
 test('network exceptions use a local safe message rather than credentials or provider text', async () => {
   await assert.rejects(fetchDoubanCover(URL, { fetch: async () => { throw new Error('PRIVATE_COOKIE PRIVATE_PROVIDER_URL'); } }), (error: unknown) => {
-    assert.ok(error instanceof DoubanCoverError); assert.equal(error.status, 502); assert.doesNotMatch(error.message + JSON.stringify(error), /PRIVATE_/); return true;
+    assert.ok(error instanceof DoubanCoverError); assert.equal(error.status, 502); assert.equal(error.code, 'DOUBAN_COVER_NETWORK'); assert.doesNotMatch(error.message + JSON.stringify(error), /PRIVATE_/); return true;
   });
+});
+
+void test('provider rate limits, blocked responses, redirects and missing images expose fixed diagnostics after one read', async () => {
+  const cases = [[403, 'DOUBAN_COVER_BLOCKED', 502], [418, 'DOUBAN_COVER_BLOCKED', 502], [451, 'DOUBAN_COVER_BLOCKED', 502],
+    [302, 'DOUBAN_COVER_REDIRECT', 502], [404, 'DOUBAN_COVER_UPSTREAM_NOT_FOUND', 404], [500, 'DOUBAN_COVER_UPSTREAM_ERROR', 502]] as const;
+  for (const [status, code, expectedStatus] of cases) {
+    let calls = 0;
+    await assert.rejects(fetchDoubanCover(URL, { fetch: async () => { calls++; return new Response('PRIVATE_PROVIDER_BODY', { status, headers: { Location: 'https://img2.doubanio.com/view/photo/public/next.webp' } }); } }), error => {
+      assert.ok(error instanceof DoubanCoverError); assert.equal(error.code, code); assert.equal(error.status, expectedStatus); assert.doesNotMatch(error.message + JSON.stringify(error), /PRIVATE_PROVIDER_BODY|next\.webp|Location/); return true;
+    });
+    assert.equal(calls, 1, 'neither redirects nor restrictions start another request');
+  }
+  for (const [header, expected] of [['17', 17], ['99999999', 3600], ['not-a-delay', 60], [null, 60]] as const) {
+    let calls = 0;
+    await assert.rejects(fetchDoubanCover(URL, { fetch: async () => { calls++; return new Response('PRIVATE_PROVIDER_BODY', { status: 429, headers: header === null ? {} : { 'Retry-After': header } }); } }), error => {
+      assert.ok(error instanceof DoubanCoverError); assert.equal(error.code, 'DOUBAN_COVER_RATE_LIMITED'); assert.equal(error.status, 429); assert.equal(error.retryAfter, expected); assert.doesNotMatch(error.message, /PRIVATE_PROVIDER_BODY/); return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+void test('the default cover deadline is fifteen seconds without adding retries', async context => {
+  assert.equal(DOUBAN_COVER_TIMEOUT_MS, 15000); context.mock.timers.enable({ apis: ['setTimeout'] });
+  let calls = 0, finished = false, signal: AbortSignal | undefined;
+  const pending = fetchDoubanCover(URL, { fetch: async (_url, options) => { calls++; signal = options?.signal ?? undefined; return new Promise<Response>(() => {}); } }).finally(() => { finished = true; });
+  context.mock.timers.tick(14999); await Promise.resolve(); assert.equal(finished, false);
+  context.mock.timers.tick(1); await assert.rejects(pending, errorCode('DOUBAN_COVER_TIMEOUT'));
+  assert.equal(calls, 1); assert.equal(signal?.aborted, true);
 });

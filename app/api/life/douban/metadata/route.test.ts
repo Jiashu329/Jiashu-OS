@@ -193,6 +193,48 @@ void test('browser metadata cannot address another owner, source profile or stal
   assert.deepEqual(f.outgoing, []); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
 });
 
+void test('a browser PUT whose committed reply was lost replays the original body as a read-only current receipt', async t => {
+  const f = fixture(t); f.seed('alice', { source: 'collection' }); f.seed('bob');
+  const original = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: { summary: '已保存作品简介', episodes: 12 } } };
+  await f.browser(original); // The write commits, but the caller never receives its response.
+  const committed = (await store.readDoubanRecord(f.db, 'alice', KEY))!;
+  assert.equal(committed.kind, 'series'); assert.notEqual(committed.updatedAt, original.expectedUpdatedAt);
+  f.queries.length = 0;
+  const replay = await f.browser(original); assert.equal(replay.status, 200);
+  const result = await body(replay); assert.deepEqual(result.item, committed); assert.equal(result.changed, false); assert.equal(result.metadata.status, 'complete'); assert.equal(result.dataEpoch, 0);
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false); assert.deepEqual(f.outgoing, []);
+  assert.equal((await store.readDoubanRecord(f.db, 'bob', KEY))?.kind, 'screen');
+});
+
+void test('browser lost-reply recovery preserves later personal edits and manual type without refreshing or writing its stale version', async t => {
+  const f = fixture(t); f.seed('alice', { source: 'collection' });
+  const original = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: { summary: '已保存作品简介' } } };
+  await f.browser(original);
+  const committed = (await store.readDoubanRecord(f.db, 'alice', KEY))!;
+  assert.equal((await f.put({ ...KEY, expectedUpdatedAt: committed.updatedAt, kind: 'movie' })).status, 200);
+  f.sqlite.prepare("UPDATE douban_items SET title=?,rating=?,marked_date=?,comment=? WHERE user_id='alice'").run('后来修改的名称', 2, '2026-11-13', '后来修改的私人短评');
+  const current = (await store.readDoubanRecord(f.db, 'alice', KEY))!; f.queries.length = 0;
+  const response = await f.browser(original); assert.equal(response.status, 200);
+  const recovered = await body(response); assert.deepEqual(recovered.item, current); assert.equal(recovered.item.kind, 'movie'); assert.equal(recovered.item.metadataCheckedRunId, 'manual-kind'); assert.equal(recovered.changed, false);
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false); assert.deepEqual(f.outgoing, []);
+  const conflicting = await f.browser({ ...original, metadata: { ...original.metadata, details: { summary: '还未保存的旧简介' } } });
+  assert.equal(conflicting.status, 409); assert.equal((await body(conflicting)).code, 'DOUBAN_RECORD_CONFLICT');
+  assert.deepEqual(await store.readDoubanRecord(f.db, 'alice', KEY), current); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+});
+
+void test('a browser replay cannot acknowledge matching metadata recreated after a reset', async t => {
+  const f = fixture(t); f.seed('alice');
+  const metadata = { kind: 'series' as const, coverUrl: COVER, details: { summary: '相同作品简介' } };
+  const original = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata };
+  await f.browser(original);
+  f.sqlite.prepare("DELETE FROM douban_items WHERE user_id='alice'").run();
+  const recreated = f.seed('alice', { ...metadata, updatedAt: T2, comment: '新世代私人记录' });
+  f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
+  f.queries.length = 0;
+  const response = await f.browser(original); assert.equal(response.status, 409); assert.equal((await body(response)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
+  assert.deepEqual(await store.readDoubanRecord(f.db, 'alice', KEY), recreated); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false); assert.deepEqual(f.outgoing, []);
+});
+
 void test('details alone make a server metadata response useful, and the optional expected epoch stops old reads before fetch', async t => {
   const f = fixture(t); f.seed('alice'); f.metadata({ kind: null, coverUrl: null, details: { summary: '可靠的作品简介', writers: ['编剧甲'] } });
   const response = await f.post({ ...KEY, confirmed: true, expectedDataEpoch: 0 }); assert.equal(response.status, 200);

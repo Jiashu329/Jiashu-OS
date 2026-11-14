@@ -102,11 +102,16 @@ async function settle(check: () => boolean) {
   }
   assert.ok(check(), 'The built client must finish initialization');
 }
+async function settleWork(check: () => boolean, description: () => string) {
+  const deadline = Date.now() + 10000;
+  while (!check() && Date.now() < deadline) await new Promise<void>(done => setTimeout(done, 10));
+  assert.ok(check(), description());
+}
 function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata> } } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   // Linkedom delegates host globals between windows. Browser capabilities are
@@ -167,7 +172,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const data = body.action === 'START' ? { runId: '11111111-1111-4111-8111-111111111111', step: 0, done: false, progress: progress() }
         : body.action === 'STEP' ? { runId: body.runId, step: Number(body.step) + 1, done: true, items: imported, progress: progress(true) }
           : body.action === 'SUBJECT' ? { requestId: body.requestId, domain: body.domain, subjectId: body.subjectId, metadata: catalog.douban!.browserSubjectMetadata?.[body.domain + ':' + body.subjectId] }
-            : body.action === 'SUBJECT_CANCEL' ? { cancelled: true } : { extensionVersion: '1.0.3', protocolVersion: 1 };
+            : body.action === 'SUBJECT_CANCEL' ? { cancelled: true } : { extensionVersion: catalog.douban!.browserExtensionVersion ?? '1.0.4', protocolVersion: 1 };
       queueMicrotask(() => callback({ ok: true, data }));
     } } } });
   }
@@ -191,16 +196,34 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       doubanImportBodies.push(body);
       assert.equal(body.expectedDataEpoch, catalog.douban.dataEpoch ?? 0, 'every minified import pins the current data epoch');
       assert.ok(Array.isArray(body.items));
-      const added = body.items.filter((input: DoubanRecordInput) => !catalog.douban!.items.some(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId)).length;
+      const plans = (body.items as DoubanRecordInput[]).map(input => {
+        const index = catalog.douban!.items.findIndex(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId), old = catalog.douban!.items[index];
+        const next = { ...old, ...input, profileId: body.profile } as DoubanRecord;
+        if (old) {
+          if (input.kind === 'screen' && ['movie', 'series'].includes(old.kind)) next.kind = old.kind;
+          next.coverUrl = input.coverUrl ?? old.coverUrl;
+        }
+        const details = mergeDoubanDetails(old?.details, input.details);
+        if (Object.keys(details).length) next.details = details;
+        const fields = ['title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source', 'details'] as const;
+        const changed = Boolean(old && fields.some(key => JSON.stringify(old[key]) !== JSON.stringify(next[key])));
+        return { index, old, next, changed };
+      });
+      const added = plans.filter(plan => !plan.old).length, updated = plans.filter(plan => plan.changed).length;
       if (body.action === 'preview') return Response.json({ preview: { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, profileUrl: 'https://www.douban.com/people/' + body.profile + '/',
-        snapshotHash: 'a'.repeat(64), total: body.items.length, added, updated: 0, unchanged: body.items.length - added } });
+        snapshotHash: 'a'.repeat(64), total: body.items.length, added, updated, unchanged: body.items.length - added - updated } });
       assert.ok(catalog.douban.browserExtensionItems, 'file-preview fixtures never commit private records');
       assert.equal(body.action, 'commit'); assert.equal(body.confirmed, true);
       if (!browserReceipts.has(body.requestId)) {
-        for (const item of body.items) if (!catalog.douban.items.some(old => old.profileId === body.profile && old.domain === item.domain && old.subjectId === item.subjectId)) catalog.douban.items.push({ ...item, profileId: body.profile, observedAt: '2026-11-14T12:00:00.000Z', createdAt: '2026-11-14T12:00:00.000Z', updatedAt: '2026-11-14T12:00:00.000Z', metadataCheckedRunId: null });
-        browserReceipts.set(body.requestId, { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, requestId: body.requestId, total: body.items.length, added, updated: 0, unchanged: body.items.length - added });
+        for (const plan of plans) {
+          const stamp = '2026-11-14T12:00:00.000Z', persisted: DoubanRecord = { ...plan.next, observedAt: stamp, createdAt: plan.old?.createdAt ?? stamp,
+            updatedAt: plan.changed ? new Date(Date.parse(plan.old.updatedAt) + 1).toISOString() : plan.old?.updatedAt ?? stamp, metadataCheckedRunId: plan.old?.metadataCheckedRunId ?? null };
+          if (plan.old) catalog.douban.items[plan.index] = persisted;
+          else catalog.douban.items.push(persisted);
+        }
+        browserReceipts.set(body.requestId, { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, requestId: body.requestId, total: body.items.length, added, updated, unchanged: body.items.length - added - updated });
       }
-      return Response.json({ receipt: browserReceipts.get(body.requestId) });
+      return Response.json({ receipt: browserReceipts.get(body.requestId), ...(body.returnRecords === true ? { records: body.items.map((input: DoubanRecordInput) => catalog.douban!.items.find(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId)) } : {}) });
     }
     if (method === 'POST' && path === '/api/life/douban/reset' && catalog.douban?.allowReset) {
       requests.push({ path, method }); const body = JSON.parse(String(options?.body)); doubanResetBodies.push(body);
@@ -260,6 +283,12 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     if (path === '/api/ai/settings') return Response.json({ scope: 'site', canManage: catalog.aiCanManage !== false, settings: { configured: catalog.aiConfigured === true, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     const parsed = new URL(path, location.origin);
+    if (parsed.pathname === '/api/life/douban/cover') {
+      const item = catalog.douban?.items.find(value => value.profileId === parsed.searchParams.get('profileId') && value.domain === parsed.searchParams.get('domain') && value.subjectId === parsed.searchParams.get('subjectId'));
+      assert.ok(item?.coverUrl, 'an explicit cover retry addresses only a stored owned image');
+      assert.equal(options?.credentials, 'same-origin');
+      return new Response(readFileSync(resolve(import.meta.dirname, '../public/brand/favicon-32.png')), { headers: { 'Content-Type': 'image/png' } });
+    }
     if (parsed.pathname === '/api/life/douban') {
       const connection = catalog.douban?.connection ?? { profileId: null, revision: 0, updatedAt: null };
       const query = parsed.searchParams.get('q') ?? '', kind = parsed.searchParams.get('kind') ?? '';
@@ -313,7 +342,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       context: { version: 1, timezone: 'Asia/Shanghai', range: { from: today, to: today, today, days: 7 }, health: [], nutrition: { recordedDays: 0, days: [] }, limitations: ['暂无合成测试记录'] }, sources: [] });
     throw new Error('Unexpected production client request: ' + method + ' ' + path);
   };
-  const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, DOMParser: window.DOMParser,
+  const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, Blob, URLSearchParams, TextEncoder, TextDecoder, AbortController, DOMParser: window.DOMParser,
     crypto: webcrypto, Intl, Date, Event: window.Event, Element: window.Element, innerWidth: width,
     Headers, setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
   for (const [index, script] of [...document.querySelectorAll('script')].entries()) {
@@ -681,6 +710,18 @@ for (const width of [390, 1280]) {
     }
     covers[0].dispatchEvent(new f.window.Event('error'));
     assert.match(covers[0].getAttribute('src') ?? '', /^data:image\/svg\+xml/);
+    assert.equal(covers[0].getAttribute('alt'), '封面加载失败');
+    assert.equal(covers[0].getAttribute('data-douban-cover'), 'failed');
+    const failedCard = covers[0].closest('.db-card')!;
+    assert.match(failedCard.querySelector('[data-douban-cover-status]')?.textContent ?? '', /封面加载失败/);
+    assert.equal(f.requests.filter(request => request.path.startsWith('/api/life/douban/cover')).length, 0, 'an image error does not automatically reread the upstream cover');
+    failedCard.querySelector('[data-douban-cover-retry]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settle(() => covers[0].getAttribute('src')?.startsWith('blob:') === true);
+    assert.equal(covers[0].getAttribute('data-douban-cover'), 'available');
+    covers[0].dispatchEvent(new f.window.Event('load'));
+    assert.equal(failedCard.querySelector('[data-douban-cover-retry]'), null);
+    assert.equal(f.requests.filter(request => request.path.startsWith('/api/life/douban/cover')).length, 1);
+    assert.equal(f.document.getElementById('douban-detail-dialog')?.hasAttribute('open'), false, 'retrying a cover does not open the work or an external link');
     assert.equal(f.document.querySelectorAll('#douban-list img').length, 5, 'an unavailable cover remains an honest local fallback image');
     assert.match(f.document.querySelector('#douban-list h3')?.textContent ?? '', /<img src=x>/);
     assert.ok(f.requests.every(request => request.method === 'GET' && !request.path.includes('/sync')));
@@ -712,7 +753,7 @@ test('minified browser-extension sync connects explicitly and saves normalized p
     url: 'https://book.douban.com/subject/1234567/', coverUrl: null, rating: 4, markedDate: '2026-11-12',
     comment: '扩展合成个人短评', publishedAt: null, source: 'import' };
   const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
-    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: '2026-11-14T00:00:00.000Z' }, items: [], browserExtensionItems: [item],
+    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: '2026-11-14T00:00:00.000Z' }, items: [], browserExtensionItems: [item], browserExtensionVersion: '1.0.3',
   } });
   const get = (id: string) => f.document.getElementById('douban-browser-' + id)!;
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
@@ -722,6 +763,7 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   get('sync').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => get('status').textContent?.includes('浏览器同步完成') === true);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'START', 'STEP']);
+  assert.match(get('status').textContent ?? '', /分类尚未补全.*1\.0\.4/);
   assert.deepEqual(f.doubanImportBodies.map(body => body.action), ['preview', 'commit']);
   assert.deepEqual(f.doubanImportBodies.map(body => body.expectedDataEpoch), [0, 0]);
   assert.deepEqual(f.doubanImportBodies[1].items, [item]);
@@ -735,6 +777,50 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   await settle(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2
     && f.doubanImportBodies.filter(body => body.action === 'commit').length === 2 && get('status').textContent?.includes('浏览器同步完成') === true);
   assert.equal(f.document.querySelectorAll('#douban-list .db-card').length, 1, 'a new explicit refresh reconciles the saved subject rather than duplicating it');
+});
+
+for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const) void test('minified browser resync automatically enriches a saved screen using its newly persisted version at ' + width + 'px', { skip: !hasBuild }, async () => {
+  const existing = { ...mediaWorkspaceRecord('screen', '1234890', '原待分类影视'),
+    coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-old.jpg', details: { summary: '原有简介必须保留' } };
+  const input: DoubanRecordInput = { domain: existing.domain, subjectId: existing.subjectId, kind: 'screen', title: '重新同步的影视作品', url: existing.url,
+    coverUrl: null, rating: existing.rating, markedDate: existing.markedDate, comment: existing.comment, publishedAt: null, source: 'import' };
+  const metadata: DoubanSubjectMetadata = { kind: expectedKind, coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-new.jpg',
+    details: { directors: ['合成导演'], ...(expectedKind === 'movie' ? { duration: '118分钟' } : { episodes: 12 }) } };
+  const items = [existing];
+  const f = await fixture('id="douban-page"', '/life/douban', width, {}, { foods: [], douban: {
+    connection: { profileId: existing.profileId, revision: 1, updatedAt: existing.updatedAt }, items, allowMetadata: true,
+    browserExtensionItems: [input], browserSubjectMetadata: { ['screen:' + existing.subjectId]: metadata },
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  assert.equal(f.doubanExtensionMessages.length, 0);
+  assert.equal(f.doubanImportBodies.length, 0);
+  openMediaTools(f, 'browser');
+  const button = f.document.getElementById('douban-browser-sync')!;
+  const status = f.document.getElementById('douban-browser-status')!;
+  button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => status.textContent?.includes('浏览器同步完成') === true, () => 'automatic sync must complete: ' + status.textContent);
+  assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'START', 'STEP', 'CONNECT', 'SUBJECT']);
+  const subject = f.doubanExtensionMessages.find(body => body.action === 'SUBJECT')!;
+  assert.equal(subject.runId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(f.doubanImportBodies[0].returnRecords, undefined, 'preview only verifies the collection page');
+  assert.equal(f.doubanImportBodies[1].returnRecords, true, 'the queue must use persisted versions, not stale collection input');
+  assert.equal(f.doubanMetadataBodies[0].expectedUpdatedAt, new Date(Date.parse(existing.updatedAt) + 1).toISOString());
+  assert.equal(f.doubanMetadataBodies[0].expectedDataEpoch, 0);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, expectedKind);
+  assert.equal(items[0].coverUrl, metadata.coverUrl);
+  assert.equal(items[0].details?.summary, '原有简介必须保留');
+  assert.equal(items[0].rating, existing.rating);
+  assert.equal(items[0].comment, existing.comment);
+  assert.doesNotMatch(JSON.stringify(subject) + JSON.stringify(f.doubanMetadataBodies), /独立的个人短评|markedDate|cookie|password|rawHTML/i);
+  assert.match(status.textContent ?? '', /识别影视 1 条/);
+  button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2 && status.textContent?.includes('浏览器同步完成') === true,
+    () => 'repeat sync must finish without downgrading known works: ' + status.textContent);
+  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 1);
+  assert.equal(f.doubanMetadataBodies.length, 1);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, expectedKind);
 });
 
 for (const width of [390, 1280]) void test('minified work enrichment explicitly reads the local browser and saves public details without changing personal data at ' + width + 'px', { skip: !hasBuild }, async () => {

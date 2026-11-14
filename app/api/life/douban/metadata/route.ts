@@ -1,4 +1,5 @@
-import { readDoubanMetadataEpoch, readDoubanMetadataRecord, saveDoubanSubjectMetadata } from '../../../../../db/douban-metadata-store';
+import { readDoubanMetadataEpoch, readDoubanMetadataRecord, readSatisfiedDoubanSubjectMetadata, saveDoubanSubjectMetadata } from '../../../../../db/douban-metadata-store';
+import { DoubanStoreError } from '../../../../../db/douban-store';
 import { doubanSubjectUrl, normalizeDoubanCover, parseDoubanProfile, type DoubanDomain } from '../../../../../lib/douban';
 import { parseDoubanDetails } from '../../../../../lib/douban-details';
 import { fetchDoubanSubjectMetadata, type DoubanSubjectMetadata } from '../../../../../lib/douban-metadata';
@@ -65,8 +66,14 @@ export async function PUT(request: Request) {
   try {
     const parsed = command(await doubanBody(request, 4 * 1024 * 1024), true), metadata = browserMetadata(parsed.metadata, parsed.value.domain), db = doubanDatabase();
     const dataEpoch = await readDoubanMetadataEpoch(db, user.userId, parsed.value.expectedDataEpoch);
-    const old = await readDoubanMetadataRecord(db, user.userId, parsed.value);
-    const result = await saveDoubanSubjectMetadata(db, user.userId, old, metadata, undefined, dataEpoch);
+    let result;
+    try {
+      const old = await readDoubanMetadataRecord(db, user.userId, parsed.value);
+      result = await saveDoubanSubjectMetadata(db, user.userId, old, metadata, undefined, dataEpoch);
+    } catch (error) {
+      if (!(error instanceof DoubanStoreError) || error.code !== 'DOUBAN_RECORD_CONFLICT') throw error;
+      result = await readSatisfiedDoubanSubjectMetadata(db, user.userId, { ...parsed.value, expectedDataEpoch: dataEpoch }, metadata);
+    }
     return json({ ...result, dataEpoch, metadata: { status: 'complete' } });
   } catch (error) {
     if (error instanceof RangeError) return json({ error: '作品详情不能超过 4 MiB，请精简后重试。', code: 'DOUBAN_METADATA_TOO_LARGE' }, 413);

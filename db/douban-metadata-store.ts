@@ -66,10 +66,7 @@ async function persist(db: DoubanDatabase, userId: string, old: DoubanRecord, ki
   if (!row) conflict();
   return { item: presentDoubanStoredRecord(row), changed };
 }
-/** Only reliable subject metadata is merged; personal fields and original source are never changed. */
-export async function saveDoubanSubjectMetadata(db: DoubanDatabase, userId: string, old: DoubanRecord, metadata: DoubanSubjectMetadata,
-  now = new Date().toISOString(), expectedDataEpoch?: number): Promise<{ item: DoubanRecord; changed: boolean }> {
-  const dataEpoch = await readDoubanMetadataEpoch(db, userId, expectedDataEpoch);
+function subjectMetadataValues(old: DoubanRecord, metadata: DoubanSubjectMetadata) {
   const coverUrl = normalizeDoubanCover(metadata.coverUrl) ?? old.coverUrl;
   let kind = old.kind;
   if (metadata.kind !== null) {
@@ -79,6 +76,26 @@ export async function saveDoubanSubjectMetadata(db: DoubanDatabase, userId: stri
   }
   let detailsJson: string;
   try { detailsJson = doubanDetailsJson(mergeDoubanDetails(old.details, metadata.details)); } catch { return invalid('豆瓣作品详情含有不支持或超出限制的字段。'); }
+  return { kind, coverUrl, detailsJson };
+}
+/** A lost browser reply can be acknowledged only when its public values are already satisfied, without any write. */
+export async function readSatisfiedDoubanSubjectMetadata(db: DoubanDatabase, userId: string,
+  command: DoubanRecordUpdateKey & { expectedDataEpoch: number }, metadata: DoubanSubjectMetadata): Promise<{ item: DoubanRecord; changed: false }> {
+  const recordKey = key(command);
+  if (command.expectedDataEpoch === undefined) invalid('请先读取当前豆瓣资料版本。');
+  const dataEpoch = await readDoubanMetadataEpoch(db, userId, command.expectedDataEpoch);
+  const current = await readDoubanRecord(db, userId, recordKey);
+  await readDoubanMetadataEpoch(db, userId, dataEpoch);
+  if (!current) throw new DoubanStoreError('未找到这条豆瓣记录，请重新读取收藏。', 'DOUBAN_RECORD_NOT_FOUND', 404);
+  const values = subjectMetadataValues(current, metadata);
+  if (current.kind !== values.kind || current.coverUrl !== values.coverUrl || doubanDetailsJson(current.details) !== values.detailsJson) conflict();
+  return { item: current, changed: false };
+}
+/** Only reliable subject metadata is merged; personal fields and original source are never changed. */
+export async function saveDoubanSubjectMetadata(db: DoubanDatabase, userId: string, old: DoubanRecord, metadata: DoubanSubjectMetadata,
+  now = new Date().toISOString(), expectedDataEpoch?: number): Promise<{ item: DoubanRecord; changed: boolean }> {
+  const dataEpoch = await readDoubanMetadataEpoch(db, userId, expectedDataEpoch);
+  const { kind, coverUrl, detailsJson } = subjectMetadataValues(old, metadata);
   return persist(db, userId, old, kind, coverUrl, detailsJson, old.metadataCheckedRunId, now, dataEpoch);
 }
 /** Local manual classification also marks an already matching kind as explicitly chosen. */

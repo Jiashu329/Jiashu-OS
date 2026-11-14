@@ -4,7 +4,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { DoubanValidationError, doubanSubjectUrl, parseDoubanRecord, type DoubanRecordInput } from '../lib/douban.ts';
 import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRecord, readDoubanRun,
-  startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
+  readDoubanImportRecords, startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
 import { commitDoubanReset, previewDoubanReset, readDoubanDataEpoch } from './douban-reset-store.ts';
 
 const T1 = '2026-11-14T08:00:00.000Z', T2 = '2026-11-14T08:01:00.000Z', T3 = '2026-11-14T08:02:00.000Z';
@@ -549,4 +549,35 @@ void test('record validation keeps empty details optional and maps detail violat
   for (const details of [{ cookie: 'PRIVATE' }, { myRating: 1 }, { summary: '<script>unsafe()</script>' }, { pages: -1 }, { doubanRating: '8.5' }]) {
     assert.throws(() => parseDoubanRecord({ ...item, details }), error => error instanceof DoubanValidationError && error.code === 'INVALID_DOUBAN_INPUT' && error.status === 400);
   }
+});
+
+void test('small import-page reads return only current owner/profile/key versions and never copy rows into the receipt', async t => {
+  const f = fixture(t), input = [privateRecord('1', 'screen', { comment: 'ALICE_PRIVATE' }), privateRecord('2', 'book')];
+  const imported = await importRecords(f.db, input);
+  await importRecords(f.db, [privateRecord('1', 'screen', { comment: 'BOB_PRIVATE' })], { userId: 'bob' });
+  await importRecords(f.db, [privateRecord('1', 'screen', { comment: 'OTHER_SOURCE_PRIVATE' })], { profileId: 'another_profile' });
+  f.sqlite.prepare("UPDATE douban_items SET kind='movie',updated_at=?,metadata_checked_run_id='manual-kind',details_json=? WHERE user_id='alice' AND profile_id='alice_douban' AND subject_id='1'").run(T3, JSON.stringify({ summary: '最新已保存详情' }));
+  const records = await readDoubanImportRecords(f.db, 'alice', { profileId: 'alice_douban', items: [input[0]], expectedDataEpoch: 0 });
+  assert.equal(records.length, 1); assert.equal(records[0].kind, 'movie'); assert.equal(records[0].updatedAt, T3); assert.equal(records[0].details?.summary, '最新已保存详情');
+  assert.equal(records[0].comment, 'ALICE_PRIVATE'); assert.doesNotMatch(JSON.stringify(records), /BOB_PRIVATE|OTHER_SOURCE_PRIVATE/);
+  assert.deepEqual(await commitDoubanImport(f.db, 'alice', imported.command), imported.receipt, 'the receipt still replays its original counters');
+  const storedReceipt = f.sqlite.prepare("SELECT receipt_json FROM douban_import_receipts WHERE user_id='alice' AND request_id=?").get(imported.command.requestId)?.receipt_json as string;
+  assert.doesNotMatch(storedReceipt, /ALICE_PRIVATE|最新已保存详情|records|updatedAt/);
+  await assert.rejects(readDoubanImportRecords(f.db, 'alice', { profileId: 'alice_douban', items: Array.from({ length: 31 }, (_, index) => privateRecord(String(index + 1))) }), error => error instanceof DoubanStoreError && error.status === 400);
+});
+
+void test('a clear winning during current import-row reads fences the entire response instead of returning old versions', async t => {
+  const f = fixture(t), input = { profileId: 'alice_douban', items: [privateRecord('1', 'book')] };
+  await importRecords(f.db, input.items); let reset = false;
+  const racing = { prepare(sql: string) {
+    const prepared = f.db.prepare(sql);
+    return { bind(...values: unknown[]) {
+      const bound = prepared.bind(...values);
+      return { first<T>() { return bound.first<T>(); }, async all<T>() {
+        const result = await bound.all<T>(); if (!reset && sql.includes('ORDER BY domain,subject_id')) { reset = true; simulateConcurrentClear(f.sqlite); } return result;
+      } };
+    } };
+  } } as unknown as DoubanDatabase;
+  await assert.rejects(readDoubanImportRecords(racing, 'alice', { ...input, expectedDataEpoch: 0 }), epochConflict);
+  assert.equal((await listDoubanRecords(f.db, 'alice')).total, 0);
 });

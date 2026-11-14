@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { classifyDoubanRecord, readDoubanMetadataRecord, saveDoubanSubjectMetadata } from './douban-metadata-store.ts';
+import { classifyDoubanRecord, readDoubanMetadataRecord, readSatisfiedDoubanSubjectMetadata, saveDoubanSubjectMetadata } from './douban-metadata-store.ts';
 import { DoubanStoreError, doubanDetailsJson, readDoubanRecord, type DoubanDatabase, type DoubanRecord } from './douban-store.ts';
 
 const T1 = '2026-11-14T08:00:00.000Z', T2 = '2026-11-14T08:01:00.000Z';
@@ -145,4 +145,67 @@ void test('a reset winning immediately before metadata CAS cannot contaminate a 
   await assert.rejects(saveDoubanSubjectMetadata(racing, 'alice', old, { kind: 'series', coverUrl: COVER, details: { summary: '迟到的旧元数据' } }, T2, 0), error => error instanceof DoubanStoreError && error.code === 'DOUBAN_DATA_EPOCH_CONFLICT');
   const current = (await readDoubanRecord(f.db, 'alice', KEY))!;
   assert.equal(current.kind, 'screen'); assert.equal(current.coverUrl, null); assert.equal(current.details?.summary, '新世代简介'); assert.equal(current.comment, '清空后新私人短评'); assert.equal(current.updatedAt, T1);
+});
+
+void test('a committed browser metadata reply can be recovered with its original version using reads only', async t => {
+  const f = fixture(t), old = f.seed();
+  const metadata = { kind: 'series' as const, coverUrl: COVER, details: { summary: '已保存作品简介', episodes: 12 } };
+  await saveDoubanSubjectMetadata(f.db, 'alice', old, metadata, T2, 0); // The caller loses this reply.
+  const current = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  assert.notEqual(current.updatedAt, KEY.expectedUpdatedAt); f.queries.length = 0;
+  assert.deepEqual(await readSatisfiedDoubanSubjectMetadata(f.db, 'alice', { ...KEY, expectedDataEpoch: 0 }, metadata), { item: current, changed: false });
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+});
+
+void test('satisfied recovery retains later personal edits and protected manual or imported classifications', async t => {
+  const f = fixture(t), old = f.seed();
+  const metadata = { kind: 'series' as const, coverUrl: COVER, details: { summary: '作品简介' } };
+  const saved = await saveDoubanSubjectMetadata(f.db, 'alice', old, metadata, T2, 0);
+  await classifyDoubanRecord(f.db, 'alice', { ...KEY, expectedUpdatedAt: saved.item.updatedAt, kind: 'movie' }, T2);
+  f.sqlite.prepare("UPDATE douban_items SET title=?,rating=?,marked_date=?,comment=?,details_json=? WHERE user_id='alice'")
+    .run('后来更正的名称', 2, '2026-11-13', '后来更正的私人短评', doubanDetailsJson({ summary: '作品简介', directors: ['补充导演'] }));
+  const manual = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  f.seed('imported', { kind: 'movie', source: 'import', coverUrl: COVER, updatedAt: T2, details: metadata.details });
+  f.queries.length = 0;
+  const recovered = await readSatisfiedDoubanSubjectMetadata(f.db, 'alice', { ...KEY, expectedDataEpoch: 0 }, metadata);
+  assert.deepEqual(recovered, { item: manual, changed: false }); assert.equal(recovered.item.metadataCheckedRunId, 'manual-kind');
+  const imported = await readSatisfiedDoubanSubjectMetadata(f.db, 'imported', { ...KEY, expectedDataEpoch: 0 }, { ...metadata, coverUrl: null });
+  assert.equal(imported.item.kind, 'movie'); assert.equal(imported.item.source, 'import'); assert.equal(imported.changed, false);
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+});
+
+void test('recovery never writes unsatisfied public values, crosses an owner or profile, or accepts a reset epoch', async t => {
+  const f = fixture(t); f.seed('alice', { kind: 'movie', coverUrl: COVER, updatedAt: T2, details: { summary: '当前简介' } });
+  const command = { ...KEY, expectedDataEpoch: 0 }, metadata = { kind: 'movie' as const, coverUrl: COVER, details: { summary: '当前简介' } };
+  for (const value of [{ ...metadata, kind: 'series' as const }, { ...metadata, coverUrl: COVER.replace('p1.jpg', 'p2.jpg') }, { ...metadata, details: { summary: '旧简介' } }]) {
+    await assert.rejects(readSatisfiedDoubanSubjectMetadata(f.db, 'alice', command, value), conflict);
+  }
+  for (const [owner, value] of [['bob', command], ['alice', { ...command, profileId: 'other-profile' }], ['alice', { ...command, subjectId: '67890' }]] as const) {
+    await assert.rejects(readSatisfiedDoubanSubjectMetadata(f.db, owner, value, metadata), error => error instanceof DoubanStoreError && error.code === 'DOUBAN_RECORD_NOT_FOUND');
+  }
+  f.sqlite.prepare("DELETE FROM douban_items WHERE user_id='alice'").run();
+  f.seed('alice', { kind: 'movie', coverUrl: COVER, updatedAt: T2, details: metadata.details });
+  f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
+  await assert.rejects(readSatisfiedDoubanSubjectMetadata(f.db, 'alice', command, metadata), error => error instanceof DoubanStoreError && error.code === 'DOUBAN_DATA_EPOCH_CONFLICT');
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+});
+
+void test('satisfied recovery checks its epoch again after reading a same-key item', async t => {
+  const f = fixture(t); f.seed('alice', { kind: 'movie', coverUrl: COVER, updatedAt: T2 }); let reset = false;
+  const racing = { prepare(sql: string) {
+    const prepared = f.db.prepare(sql);
+    return { bind(...values: unknown[]) {
+      const bound = prepared.bind(...values);
+      return { async first<T>() {
+        const row = await bound.first<T>();
+        if (!reset && sql.includes('FROM douban_items')) {
+          reset = true;
+          f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
+        }
+        return row;
+      } };
+    } };
+  } } as unknown as DoubanDatabase;
+  await assert.rejects(readSatisfiedDoubanSubjectMetadata(racing, 'alice', { ...KEY, expectedDataEpoch: 0 }, { kind: 'movie', coverUrl: COVER }), error => error instanceof DoubanStoreError && error.code === 'DOUBAN_DATA_EPOCH_CONFLICT');
+  assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
 });

@@ -11,6 +11,17 @@ const STAMP = '2026-11-14T08:00:00.000Z';
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
 const KINDS = ['movie', 'series', 'book', 'music', 'screen'];
 
+function syntheticWebPCover() {
+  // A valid local lossless WebP plus a legal unknown RIFF chunk exercises
+  // 23 kB image responses without downloading a real person's cover.
+  const image = Buffer.from('UklGRh4AAABXRUJQVlA4TBEAAAAvD8AFAAfQmsIVsP+BiOh/AAA=', 'base64');
+  const padding = Buffer.alloc(23000 - image.length);
+  padding.write('JUNK'); padding.writeUInt32LE(padding.length - 8, 4);
+  const bytes = Buffer.concat([image, padding]);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  return bytes;
+}
+
 function record(kind, index = 0, profileId = PROFILE) {
   const domain = kind === 'movie' || kind === 'series' || kind === 'screen' ? 'screen' : kind;
   const subjectId = String(9000000 + index), host = domain === 'screen' ? 'movie' : domain;
@@ -47,6 +58,25 @@ function resetSnapshot(state) {
   return { epoch: state.doubanDataEpoch, total: state.doubanItems.length, counts, latestUpdatedAt,
     previewHash: createHash('sha256').update(JSON.stringify({ epoch: state.doubanDataEpoch, items: state.doubanItems })).digest('hex') };
 }
+function importPlan(state, profileId, items) {
+  return items.map(input => {
+    const index = state.doubanItems.findIndex(item => item.profileId === profileId && item.domain === input.domain && item.subjectId === input.subjectId);
+    const old = state.doubanItems[index], next = { ...old, ...input, profileId };
+    if (old) {
+      if (input.kind === 'screen' && ['movie', 'series'].includes(old.kind)) next.kind = old.kind;
+      for (const key of ['coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt']) if (input[key] == null && old[key] != null) next[key] = old[key];
+    }
+    const details = mergeDoubanDetails(old?.details, input.details);
+    if (Object.keys(details).length) next.details = details;
+    else delete next.details;
+    const keys = ['domain', 'subjectId', 'title', 'url', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source', 'details'];
+    const changed = Boolean(old && keys.some(key => JSON.stringify(old[key]) !== JSON.stringify(next[key])));
+    return { index, old, next, changed };
+  });
+}
+function nextVersion(state, previous = STAMP) {
+  return new Date(Math.max(Date.parse(previous) + 1, Date.parse(STAMP) + ++state.doubanMetadataVersion)).toISOString();
+}
 
 test.beforeEach(async ({ context, page }, testInfo) => {
   const state = syntheticState();
@@ -56,6 +86,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanDataEpoch = 0;
   state.doubanResetReceipt = null; state.doubanLoseResetReply = false; state.doubanOtherOwnerItems = [];
   state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
+  state.doubanLoseMetadataReply = false;
   state.doubanCoverBytes = new Map();
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
@@ -85,11 +116,18 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (url.pathname.endsWith('/metadata') && (body.expectedDataEpoch ?? 0) !== state.doubanDataEpoch) return fail('书影音资料已清空或重置，旧作品补全已停止。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const item = state.doubanItems.find(value => value.profileId === body.profileId && value.domain === body.domain && value.subjectId === body.subjectId);
       if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
-      if (body.expectedUpdatedAt !== item.updatedAt) return fail('条目已更新，请重新核对。', 'DOUBAN_ITEM_CONFLICT');
+      if (body.expectedUpdatedAt !== item.updatedAt) {
+        const metadata = body.metadata;
+        const alreadySaved = url.pathname.endsWith('/metadata') && method === 'PUT' && body.confirmed === true && metadata
+          && (!metadata.kind || metadata.kind === item.kind) && (!metadata.coverUrl || metadata.coverUrl === item.coverUrl)
+          && JSON.stringify(mergeDoubanDetails(item.details, metadata.details)) === JSON.stringify(item.details ?? {});
+        if (alreadySaved) return send({ item, changed: false, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
+        return fail('条目已更新，请重新核对。', 'DOUBAN_RECORD_CONFLICT');
+      }
       if (url.pathname.endsWith('/classification')) {
         if (body.domain !== 'screen' || !['movie', 'series'].includes(body.kind)) return fail('请选择电影或电视剧。', 'DOUBAN_INVALID_CLASSIFICATION', 400);
         item.kind = body.kind;
-        item.updatedAt = new Date(Date.parse(STAMP) + ++state.doubanMetadataVersion).toISOString();
+        item.updatedAt = nextVersion(state, item.updatedAt);
         return send({ item });
       }
       if (body.confirmed !== true) return fail('请明确确认补全此条目。', 'DOUBAN_METADATA_CONFIRMATION_REQUIRED', 400);
@@ -99,7 +137,8 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (metadata.coverUrl) item.coverUrl = metadata.coverUrl;
       const details = mergeDoubanDetails(item.details, metadata.details);
       if (Object.keys(details).length) item.details = details;
-      item.updatedAt = new Date(Date.parse(STAMP) + ++state.doubanMetadataVersion).toISOString();
+      item.updatedAt = nextVersion(state, item.updatedAt);
+      if (method === 'PUT' && state.doubanLoseMetadataReply) { state.doubanLoseMetadataReply = false; return route.abort('connectionreset'); }
       return send({ item, changed: true, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
     }
     if (url.pathname === '/api/life/douban/cover' && method === 'GET') {
@@ -107,7 +146,8 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         && value.domain === url.searchParams.get('domain') && value.subjectId === url.searchParams.get('subjectId'));
       if (!item?.coverUrl) return route.fulfill({ status: 404, contentType: 'text/plain', body: 'No stored cover' });
       if (state.doubanFailedCovers.has(item.subjectId)) return route.fulfill({ status: 502, contentType: 'text/plain', body: 'Synthetic cover unavailable' });
-      return route.fulfill({ status: 200, contentType: 'image/png', body: state.doubanCoverBytes.get(item.subjectId) ?? await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url)) });
+      const bytes = state.doubanCoverBytes.get(item.subjectId) ?? await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url));
+      return route.fulfill({ status: 200, contentType: bytes.subarray(0, 4).toString() === 'RIFF' ? 'image/webp' : 'image/png', body: bytes });
     }
     if (url.pathname === '/api/life/douban/import' && method === 'POST') {
       const profile = parseDoubanProfile(body.profile), items = body.items;
@@ -115,21 +155,28 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       const expectedDataEpoch = body.expectedDataEpoch ?? 0;
       if (expectedDataEpoch !== state.doubanDataEpoch) return fail('豆瓣资料已清空或更新，请重新预览后再保存。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const snapshotHash = ['a', 'b', 'c', 'd', 'e', 'f'][state.doubanDataEpoch % 6].repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items, dataEpoch: state.doubanDataEpoch });
+      const plans = importPlan(state, profile.profileId, items), added = plans.filter(plan => !plan.old).length, updated = plans.filter(plan => plan.changed).length;
+      const currentRecords = () => items.map(input => state.doubanItems.find(item => item.profileId === profile.profileId && item.domain === input.domain && item.subjectId === input.subjectId));
+      const result = receipt => ({ receipt, ...(body.returnRecords === true ? { records: currentRecords() } : {}) });
       if (body.action === 'preview') {
         state.doubanImportPreview = { snapshotHash, payload };
-        return send({ preview: { ...profile, snapshotHash, dataEpoch: state.doubanDataEpoch, total: items.length, added: items.length, updated: 0, unchanged: 0 } });
+        return send({ preview: { ...profile, snapshotHash, dataEpoch: state.doubanDataEpoch, total: items.length, added, updated, unchanged: items.length - added - updated } });
       }
       const replay = state.doubanImportReceipts.get(body.requestId);
-      if (replay) return replay.payload === payload ? send({ receipt: replay.receipt }) : fail('原操作内容已变化。', 'DOUBAN_IMPORT_CONFLICT');
+      if (replay) return replay.payload === payload ? send(result(replay.receipt)) : fail('原操作内容已变化。', 'DOUBAN_IMPORT_CONFLICT');
       if (body.action !== 'commit' || body.confirmed !== true || !/^[0-9a-f-]{36}$/i.test(body.requestId)
         || body.expectedSnapshotHash !== state.doubanImportPreview?.snapshotHash || payload !== state.doubanImportPreview?.payload) {
         return fail('导入预览已变化，请重新预览。', 'DOUBAN_IMPORT_CONFLICT');
       }
-      state.doubanItems.push(...items.map(item => ({ ...item, profileId: profile.profileId, observedAt: STAMP, createdAt: STAMP, updatedAt: STAMP })));
-      const receipt = { profileId: profile.profileId, requestId: body.requestId, dataEpoch: state.doubanDataEpoch, total: items.length, added: items.length, updated: 0, unchanged: 0 };
+      for (const plan of plans) {
+        const persisted = { ...plan.next, observedAt: STAMP, createdAt: plan.old?.createdAt ?? STAMP, updatedAt: plan.changed ? nextVersion(state, plan.old.updatedAt) : plan.old?.updatedAt ?? STAMP };
+        if (plan.old) state.doubanItems[plan.index] = persisted;
+        else state.doubanItems.push(persisted);
+      }
+      const receipt = { profileId: profile.profileId, requestId: body.requestId, dataEpoch: state.doubanDataEpoch, total: items.length, added, updated, unchanged: items.length - added - updated };
       state.doubanImportReceipts.set(body.requestId, { payload, receipt });
       if (state.doubanLoseImportReply) { state.doubanLoseImportReply = false; return route.abort('connectionreset'); }
-      return send({ receipt });
+      return send(result(receipt));
     }
     if (url.pathname === '/api/life/douban/connection' && method === 'PUT') {
       if (body.expectedRevision !== state.doubanConnection.revision) return fail('请读取最新配置后再保存。', 'DOUBAN_CONNECTION_CONFLICT');
@@ -229,7 +276,7 @@ async function installExtensionMock(context, pages, options = {}) {
     const runtime = { sendMessage(id, body, callback) {
       state.calls.push({ id, body: structuredClone(body) });
       const reply = value => queueMicrotask(() => callback(value));
-      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.3', protocolVersion: 1 } });
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.4', protocolVersion: 1 } });
       if (body.action === 'SUBJECT_CANCEL') return reply({ ok: true, data: { cancelled: true } });
       if (body.action === 'SUBJECT') {
         const key = body.domain + ':' + body.subjectId, metadata = options.subjects?.[key];
@@ -519,19 +566,24 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
   await page.locator('#douban-sources').screenshot({ path: testInfo.outputPath('douban-source-failure-recovery.png') });
 });
 
-test('all media covers including private imports use owned same-origin images and missing or failed covers retain an image fallback', async ({ page }, testInfo) => {
+test('private media covers distinguish a failed read from a missing image and recover only through explicit same-origin retry', async ({ page }, testInfo) => {
   const state = testInfo.synthetic;
   bind(state);
   state.doubanItems = KINDS.map((kind, index) => ({ ...record(kind, 500 + index), source: 'import',
     coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p' + (500 + index) + '.jpg' }));
   state.doubanItems[2].coverUrl = null;
   state.doubanFailedCovers.add(state.doubanItems[1].subjectId);
+  state.doubanCoverBytes.set(state.doubanItems[1].subjectId, syntheticWebPCover());
   await openLibrary(page);
   const covers = page.locator('#douban-list img[data-douban-cover]');
   await expect(covers).toHaveCount(KINDS.length);
   for (let index = 0; index < KINDS.length; index++) await covers.nth(index).scrollIntoViewIfNeeded();
   await expect(covers.nth(1)).toHaveAttribute('data-douban-cover', 'failed');
   await expect(covers.nth(1)).toHaveAttribute('src', /^data:image\/svg\+xml/);
+  await expect(covers.nth(1)).toHaveAttribute('alt', '封面加载失败');
+  const failedCard = page.locator('#douban-list .db-card').nth(1);
+  await expect(failedCard.locator('[data-douban-cover-status]')).toContainText('封面加载失败');
+  await expect(failedCard.locator('[data-douban-cover-retry]')).toBeVisible();
   await expect(covers.nth(2)).toHaveAttribute('data-douban-cover', 'missing');
   await expect(covers.nth(2)).toHaveAttribute('src', /^data:image\/svg\+xml/);
   for (const index of [0, 3, 4]) {
@@ -543,6 +595,14 @@ test('all media covers including private imports use owned same-origin images an
   }
   await expect.poll(() => covers.evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
   expect(state.requests.filter(request => request.path === '/api/life/douban/cover')).toHaveLength(4);
+  await expect(page.locator('#douban-list .db-card').nth(2).locator('[data-douban-cover-retry]')).toHaveCount(0);
+  state.doubanFailedCovers.clear();
+  await failedCard.locator('[data-douban-cover-retry]').click();
+  await expect(covers.nth(1)).toHaveAttribute('data-douban-cover', 'available');
+  await expect(covers.nth(1)).toHaveAttribute('src', /^blob:/);
+  await expect(failedCard.locator('[data-douban-cover-retry]')).toHaveCount(0);
+  await expect(page.locator('#douban-detail-dialog')).toBeHidden();
+  expect(state.requests.filter(request => request.path === '/api/life/douban/cover')).toHaveLength(5);
   expect(state.requests.filter(request => /metadata|classification/.test(request.path))).toEqual([]);
   expect(mutations(testInfo)).toEqual([]);
   expect(state.externalRequests).toEqual([]);
@@ -619,7 +679,7 @@ test('desktop browser extension syncing starts explicitly and saves only normali
   const state = testInfo.synthetic;
   bind(state);
   const pages = [[{ ...extensionItem('screen', 800), rawHTML: 'PRIVATE-RAW-EXTENSION-PAGE' }], [extensionItem('book', 801), extensionItem('music', 802)]];
-  await installExtensionMock(context, pages);
+  await installExtensionMock(context, pages, { version: '1.0.3' });
   await openLibrary(page);
   expect(await extensionCalls(page)).toEqual([]);
   expect(mutations(testInfo)).toEqual([]);
@@ -632,6 +692,8 @@ test('desktop browser extension syncing starts explicitly and saves only normali
   await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
   await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(3);
   expect(state.doubanItems.map(item => item.kind)).toEqual(['screen', 'book', 'music']);
+  await expect(page.locator('#douban-browser-status')).toContainText('分类尚未补全');
+  await expect(page.locator('#douban-browser-status')).toContainText('1.0.4');
   const calls = await extensionCalls(page);
   expect(calls.map(call => call.body.action)).toEqual(['CONNECT', 'START', 'STEP', 'STEP']);
   expect(calls.every(call => call.id === 'gbcgjkicjfbaakippafhhpadfkfifaeb' && call.body.type === 'JIASHU_DOUBAN' && call.body.version === 1 && call.body.profileId === PROFILE)).toBe(true);
@@ -651,7 +713,7 @@ test('desktop browser extension syncing starts explicitly and saves only normali
 test('an unknown extension step waits for explicit retry and reuses its original operation without reading or saving twice', async ({ context, page }, testInfo) => {
   const state = testInfo.synthetic;
   bind(state);
-  await installExtensionMock(context, [[extensionItem('book', 810)]], { lostReply: true });
+  await installExtensionMock(context, [[extensionItem('book', 810)]], { version: '1.0.3', lostReply: true });
   await openLibrary(page);
   await openTools(page, 'browser');
   await page.locator('#douban-browser-sync').click();
@@ -676,7 +738,7 @@ test('an unknown extension step waits for explicit retry and reuses its original
 test('pausing saves only the current browser page and switching website accounts cancels the next return while retaining a file draft', async ({ context, page }, testInfo) => {
   const state = testInfo.synthetic;
   bind(state);
-  await installExtensionMock(context, [[extensionItem('book', 820)], [extensionItem('music', 821)]], { holdStep: 0 });
+  await installExtensionMock(context, [[extensionItem('book', 820)], [extensionItem('music', 821)]], { version: '1.0.3', holdStep: 0 });
   await openLibrary(page);
   await openTools(page, 'import');
   await page.locator('#douban-import-profile').fill('keep-local-file-draft');
@@ -1076,5 +1138,144 @@ test('long work summaries, casts and track lists expand accessibly and Escape re
   await page.keyboard.press('Escape');
   await expect(music).toBeFocused();
   expect(mutations(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+
+test('explicit browser resync classifies existing screen records and refreshes covers before another collection page', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const inputs = [extensionItem('screen', 1200), extensionItem('screen', 1201)];
+  state.doubanItems = inputs.map((input, index) => ({ ...record('screen', 1200 + index), ...input,
+    coverUrl: index ? null : 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-old.jpg', details: { summary: '已有简介必须保留' } }));
+  const subjects = Object.fromEntries(inputs.map((item, index) => ['screen:' + item.subjectId, { kind: index ? 'series' : 'movie',
+    coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-new-' + index + '.jpg',
+    details: { directors: ['合成导演'], ...(index ? { episodes: 12 } : { duration: '118分钟' }) } }]));
+  await installExtensionMock(context, [inputs, []], { subjects });
+  await openLibrary(page);
+  expect(await extensionCalls(page)).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await openTools(page, 'browser');
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  await expect(page.locator('#douban-browser-status')).toContainText('识别影视 2 条');
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['movie', 'series']);
+  expect(state.doubanItems).toHaveLength(2);
+  for (const item of state.doubanItems) {
+    expect(item.coverUrl).toContain('p-new-');
+    expect(item.details.summary).toBe('已有简介必须保留');
+    expect(item.rating).toBe(4);
+    expect(item.comment).toBe('合成个人短评');
+  }
+  const calls = await extensionCalls(page), reads = calls.filter(call => ['STEP', 'SUBJECT'].includes(call.body.action));
+  expect(reads.map(call => call.body.action)).toEqual(['STEP', 'SUBJECT', 'SUBJECT', 'STEP']);
+  const runId = reads[0].body.runId;
+  expect(reads.filter(call => call.body.action === 'SUBJECT').every(call => call.body.runId === runId)).toBe(true);
+  const writes = mutations(testInfo), commits = writes.filter(request => request.body.action === 'commit'), puts = writes.filter(request => request.method === 'PUT');
+  expect(commits).toHaveLength(1);
+  expect(commits[0].body.returnRecords).toBe(true);
+  expect(writes.find(request => request.body.action === 'preview').body.returnRecords).toBeUndefined();
+  expect(puts).toHaveLength(2);
+  expect(puts.every(request => request.path === '/api/life/douban/metadata' && request.body.expectedDataEpoch === 0)).toBe(true);
+  expect(JSON.stringify(reads.filter(call => call.body.action === 'SUBJECT')) + JSON.stringify(puts)).not.toMatch(/合成个人短评|markedDate|rawHTML|cookie|password/i);
+  const subjectsBefore = (await extensionCalls(page, 'SUBJECT')).length;
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => extensionCalls(page, 'START').then(items => items.length)).toBe(2);
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(subjectsBefore);
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['movie', 'series']);
+  expect(state.doubanItems).toHaveLength(2);
+  await closeTools(page);
+  await expect(page.locator('#douban-list img[data-douban-cover="available"]')).toHaveCount(2);
+  await fits(page);
+});
+
+test('automatic classification retains a paused queue and an unknown metadata save retries the original body without another subject read', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const items = [extensionItem('screen', 1220), extensionItem('screen', 1221)];
+  const subjects = Object.fromEntries(items.map(item => ['screen:' + item.subjectId, { kind: 'movie', coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-auto.jpg', details: { duration: '120分钟' } }]));
+  await installExtensionMock(context, [items], { subjects, holdSubject: 'screen:' + items[0].subjectId });
+  await openLibrary(page);
+  await openTools(page, 'browser');
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.subjectPending)).toBe(true);
+  await page.locator('#douban-browser-stop').click();
+  await page.evaluate(() => window.__doubanExtensionMock.releaseSubject());
+  await expect(page.locator('#douban-browser-status')).toContainText('已暂停浏览器同步');
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['movie', 'screen']);
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  state.doubanLoseMetadataReply = true;
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-sync')).toHaveText('重试并继续浏览器同步');
+  await expect(page.locator('#douban-browser-sync')).toBeEnabled();
+  expect(state.doubanItems.map(item => item.kind)).toEqual(['movie', 'movie']);
+  const metadataWrites = () => mutations(testInfo).filter(request => request.path === '/api/life/douban/metadata');
+  expect(metadataWrites()).toHaveLength(2);
+  const original = structuredClone(metadataWrites()[1].body), savedVersion = state.doubanItems[1].updatedAt;
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  expect(metadataWrites()).toHaveLength(3);
+  expect(metadataWrites()[2].body).toEqual(original);
+  expect(state.doubanItems[1].updatedAt).toBe(savedVersion);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(2);
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  expect(await extensionCalls(page, 'START')).toHaveLength(1);
+  expect(state.doubanItems).toHaveLength(2);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
+});
+
+test('a real concurrent metadata change stops automatic classification without replacing its saved version', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const item = extensionItem('screen', 1230);
+  await installExtensionMock(context, [[item]], { holdSubject: 'screen:' + item.subjectId,
+    subjects: { ['screen:' + item.subjectId]: { kind: 'movie', coverUrl: null, details: { duration: '120分钟' } } } });
+  await openLibrary(page);
+  await openTools(page, 'browser');
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.subjectPending)).toBe(true);
+  const persisted = state.doubanItems[0];
+  persisted.kind = 'series'; persisted.details = { episodes: 12 }; persisted.updatedAt = nextVersion(state, persisted.updatedAt);
+  const concurrentVersion = structuredClone(persisted);
+  await page.evaluate(() => window.__doubanExtensionMock.releaseSubject());
+  await expect(page.locator('#douban-browser-status')).toContainText('未重复覆盖');
+  await expect(page.locator('#douban-browser-sync')).toHaveText('跳过冲突并继续同步');
+  expect(state.doubanItems[0]).toEqual(concurrentVersion);
+  const puts = mutations(testInfo).filter(request => request.path === '/api/life/douban/metadata');
+  expect(puts).toHaveLength(1);
+  expect(puts[0].body.expectedUpdatedAt).not.toBe(concurrentVersion.updatedAt);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  expect(await extensionCalls(page, 'START')).toHaveLength(1);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
+});
+
+test('clearing an account during queued subject enrichment prevents the late metadata from restoring old records', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const item = extensionItem('screen', 1240);
+  await installExtensionMock(context, [[item]], { holdSubject: 'screen:' + item.subjectId,
+    subjects: { ['screen:' + item.subjectId]: { kind: 'series', coverUrl: null, details: { episodes: 8 } } } });
+  await openLibrary(page);
+  await openTools(page, 'browser');
+  await page.locator('#douban-browser-sync').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.subjectPending)).toBe(true);
+  state.doubanItems = []; state.doubanDataEpoch = 1;
+  state.doubanConnection = { ...state.doubanConnection, revision: 2 };
+  await page.evaluate(() => window.__doubanExtensionMock.releaseSubject());
+  await expect(page.locator('#douban-browser-status')).toContainText('已清空或重置');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  expect(state.doubanItems).toEqual([]);
+  const puts = mutations(testInfo).filter(request => request.path === '/api/life/douban/metadata');
+  expect(puts).toHaveLength(1);
+  expect(puts[0].body.expectedDataEpoch).toBe(0);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  expect(await extensionCalls(page, 'CANCEL')).toHaveLength(1);
+  expect(state.doubanDataEpoch).toBe(1);
   await fits(page);
 });

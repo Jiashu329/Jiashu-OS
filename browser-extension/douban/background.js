@@ -1,7 +1,7 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
 import { parseDoubanDetails } from './details-parser.js';
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.3';
+export const EXTENSION_VERSION = '1.0.4';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -49,13 +49,14 @@ function validRequest(message) {
   const keys = ['type', 'version', 'action', 'ownerKey', 'profileId'];
   if (['STEP', 'POLL', 'CANCEL'].includes(message.action)) keys.push('runId');
   if (message.action === 'STEP') keys.push('step', 'requestId');
-  if (message.action === 'SUBJECT') keys.push('requestId', 'domain', 'subjectId');
+  if (message.action === 'SUBJECT') keys.push('requestId', 'domain', 'subjectId', 'runId');
   if (message.action === 'SUBJECT_CANCEL') keys.push('requestId');
   if (Object.keys(message).some(key => !keys.includes(key))) return false;
   if (['SUBJECT', 'SUBJECT_CANCEL'].includes(message.action)
     && (typeof message.requestId !== 'string' || !UUID.test(message.requestId))) return false;
   if (message.action === 'SUBJECT' && (!DOMAINS.includes(message.domain) || typeof message.subjectId !== 'string'
-    || !/^[1-9]\d{0,15}$/.test(message.subjectId))) return false;
+    || !/^[1-9]\d{0,15}$/.test(message.subjectId)
+    || Object.hasOwn(message, 'runId') && (typeof message.runId !== 'string' || !UUID.test(message.runId)))) return false;
   if (['STEP', 'POLL', 'CANCEL'].includes(message.action) && (typeof message.runId !== 'string' || !UUID.test(message.runId))) return false;
   return message.action !== 'STEP' || Number.isSafeInteger(message.step) && message.step >= 0 && typeof message.requestId === 'string' && UUID.test(message.requestId);
 }
@@ -85,6 +86,15 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
   function owns(run, message, sender) {
     return run && run.id === message.runId && run.ownerKey === message.ownerKey && run.profileId === message.profileId && run.websiteTabId === sender.tab.id;
   }
+  function parentAvailable(job) {
+    return job.collectionRunId === null || active && active.id === job.collectionRunId && active.status !== 'cancelled'
+      && active.ownerKey === job.ownerKey && active.profileId === job.profileId && active.websiteTabId === job.websiteTabId;
+  }
+  function cancelRunSubject(run) {
+    const job = subject;
+    if (!job || job.collectionRunId !== run.id || job.ownerKey !== run.ownerKey || job.profileId !== run.profileId || job.websiteTabId !== run.websiteTabId) return null;
+    job.status = 'cancelled'; job.response = null; return job;
+  }
   function progress(run) {
     return { status: run.status, sources: structuredClone(run.sources), received: DOMAINS.reduce((sum, domain) => sum + run.sources[domain].received, 0),
       pages: DOMAINS.reduce((sum, domain) => sum + run.sources[domain].pages, 0), accountProfileId: run.accountProfileId };
@@ -113,25 +123,35 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
     if (message.action === 'SUBJECT') {
       if (subject?.requestId === message.requestId) {
         if (!subjectOwner(subject, message, sender)) return failure('RUN_NOT_FOUND');
-        if (subject.domain !== message.domain || subject.subjectId !== message.subjectId) return failure('STEP_CONFLICT');
-        if (subject.status === 'cancelled') return failure('RUN_NOT_FOUND');
+        if (subject.domain !== message.domain || subject.subjectId !== message.subjectId || subject.requestRunId !== (message.runId ?? null)) return failure('STEP_CONFLICT');
+        if (subject.status === 'cancelled' || !parentAvailable(subject)) return failure('RUN_NOT_FOUND');
         return subject.response ? structuredClone(subject.response) : failure('RUN_BUSY');
       }
-      if (subject?.status === 'running' || active?.status === 'running') return failure('RUN_BUSY');
+      if (subject?.status === 'running') return failure('RUN_BUSY');
+      let collection = null;
+      if (message.runId !== undefined) {
+        if (!owns(active, message, sender) || active.status === 'cancelled') return failure('RUN_NOT_FOUND');
+        collection = active;
+      } else if (active?.status === 'running') {
+        if (!subjectOwner(active, message, sender)) return failure('RUN_BUSY');
+        collection = active;
+      }
+      if (collection?.busy) return failure('RUN_BUSY');
       const lastRead = lastExternalReadAt ?? -Infinity;
       if (now() - lastRead < 1500) return failure('PACING', Math.ceil((1500 - (now() - lastRead)) / 1000));
       const prior = subject;
       const job = { id: message.requestId, requestId: message.requestId, ownerKey: message.ownerKey, profileId: message.profileId,
         websiteTabId: sender.tab.id, domain: message.domain, subjectId: message.subjectId, status: 'running',
+        collectionRunId: collection?.id ?? null, requestRunId: message.runId ?? null,
         tabs: subjectOwner(prior, message, sender) ? { ...prior.tabs } : {}, response: null, attentionTabId: null };
       subject = job; lastExternalReadAt = now();
       let response;
       try {
         const metadata = normalizeSubjectMetadata(await readSubject(job), job.domain);
-        if (subject !== job || job.status !== 'running') return failure('RUN_NOT_FOUND');
+        if (subject !== job || job.status !== 'running' || !parentAvailable(job)) return failure('RUN_NOT_FOUND');
         response = { ok: true, data: { requestId: job.requestId, domain: job.domain, subjectId: job.subjectId, metadata } };
       } catch (error) {
-        if (subject !== job || job.status !== 'running') return failure('RUN_NOT_FOUND');
+        if (subject !== job || job.status !== 'running' || !parentAvailable(job)) return failure('RUN_NOT_FOUND');
         const code = SAFE_CODES.has(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID';
         if (['DOUBAN_BROWSER_LOGIN_REQUIRED', 'DOUBAN_BROWSER_CHALLENGE', 'DOUBAN_BROWSER_BLOCKED', 'DOUBAN_BROWSER_RATE_LIMITED'].includes(code)) job.attentionTabId = job.tabs[job.domain] ?? null;
         response = failure(code);
@@ -163,7 +183,7 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
         sources: Object.fromEntries(DOMAINS.map(domain => [domain, sourceProgress()])), tabs: {}, seen: new Set(), lastReadAt: null,
         lastResult: null, busy: false, accountProfileId: null, attentionTabId: null };
       active = created;
-      if (interrupted) await stopRead(interrupted);
+      if (interrupted) { const child = cancelRunSubject(interrupted); await stopRead(interrupted); if (child) await stopRead(child); }
       return { ok: true, data: view(created) };
     }
     const run = active;
@@ -171,13 +191,15 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
     if (message.action === 'POLL') return { ok: true, data: view(run) };
     if (message.action === 'CANCEL') {
       run.status = 'cancelled'; run.lastResult = null;
+      const child = cancelRunSubject(run);
       await stopRead(run);
+      if (child) await stopRead(child);
       return { ok: true, data: view(run) };
     }
     if (run.lastResult?.requestId === message.requestId) {
       return run.lastResult.requestStep === message.step ? structuredClone(run.lastResult.response) : failure('STEP_CONFLICT');
     }
-    if (run.busy) return failure('RUN_BUSY');
+    if (run.busy || subject?.status === 'running') return failure('RUN_BUSY');
     if (run.step !== message.step || run.status !== 'running') return failure('STEP_CONFLICT');
     const lastRead = lastExternalReadAt ?? -Infinity;
     if (now() - lastRead < 1500) return failure('PACING', Math.ceil((1500 - (now() - lastRead)) / 1000));

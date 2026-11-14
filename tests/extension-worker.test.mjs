@@ -40,7 +40,7 @@ function fixture(readPage, readSubject) {
     calls.reads.push({ runId: run.id, ownerKey: run.ownerKey, profileId: run.profileId, domain, offset: run.sources[domain].start });
     return readPage ? readPage(run, domain) : page(domain);
   }, readSubject: async job => {
-    calls.subjectReads.push({ requestId: job.requestId, ownerKey: job.ownerKey, profileId: job.profileId, domain: job.domain, subjectId: job.subjectId });
+    calls.subjectReads.push({ requestId: job.requestId, ownerKey: job.ownerKey, profileId: job.profileId, domain: job.domain, subjectId: job.subjectId, collectionRunId: job.collectionRunId });
     const result = readSubject ? await readSubject(job) : { kind: job.domain === 'screen' ? 'series' : job.domain, coverUrl: null,
       details: { summary: '合成作品简介', doubanRating: 8.6, ratingCount: 321, year: 2026 } };
     // Chrome serializes an isolated-world result into the service worker realm.
@@ -52,7 +52,7 @@ function fixture(readPage, readSubject) {
 test('local Douban extension grants only collection hosts and never asks for Cookie or request interception permissions', () => {
   const manifest = JSON.parse(readFileSync(new URL('manifest.json', extensionRoot), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '1.0.3');
+  assert.equal(manifest.version, '1.0.4');
   assert.deepEqual(manifest.permissions.toSorted(), ['scripting', 'tabs']);
   assert.deepEqual(manifest.host_permissions.toSorted(), ['https://book.douban.com/*', 'https://movie.douban.com/*', 'https://music.douban.com/*']);
   assert.deepEqual(manifest.externally_connectable.matches, [productionOrigin + '/*']);
@@ -65,7 +65,8 @@ test('subject reads accept only fixed subject keys and reject URLs, credentials,
   const f = fixture();
   for (const body of [subject(requestId, { url: 'https://evil.example/' }), subject(requestId, { cookie: 'PRIVATE_COOKIE' }),
     subject(requestId, { domain: 'other' }), subject(requestId, { subjectId: '../secret' }), subject(requestId, { subjectId: ['12345'] }),
-    subject('bad-id'), message('SUBJECT_CANCEL', { requestId: ['bad'] }), subject(requestId, { ownerKey: 'not-a-uuid' })]) {
+    subject('bad-id'), message('SUBJECT_CANCEL', { requestId: ['bad'] }), subject(requestId, { ownerKey: 'not-a-uuid' }),
+    subject(requestId, { runId: null }), subject(requestId, { runId: [runId] }), subject(requestId, { runId: 'bad-run' })]) {
     assert.equal((await f.send(body)).error.code, 'INVALID_REQUEST');
   }
   assert.equal((await f.send(subject(), { ...sender, frameId: 1 })).error.code, 'FORBIDDEN');
@@ -101,17 +102,112 @@ test('held subject reads are exclusive and cancellation discards their eventual 
   assert.equal(f.calls.subjectReads.length, 1);
 });
 
-test('subject reads share pacing with collection reads and never overlap an unfinished collection run', async () => {
+test('idle own collections interleave one subject read while sharing pacing and preserving collection replay and cursor', async () => {
   const f = fixture(); await f.start();
-  assert.equal((await f.send(subject())).error.code, 'RUN_BUSY');
-  assert.equal(f.calls.subjectReads.length, 0);
-  await f.send(step()); await f.send(message('CANCEL', { runId }));
-  assert.equal((await f.send(subject())).error.code, 'PACING');
-  f.advance(); assert.equal((await f.send(subject())).ok, true);
-  const paced = await f.send(subject(nextRequest, { domain: 'book' }));
+  const first = await f.send(step());
+  const lookup = subject(nextRequest, { runId });
+  assert.equal((await f.send(lookup)).error.code, 'PACING');
+  f.advance(); const metadata = await f.send(lookup); assert.equal(metadata.ok, true);
+  assert.equal(f.calls.subjectReads[0].collectionRunId, runId);
+  assert.deepEqual(clone(await f.send(lookup)), clone(metadata)); assert.equal(f.calls.subjectReads.length, 1);
+  assert.deepEqual(clone(await f.send(step())), clone(first)); assert.equal(f.calls.reads.length, 1);
+  const poll = await f.send(message('POLL', { runId })); assert.equal(poll.data.step, 1); assert.equal(poll.data.done, false);
+  const paced = await f.send(step(1, finalRequest));
   assert.equal(paced.error.code, 'PACING'); assert.equal(paced.error.retryAfter, 2);
-  f.advance(); assert.equal((await f.send(subject(nextRequest, { domain: 'book' }))).data.metadata.kind, 'book');
+  f.advance(); assert.equal((await f.send(step(1, finalRequest))).ok, true);
+  await f.send(message('CANCEL', { runId }));
   const restarted = await f.start(); assert.equal((await f.send(step(0, finalRequest, { runId: restarted.data.runId }))).error.code, 'PACING');
+});
+
+test('interleaving cannot read through another owner, profile or tab, and an explicit parent must identify the current owned run', async () => {
+  const f = fixture(); await f.start(); await f.send(step()); f.advance();
+  for (const [payload, from] of [[subject(nextRequest, { ownerKey: secondOwner }), sender], [subject(nextRequest, { profileId: 'other' }), sender],
+    [subject(nextRequest), { ...sender, tab: { id: 8 } }]]) assert.equal((await f.send(payload, from)).error.code, 'RUN_BUSY');
+  for (const [payload, from] of [[subject(nextRequest, { runId, ownerKey: secondOwner }), sender], [subject(nextRequest, { runId, profileId: 'other' }), sender],
+    [subject(nextRequest, { runId }), { ...sender, tab: { id: 8 } }], [subject(nextRequest, { runId: finalRequest }), sender]]) {
+    assert.equal((await f.send(payload, from)).error.code, 'RUN_NOT_FOUND');
+  }
+  assert.equal(f.calls.subjectReads.length, 0);
+  const own = await f.send(subject(nextRequest, { runId })); assert.equal(own.ok, true);
+  assert.equal((await f.send(subject(nextRequest))).error.code, 'STEP_CONFLICT');
+  assert.equal(f.calls.subjectReads.length, 1);
+});
+
+test('collection and subject network reads are mutually exclusive while immutable page replays remain available', async () => {
+  let resolveCollection, resolveSubject, collectionCount = 0;
+  const f = fixture((run, domain) => collectionCount++ === 0 ? new Promise(resolve => { resolveCollection = resolve; }) : page(domain),
+    () => new Promise(resolve => { resolveSubject = resolve; }));
+  await f.start(); const collectionPending = f.send(step());
+  f.advance(); assert.equal((await f.send(subject(nextRequest, { runId }))).error.code, 'RUN_BUSY'); assert.equal(f.calls.subjectReads.length, 0);
+  resolveCollection(page()); const first = await collectionPending;
+  const subjectPending = f.send(subject(nextRequest, { runId })); assert.equal(f.calls.subjectReads.length, 1);
+  f.advance(); assert.equal((await f.send(step(1, finalRequest))).error.code, 'RUN_BUSY');
+  assert.equal((await f.send(message('START'))).error.code, 'RUN_BUSY');
+  assert.equal((await f.send(message('START', { ownerKey: secondOwner }))).error.code, 'RUN_BUSY');
+  assert.deepEqual(clone(await f.send(step())), clone(first)); assert.equal(f.calls.reads.length, 1);
+  resolveSubject({ kind: 'movie', coverUrl: null, details: {} }); assert.equal((await subjectPending).ok, true);
+  assert.equal((await f.send(step(1, finalRequest))).ok, true); assert.equal(f.calls.reads.length, 2);
+});
+
+test('cancelling a collection also cancels only its associated subject, discards late results and invalidates cached metadata', async () => {
+  let resolveSubject;
+  const f = fixture((run, domain) => { run.tabs[domain] = 123; return page(domain); }, job => {
+    job.tabs[job.domain] = 456; return new Promise(resolve => { resolveSubject = resolve; });
+  });
+  await f.start(); await f.send(step()); f.advance();
+  const lookup = subject(nextRequest, { runId }), pending = f.send(lookup);
+  assert.equal((await f.send(message('CANCEL', { runId, ownerKey: secondOwner }))).error.code, 'RUN_NOT_FOUND');
+  assert.equal((await f.send(message('CANCEL', { runId }), { ...sender, tab: { id: 8 } })).error.code, 'RUN_NOT_FOUND');
+  assert.equal(f.calls.scripts.length, 0);
+  assert.equal((await f.send(message('CANCEL', { runId }))).data.done, true);
+  assert.deepEqual(f.calls.scripts.map(call => clone(call.args)), [[runId], [nextRequest]]);
+  resolveSubject({ kind: 'movie', coverUrl: null, details: { summary: 'OLD_PAGE_MUST_NOT_RETURN' } });
+  const late = await pending; assert.equal(late.error.code, 'RUN_NOT_FOUND'); assert.doesNotMatch(JSON.stringify(late), /OLD_PAGE/);
+  assert.equal((await f.send(lookup)).error.code, 'RUN_NOT_FOUND');
+  assert.equal((await f.send(subject(finalRequest, { runId }))).error.code, 'RUN_NOT_FOUND');
+  assert.equal(f.calls.subjectReads.length, 1);
+});
+
+test('the final saved page can still bind automatic metadata to its completed run and later cancellation clears its cache', async () => {
+  const f = fixture(); await f.start(); await f.send(step());
+  f.advance(); await f.send(step(1, nextRequest)); f.advance(); const final = await f.send(step(2, finalRequest)); assert.equal(final.data.done, true);
+  f.advance(); const lookup = subject('77777777-7777-4777-8777-777777777777', { runId });
+  const completed = await f.send(lookup); assert.equal(completed.ok, true); assert.equal(f.calls.subjectReads[0].collectionRunId, runId);
+  assert.deepEqual(clone(await f.send(lookup)), clone(completed));
+  await f.send(message('CANCEL', { runId }));
+  assert.equal((await f.send(lookup)).error.code, 'RUN_NOT_FOUND'); assert.equal(f.calls.subjectReads.length, 1);
+});
+
+test('a legacy manual request may interleave its own idle running collection and is cancelled with that parent', async () => {
+  const f = fixture(); await f.start(); await f.send(step()); f.advance();
+  const lookup = subject(nextRequest), response = await f.send(lookup);
+  assert.equal(response.ok, true); assert.equal(f.calls.subjectReads[0].collectionRunId, runId);
+  assert.deepEqual(clone(await f.send(lookup)), clone(response)); assert.equal(f.calls.subjectReads.length, 1);
+  await f.send(message('CANCEL', { runId }));
+  assert.equal((await f.send(lookup)).error.code, 'RUN_NOT_FOUND');
+});
+
+test('a cancelled generation cannot publish metadata into a refreshed page or return old cached facts under the new parent', async () => {
+  let resolveSubject;
+  const f = fixture(undefined, () => new Promise(resolve => { resolveSubject = resolve; }));
+  await f.start(); await f.send(step()); f.advance(); const old = f.send(subject(nextRequest, { runId }));
+  await f.send(message('CANCEL', { runId }));
+  const fresh = await f.send(message('START', { ownerKey: secondOwner })); assert.equal(fresh.ok, true);
+  resolveSubject({ kind: 'series', coverUrl: null, details: { summary: 'OLD_GENERATION' } });
+  assert.equal((await old).error.code, 'RUN_NOT_FOUND');
+  assert.equal((await f.send(subject(nextRequest, { runId: fresh.data.runId, ownerKey: secondOwner }))).error.code, 'RUN_NOT_FOUND');
+  assert.equal(f.calls.subjectReads.length, 1); assert.equal((await f.send(message('POLL', { runId: fresh.data.runId, ownerKey: secondOwner }))).data.step, 0);
+});
+
+test('manual metadata remains independent when another caller owns only an already completed collection', async () => {
+  let resolveSubject;
+  const f = fixture(undefined, job => { job.tabs[job.domain] = 456; return new Promise(resolve => { resolveSubject = resolve; }); });
+  await f.start(); await f.send(step()); f.advance(); await f.send(step(1, nextRequest)); f.advance(); await f.send(step(2, finalRequest)); f.advance();
+  const from = { ...sender, tab: { id: 8 } }, lookup = subject('77777777-7777-4777-8777-777777777777', { ownerKey: secondOwner, profileId: 'other_profile' });
+  const pending = f.send(lookup, from); assert.equal(f.calls.subjectReads[0].collectionRunId, null);
+  await f.send(message('CANCEL', { runId })); assert.equal(f.calls.scripts.length, 0);
+  resolveSubject({ kind: 'movie', coverUrl: null, details: {} }); assert.equal((await pending).ok, true);
+  assert.equal((await f.send(lookup, from)).ok, true); assert.equal(f.calls.subjectReads.length, 1);
 });
 
 test('subject challenge failures are fixed-label cached responses and invalid or personal metadata never leaves the worker', async () => {
@@ -148,7 +244,7 @@ test('worker accepts only the production top-level media page before any collect
   }
   assert.equal(f.calls.reads.length + f.calls.created.length + f.calls.scripts.length, 0);
   const response = await f.send(message('CONNECT'), { ...sender, url: productionOrigin + '/life/douban?kind=book' });
-  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.3', protocolVersion: 1 } });
+  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.4', protocolVersion: 1 } });
 });
 
 test('message schemas reject injected URLs, credentials, non-string identities and malformed step fields', async () => {

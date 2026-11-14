@@ -49,7 +49,7 @@ function subjectHTML(domain, subjectId, inert = false) {
   const url = 'https://' + hosts[domain] + '.douban.com/subject/' + subjectId + '/';
   const title = { screen: '合成电影作品', book: '合成图书作品', music: '合成音乐作品' }[domain];
   const type = { screen: 'Movie', book: 'Book', music: 'MusicAlbum' }[domain];
-  const info = domain === 'screen' ? '<span class="pl">导演:</span> 合成导演<br><span class="pl">编剧:</span> 合成编剧<br><span class="pl">主演:</span> 合成演员<br><span class="pl">类型:</span> 剧情<br><span class="pl">制片国家/地区:</span> 中国大陆<br><span class="pl">语言:</span> 汉语普通话<br><span class="pl">上映日期:</span> 2024-02-10(中国大陆)<br><span class="pl">片长:</span> 120分钟<br>'
+  const info = domain === 'screen' ? '<span class="pl">导演</span>: 合成导演<br><span class="pl">编剧</span>：合成编剧<br><span class="pl">主演:</span> 合成演员<br><span class="pl">类型:</span> 剧情<br><span class="pl">制片国家/地区:</span> 中国大陆<br><span class="pl">语言:</span> 汉语普通话<br><span class="pl">上映日期</span>: 2024-02-10(中国大陆)<br><span class="pl">片长</span>：120分钟<br>'
     : domain === 'book' ? '<span class="pl">作者:</span> 合成作者<br><span class="pl">译者:</span> 合成译者<br><span class="pl">出版社:</span> 合成出版社<br><span class="pl">出版年:</span> 2024-03<br><span class="pl">页数:</span> 320<br><span class="pl">ISBN:</span> 9787020002207<br><span class="pl">装帧:</span> 平装<br>'
       : '<span class="pl">表演者:</span> 合成歌手<br><span class="pl">流派:</span> 民谣<br><span class="pl">专辑类型:</span> 专辑<br><span class="pl">介质:</span> CD<br><span class="pl">发行时间:</span> 2024-06-01<br><span class="pl">出版者:</span> 合成唱片<br>';
   return '<!doctype html><html><head><title>' + title + '</title><link rel="icon" href="data:,"><link rel="canonical" href="' + url + '"><meta property="og:url" content="' + url + '">'
@@ -74,6 +74,7 @@ const test = base.extend({
     const fixtureOrigins = new Set(fixtureHosts.map(host => 'https://' + host));
     const subjects = new Map(Object.entries(SUBJECT_IDS).map(([domain, subjectId]) => [domain + ':' + subjectId, subjectHTML(domain, subjectId)]));
     subjects.set('screen:9400001', subjectHTML('screen', '9400001', true));
+    subjects.set('screen:9100000', subjectHTML('screen', '9100000'));
     // Start the transport before Chrome, so even its first extension-created tab
     // is synthetic. Playwright request routes attach too late for that navigation.
     const offline = await startOfflineProxy({
@@ -150,7 +151,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
   expect(subjectRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.3', protocolVersion: 1 } });
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.4', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
@@ -211,7 +212,7 @@ test('a native subject challenge returns a safe fixed error and does not expose 
   expect(JSON.stringify(result)).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<script'));
 });
 
-test('native collection follows the real fifteen-item type-all movie pagination and mine navigation without activating raw HTML', async ({ extension }) => {
+test('native collection interleaves subject classification in its owning run and follows real pagination without activating raw HTML', async ({ extension }) => {
   const { page, context, worker, requests } = extension;
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
@@ -219,7 +220,7 @@ test('native collection follows the real fifteen-item type-all movie pagination 
   expect(started).toMatchObject({ ok: true, data: { step: 0, done: false, progress: { status: 'running', pages: 0 } } });
   expect(collectionRequests(requests)).toEqual([]);
   const runId = started.data.runId, results = [];
-  let replayedFirst;
+  let replayedFirst, interleaved;
   for (let step = 0; step < 4; step++) {
     const payload = message('STEP', { runId, step, requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-' + String(step + 1).padStart(12, '0') });
     const result = await bridge(page, payload);
@@ -234,6 +235,13 @@ test('native collection follows the real fifteen-item type-all movie pagination 
       replayedFirst = await bridge(page, payload);
       expect(replayedFirst).toEqual(result);
       expect(collectionRequests(requests)).toHaveLength(1);
+      await page.waitForTimeout(1600);
+      const enrich = message('SUBJECT', { runId, requestId: 'dddddddd-eeee-4fff-8aaa-111111111111', domain: 'screen', subjectId: result.data.items[0].subjectId });
+      interleaved = await bridge(page, enrich);
+      expect(interleaved).toMatchObject({ ok: true, data: { metadata: { kind: 'movie', details: { directors: ['合成导演'], duration: '120分钟' } } } });
+      expect(await bridge(page, enrich)).toEqual(interleaved);
+      expect(subjectRequests(requests)).toHaveLength(1);
+      expect(await bridge(page, message('POLL', { runId }))).toMatchObject({ ok: true, data: { step: 1, done: false, progress: { status: 'running' } } });
     }
     if (step < 3) await page.waitForTimeout(1600);
   }
@@ -253,7 +261,8 @@ test('native collection follows the real fifteen-item type-all movie pagination 
   expect(collectionRequests(requests).map(request => Number(new URL(request.url).searchParams.get('start')))).toEqual([0, 15, 0, 0]);
   expect(collectionRequests(requests).every(request => new URL(request.url).pathname === '/people/' + PROFILE + '/collect')).toBe(true);
   expect(collectionRequests(requests).map(request => request.nativeLogin)).toEqual([true, true, true, true]);
-  expect(JSON.stringify({ results, replayedFirst, poll })).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));
+  expect(subjectRequests(requests).map(request => request.nativeLogin)).toEqual([true]);
+  expect(JSON.stringify({ results, replayedFirst, poll, interleaved })).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));
   const sourcePage = context.pages().find(tab => tab.url().startsWith('https://movie.douban.com/people/'));
   expect(sourcePage).toBeTruthy();
   expect(await sourcePage.evaluate(() => globalThis.__doubanExtensionRawExecuted)).toBeUndefined();
@@ -264,4 +273,8 @@ test('native collection follows the real fifteen-item type-all movie pagination 
   expect(await worker.evaluate(() => typeof chrome.cookies)).toBe('undefined');
   expect(await page.evaluate(() => JSON.stringify({ local: Object.entries(localStorage), session: Object.entries(sessionStorage) }))).not.toMatch(/扩展合成个人短评|PRIVATE-HTML-MUST-STAY|SYNTHETIC-BROWSER-LOGIN/);
   expect(requests.filter(request => new URL(request.url).origin === ORIGIN && request.method !== 'GET')).toEqual([]);
+  expect(await bridge(page, message('CANCEL', { runId }))).toMatchObject({ ok: true, data: { progress: { status: 'cancelled' } } });
+  const cancelled = await bridge(page, message('SUBJECT', { runId, requestId: 'dddddddd-eeee-4fff-8aaa-111111111111', domain: 'screen', subjectId: '9100000' }));
+  expect(cancelled).toMatchObject({ ok: false, error: { code: 'RUN_NOT_FOUND' } });
+  expect(subjectRequests(requests)).toHaveLength(1);
 });

@@ -366,6 +366,19 @@ async function planDoubanImport(db: DoubanDatabase, userId: string, input: Douba
 export async function previewDoubanImport(db: DoubanDatabase, userId: string, input: DoubanImportInput): Promise<DoubanImportPreview> {
   return (await planDoubanImport(db, userId, input)).preview;
 }
+/** Read current persisted versions for an explicitly requested small import page, never the receipt's old input. */
+export async function readDoubanImportRecords(db: DoubanDatabase, userId: string, input: DoubanImportInput): Promise<DoubanRecord[]> {
+  const normalized = importItems(input);
+  if (normalized.items.length > 30) invalid('每次最多返回30条已保存的豆瓣记录。');
+  await assertImportEpoch(db, userId, normalized.expectedDataEpoch);
+  const result = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=?
+    AND domain||':'||subject_id IN (SELECT value FROM json_each(?)) ORDER BY domain,subject_id`)
+    .bind(userId, normalized.profileId, JSON.stringify(normalized.items.map(keyOf))).all<DoubanStoredRecord>();
+  const records = result.results.map(presentDoubanStoredRecord);
+  await assertImportEpoch(db, userId, normalized.expectedDataEpoch);
+  if (records.length !== normalized.items.length) importConflict();
+  return records;
+}
 async function importReceipt(db: DoubanDatabase, userId: string, requestId: string, dataEpoch: number) {
   return db.prepare(`SELECT request_hash AS requestHash,receipt_json AS receiptJson FROM douban_import_receipts WHERE user_id=? AND request_id=? AND ${importEpochGuard}`)
     .bind(userId, requestId, userId, dataEpoch).first<{ requestHash: string; receiptJson: string }>();

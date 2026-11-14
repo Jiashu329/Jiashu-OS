@@ -9,6 +9,11 @@ const coverHeaders = {
   'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
   'Cross-Origin-Resource-Policy': 'same-origin', 'Referrer-Policy': 'no-referrer',
 };
+const coverFailureStatuses = new Map<string, number>([
+  ['DOUBAN_COVER_NETWORK', 502], ['DOUBAN_COVER_BLOCKED', 502], ['DOUBAN_COVER_REDIRECT', 502],
+  ['DOUBAN_COVER_UPSTREAM_ERROR', 502], ['DOUBAN_COVER_INVALID_IMAGE', 502], ['DOUBAN_COVER_TOO_LARGE', 502],
+  ['DOUBAN_COVER_UPSTREAM_NOT_FOUND', 404], ['DOUBAN_COVER_RATE_LIMITED', 429], ['DOUBAN_COVER_TIMEOUT', 504],
+]);
 
 /** Authenticated image reads resolve a saved owner-scoped key, never a supplied remote URL. */
 export async function GET(request: Request) {
@@ -29,7 +34,12 @@ export async function GET(request: Request) {
     const cover = await fetchDoubanCover(record.coverUrl, { signal: request.signal });
     return new Response(cover.bytes, { status: 200, headers: { ...coverHeaders, 'Content-Type': cover.contentType, 'Content-Length': String(cover.bytes.byteLength) } });
   } catch (error) {
-    if (error instanceof DoubanCoverError) return json({ error: error.message, code: error.code }, error.status, coverHeaders);
+    if (error instanceof DoubanCoverError) {
+      const status = coverFailureStatuses.get(error.code);
+      if (status !== undefined) console.warn(JSON.stringify({ event: 'douban_cover_failed', code: error.code, status }));
+      return json({ error: error.message, code: error.code }, error.status,
+        { ...coverHeaders, ...(error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {}) });
+    }
     return doubanError(error);
   }
 }
