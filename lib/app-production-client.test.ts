@@ -14,6 +14,7 @@ import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
+import { calculateNutritionNeeds, parseNutritionNeedsInput, type NutritionNeedsInput } from './nutrition-needs.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
@@ -98,7 +99,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable' } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
@@ -137,12 +138,21 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   Object.defineProperty(window, 'localStorage', { value: localStorage, configurable: true });
   const requests: Array<{ path: string; method: string }> = [];
   const identityRequests: Array<{ path: string; method: string }> = [];
+  const needsBodies: NutritionNeedsInput[] = [];
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] }, nutrition: { entries: [], statuses: [], goals: EMPTY_NUTRITION_GOALS } });
   const fetch = async (url: string | URL, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
     // Initializing any page must remain read-only, even when session storage
     // contains another signed-in owner's original pending requests.
+    if (method === 'POST' && path === '/api/health/nutrition/needs' && catalog.nutritionNeeds) {
+      requests.push({ path, method });
+      const input = parseNutritionNeedsInput(JSON.parse(String(options?.body)));
+      needsBodies.push(input);
+      return Response.json({ estimate: calculateNutritionNeeds(input), ai: catalog.nutritionNeeds === 'ready'
+        ? { status: 'ready', text: '静息代谢与日常维持需求不同，活动程度会影响估算。', message: null, provider: 'MiniMax', model: 'MiniMax-M3' }
+        : { status: 'unavailable', text: null, message: 'AI 解读暂不可用，公式估算仍可参考。' } });
+    }
     if (method !== 'GET') throw new Error('Unexpected automatic production write: ' + method + ' ' + path);
     // The account chrome now performs an independent identity read. Preserve
     // the business-call assertions below while also enforcing its read-only,
@@ -205,7 +215,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage, location };
+  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, location };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
@@ -422,6 +432,40 @@ test('390px minified nutrition opens direct recording with lazy history and prot
   for(const [key,value] of Object.entries(foreignStorage))assert.equal(f.sessionStorage.getItem(key),value);
   assert.ok(!f.document.body.textContent?.includes('OTHER_OWNER_PRIVATE_DRAFT'));
 });
+
+for (const [width, ai] of [[390, 'ready'], [1280, 'unavailable']] as const) {
+  test('minified daily-needs calculator explicitly previews and fills unsaved goals at ' + width + 'px with AI ' + ai, { skip: !hasBuild }, async () => {
+    const f = await fixture('id="nutrition-page"', '/health/nutrition#nutrition-goals', width, {}, { foods: [], nutritionNeeds: ai });
+    await settle(() => Boolean(f.document.getElementById('nutrition-goals-status')?.textContent?.includes('目标可分别留空')));
+    assert.equal(f.needsBodies.length, 0, 'page initialization must not send body measurements to AI');
+    const get = (id: string) => f.document.getElementById('nutrition-' + id)!;
+    const initialLocal = f.localStorage.snapshot(), initialSession = f.sessionStorage.snapshot();
+    const values = { age: '30', sex: 'male', height: '175', weight: '70', activity: 'moderate', goal: 'maintain' };
+    for (const [key, value] of Object.entries(values)) {
+      (get('needs-' + key) as unknown as HTMLInputElement).value = value;
+      get('needs-' + key).dispatchEvent(new f.window.Event('input', { bubbles: true }));
+    }
+    get('needs-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => get('needs-result').hidden === false);
+    assert.deepEqual(f.needsBodies, [{ age: 30, heightCm: 175, weightKg: 70, sex: 'male', activity: 'moderate', goal: 'maintain' }]);
+    const targets = calculateNutritionNeeds(f.needsBodies[0]).targets;
+    assert.equal(get('needs-calories').textContent, targets.calories + ' kcal');
+    assert.match(get('needs-ai').textContent ?? '', ai === 'ready' ? /AI 解读/ : /AI 解读暂不可用/);
+    assert.equal((get('goal-calories') as HTMLInputElement).value, '', 'a preview cannot change current goals');
+    assert.deepEqual(f.localStorage.snapshot(), initialLocal, 'body measurements must not be written to durable drafts');
+    assert.deepEqual(f.sessionStorage.snapshot(), initialSession, 'body measurements must not be written to session storage');
+    assert.equal((get('needs-apply') as HTMLButtonElement).disabled, false);
+    get('needs-apply').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settle(() => (get('goal-calories') as HTMLInputElement).value === targets.calories);
+    for (const key of ['calories', 'carbs', 'protein', 'fat'] as const) assert.equal((get('goal-' + key) as HTMLInputElement).value, targets[key]);
+    assert.equal(f.requests.filter(item => item.method !== 'GET').length, 1, 'filling a target form cannot save it automatically');
+    assert.equal((get('needs-apply') as HTMLButtonElement).disabled, true);
+    (get('needs-weight') as HTMLInputElement).value = '71';
+    get('needs-weight').dispatchEvent(new f.window.Event('input', { bubbles: true }));
+    assert.equal(get('needs-result').hidden, true, 'changed inputs invalidate the older result');
+    assert.equal((get('goal-calories') as HTMLInputElement).value, targets.calories, 'invalidating a preview must retain the separate goal draft');
+  });
+}
 
 test('minified official McDonald serving selection keeps its published SKU, half/two serving calories and separate source metadata', { skip: !hasBuild }, async()=>{
   const burger=getFood('mcd-cn:49:28');assert.ok(burger);assert.equal(burger.basis,'perServing');
