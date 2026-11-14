@@ -25,7 +25,8 @@ test('a custom health range stays aligned across chart navigation, assistant han
   await page.locator('#health-range-form button[type="submit"]').click();
   await expect.poll(() => new URL(page.url()).searchParams.get('from')).toBe(nextFrom);
   await expect(page.locator('#health-range-selected')).toContainText('4 天');
-  await expect(page.locator('#health-export-chart')).toHaveAttribute('href', '/api/health/export?from=' + nextFrom + '&to=' + to);
+  const expectedExport = new URL('/api/health/export?from=' + nextFrom + '&to=' + to, page.url()).href;
+  await expect.poll(async () => new URL(await page.locator('#health-export-chart').getAttribute('href'), page.url()).href).toBe(expectedExport);
   await page.evaluate(() => window.addEventListener('health-assistant-open', (event) => { window.__syntheticHandoff = event.detail; }));
   await page.locator('#ask-health-chart').click();
   expect(await page.evaluate(() => window.__syntheticHandoff)).toMatchObject({ metric: 'sleep', from: nextFrom, to, days: 4 });

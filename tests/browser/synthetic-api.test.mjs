@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { syntheticState, interceptSyntheticAPI, DAY } from './synthetic-api.mjs';
+import { syntheticState, interceptSyntheticAPI, DAY, ACCOUNT_ID } from './synthetic-api.mjs';
+import { FinanceMetadataConflictError } from '../../db/finance-store.ts';
 
 async function fixture() {
   const state = syntheticState();
@@ -39,4 +40,17 @@ test('browser API fixtures use current nutrition normalization, replay a lost ba
   assert.equal((await request('/api/health/records')).body.today, DAY);
   assert.equal((await request('/api/overview')).status, 200);
   assert.equal((await request('/api/unexpected')).status, 501);
+});
+
+test('browser finance conflict fixture uses the production metadata conflict code and retains the pending edit', async () => {
+  const { state, request } = await fixture();
+  const originalName = state.accounts[0].name;
+  state.rejectNextAccountEdit = true;
+  const conflict = await request('/api/finance/accounts/' + ACCOUNT_ID, 'PATCH', { name: '保留待核对的修改', expectedRevision: 1 });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.code, new FinanceMetadataConflictError().code);
+  assert.equal(state.accounts[0].name, originalName);
+  assert.equal(state.accounts[0].metadataRevision, 2);
+  const latest = await request('/api/finance/accounts/' + ACCOUNT_ID);
+  assert.equal(latest.body.account.metadataRevision, 2);
 });

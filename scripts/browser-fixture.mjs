@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { withPageAccount } from '../lib/page-account.ts';
 import { renderHomeApp } from '../home-ui.ts';
 import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderHealthRecordsPage } from '../health-records-page.ts';
@@ -15,7 +16,7 @@ import { renderFinanceReviewPage } from '../finance-review-page.ts';
 import { renderDataBackupPage } from '../data-backup-page.ts';
 
 export const BROWSER_FIXTURE_OWNER = 'browser-acceptance-synthetic-owner';
-export function renderBrowserFixture(pathname) {
+function renderSyntheticPage(pathname) {
   if (pathname === '/') return renderHomeApp();
   if (pathname === '/health/nutrition') return renderNutritionPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
@@ -28,6 +29,11 @@ export function renderBrowserFixture(pathname) {
   if (pathname === '/data/backup') return renderDataBackupPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/sync/templates') return renderShortcutTemplatesPage('weight');
   return null;
+}
+
+export function renderBrowserFixture(pathname) {
+  const html = renderSyntheticPage(pathname);
+  return html === null ? null : withPageAccount(html, BROWSER_FIXTURE_OWNER);
 }
 
 export function assertBrowserFixtureEnvironment(environment = process.env) {

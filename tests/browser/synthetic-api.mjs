@@ -108,7 +108,7 @@ export async function interceptSyntheticAPI(context, state) {
       const account = state.accounts.find((value) => value.id === finance[1]);
       if (!account) return fail('合成账户不存在。', 'FINANCE_NOT_FOUND', 404);
       if (method === 'PATCH') {
-        if (state.rejectNextAccountEdit) { state.rejectNextAccountEdit = false; account.metadataRevision++; return fail('其他页面已更新账户，请读取最新内容。', 'FINANCE_ACCOUNT_CONFLICT'); }
+        if (state.rejectNextAccountEdit) { state.rejectNextAccountEdit = false; account.metadataRevision++; return fail('其他页面已更新账户，请读取最新内容。', 'FINANCE_METADATA_CONFLICT'); }
         Object.assign(account, body, { metadataRevision: account.metadataRevision + 1 });
         delete account.expectedRevision;
       }

@@ -191,12 +191,14 @@ test('record history shows prior nutrients and restores a selected revision as a
   await page.locator('#nutrition-save').click();
   await expect(page.locator('#nutrition-dialog')).not.toBeVisible();
   const entryId = testInfo.synthetic.entries[0].id;
-  await page.locator('[data-nutrition-action="edit"]').first().click();
+  const card = page.locator('[data-nutrition-entry="' + entryId + '"]');
+  await card.locator('.nt-row-menu > summary').click();
+  await card.locator('[data-nutrition-action="edit"]').click();
   if (!(await page.locator('#nutrition-form-nutrients').evaluate((element) => element.open))) await page.locator('#nutrition-form-nutrients > summary').click();
   await page.locator('#nutrition-protein').fill('20');
   await page.locator('#nutrition-save').click();
   await expect(page.locator('#nutrition-dialog')).not.toBeVisible();
-  await page.locator('.nt-row-menu > summary').first().click();
+  await card.locator('.nt-row-menu > summary').click();
   await page.locator('[data-nutrition-history="' + entryId + '"]').click();
   await expect(page.locator('#nutrition-record-history-dialog')).toBeVisible();
   await expect(page.locator('#nutrition-record-history-rows')).toContainText('版本 2');
