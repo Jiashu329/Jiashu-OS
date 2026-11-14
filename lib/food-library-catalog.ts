@@ -1,5 +1,7 @@
 import luckinRelease from '../data/food-catalog-releases/luckin-cn-2026-11-13-v1.json' with { type: 'json' };
 import { browseFoods, getFood, type FoodItem, type FoodSource } from './food-catalog.ts';
+import type { ManagedLibraryFood } from './managed-food-catalog.ts';
+import type { PersonalLibraryFood } from './personal-food-library.ts';
 
 /** Products without official energy are browsable, but never trusted nutrition selections. */
 export interface CatalogOnlyProduct {
@@ -15,7 +17,7 @@ export interface CatalogOnlyProduct {
   reference: { label: string | null; protein?: number; fat?: number; carbs?: number; caffeineMg?: number };
   catalogRelease?: string;
 }
-export type LibraryFood = FoodItem | CatalogOnlyProduct;
+export type LibraryFood = FoodItem | CatalogOnlyProduct | ManagedLibraryFood | PersonalLibraryFood;
 export type FoodLibraryBrandId = 'mcd-cn' | 'luckin-cn';
 export function foodLibraryBrand(food: { id: string }): FoodLibraryBrandId {
   return food.id.startsWith('luckin-cn:') ? 'luckin-cn' : 'mcd-cn';
@@ -49,7 +51,7 @@ export function foodLibraryCategories(brand = '') {
 }
 const normalize = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase('en').replace(/\s+/g, '');
 const searchable = foods.map((food, order) => ({ food, order, name: normalize(food.name),
-  aliases: [...food.aliases, ...(food.searchAliases ?? [])].map(normalize),
+  aliases: [...food.aliases, ...('searchAliases' in food ? food.searchAliases ?? [] : [])].map(normalize),
   category: normalize(food.category), description: normalize(food.description ?? '') }));
 
 export function getLibraryFood(id: string): LibraryFood | null {

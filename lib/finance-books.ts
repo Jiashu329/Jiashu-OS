@@ -3,20 +3,25 @@ import { normalizeAccessEmail, validAccessUserId } from './access-control.ts';
 export interface FinanceBookActor { userId: string; email: string; displayName?: string; isOwner?: boolean }
 export interface FinanceBookScope {
   actorUserId: string; actorEmail: string; actorName: string; ownerUserId: string;
-  ledger: 'personal' | 'family'; bookId: string | null; role: 'owner' | 'editor';
+  ledger: 'personal' | 'family'; bookId: string | null; role: 'owner' | 'editor' | 'viewer';
+  canWrite?: boolean;
   membershipId: string | null; accessRevision: number; isSiteOwner: boolean;
 }
 export type FinanceBookMemberStatus = 'pending' | 'active' | 'revoked' | 'declined';
 export interface FinanceBookMember {
   id: string; bookId: string; email: string; status: FinanceBookMemberStatus; revision: number;
   expiresAt: string; acceptedAt: string | null; createdAt: string; updatedAt: string; bound: boolean;
+  role: 'editor' | 'viewer';
 }
 export interface FinanceBookChoice {
-  id: string; name: string; ownerName: string; role: 'owner' | 'editor'; accessRevision: number;
+  id: string; name: string; ownerName: string; role: 'owner' | 'editor' | 'viewer'; accessRevision: number;
+  canWrite?: boolean;
   canManageMembers: boolean; canExport: boolean;
 }
 export interface FinanceBookInvitation {
   id: string; bookId: string; bookName: string; ownerName: string; email: string; revision: number; expiresAt: string;
+  role?: 'editor' | 'viewer';
+  createdAt?: string;
 }
 export interface FinanceBookPublic {
   id: string; name: string; ownerName: string; createdAt: string | null; updatedAt: string | null;
@@ -52,12 +57,16 @@ function exact(value: unknown, keys: string[]): Record<string, unknown> {
   if (Object.keys(raw).length !== keys.length || keys.some((key) => !Object.hasOwn(raw, key))) throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '家庭成员操作含缺少或不支持的字段。');
   return raw;
 }
-export function parseFinanceBookInvite(value: unknown): { email: string } {
-  const raw = exact(value, ['email']);
-  try { return { email: normalizeAccessEmail(raw.email) }; } catch { throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请输入有效的受邀账户邮箱。'); }
+export function parseFinanceBookInvite(value: unknown): { email: string; role?: 'editor' | 'viewer' } {
+  const withRole = value !== null && typeof value === 'object' && Object.hasOwn(value, 'role');
+  const raw = exact(value, withRole ? ['email', 'role'] : ['email']);
+  if (withRole && raw.role !== 'editor' && raw.role !== 'viewer') throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请选择可编辑或只读权限。');
+  try { return { email: normalizeAccessEmail(raw.email), ...(withRole ? { role: raw.role as 'editor' | 'viewer' } : {}) }; } catch { throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请输入有效的受邀账户邮箱。'); }
 }
-export function parseFinanceBookMemberAction(value: unknown, actions: readonly string[]): { action: string; expectedRevision: number } {
-  const raw = exact(value, ['action', 'expectedRevision']);
+export function parseFinanceBookMemberAction(value: unknown, actions: readonly string[]): { action: string; expectedRevision: number; role?: 'editor' | 'viewer' } {
+  const roleChange = value !== null && typeof value === 'object' && (value as { action?: unknown }).action === 'role';
+  const raw = exact(value, roleChange ? ['action', 'role', 'expectedRevision'] : ['action', 'expectedRevision']);
   if (typeof raw.action !== 'string' || !actions.includes(raw.action) || !Number.isSafeInteger(raw.expectedRevision) || Number(raw.expectedRevision) < 1 || Number(raw.expectedRevision) >= Number.MAX_SAFE_INTEGER) throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请读取成员最新状态后再选择操作。');
-  return { action: raw.action, expectedRevision: Number(raw.expectedRevision) };
+  if (roleChange && raw.role !== 'editor' && raw.role !== 'viewer') throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请选择可编辑或只读权限。');
+  return { action: raw.action, expectedRevision: Number(raw.expectedRevision), ...(roleChange ? { role: raw.role as 'editor' | 'viewer' } : {}) };
 }

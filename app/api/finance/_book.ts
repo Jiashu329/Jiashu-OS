@@ -62,6 +62,7 @@ export async function financeRequestScope(request: Request, actor: FinanceBookAc
     if (ledger === 'personal' && book !== 'own') invalid('协作权限不能用于个人账本。');
     scope = await resolveFinanceBookScope(raw, actor, ledger, book, accessRevision);
   }
+  if (scope.role === 'viewer' && options.write) throw new FinanceBookError('FINANCE_BOOK_READ_ONLY', 403, '你在这本家庭账本中拥有只读权限，不能修改记录。');
   if (scope.role === 'editor' && options.write && accessRevision === undefined) {
     throw new FinanceBookError('FINANCE_BOOK_ACCESS_CHANGED', 409, '请从家庭账本选择器重新打开协作账本；原提交保持原目标。');
   }
@@ -75,7 +76,7 @@ export async function financeRequestScope(request: Request, actor: FinanceBookAc
 
 export function publicFinanceBook(scope: FinanceBookScope) {
   return { id: scope.ledger === 'personal' ? 'personal' : scope.role === 'owner' ? 'own' : scope.bookId,
-    role: scope.role, accessRevision: scope.accessRevision, canManageMembers: scope.ledger === 'family' && scope.role === 'owner', canExport: scope.role === 'owner' };
+    role: scope.role, canWrite: scope.role !== 'viewer', accessRevision: scope.accessRevision, canManageMembers: scope.ledger === 'family' && scope.role === 'owner', canExport: scope.role === 'owner' };
 }
 export function assertFinanceBookExport(scope: FinanceBookScope): void {
   if (scope.role !== 'owner') throw new FinanceBookError('FINANCE_BOOK_OWNER_REQUIRED', 403, '仅账本拥有人可以导出这本家庭账本。');

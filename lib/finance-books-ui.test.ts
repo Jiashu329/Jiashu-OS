@@ -12,9 +12,9 @@ const MEMBER = '44444444-4444-4444-8444-444444444444';
 const own = { id: 'own', name: '我的家庭账本', ownerName: '本人', role: 'owner', accessRevision: 0, canManageMembers: true, canExport: true };
 const shared = { id: BOOK, name: '共同生活账本', ownerName: '家人', role: 'editor', accessRevision: 3, canManageMembers: false, canExport: false };
 const invitation = { id: INVITATION, bookId: OTHER, bookName: '另一家庭账本', ownerName: '邀请人', email: 'member@example.invalid', revision: 2, expiresAt: '2026-12-13T00:00:00.000Z' };
-type Book = typeof own;
+type Book = typeof own & { canWrite?: boolean };
 type Metadata = { books: Book[]; invitations: typeof invitation[] };
-type Client = { ready(): Promise<unknown>; scopeKey(): string; scopedUrl(path: string): string; current: Book | null; blocked: boolean; needsReload: boolean };
+type Client = { ready(): Promise<unknown>; scopeKey(): string; scopedUrl(path: string): string; current: Book | null; blocked: boolean; needsReload: boolean; canWrite(): boolean };
 type RequestRow = { url: string; method: string; body: unknown; headers: Headers };
 type Handler = (url: string, options: RequestInit) => Promise<Response>;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -22,8 +22,8 @@ async function settled(check: () => boolean) {
   for (let count = 0; count < 70; count++) { if (check()) return; await new Promise<void>((done) => setImmediate(done)); }
   assert.ok(check(), 'Finance books UI did not settle');
 }
-function fixture(path = '/finance?ledger=family&currency=CNY', initial: Metadata = { books: [own, shared], invitations: [] }) {
-  const { document, window } = parseHTML('<!doctype html><html><body>' + renderFinanceBooksControl() + '</body></html>');
+function fixture(path = '/finance?ledger=family&currency=CNY', initial: Metadata = { books: [own, shared], invitations: [] }, content = '') {
+  const { document, window } = parseHTML('<!doctype html><html><body>' + renderFinanceBooksControl() + content + '</body></html>');
   const current = new URL(path, 'https://finance.example');
   const assignments: string[] = []; const replacements: string[] = [];
   const location = {
@@ -152,4 +152,47 @@ void test('revoked and changed access preserve the real error response, lock the
     const personal = await f.fetch('/api/finance?ledger=personal'); assert.equal(personal.status, 200); assert.deepEqual(await personal.json(), { personal: 'still available' });
     assert.equal(f.requests.at(-1)?.url, '/api/finance?ledger=personal'); assert.equal(f.client.blocked, true); assert.deepEqual(changes, [code]);
   }
+});
+
+
+void test('viewer metadata creates a read-only scope that preserves navigation and reads while stopping every finance mutation transport', async () => {
+  const viewer = { ...shared, role: 'viewer', canWrite: false };
+  const content = '<main><button id="add-account">添加</button><button data-create>添加空账户</button><button data-action="detail">详情</button><button data-action="edit">编辑</button><button data-balance-change="correct">更正</button><button id="finance-goals-add">新增目标</button><button data-goal-action="archive">归档目标</button><button id="runway-save">保存储备</button><button id="review-close-confirm">确认月结</button><button id="balance-check-save">保存余额</button><button id="retry">重试读取</button><select id="view-currency"><option>CNY</option></select><form id="runway-form"><input id="runway-expense" value="1000"></form></main>';
+  const f = fixture('/finance?ledger=family&book=' + BOOK + '&bookRevision=3', { books: [own, viewer], invitations: [] }, content);
+  await f.client.ready();
+  assert.equal(f.client.canWrite(), false); assert.equal(f.client.blocked, false);
+  assert.equal(f.document.documentElement.hasAttribute('data-finance-readonly'), true);
+  assert.equal(f.el('readonly').hidden, false); assert.match(f.el('status').textContent ?? '', /只读权限/);
+  for (const selector of ['#add-account','[data-create]','[data-action="edit"]','[data-balance-change]','#finance-goals-add','[data-goal-action]','#runway-save','#review-close-confirm','#balance-check-save']) assert.equal(f.document.querySelector(selector)?.hasAttribute('data-finance-write'), true, selector);
+  for (const selector of ['[data-action="detail"]','#retry','#view-currency']) assert.equal(f.document.querySelector(selector)?.hasAttribute('data-finance-write'), false, selector);
+  assert.equal((f.document.getElementById('runway-expense') as HTMLInputElement).disabled, true);
+  const late=f.document.createElement('input');late.setAttribute('data-check-amount','newly-rendered');f.document.querySelector('main')!.appendChild(late);
+  await settled(()=>late.disabled===true);late.disabled=false;await settled(()=>late.disabled===true);
+  const lateAction=f.document.createElement('button');lateAction.setAttribute('data-goal-action','edit');f.document.querySelector('main')!.appendChild(lateAction);
+  await settled(()=>lateAction.hasAttribute('data-finance-write'));
+  assert.equal(f.el('select').disabled, false); assert.equal(f.el('refresh').disabled, false);
+  await f.fetch('/api/finance?ledger=family');
+  await assert.rejects(f.fetch('/api/finance/accounts', { method: 'POST' }), (error: unknown) => (error as { code: string }).code === 'FINANCE_BOOK_READ_ONLY');
+  await assert.rejects(f.accountSession.request('/api/finance/runway?ledger=family', { method: 'PUT' }), (error: unknown) => (error as { code: string }).code === 'FINANCE_BOOK_READ_ONLY');
+  assert.equal(f.writes().length, 0); assert.equal(f.stored.get('old-pending'), f.originalPending);
+  assert.equal((await f.fetch('/api/finance?ledger=personal', { method:'POST' })).status, 200, 'personal operations retain their independent account scope');
+});
+
+void test('owners explicitly choose read-only invitations and save a revised member role without automatic writes', async () => {
+  const f = fixture(); await f.client.ready(); f.event('manage');
+  await settled(() => !f.el('invite-submit').disabled);
+  f.el('invite-role').value='viewer';f.el('email').value='reader@example.invalid';
+  f.respond(async (url, options) => options.method==='POST'?Response.json({invitation}):url.endsWith('/members')?Response.json({book:own,members:[]}):Response.json({books:[own,shared],invitations:[]}));
+  f.event('invite-form','submit');await settled(()=>f.writes().length===1&&!f.el('invite-submit').disabled);
+  assert.deepEqual(f.writes()[0].body,{email:'reader@example.invalid',role:'viewer'});
+  const member={id:MEMBER,email:'reader@example.invalid',status:'active',revision:6,role:'viewer',expiresAt:null};
+  f.event('dialog-close');f.respond(async()=>Response.json({book:own,members:[member]}));f.event('manage');
+  await settled(()=>!f.el('invite-submit').disabled&&Boolean(f.document.querySelector('[data-finance-member-role]')));
+  assert.match(f.el('members').textContent??'',/只读/);
+  const select=f.document.querySelector('[data-finance-member-role-select]')!;
+  Object.defineProperty(select,'value',{configurable:true,writable:true,value:'editor'});
+  f.respond(async(_url,options)=>options.method==='POST'?Response.json({member:{...member,role:'editor',revision:7}}):Response.json({book:own,members:[{...member,role:'editor',revision:7}]}));
+  assert.equal(f.writes().length,1);f.click(f.document.querySelector('[data-finance-member-role]')!);
+  await settled(()=>f.writes().length===2&&!f.el('invite-submit').disabled);
+  assert.deepEqual(f.writes()[1].body,{action:'role',role:'editor',expectedRevision:6});assert.match(f.writes()[1].headers.get('Idempotency-Key')??'',uuid);
 });

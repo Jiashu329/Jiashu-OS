@@ -1,3 +1,4 @@
+import { listManagedFoodLibrary } from '../../../../../db/managed-food-store';
 import { env } from 'cloudflare:workers';
 import { consumeAIQuota } from '../../../../../db/ai-usage-store';
 import { AISettingsConflictError } from '../../../../../db/ai-settings-store';
@@ -31,12 +32,13 @@ export async function POST(request: Request) {
     const config = await resolveSiteAIConfiguration(env.DB, env, saved.revision);
     if (!config.ready) return json({ error: '网站 AI 服务尚未就绪，请联系网站创建者检查配置。', code: 'AI_NOT_CONFIGURED' }, 503);
     assertNutritionPhotoModel(config);
+    const publicCatalog = await listManagedFoodLibrary(env.DB);
     const quota = await consumeAIQuota(env.DB, user.userId, Date.now());
     if (!quota.allowed) return json({ error: '已达到 AI 请求上限，请稍后再试。每分钟最多 3 次，每天最多 20 次。', code: 'AI_RATE_LIMITED' }, 429, { 'Retry-After': String(quota.retryAfter) });
     // Same ownership/revision boundary as text parsing; no stale captured key after a clear/update.
     const active = await resolveSiteAIConfiguration(env.DB, env, saved.revision);
     assertNutritionPhotoModel(active);
     const result = await callNutritionPhotoParser(active, input);
-    return json({ ...buildNutritionPhotoDrafts(result.answer, input), provider: result.provider, model: result.model });
+    return json({ ...buildNutritionPhotoDrafts(result.answer, input, { excludedFoodIds: publicCatalog.overrides }), provider: result.provider, model: result.model });
   } catch (error) { return failure(error); }
 }

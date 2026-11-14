@@ -81,7 +81,7 @@ function resultObject(value: unknown, fields: readonly string[]): Record<string,
 }
 
 /** Visual evidence is deliberately separate from the literal sourceText contract of text parsing. */
-export function buildNutritionPhotoDrafts(answer: string, request: NutritionPhotoRequest): { drafts: NutritionDraft[]; warnings: string[] } {
+export function buildNutritionPhotoDrafts(answer: string, request: NutritionPhotoRequest, options: { excludedFoodIds?: readonly string[] } = {}): { drafts: NutritionDraft[]; warnings: string[] } {
   if (typeof answer !== 'string' || answer.length > 10000) throw new NutritionPhotoError();
   let parsed: unknown; try { parsed = JSON.parse(answer); } catch { throw new NutritionPhotoError(); }
   const raw = resultObject(parsed, ['items']);
@@ -115,7 +115,7 @@ export function buildNutritionPhotoDrafts(answer: string, request: NutritionPhot
     if (request.meal === null) warnings.push('请选择这项食物的餐次。');
     const missing = keys.filter((key) => values[key] === null).map((key) => labels[key]);
     if (missing.length) warnings.push(missing.join('、') + '暂时未知，请按实际份量补充；未知不会按0计算。');
-    const candidates = searchFoods(name, 6);
+    const candidates = searchFoods(name, 50).filter((food) => !options.excludedFoodIds?.includes(food.id)).slice(0, 6);
     if (candidates.some((food) => food.id.startsWith('luckin-cn:'))) warnings.push('瑞幸官网热量仅适用于列明的杯型、冰热和糖度，图片不能确认这些配置，请核对候选规格后主动选择。');
     drafts.push({ date: request.date, meal: request.meal, name, amount: null, unit: null, portion,
       calories: values.calories, calorieSource: values.calories === null ? null : 'ai', carbs: values.carbs, protein: values.protein, fat: values.fat,

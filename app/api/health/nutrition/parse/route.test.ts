@@ -38,6 +38,7 @@ function fixture() {
       if (expectedRevision !== revision) throw new AISettingsConflictError();
       return provider.readAIConfiguration({ MINIMAX_API_KEY: configured ? 'PRIVATE-SHARED-KEY' : '' });
     },
+    listManagedFoodLibrary: async () => ({ foods: [], overrides: [] }),
     consumeAIQuota: async (_db: unknown, id: string) => { quotaUsers.push(id); beforeQuota?.(); return { allowed, retryAfter: 37 }; },
     callNutritionParser: async (_config: provider.AIConfiguration, input: parser.NutritionParserRequest) => {
       outgoing.push({ user, input });

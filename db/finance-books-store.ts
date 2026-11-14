@@ -10,7 +10,7 @@ export interface FamilyBookRecord { id: string; ownerUserId: string; ownerEmail:
 interface MemberRow extends Omit<FinanceBookMember, 'bound'> { userId: string | null }
 interface OperationRow { actorUserId: string; bookId: string; memberId: string; requestHash: string }
 const bookColumns = 'id,owner_user_id AS ownerUserId,owner_email AS ownerEmail,owner_name AS ownerName,name,created_at AS createdAt,updated_at AS updatedAt';
-const memberColumns = 'id,book_id AS bookId,email,user_id AS userId,status,revision,expires_at AS expiresAt,accepted_at AS acceptedAt,created_at AS createdAt,updated_at AS updatedAt';
+const memberColumns = 'id,book_id AS bookId,email,user_id AS userId,status,role,revision,expires_at AS expiresAt,accepted_at AS acceptedAt,created_at AS createdAt,updated_at AS updatedAt';
 const conflict = (message = '家庭成员状态已变化，请重新读取后核对原操作。') => new FinanceBookError('FINANCE_BOOK_MEMBER_CHANGED', 409, message);
 const ownerRequired = () => new FinanceBookError('FINANCE_BOOK_OWNER_REQUIRED', 403, '只有这本家庭账本的创建者可以管理成员。');
 function instant(value: string): string { const normalized = normalizeTimestamp(value); if (!normalized) throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '操作时间无效，请重试。'); return normalized; }
@@ -41,25 +41,25 @@ export async function resolveFinanceBookScope(db: FinanceBooksDatabase, value: F
   const book = ledger === 'personal' ? null : selected === 'own' ? await ownBook(db, actor.userId) : await readBook(db, selected);
   if (selected === 'own' || book?.ownerUserId === actor.userId) {
     if (accessRevision !== undefined && accessRevision !== 0) throw financeBookAccessChanged();
-    return { ...base, ownerUserId: actor.userId, bookId: book?.id ?? null, role: 'owner', membershipId: null, accessRevision: 0 };
+    return { ...base, ownerUserId: actor.userId, bookId: book?.id ?? null, role: 'owner', canWrite: true, membershipId: null, accessRevision: 0 };
   }
   if (!book) throw financeBookAccessRevoked();
   const grant = await db.prepare(`SELECT ${memberColumns} FROM family_book_members WHERE book_id=? AND user_id=? AND status='active'`).bind(book.id, actor.userId).first<MemberRow>();
   if (!grant) throw financeBookAccessRevoked();
   if (accessRevision !== undefined && accessRevision !== grant.revision) throw financeBookAccessChanged();
-  return { ...base, ownerUserId: book.ownerUserId, bookId: book.id, role: 'editor', membershipId: grant.id, accessRevision: grant.revision };
+  return { ...base, ownerUserId: book.ownerUserId, bookId: book.id, role: grant.role, canWrite: grant.role === 'editor', membershipId: grant.id, accessRevision: grant.revision };
 }
 
 export async function listFinanceBooks(db: FinanceBooksDatabase, value: FinanceBookActor, now = new Date().toISOString()): Promise<{ books: FinanceBookChoice[]; invitations: FinanceBookInvitation[] }> {
   const actor = normalizeFinanceBookActor(value), timestamp = instant(now), own = await ownBook(db, actor.userId);
-  const shared = await db.prepare(`SELECT b.id,b.name,b.owner_name AS ownerName,m.revision AS accessRevision FROM family_books b
-    JOIN family_book_members m ON m.book_id=b.id WHERE m.user_id=? AND m.status='active' AND b.owner_user_id<>? ORDER BY b.created_at,b.id`).bind(actor.userId, actor.userId).all<{ id: string; name: string; ownerName: string; accessRevision: number }>();
-  const pending = await db.prepare(`SELECT m.id,m.book_id AS bookId,b.name AS bookName,b.owner_name AS ownerName,m.email,m.revision,m.expires_at AS expiresAt
+  const shared = await db.prepare(`SELECT b.id,b.name,b.owner_name AS ownerName,m.revision AS accessRevision,m.role FROM family_books b
+    JOIN family_book_members m ON m.book_id=b.id WHERE m.user_id=? AND m.status='active' AND b.owner_user_id<>? ORDER BY b.created_at,b.id`).bind(actor.userId, actor.userId).all<{ id: string; name: string; ownerName: string; accessRevision: number; role: 'editor' | 'viewer' }>();
+  const pending = await db.prepare(`SELECT m.id,m.book_id AS bookId,b.name AS bookName,b.owner_name AS ownerName,m.email,m.role,m.revision,m.created_at AS createdAt,m.expires_at AS expiresAt
     FROM family_book_members m JOIN family_books b ON b.id=m.book_id
     WHERE m.email=? AND m.status='pending' AND m.expires_at>? AND (m.user_id IS NULL OR m.user_id=?) AND b.owner_user_id<>?
     ORDER BY m.created_at,m.id`).bind(actor.email, timestamp, actor.userId, actor.userId).all<FinanceBookInvitation>();
-  return { books: [{ id: 'own', name: own?.name ?? '我的家庭账本', ownerName: actor.displayName, role: 'owner', accessRevision: 0, canManageMembers: true, canExport: true },
-    ...shared.results.map((row): FinanceBookChoice => ({ ...row, role: 'editor', canManageMembers: false, canExport: false }))], invitations: pending.results };
+  return { books: [{ id: 'own', name: own?.name ?? '我的家庭账本', ownerName: actor.displayName, role: 'owner', accessRevision: 0, canWrite: true, canManageMembers: true, canExport: true },
+    ...shared.results.map((row): FinanceBookChoice => ({ ...row, canWrite: row.role === 'editor', canManageMembers: false, canExport: false }))], invitations: pending.results };
 }
 
 async function requireBookOwner(db: FinanceBooksDatabase, actor: ReturnType<typeof normalizeFinanceBookActor>, bookId: string | null | undefined, create = false, now?: string) {
@@ -85,43 +85,52 @@ async function replay(db: FinanceBooksDatabase, operationId: string, actorId: st
 function receiptInsert(db: FinanceBooksDatabase, operationId: string, actorId: string, bookId: string, memberId: string, requestHash: string, now: string) {
   return db.prepare('INSERT INTO family_book_member_operations(operation_id,actor_user_id,book_id,member_id,request_hash,created_at) VALUES (?,?,?,?,?,?)').bind(operationId, actorId, bookId, memberId, requestHash, now);
 }
+function activityInsert(db: FinanceBooksDatabase, id: string, bookId: string, actor: ReturnType<typeof normalizeFinanceBookActor>, action: string, now: string) {
+  return db.prepare('INSERT INTO family_book_activity(id,book_id,actor_user_id,actor_name,action,target_id,target_name,created_at) VALUES (?,?,?,?,?,NULL,?,?)')
+    .bind(id, bookId, actor.userId, actor.displayName, action, '家庭成员', now);
+}
 function ownerGuard(db: FinanceBooksDatabase, book: FamilyBookRecord, actorId: string, current?: MemberRow) {
   return db.prepare(`SELECT CASE WHEN EXISTS(SELECT 1 FROM family_books WHERE id=? AND owner_user_id=?)
     ${current ? "AND EXISTS(SELECT 1 FROM family_book_members WHERE id=? AND book_id=? AND revision=?)" : ''}
     THEN 1 ELSE abs(-9223372036854775808) END AS family_member_guard`).bind(book.id, actorId, ...(current ? [current.id, book.id, current.revision] : []));
 }
 
-export async function inviteFinanceBookMember(db: FinanceBooksDatabase, value: FinanceBookActor, bookId: string, input: { email: string }, requestId: string, now = new Date().toISOString()) {
-  const actor = normalizeFinanceBookActor(value), { email } = parseFinanceBookInvite(input), operationId = parseFinanceBookId(requestId, false), timestamp = instant(now);
+export async function inviteFinanceBookMember(db: FinanceBooksDatabase, value: FinanceBookActor, bookId: string, input: { email: string; role?: 'editor' | 'viewer' }, requestId: string, now = new Date().toISOString()) {
+  const actor = normalizeFinanceBookActor(value), invitation = parseFinanceBookInvite(input), { email } = invitation, role = invitation.role ?? 'editor', operationId = parseFinanceBookId(requestId, false), timestamp = instant(now);
   if (email === actor.email) throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '账本创建者已拥有访问权限，无需邀请自己。');
   const book = (await requireBookOwner(db, actor, bookId, true, timestamp))!;
-  const requestHash = await hash(['invite', book.id, email]);
+  const requestHash = await hash(role === 'editor' ? ['invite', book.id, email] : ['invite', book.id, email, role]);
   const prior = await replay(db, operationId, actor.userId, requestHash, book.id); if (prior) return prior;
   const current = await db.prepare(`SELECT ${memberColumns} FROM family_book_members WHERE book_id=? AND email=?`).bind(book.id, email).first<MemberRow>();
   if (current?.status === 'active') throw conflict('这个账户已是家庭账本成员，无需再次邀请。');
   const expiresAt = new Date(Date.parse(timestamp) + 30 * 86400000).toISOString(), id = current?.id ?? operationId;
   const commands = [ownerGuard(db, book, actor.userId, current ?? undefined)];
   commands.push(current
-    ? db.prepare(`UPDATE family_book_members SET status='pending',revision=revision+1,expires_at=?,accepted_at=NULL,updated_at=? WHERE id=? AND revision=?`).bind(expiresAt, timestamp, id, current.revision)
-    : db.prepare(`INSERT INTO family_book_members(id,book_id,email,user_id,status,revision,expires_at,accepted_at,created_at,updated_at)
-      VALUES (?,?,?,NULL,'pending',1,?,NULL,?,?)`).bind(id, book.id, email, expiresAt, timestamp, timestamp));
+    ? db.prepare(`UPDATE family_book_members SET status='pending',role=?,revision=revision+1,expires_at=?,accepted_at=NULL,updated_at=? WHERE id=? AND revision=?`).bind(role, expiresAt, timestamp, id, current.revision)
+    : db.prepare(`INSERT INTO family_book_members(id,book_id,email,user_id,status,role,revision,expires_at,accepted_at,created_at,updated_at)
+      VALUES (?,?,?,NULL,'pending',?,1,?,NULL,?,?)`).bind(id, book.id, email, role, expiresAt, timestamp, timestamp));
   commands.push(receiptInsert(db, operationId, actor.userId, book.id, id, requestHash, timestamp));
+  commands.push(activityInsert(db, operationId, book.id, actor, 'member.invite.' + role, timestamp));
   try { await db.batch(commands); }
   catch (error) { const done = await replay(db, operationId, actor.userId, requestHash, book.id); if (done) return done; if (expectedRace(error)) throw conflict(); throw error; }
   const saved = await member(db, id); if (!saved) throw new Error('Family invitation was not saved');
   return { member: present(saved), replayed: false };
 }
 
-export async function changeFinanceBookMember(db: FinanceBooksDatabase, value: FinanceBookActor, bookId: string, memberId: string, input: { action: 'revoke'; expectedRevision: number }, requestId: string, now = new Date().toISOString()) {
-  const actor = normalizeFinanceBookActor(value), operationId = parseFinanceBookId(requestId, false), id = parseFinanceBookId(memberId, false), change = parseFinanceBookMemberAction(input, ['revoke']), timestamp = instant(now);
+export async function changeFinanceBookMember(db: FinanceBooksDatabase, value: FinanceBookActor, bookId: string, memberId: string, input: { action: 'revoke' | 'role'; expectedRevision: number; role?: 'editor' | 'viewer' }, requestId: string, now = new Date().toISOString()) {
+  const actor = normalizeFinanceBookActor(value), operationId = parseFinanceBookId(requestId, false), id = parseFinanceBookId(memberId, false), change = parseFinanceBookMemberAction(input, ['revoke', 'role']), timestamp = instant(now);
   const book = await requireBookOwner(db, actor, bookId); if (!book) throw ownerRequired();
-  const requestHash = await hash(['revoke', book.id, id, change.expectedRevision]);
+  const requestHash = await hash(change.action === 'revoke' ? ['revoke', book.id, id, change.expectedRevision] : ['role', book.id, id, change.expectedRevision, change.role]);
   const prior = await replay(db, operationId, actor.userId, requestHash, book.id); if (prior) return prior;
   const current = await member(db, id); if (!current || current.bookId !== book.id) throw ownerRequired();
   if (current.revision !== change.expectedRevision) throw conflict();
+  if (change.action === 'role' && !['pending', 'active'].includes(current.status)) throw conflict('请先重新邀请此账户，再调整协作权限。');
   try { await db.batch([ownerGuard(db, book, actor.userId, current),
-    db.prepare("UPDATE family_book_members SET status='revoked',revision=revision+1,updated_at=? WHERE id=? AND book_id=? AND revision=?").bind(timestamp, id, book.id, change.expectedRevision),
-    receiptInsert(db, operationId, actor.userId, book.id, id, requestHash, timestamp)]); }
+    change.action === 'revoke'
+      ? db.prepare("UPDATE family_book_members SET status='revoked',revision=revision+1,updated_at=? WHERE id=? AND book_id=? AND revision=?").bind(timestamp, id, book.id, change.expectedRevision)
+      : db.prepare("UPDATE family_book_members SET role=?,revision=revision+1,updated_at=? WHERE id=? AND book_id=? AND revision=?").bind(change.role, timestamp, id, book.id, change.expectedRevision),
+    receiptInsert(db, operationId, actor.userId, book.id, id, requestHash, timestamp),
+    activityInsert(db, operationId, book.id, actor, change.action === 'revoke' ? 'member.revoke' : 'member.role.' + change.role, timestamp)]); }
   catch (error) { const done = await replay(db, operationId, actor.userId, requestHash, book.id); if (done) return done; if (expectedRace(error)) throw conflict(); throw error; }
   const saved = await member(db, id); if (!saved) throw new Error('Family membership was not saved'); return { member: present(saved), replayed: false };
 }
@@ -142,6 +151,7 @@ export async function respondFinanceBookInvitation(db: FinanceBooksDatabase, val
       accepted_at=CASE WHEN ?='accept' THEN ? ELSE NULL END,revision=revision+1,updated_at=? WHERE id=? AND book_id=? AND revision=?`)
       .bind(change.action === 'accept' ? 'active' : 'declined', change.action, actor.userId, change.action, timestamp, timestamp, id, book.id, change.expectedRevision),
     receiptInsert(db, operationId, actor.userId, book.id, id, requestHash, timestamp),
+    activityInsert(db, operationId, book.id, actor, 'member.' + change.action, timestamp),
   ]); }
   catch (error) { const done = await replay(db, operationId, actor.userId, requestHash, book.id); if (done) return done; if (expectedRace(error)) throw conflict(); throw error; }
   const saved = await member(db, id); if (!saved) throw new Error('Family invitation response was not saved'); return { member: present(saved), replayed: false };

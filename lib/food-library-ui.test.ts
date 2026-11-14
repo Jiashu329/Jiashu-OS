@@ -304,3 +304,43 @@ test('a stale cross-brand category link adopts the normalized category and first
   assert.equal(new URLSearchParams(app.location.search).has('offset'),false);
   assert.equal(app.el('list').children.length,2);assert.equal(app.requests.length,1);
 });
+
+const privateTemplate={basis:'template',id:'template:11111111-1111-4111-8111-111111111111:2',templateId:'11111111-1111-4111-8111-111111111111',revision:2,kind:'meal',name:'我的午餐',aliases:[],category:'整餐',state:'仅自己可见',brand:{id:'mine',name:'我的食物'},source:{name:'我的食物',url:'',recordId:'11111111-1111-4111-8111-111111111111',version:'版本2'},reference:{label:'1份',calories:320,protein:20,carbs:40,fat:10}};
+const managedReference={basis:'managed',id:'managed:22222222-2222-4222-8222-222222222222:3',itemId:'22222222-2222-4222-8222-222222222222',revision:3,name:'管理员维护酸奶',aliases:[],category:'乳制品',state:'网站维护',brand:{id:'custom-yogurt',name:'酸奶品牌'},source:{name:'包装营养标签',url:'https://label.example/yogurt',recordId:'yogurt',version:'网站修订3'},reference:{label:'一杯200g',calories:120,protein:8,carbs:14,fat:0}};
+
+test('all, public and personal scopes share one search while private templates keep their own use flow',async()=>{
+  const metadata={brands:[{id:'mine',name:'我的食物',count:1},{id:'custom-yogurt',name:'酸奶品牌',count:1}],categories:[{name:'整餐',count:1},{name:'乳制品',count:1}]};
+  const app=fixture({responder:()=>Response.json({...metadata,foods:[privateTemplate,managedReference],total:2,scope:'all',category:'',brand:'',offset:0,canManage:true,images:{[managedReference.id]:{src:'https://image.example/yogurt.png',alt:'酸奶'}}})});await app.ready();
+  assert.equal(app.el('scope').value,'all');assert.equal(app.el('manage').hidden,false);
+  assert.match(app.el('list').textContent??'',/仅自己可见/);
+  app.click(app.el('list').querySelector('[data-food-open="0"]')!);
+  assert.equal(app.el('record').textContent,'使用模板');assert.equal(app.el('record').getAttribute('href'),'/health/nutrition?template=11111111-1111-4111-8111-111111111111&templateRevision=2');
+  assert.match(app.el('detail').textContent??'',/仅自己可见/);
+  app.click('detail-done');
+  app.next(()=>Response.json({...metadata,brands:[metadata.brands[0]],categories:[metadata.categories[0]],foods:[privateTemplate],total:1,scope:'mine',category:'',brand:'',offset:0,canManage:true}));
+  app.el('scope').value='mine';app.el('scope').dispatchEvent(new app.window.Event('change',{bubbles:true}));await app.ready();
+  assert.equal(app.requests.at(-1)?.url.searchParams.get('scope'),'mine');assert.equal(new URLSearchParams(app.location.search).get('scope'),'mine');assert.equal(app.el('list').children.length,1);
+  app.next(()=>Response.json({...metadata,brands:[metadata.brands[1]],categories:[metadata.categories[1]],foods:[managedReference],total:1,scope:'public',category:'',brand:'',offset:0,canManage:false,images:{[managedReference.id]:{src:'https://image.example/yogurt.png',alt:'酸奶'}}}));
+  app.el('scope').value='public';app.el('scope').dispatchEvent(new app.window.Event('change',{bubbles:true}));await app.ready();
+  assert.equal(app.el('manage').hidden,true);assert.doesNotMatch(app.el('list').textContent??'',/我的午餐/);
+  assert.equal(app.el('brand').querySelectorAll('option').length,2);assert.ok(app.el('brand').textContent?.includes('酸奶品牌'));
+  assert.equal(app.el('list').querySelector('img')?.getAttribute('src'),'https://image.example/yogurt.png');
+  assert.equal(app.el('list').querySelector('img')?.getAttribute('referrerpolicy'),'no-referrer');
+  app.click(app.el('list').querySelector('[data-food-open]')!);assert.match(app.el('detail').textContent??'',/管理员维护的来源参考值/);assert.match(app.el('detail').textContent??'',/脂肪0 g/);
+  assert.equal(app.el('record').textContent,'带入手工核对');assert.ok(app.requests.every(item=>item.init.method==='GET'));
+});
+
+test('changing a drink configuration removes official heat and macros until the exact official selection is restored',async()=>{
+  const app=fixture({catalog:[luckinKnown]});await app.ready();app.click(app.el('list').querySelector('[data-food-open]')!);
+  const temperature=app.el('detail').querySelector('[data-drink-field="temperature"]')! as unknown as HTMLSelectElement;
+  const sweetness=app.el('detail').querySelector('[data-drink-field="sweetness"]')! as unknown as HTMLSelectElement;
+  assert.match(app.el('detail').textContent??'',/179/);
+  temperature.value='热';temperature.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.match(app.el('detail').textContent??'',/热量未公布/);assert.doesNotMatch(app.el('detail-nutrition').textContent??'',/179|0 kcal/);
+  let query=new URL(app.el('record').getAttribute('href')!,'https://food.test').searchParams;
+  assert.equal(query.get('temperature'),'热');assert.equal(query.get('cup'),'大杯');assert.equal(app.el('record').textContent,'带入手工核对');
+  temperature.value='冰';temperature.dispatchEvent(new app.window.Event('change',{bubbles:true}));assert.match(app.el('detail-nutrition').textContent??'',/179/);
+  sweetness.value='半糖';sweetness.dispatchEvent(new app.window.Event('change',{bubbles:true}));assert.match(app.el('detail-nutrition').textContent??'',/热量未公布/);
+  sweetness.value='不另外加糖';sweetness.dispatchEvent(new app.window.Event('change',{bubbles:true}));assert.match(app.el('detail-nutrition').textContent??'',/179/);assert.equal(app.el('record').textContent,'记录此配置');
+  assert.equal(app.requests.length,1);assert.equal(app.requests[0].init.method,'GET');
+});

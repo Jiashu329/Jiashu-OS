@@ -71,7 +71,7 @@ export function createFinanceBookHandlers(deps: Dependencies) {
     },
     REVOKE(request: Request, bookId: string, memberId: string) {
       return mutation(request, async (user, input, operationId) => {
-        const change = parseFinanceBookMemberAction(input, ['revoke']) as { action: 'revoke'; expectedRevision: number };
+        const change = parseFinanceBookMemberAction(input, ['revoke', 'role']) as { action: 'revoke' | 'role'; expectedRevision: number; role?: 'editor' | 'viewer' };
         return changeFinanceBookMember(deps.database(), user, parseFinanceBookId(bookId), parseFinanceBookId(memberId, false), change, operationId);
       });
     },

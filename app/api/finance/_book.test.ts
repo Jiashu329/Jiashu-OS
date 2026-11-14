@@ -156,3 +156,17 @@ void test('a member cannot claim legacy owner operation IDs and personal backups
   assert.equal(JSON.stringify(backup).includes('OWNER PRIVATE SECRET'), false);
   assert.equal(JSON.stringify(backup).includes('家庭存款'), false);
 });
+
+void test('the actual request boundary permits viewer reads and denies account or goal writes after downgrade', async (t) => {
+  const f=await fixture(t);await f.accept();
+  await changeFinanceBookMember(f.db,owner,f.bookId,f.invitation.member.id,{action:'role',role:'viewer',expectedRevision:2},crypto.randomUUID(),NOW);
+  const before=f.businessState();
+  const read=await f.financeRequestScope(f.request(3),bob,{ledger:'family'});
+  assert.equal(read.scope.role,'viewer');assert.equal(read.scope.canWrite,false);
+  assert.equal((await listFinanceAccounts(read.db,read.scope.ownerUserId,'family')).length,1);
+  await assert.rejects(f.financeRequestScope(f.request(3),bob,{ledger:'family',write:{action:'account.create',input:original}}),hasCode('FINANCE_BOOK_READ_ONLY'));
+  await assert.rejects(f.financeRequestScope(f.request(3,'/api/finance/accounts/'+f.ownerFamily),bob,{accountId:f.ownerFamily,write:{action:'account.update',input:{name:'not allowed'}}}),hasCode('FINANCE_BOOK_READ_ONLY'));
+  await assert.rejects(f.financeRequestScope(f.request(3,'/api/finance/goals/'+f.familyGoal.id),bob,{goalId:f.familyGoal.id,write:{action:'goal.update',input:{name:'not allowed'}}}),hasCode('FINANCE_BOOK_READ_ONLY'));
+  await assert.rejects(f.financeRequestScope(f.request(2),bob,{ledger:'family',write:{action:'runway.update',input:{}}}),hasCode('FINANCE_BOOK_ACCESS_CHANGED'));
+  assert.equal(f.businessState(),before);
+});

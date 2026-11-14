@@ -32,10 +32,10 @@ export function financeBookDatabase(db: D1Database, scope: FinanceBookScope, com
   const bookId = scope.bookId;
   const permissionSQL = `EXISTS (SELECT 1 FROM family_books b WHERE b.id=? AND b.owner_user_id=? AND (
     (?='owner' AND ?=b.owner_user_id AND ? IS NULL AND ?=0) OR
-    (?='editor' AND EXISTS (SELECT 1 FROM family_book_members m WHERE m.id=? AND m.book_id=b.id AND m.user_id=? AND m.status='active' AND m.revision=?))
+    (? IN ('editor','viewer') AND EXISTS (SELECT 1 FROM family_book_members m WHERE m.id=? AND m.book_id=b.id AND m.user_id=? AND m.status='active' AND m.revision=? AND m.role=?))
   )) AND (?=1 OR EXISTS (SELECT 1 FROM app_access_grants g WHERE g.bound_user_id=? AND g.status='active'))`;
   const permissionValues = [bookId, scope.ownerUserId, scope.role, scope.actorUserId, scope.membershipId, scope.accessRevision,
-    scope.role, scope.membershipId, scope.actorUserId, scope.accessRevision, scope.isSiteOwner ? 1 : 0, scope.actorUserId];
+    scope.role, scope.membershipId, scope.actorUserId, scope.accessRevision, scope.role, scope.isSiteOwner ? 1 : 0, scope.actorUserId];
   const permission = () => db.prepare(`SELECT CASE WHEN ${permissionSQL} THEN 1 ELSE ${abort} END AS allowed`).bind(...permissionValues);
   const receiptMatch = `actor_user_id=? AND membership_id IS ? AND access_revision=? AND request_hash=? AND action=? AND target_id IS ?`;
   const receiptValues = command ? [scope.actorUserId, scope.membershipId, scope.accessRevision, command.requestHash, command.action, command.targetId ?? null] : [];
@@ -69,6 +69,7 @@ export function financeBookDatabase(db: D1Database, scope: FinanceBookScope, com
       return entry;
     });
     const writes = bound.some((entry) => entry.write);
+    if (writes && scope.role === 'viewer') throw bookError('FINANCE_BOOK_READ_ONLY', 403, '你在这本家庭账本中拥有只读权限，不能修改记录。');
     if (writes && !command) throw bookError('FINANCE_BOOK_COMMAND_REQUIRED', 400, '请使用有效提交标识保存家庭账本。');
     const guards = [permission(), ...(command ? [commandGuard()] : [])];
     const audit = writes && command ? [db.prepare(`INSERT INTO family_finance_commands

@@ -31,6 +31,7 @@ function fixture(){
       assert.equal(configurationEnv,env);configs.push({user:env.APP_OWNER_USER_ID,revision:expectedRevision});if(expectedRevision!==revision)throw new AISettingsConflictError();
       return provider.readAIConfiguration({MINIMAX_API_KEY:configured?'PRIVATE-SHARED-KEY':'',MINIMAX_MODEL:model});
     },
+    listManagedFoodLibrary:async()=>({foods:[],overrides:[]}),
     consumeAIQuota:async(_db:unknown,id:string)=>{quotaUsers.push(id);if(changeOnQuota){revision++;if(clearOnQuota)configured=false;}return{allowed,retryAfter:37};},
     callNutritionPhotoParser:async(_config:provider.AIConfiguration,input:photo.NutritionPhotoRequest)=>{
       outgoing.push({user,input});if(providerFailure)throw providerFailure;return{answer,model,provider:'MiniMax'};

@@ -28,3 +28,16 @@ test('duplicate, oversized, or malformed handoff IDs are excluded from the sign-
     const app=fixture();await app.get(query);assert.equal(new URL('https://app.test'+app.returnTo).searchParams.has('food'),false);
   }
 });
+
+test('personal template intent and complete drink choices survive sign-in without accepting incomplete configurations',async()=>{
+  const app=fixture();await app.get('?template=11111111-1111-4111-8111-111111111111&templateRevision=2');
+  let query=new URL('https://app.test'+app.returnTo).searchParams;
+  assert.equal(query.get('template'),'11111111-1111-4111-8111-111111111111');assert.equal(query.get('templateRevision'),'2');
+  await app.get('?food=luckin-cn%3A1&cup='+encodeURIComponent('大杯')+'&temperature='+encodeURIComponent('热')+'&sweetness='+encodeURIComponent('半糖'));
+  query=new URL('https://app.test'+app.returnTo).searchParams;assert.equal(query.get('temperature'),'热');assert.equal(query.get('sweetness'),'半糖');
+  for(const suffix of ['&cup=大杯','&cup=大杯&temperature=冰&sweetness=半糖&cup=大杯','&cup=%0A&temperature=冰&sweetness=半糖']){
+    await app.get('?food=luckin-cn%3A1'+suffix);query=new URL('https://app.test'+app.returnTo).searchParams;
+    assert.equal(query.get('configurationInvalid'),'1');assert.equal(query.has('cup'),false);
+  }
+  await app.get('?template=11111111-1111-4111-8111-111111111111&templateRevision=0');query=new URL('https://app.test'+app.returnTo).searchParams;assert.equal(query.has('template'),false);
+});

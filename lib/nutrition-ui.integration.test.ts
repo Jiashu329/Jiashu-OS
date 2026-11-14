@@ -1147,3 +1147,46 @@ test('kcal-only Luckin serving selections scale official heat while preserving u
   const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;
   assert.deepEqual(sent.food,{id:selected.id,amount:2,unit:'份',catalogRelease:selected.catalogRelease});assert.equal(sent.calories,'358.0');assert.equal(sent.protein,null);
 });
+
+test('a unified personal meal link opens the existing serving preview and preserves component rows until explicit batch save',async()=>{
+  const template=personalTemplate();const app=fixture({templates:[template],search:'?date='+DAY+'&template='+template.id+'&templateRevision=1'});
+  await app.ready();await settled(()=>app.el('template-use-dialog').open);
+  assert.equal(app.el('dialog').open,false);assert.equal(app.el('batch-dialog').open,false);assert.equal(app.entries.length,0);
+  assert.equal(app.el('template-scale-amount').value,'1');assert.equal(app.el('template-use-date').value,DAY);
+  assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);
+  app.input('template-scale-amount','2');app.input('template-use-meal','lunch','change');app.click('template-preview');await settled(()=>!app.el('template-confirm').disabled);
+  assert.match(app.el('template-preview-rows').textContent??'',/燕麦/);assert.match(app.el('template-preview-rows').textContent??'',/酸奶/);
+  assert.equal(app.entries.length,0);assert.equal(app.requests.some(row=>row.url==='/api/health/nutrition/batch'),false);
+  app.click('template-confirm');assert.equal(app.el('batch-dialog').open,true);assert.equal(app.el('batch-rows').querySelectorAll('[data-draft-index]').length,2);
+  app.submit('batch-form');await settled(()=>app.entries.length===2);
+  assert.deepEqual(app.entries.map(row=>row.name),['燕麦','酸奶']);assert.deepEqual(app.entries.map(row=>row.calories),['100.0','50.0']);
+  assert.equal(new URLSearchParams(app.location.search).has('template'),false);
+});
+
+test('a stale personal template link never opens a replacement revision or writes any food',async()=>{
+  const template=personalTemplate();const app=fixture({templates:[template],search:'?date='+DAY+'&template='+template.id+'&templateRevision=2'});
+  await app.ready();await settled(()=>app.el('food-handoff-message').textContent?.includes('已更新')===true);
+  assert.equal(app.el('template-use-dialog').open,false);assert.equal(app.el('dialog').open,false);assert.equal(app.entries.length,0);
+  assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);
+});
+
+test('managed reference values remain editable source labels without creating a trusted catalog snapshot',async()=>{
+  const selected={basis:'managed',id:'managed:22222222-2222-4222-8222-222222222222:3',itemId:'22222222-2222-4222-8222-222222222222',revision:3,name:'管理员维护酸奶',aliases:[],category:'乳制品',state:'网站维护',brand:{id:'custom-yogurt',name:'酸奶品牌'},source:{name:'包装标签',url:'https://label.example/yogurt',recordId:'yogurt',version:'网站修订3'},reference:{label:'一杯200g',calories:120,protein:8,carbs:14,fat:0}};
+  const app=fixture({foods:[selected],search:'?date='+DAY+'&food='+encodeURIComponent(selected.id)});await app.ready();await settled(()=>app.el('dialog').open);
+  assert.equal(app.el('calories').value,'120.0');assert.equal(app.el('fat').value,'0.0');assert.equal(app.el('source-calories').value,'label');assert.equal(app.el('food-selection').hidden,true);
+  assert.equal(app.entries.length,0);app.input('meal','lunch','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;
+  assert.equal(Object.hasOwn(sent,'food'),false);assert.equal(sent.calories,'120.0');assert.equal(sent.fat,'0.0');assert.equal(sent.provenance.calories.source,'label');assert.match(sent.provenance.calories.basis,/网站修订3/);
+});
+
+test('a different drink configuration and incomplete query cannot reuse the original official heat or macros',async()=>{
+  const selected={...officialServingFood,id:'luckin-cn:1',name:'瑞幸生椰拿铁［大杯/冰/不另外加糖］',catalogRelease:'catalog-2026-11-13-luckin-v1',serving:{unit:'份',label:'大杯/冰/埃塞金烘/默认浓度/不另外加糖',originalLabel:null,kcal:179,energyKj:null,energyBasis:'officialKcal',protein:3,carbs:20,fat:8}};
+  const choices='&cup='+encodeURIComponent('大杯')+'&temperature='+encodeURIComponent('热')+'&sweetness='+encodeURIComponent('半糖');
+  const app=fixture({foods:[selected],search:'?date='+DAY+'&food='+selected.id+choices});await app.ready();await settled(()=>app.el('dialog').open);
+  for(const key of ['calories','protein','carbs','fat'])assert.equal(app.el(key).value,'');
+  assert.equal(app.el('food-selection').hidden,true);assert.match(app.el('portion').value,/热/);assert.match(app.el('portion').value,/半糖/);assert.doesNotMatch(app.el('name').value,/大杯\/冰/);assert.match(app.el('note').value,/当前配置/);
+  assert.equal(app.requests.filter(row=>row.method!=='GET').length,0);app.input('meal','snack','change');app.submit('form');await settled(()=>app.entries.length===1);
+  const sent=app.requests.find(row=>row.method==='POST'&&row.url==='/api/health/nutrition')!.body;assert.equal(sent.calories,null);assert.equal(Object.hasOwn(sent,'food'),false);
+  const invalid=fixture({foods:[selected],search:'?date='+DAY+'&food='+selected.id+'&cup='+encodeURIComponent('大杯')});await invalid.ready();await settled(()=>!invalid.el('food-handoff').hidden&&invalid.el('food-handoff-retry').hidden===false);
+  assert.equal(invalid.el('dialog').open,false);assert.equal(invalid.entries.length,0);assert.equal(invalid.requests.filter(row=>row.method!=='GET').length,0);
+});

@@ -17,6 +17,11 @@ import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
+import { browseUnifiedFoodLibrary, unifiedLibraryFood } from './food-library-service.ts';
+import { personalLibraryFood } from './personal-food-library.ts';
+import { parseNutritionTemplate, type NutritionTemplate } from './nutrition-templates.ts';
+import type { ManagedLibraryFood } from './managed-food-catalog.ts';
+import { DEFAULT_NOTIFICATION_PREFERENCES } from './notifications.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -93,9 +98,10 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>> } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
+  Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
   let current = new URL(path, 'https://synthetic-production.example');
   const location = {
     get origin() { return current.origin; }, get pathname() { return current.pathname; },
@@ -112,12 +118,12 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       close() { dialog.removeAttribute('open'); dialog.dispatchEvent(new window.Event('close')); },
     });
   });
-  // linkedom intentionally omits a browser select value setter.
-  document.querySelectorAll('select').forEach((select) => Object.defineProperty(select, 'value', {
+  // Dynamic dialogs create selects after initialization; model the native prototype setter.
+  Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
-    get() { const option = select.querySelector('option[selected]') ?? select.querySelector('option'); return option?.getAttribute('value') ?? option?.textContent ?? ''; },
-    set(value: string) { for (const option of select.querySelectorAll('option')) { if (option.getAttribute('value') === String(value)) option.setAttribute('selected', ''); else option.removeAttribute('selected'); } },
-  }));
+    get() { const option = this.querySelector('option[selected]') ?? this.querySelector('option'); return option?.getAttribute('value') ?? option?.textContent ?? ''; },
+    set(value: string) { for (const option of this.querySelectorAll('option')) { if (option.getAttribute('value') === String(value)) option.setAttribute('selected', ''); else option.removeAttribute('selected'); } },
+  });
   document.querySelectorAll('form').forEach((form) => Object.assign(form, { reset() {
     form.querySelectorAll('input,textarea,select').forEach((element) => {
       const field = element as unknown as HTMLInputElement;
@@ -158,14 +164,19 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const selection = parseNutritionQuery(parsed.searchParams);
       return Response.json({...buildNutritionReview([],selection),recentFoods:[],dayStatus:{date:selection.date,complete:false,revision:0,meals:emptyMealStates}});
     }
+    if (parsed.pathname === '/api/health/foods/manage') return Response.json({canManage:true,items:[],builtin:[0,50,100,150].flatMap(offset=>browseFoodLibrary({offset,limit:50}).foods),images:{}});
+    if (parsed.pathname === '/api/notifications') return Response.json({items:[],total:0,unreadCount:0,unreadIds:[],offset:0,limit:20,hasMore:false,unavailable:[],truncated:false,settings:{categories:DEFAULT_NOTIFICATION_PREFERENCES,revision:0,updatedAt:null}});
+    if (/^\/api\/finance\/books\/[^/]+\/activity$/.test(parsed.pathname)) return Response.json({items:[],offset:0,limit:30,hasMore:false});
     if (parsed.pathname === '/api/health/foods') {
-      const metadata={brands:FOOD_LIBRARY_BRANDS,categories:foodLibraryCategories(parsed.searchParams.get('brand')??''),sources:FOOD_CATALOG_SOURCES};
+      const blocked=new Set(catalog.managedOverrides??[]);
+      const snapshot={publicFoods:[...[0,50,100,150].flatMap(offset=>browseFoodLibrary({offset,limit:50}).foods).filter(food=>!blocked.has(food.id)),...(catalog.managedFoods??[])],personalFoods:(catalog.personalTemplates??[]).map(item=>personalLibraryFood(item)),overrides:[...blocked],canManage:catalog.canManageLibrary===true};
       if (parsed.searchParams.has('id')) {
-        const food=getLibraryFood(parsed.searchParams.get('id')!);
-        return food?Response.json({food,...metadata,images:foodCatalogImages([food])}):Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
+        const food=unifiedLibraryFood(snapshot,parsed.searchParams.get('id')!);
+        const images=food?foodCatalogImages([food]):{};
+        if(food?.basis==='managed'&&food.image)images[food.id]=food.image;
+        return food?Response.json({food,images}):Response.json({code:'FOOD_NOT_FOUND',error:'当前食物库中没有这项食品。'}, {status:404});
       }
-      const result=browseFoodLibrary({query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',brand:parsed.searchParams.get('brand')??'',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??24)});
-      return Response.json({...result,...metadata,images:foodCatalogImages(result.foods)});
+      return Response.json(browseUnifiedFoodLibrary(snapshot,{query:parsed.searchParams.get('q')??'',category:parsed.searchParams.get('category')??'',brand:parsed.searchParams.get('brand')??'',scope:parsed.searchParams.get('scope')??'all',offset:Number(parsed.searchParams.get('offset')??0),limit:Number(parsed.searchParams.get('limit')??24)}));
     }
     if (parsed.pathname === '/api/health/nutrition/foods') {
       if (parsed.searchParams.has('id')) {
@@ -175,7 +186,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       return Response.json({foods:catalog.foods,...(catalog.sources?{sources:catalog.sources}:{})});
     }
     if (parsed.pathname === '/api/health/nutrition/goals') return Response.json({ goals: EMPTY_NUTRITION_GOALS, weightPlan: null });
-    if (parsed.pathname === '/api/health/nutrition/templates') return Response.json({ templates: [] });
+    if (parsed.pathname === '/api/health/nutrition/templates') return Response.json({ templates: catalog.personalTemplates??[] });
+    if (/^\/api\/health\/nutrition\/templates\/[^/]+$/.test(parsed.pathname)) {const id=parsed.pathname.split('/').pop();const template=catalog.personalTemplates?.find(item=>item.id===id);return template?Response.json({template}):Response.json({error:'模板不存在'}, {status:404});}
     if (parsed.pathname === '/api/health/nutrition/reuse') return Response.json({favorites:[],recent:[]});
     if (parsed.pathname === '/api/health/nutrition/favorites') return Response.json({favorites:[]});
     if (parsed.pathname === '/api/health/nutrition/status') return Response.json({dayStatus:{date:parsed.searchParams.get('date') ?? today,complete:false,revision:0,meals:emptyMealStates}});
@@ -546,4 +558,73 @@ test('minified Luckin handoffs preserve official kcal or unknown energy behind e
   assert.match((unknown.document.getElementById('nutrition-name') as HTMLInputElement).value,/咸法酪泰奶/);
   assert.match((unknown.document.getElementById('nutrition-note') as HTMLTextAreaElement).value,/lkcoffee.com/);
   assert.ok([...known.requests,...unknown.requests].every((item)=>item.method==='GET'));
+});
+
+function libraryPersonalTemplate(): NutritionTemplate {
+  return {...parseNutritionTemplate({kind:'meal',name:'我的测试整餐',note:'个人模板',baseServings:'1',totalWeight:null,components:[{name:'牛奶',portion:'1杯',grams:null,calories:'120',carbs:null,protein:'0',fat:null},{name:'其他食品',portion:'1份',grams:null,calories:null,carbs:null,protein:null,fat:null}]}),id:'22222222-2222-4222-8222-222222222222',revision:1,createdAt:'2026-11-14T00:00:00Z',updatedAt:'2026-11-14T00:00:00Z',archivedAt:null};
+}
+
+test('minified unified library keeps personal templates private and enters their existing explicit preview flow', {skip:!hasBuild}, async()=>{
+  const template=libraryPersonalTemplate();
+  const library=await fixture('id="food-library-page"','/health/foods?scope=mine',390,{}, {foods:[],personalTemplates:[template]});
+  await settle(()=>library.document.getElementById('food-library-list')?.getAttribute('aria-busy')==='false');
+  assert.equal(library.document.querySelectorAll('#food-library-list .fl-card').length,1);
+  assert.ok(library.document.querySelector('.fl-private-tag'));
+  assert.match(library.document.getElementById('food-library-list')?.textContent??'',/热量未填/);
+  library.document.querySelector('[data-food-open]')!.dispatchEvent(new library.window.Event('click',{bubbles:true}));
+  assert.match(library.document.getElementById('food-library-record')?.getAttribute('href')??'',/template=22222222-2222-4222-8222-222222222222/);
+  const nutrition=await fixture('id="nutrition-page"','/health/nutrition?template='+template.id+'&templateRevision=1',390,{}, {foods:[],personalTemplates:[template]});
+  await settle(()=>nutrition.document.getElementById('nutrition-template-use-dialog')?.hasAttribute('open')===true);
+  assert.equal((nutrition.document.getElementById('nutrition-template-confirm') as HTMLButtonElement).disabled,true);
+  assert.equal(nutrition.document.getElementById('nutrition-batch-dialog')?.hasAttribute('open'),false);
+  assert.ok([...library.requests,...nutrition.requests].every(request=>request.method==='GET'));
+});
+
+test('minified drink controls drop nutrition when changing the published cold configuration to hot', {skip:!hasBuild}, async()=>{
+  const library=await fixture('id="food-library-page"','/health/foods?q='+encodeURIComponent('瑞幸生椰拿铁'),390);
+  await settle(()=>library.document.getElementById('food-library-list')?.getAttribute('aria-busy')==='false');
+  library.document.querySelector('[data-food-open]')!.dispatchEvent(new library.window.Event('click',{bubbles:true}));
+  const temperature=library.document.querySelector('[data-drink-field="temperature"]') as unknown as HTMLSelectElement;
+  assert.ok(temperature);temperature.value='热';temperature.dispatchEvent(new library.window.Event('change',{bubbles:true}));
+  assert.match(library.document.getElementById('food-library-drink-status')?.textContent??'',/暂无此配置官方营养/);
+  const target=library.document.getElementById('food-library-record')!.getAttribute('href')!;
+  const nutrition=await fixture('id="nutrition-page"',target,390);
+  await settle(()=>nutrition.document.getElementById('nutrition-dialog')?.hasAttribute('open')===true);
+  assert.equal((nutrition.document.getElementById('nutrition-calories') as HTMLInputElement).value,'');
+  assert.match((nutrition.document.getElementById('nutrition-portion') as HTMLInputElement).value,/热/);
+  assert.ok([...library.requests,...nutrition.requests].every(request=>request.method==='GET'));
+});
+
+test('minified public food manager opens a draft without publishing or saving automatically', {skip:!hasBuild}, async()=>{
+  const f=await fixture('id="managed-food-page"','/health/foods/manage',390);
+  await settle(()=>f.document.getElementById('mf-content')?.hidden===false);
+  f.document.getElementById('mf-new')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(f.document.getElementById('mf-editor')?.hasAttribute('open'),true);
+  assert.equal(f.document.getElementById('mf-review')?.hasAttribute('open'),false);
+  assert.equal((f.document.getElementById('mf-name') as HTMLInputElement).value,'');
+  assert.ok(f.requests.every(request=>request.method==='GET'&&request.path==='/api/health/foods/manage'));
+});
+
+test('minified viewer can read a family book and its activity without exposing mutation actions', {skip:!hasBuild}, async()=>{
+  const book='11111111-1111-4111-8111-111111111111';
+  const choices=[{id:'own',name:'我的家庭账本',ownerName:'Synthetic account',role:'owner',accessRevision:0,canWrite:true,canManageMembers:true,canExport:true},{id:book,name:'共享家庭账本',ownerName:'另一位拥有人',role:'viewer',accessRevision:2,canWrite:false,canManageMembers:false,canExport:false}];
+  const f=await fixture('id="account-list"','/finance?ledger=family&book='+book+'&bookRevision=2',390,{}, {foods:[],financeBooks:choices});
+  await settle(()=>Boolean(f.document.documentElement.hasAttribute('data-finance-readonly')));
+  assert.equal(f.document.getElementById('finance-books-manage')?.hidden,true);
+  assert.ok(f.requests.every(request=>request.method==='GET'));
+  const activity=await fixture('id="finance-activity-page"','/finance/activity?ledger=family&book='+book+'&bookRevision=2',390,{}, {foods:[],financeBooks:choices});
+  await settle(()=>activity.document.getElementById('finance-activity-list')?.getAttribute('aria-busy')==='false');
+  assert.match(activity.document.getElementById('finance-activity-status')?.textContent??'',/还没有/);
+  assert.ok(activity.requests.some(request=>request.path.includes('/'+book+'/activity?')));
+  assert.ok(activity.requests.every(request=>request.method==='GET'));
+});
+
+test('minified notifications initialize category switches without marking messages read or changing preferences', {skip:!hasBuild}, async()=>{
+  const f=await fixture('id="notifications-page"','/notifications',390);
+  await settle(()=>f.document.getElementById('notifications-page')?.getAttribute('aria-busy')==='false');
+  assert.equal(f.document.getElementById('notifications-empty')?.hidden,false);
+  assert.equal((f.document.getElementById('notifications-read-all') as HTMLButtonElement).disabled,true);
+  assert.equal((f.document.getElementById('notifications-setting-invitations') as HTMLInputElement).disabled,false);
+  assert.equal(f.document.querySelector('[data-context-path="/notifications"]')?.getAttribute('aria-current'),'page');
+  assert.ok(f.requests.every(request=>request.method==='GET'&&request.path.startsWith('/api/notifications?')));
 });

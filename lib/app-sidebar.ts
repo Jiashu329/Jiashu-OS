@@ -6,8 +6,9 @@ import { DRAFT_GUARD_SCRIPT } from './draft-guard.ts';
 import { DURABLE_DRAFTS_SCRIPT } from './durable-drafts.ts';
 import { renderAccountIdentityScript } from './account-ui.ts';
 import { renderAccountSessionScript } from './account-session.ts';
+import { renderNotificationsBadgeScript } from './notifications-ui.ts';
 
-type AppPage = 'home' | 'health' | 'nutrition' | 'foods' | 'finance' | 'sync' | 'account';
+type AppPage = 'home' | 'health' | 'nutrition' | 'foods' | 'finance' | 'sync' | 'account' | 'notifications';
 
 // Keep the shell and its breakpoints shared by every full application page.
 export const APP_SIDEBAR_CSS = String.raw`
@@ -47,13 +48,14 @@ html[data-account-changed] .app>main,html[data-account-changed] dialog,html[data
 html[data-account-changed] dialog::backdrop{background:transparent!important;pointer-events:none!important}
 html[data-account-verifying] .app>main,html[data-account-verifying] dialog,html[data-account-verifying] #health-chat,html[data-account-verifying] [role=dialog]{visibility:hidden!important;pointer-events:none!important}
 html[data-account-verifying] dialog::backdrop{background:transparent!important;pointer-events:none!important}
+.sidebar-notifications{display:flex;align-items:center;gap:9px;min-height:38px;padding:8px 12px;margin-top:auto;border-radius:8px;color:var(--muted);font-size:12px;text-decoration:none}.sidebar-notifications:hover,.sidebar-notifications.active{background:var(--soft);color:var(--primary-hover)}.sidebar-notifications svg{width:17px;height:17px;flex:none}.sidebar-notifications [data-notification-unread]{min-width:18px;margin-left:auto;padding:1px 5px;border-radius:12px;background:var(--primary);color:var(--paper);text-align:center;font-size:10px}.sidebar-notifications + .sidebar-account{margin-top:10px}@media(max-width:980px){.sidebar-notifications{grid-column:1/-1;min-height:30px;margin-top:0;padding:5px 8px}.sidebar-notifications + .sidebar-account{margin-top:0}}
 ${APP_PAGE_UX_CSS}
 `;
 
 const contextNavigation = {
   health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
   nutrition: { label: '饮食管理', links: [['/health/nutrition', '饮食记录'], ['/health/foods', '食物库']] },
-  finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾']] },
+  finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾'], ['/finance/activity', '协作动态']] },
   sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/sync/templates', '快捷指令模板'], ['/data', '数据备份'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
 } as const;
 
@@ -78,5 +80,5 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
   }).join('');
 
   const sections = Object.entries(contextNavigation).map(([group, section]) => `<section class="sidebar-context" data-navigation-group="${group}"${activeGroup !== group ? ' hidden' : ''}><p class="sidebar-context-title">${section.label}</p><nav class="context-nav" aria-label="${section.label}">${section.links.map(([href, label]) => `<a class="context-link${activePage === 'foods' && href === '/health/foods' ? ' active' : ''}" href="${href}" data-context-path="${href}"${activePage === 'foods' && href === '/health/foods' ? ' aria-current="page"' : ''}>${label}</a>`).join('')}</nav></section>`).join('');
-  return `${renderAccountSessionScript()}<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<a class="sidebar-foot sidebar-account${activePage === 'account' ? ' active' : ''}" href="/account" aria-label="查看当前账户与切换登录"${activePage === 'account' ? ' aria-current="page"' : ''}><span class="space-avatar" data-current-account-avatar aria-hidden="true">我</span><div class="account-copy"><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></div><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 5 7 7-7 7"/></svg></a><button class="sidebar-account-retry" type="button" data-account-retry data-account-sidebar-retry hidden>重新确认账户</button></aside><script>${DURABLE_DRAFTS_SCRIPT}${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}${renderAccountIdentityScript()}`;
+  return `${renderAccountSessionScript()}<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<a class="sidebar-notifications${activePage === 'notifications' ? ' active' : ''}" href="/notifications" data-context-path="/notifications"${activePage === 'notifications' ? ' aria-current="page"' : ''}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>消息中心<span data-notification-unread hidden>0</span></a><a class="sidebar-foot sidebar-account${activePage === 'account' ? ' active' : ''}" href="/account" aria-label="查看当前账户与切换登录"${activePage === 'account' ? ' aria-current="page"' : ''}><span class="space-avatar" data-current-account-avatar aria-hidden="true">我</span><div class="account-copy"><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></div><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 5 7 7-7 7"/></svg></a><button class="sidebar-account-retry" type="button" data-account-retry data-account-sidebar-retry hidden>重新确认账户</button></aside><script>${DURABLE_DRAFTS_SCRIPT}${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}${renderAccountIdentityScript()}${renderNotificationsBadgeScript()}`;
 }

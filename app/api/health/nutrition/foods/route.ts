@@ -1,6 +1,9 @@
-import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_RELEASES, FOOD_CATALOG_SOURCE, FOOD_CATALOG_SOURCES, browseFoods, getFood } from '../../../../../lib/food-catalog';
+import { listManagedFoodLibrary } from '../../../../../db/managed-food-store';
+import { currentNutritionFoods } from '../../../../../lib/food-library-service';
+import { nutritionDatabase } from '../_shared';
+import { FOOD_CATALOG_CATEGORIES, FOOD_CATALOG_RELEASES, FOOD_CATALOG_SOURCE, FOOD_CATALOG_SOURCES, getFood } from '../../../../../lib/food-catalog';
 import { foodCatalogImages } from '../../../../../lib/food-catalog-images';
-import { apiUser, json, unauthenticated } from '../../../_shared';
+import { apiUser, json, unauthenticated, unavailable } from '../../../_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +21,12 @@ export async function GET(request: Request) {
   if (params.has('id')) {
     const id = params.get('id')!;
     if (params.size !== 1 || !id.trim() || id.length > 120) return invalid();
-    const food = getFood(id);
-    return food ? json({ food, ...metadata, images: foodCatalogImages([food]) })
-      : json({ error: '当前食物库中没有这项食品。', code: 'FOOD_NOT_FOUND' }, 404);
+    try {
+      const managed = await listManagedFoodLibrary(nutritionDatabase());
+      const food = getFood(id);
+      return food && !managed.overrides.includes(food.id) ? json({ food, ...metadata, images: foodCatalogImages([food]) })
+        : json({ error: '当前食物库中没有这项食品，可能已更新或下架。', code: 'FOOD_NOT_FOUND' }, 404);
+    } catch { return unavailable(); }
   }
   const query = params.get('q') ?? '';
   if (query.length > 100) return invalid('食物关键词最多100个字符。');
@@ -28,10 +34,13 @@ export async function GET(request: Request) {
   if ((rawOffset !== null && !/^(?:0|[1-9]\d*)$/.test(rawOffset))
     || (rawLimit !== null && !/^[1-9]\d?$/.test(rawLimit))) return invalid();
   const offset = rawOffset === null ? 0 : Number(rawOffset), limit = rawLimit === null ? 20 : Number(rawLimit);
+  const category = params.get('category') ?? '';
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 50
+    || category && !FOOD_CATALOG_CATEGORIES.some((item) => item.name === category)) return invalid();
   try {
-    const result = browseFoods({ query, category: params.get('category') ?? '', offset, limit });
-    return json({ ...result, ...metadata, images: foodCatalogImages(result.foods) });
-  } catch (error) {
-    return invalid(error instanceof Error ? error.message : undefined);
-  }
+    const managed = await listManagedFoodLibrary(nutritionDatabase());
+    const matched = currentNutritionFoods(managed.overrides, query, Number.MAX_SAFE_INTEGER).filter((food) => !category || food.category === category);
+    const foods = matched.slice(offset, offset + limit);
+    return json({ foods, total: matched.length, offset, limit, ...metadata, images: foodCatalogImages(foods) });
+  } catch { return unavailable(); }
 }

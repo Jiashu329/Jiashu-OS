@@ -9,6 +9,8 @@ import {
   resolveFinanceBookScope, respondFinanceBookInvitation,
 } from './finance-books-store.ts';
 import type { FinanceBooksDatabase } from './finance-books-store.ts';
+import { financeBookDatabase } from './finance-book-database.ts';
+import { listFinanceBookActivity } from './finance-book-activity-store.ts';
 
 const NOW = '2026-11-13T03:00:00.000Z';
 const LATER = '2026-11-14T03:00:00.000Z';
@@ -224,4 +226,69 @@ void test('household authorization and command attribution are excluded from por
   const { BACKUP_TABLE_NAMES } = await import('../lib/data-backup.ts');
   assert.ok(!BACKUP_TABLE_NAMES.some((name: string) => name.startsWith('family_')));
   assert.equal(f.count('family_finance_commands'), 0);
+});
+
+function allowSite(f: ReturnType<typeof fixture>, actor: FinanceBookActor) {
+  f.sqlite.prepare("INSERT INTO app_access_grants(id,email,bound_user_id,status,revision,created_at,updated_at) VALUES(?,?,?,'active',1,?,?)")
+    .run(uuid(),actor.email,actor.userId,NOW,NOW);
+}
+
+void test('viewer invitations bind a stable read-only grant and owner role changes invalidate prior generations', async (t) => {
+  const f=fixture(t);allowSite(f,owner);allowSite(f,member);
+  const key=uuid(), invitation=await inviteFinanceBookMember(f.db,owner,'own',{email:member.email,role:'viewer'},key,NOW);
+  assert.equal(invitation.member.role,'viewer');
+  assert.equal((await listFinanceBooks(f.db,member,NOW)).invitations[0].role,'viewer');
+  assert.equal((await listFinanceBooks(f.db,member,NOW)).invitations[0].createdAt,NOW);
+  const accepted=await respondFinanceBookInvitation(f.db,member,invitation.member.id,{action:'accept',expectedRevision:1},uuid(),NOW);
+  const book=await ensureOwnFamilyBook(f.db,owner,NOW),viewer=await resolveFinanceBookScope(f.db,member,'family',book.id,2);
+  assert.equal(viewer.role,'viewer');assert.equal(viewer.canWrite,false);
+  const choice=(await listFinanceBooks(f.db,member,NOW)).books.find(row=>row.id===book.id)!;
+  assert.equal(choice.role,'viewer');assert.equal(choice.canWrite,false);assert.equal(choice.canExport,false);
+  await assert.rejects(changeFinanceBookMember(f.db,member,book.id,invitation.member.id,{action:'role',role:'editor',expectedRevision:2},uuid(),NOW),code('FINANCE_BOOK_OWNER_REQUIRED',403));
+  const op=uuid(),edit=await changeFinanceBookMember(f.db,owner,book.id,invitation.member.id,{action:'role',role:'editor',expectedRevision:accepted.member.revision},op,NOW);
+  assert.equal(edit.member.role,'editor');assert.equal(edit.member.revision,3);
+  assert.equal((await changeFinanceBookMember(f.db,owner,book.id,invitation.member.id,{action:'role',role:'editor',expectedRevision:2},op,NOW)).replayed,true);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM family_book_activity WHERE action='member.role.editor'").get()?.n,1);
+  await assert.rejects(resolveFinanceBookScope(f.db,member,'family',book.id,2),code('FINANCE_BOOK_ACCESS_CHANGED',409));
+  assert.equal((await resolveFinanceBookScope(f.db,member,'family',book.id,3)).canWrite,true);
+  await assert.rejects(changeFinanceBookMember(f.db,owner,book.id,invitation.member.id,{action:'role',role:'viewer',expectedRevision:2},uuid(),NOW),code('FINANCE_BOOK_MEMBER_CHANGED',409));
+});
+
+void test('viewer reads work but all guarded business mutations and resolved-before-downgrade commands are denied', async (t) => {
+  const f=fixture(t);allowSite(f,owner);allowSite(f,member);
+  const accepted=await join(f),accountId=uuid();
+  f.sqlite.prepare("INSERT INTO finance_accounts(id,user_id,ledger,name,type,currency,note,created_at,updated_at) VALUES(?,?,'family','共同账户','bank','CNY','',?,?)").run(accountId,owner.userId,NOW,NOW);
+  const editor=await resolveFinanceBookScope(f.db,member,'family',accepted.book.id,2);
+  const queued=financeBookDatabase(f.db as D1Database,editor,{operationId:uuid(),requestHash:'a'.repeat(64),action:'account.update',targetId:accountId});
+  await changeFinanceBookMember(f.db,owner,accepted.book.id,accepted.member.id,{action:'role',role:'viewer',expectedRevision:2},uuid(),NOW);
+  await assert.rejects(queued.prepare('UPDATE finance_accounts SET name=? WHERE user_id=? AND id=?').bind('旧编辑页面覆盖',owner.userId,accountId).run(),code('FINANCE_BOOK_ACCESS_CHANGED',409));
+  const viewer=await resolveFinanceBookScope(f.db,member,'family',accepted.book.id,3);
+  const read=financeBookDatabase(f.db as D1Database,viewer);
+  assert.equal((await read.prepare('SELECT name FROM finance_accounts WHERE user_id=? AND id=?').bind(owner.userId,accountId).first<{name:string}>())?.name,'共同账户');
+  const write=financeBookDatabase(f.db as D1Database,viewer,{operationId:uuid(),requestHash:'b'.repeat(64),action:'account.update',targetId:accountId});
+  await assert.rejects(write.prepare('UPDATE finance_accounts SET name=? WHERE user_id=? AND id=?').bind('只读覆盖',owner.userId,accountId).run(),code('FINANCE_BOOK_READ_ONLY',403));
+  await assert.rejects(write.batch([write.prepare('DELETE FROM finance_goal_plans WHERE user_id=?').bind(owner.userId)]),code('FINANCE_BOOK_READ_ONLY',403));
+  assert.equal(f.sqlite.prepare('SELECT name FROM finance_accounts WHERE id=?').get(accountId)?.name,'共同账户');
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM family_finance_commands').get()?.n,0);
+});
+
+void test('activity combines member and actual business events, pages stably and excludes private or internal fields', async (t) => {
+  const f=fixture(t);allowSite(f,owner);allowSite(f,member);
+  const accepted=await join(f),scope=await resolveFinanceBookScope(f.db,owner,'family','own',0),id=uuid();
+  f.sqlite.prepare("INSERT INTO finance_accounts(id,user_id,ledger,name,type,currency,note,created_at,updated_at) VALUES(?,?,'personal','PRIVATE ACCOUNT','bank','CNY','',?,?)").run(uuid(),owner.userId,NOW,NOW);
+  const command=financeBookDatabase(f.db as D1Database,scope,{operationId:id,requestHash:'c'.repeat(64),action:'account.create',targetId:id});
+  await command.prepare("INSERT INTO finance_accounts(id,user_id,ledger,name,type,currency,note,created_at,updated_at) VALUES(?,?,'family','共同储蓄','bank','CNY','',?,?)").bind(id,owner.userId,NOW,NOW).run();
+  const feed=await listFinanceBookActivity(f.db,member,accepted.book.id,{accessRevision:2,limit:50});
+  assert.equal(feed.items.length,3);assert.equal(feed.hasMore,false);
+  assert.ok(feed.items.some(item=>item.action==='account.create'&&item.targetName==='共同储蓄'&&item.actorName==='Owner'));
+  assert.ok(feed.items.some(item=>item.action==='member.accept'&&item.actorName==='Member'));
+  for(const item of feed.items){assert.equal(Object.hasOwn(item,'actorUserId'),false);assert.equal(Object.hasOwn(item,'membershipId'),false);assert.equal(Object.hasOwn(item,'requestHash'),false);if(item.action.startsWith('member.'))assert.equal(item.targetId,null);}
+  assert.ok(!JSON.stringify(feed).includes('PRIVATE ACCOUNT'));assert.ok(!JSON.stringify(feed).includes(owner.email));
+  const first=await listFinanceBookActivity(f.db,member,accepted.book.id,{limit:1}),second=await listFinanceBookActivity(f.db,member,accepted.book.id,{limit:1,offset:1});
+  assert.equal(first.hasMore,true);assert.notEqual(first.items[0].id,second.items[0].id);
+  const others=await listFinanceBookActivity(f.db,member,accepted.book.id,{excludeActor:true});
+  assert.equal(others.items.length,2);assert.ok(others.items.every(item=>item.actorName==='Owner'));
+  await assert.rejects(listFinanceBookActivity(f.db,other,accepted.book.id),code('FINANCE_BOOK_ACCESS_REVOKED',403));
+  await changeFinanceBookMember(f.db,owner,accepted.book.id,accepted.member.id,{action:'revoke',expectedRevision:2},uuid(),NOW);
+  await assert.rejects(listFinanceBookActivity(f.db,member,accepted.book.id),code('FINANCE_BOOK_ACCESS_REVOKED',403));
 });

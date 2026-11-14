@@ -4,12 +4,13 @@ import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import * as catalog from '../../../../../lib/food-catalog.ts';
 import { foodCatalogImages } from '../../../../../lib/food-catalog-images.ts';
+import { currentNutritionFoods } from '../../../../../lib/food-library-service.ts';
 
 function fixture() {
   let user: string | null = 'alice';
   const source = stripTypeScriptTypes(readFileSync(new URL('./route.ts', import.meta.url), 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
-  const bindings = { ...catalog, foodCatalogImages, apiUser: async () => user,
+  const bindings = { ...catalog, foodCatalogImages, currentNutritionFoods, nutritionDatabase: () => ({}), listManagedFoodLibrary: async () => ({foods: [], overrides: []}), unavailable: () => Response.json({code:'STORAGE_UNAVAILABLE'},{status:503}), apiUser: async () => user,
     json: (value: unknown, status = 200) => Response.json(value, { status }),
     unauthenticated: () => Response.json({ code: 'UNAUTHENTICATED' }, { status: 401 }) };
   const get = new Function(...Object.keys(bindings), source + '\nreturn GET;')(...Object.values(bindings)) as (request: Request) => Promise<Response>;

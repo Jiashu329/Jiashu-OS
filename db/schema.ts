@@ -433,6 +433,7 @@ export const familyBooks = sqliteTable('family_books', {
 export const familyBookMembers = sqliteTable('family_book_members', {
   id: text('id').primaryKey().notNull(), bookId: text('book_id').notNull().references(() => familyBooks.id),
   email: text('email').notNull(), userId: text('user_id'), status: text('status').notNull(), revision: integer('revision').notNull(),
+  role: text('role').notNull().default('editor'),
   expiresAt: text('expires_at').notNull(), acceptedAt: text('accepted_at'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 }, (table) => [
   uniqueIndex('family_members_book_email_idx').on(table.bookId, table.email),
@@ -441,6 +442,7 @@ export const familyBookMembers = sqliteTable('family_book_members', {
   index('family_members_email_status_idx').on(table.email, table.status),
   check('family_members_status', sql`${table.status} IN ('pending','active','revoked','declined')`),
   check('family_members_revision', sql`${table.revision} >= 1`),
+  check('family_members_role', sql`${table.role} IN ('editor','viewer')`),
 ]);
 export const familyBookMemberOperations = sqliteTable('family_book_member_operations', {
   operationId: text('operation_id').primaryKey().notNull(), actorUserId: text('actor_user_id').notNull(),
@@ -453,3 +455,34 @@ export const familyFinanceCommands = sqliteTable('family_finance_commands', {
   membershipId: text('membership_id'), accessRevision: integer('access_revision').notNull(), requestHash: text('request_hash').notNull(),
   action: text('action').notNull(), targetId: text('target_id'), createdAt: text('created_at').notNull(),
 }, (table) => [primaryKey({ columns: [table.bookId, table.operationId] }), index('family_finance_commands_actor_idx').on(table.actorUserId, table.createdAt)]);
+
+// Public catalog maintenance is shared site configuration, separate from personal records.
+export const managedFoods = sqliteTable('managed_foods', {
+  id: text('id').primaryKey().notNull(), replacesId: text('replaces_id'), draftJson: text('draft_json').notNull(),
+  revision: integer('revision').notNull().default(1), publishedRevision: integer('published_revision'),
+  status: text('status').notNull().default('draft'), createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (table) => [uniqueIndex('managed_foods_replaces_idx').on(table.replacesId),
+  index('managed_foods_status_idx').on(table.status, table.updatedAt), check('managed_foods_status', sql`${table.status} IN ('draft','published','archived')`)]);
+export const managedFoodVersions = sqliteTable('managed_food_versions', {
+  itemId: text('item_id').notNull().references(() => managedFoods.id), revision: integer('revision').notNull(),
+  definitionJson: text('definition_json').notNull(), createdBy: text('created_by').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.itemId, table.revision] })]);
+export const managedFoodOperations = sqliteTable('managed_food_operations', {
+  operationId: text('operation_id').primaryKey().notNull(), actorUserId: text('actor_user_id').notNull(),
+  itemId: text('item_id').notNull(), action: text('action').notNull(), requestHash: text('request_hash').notNull(),
+  resultJson: text('result_json').notNull(), createdAt: text('created_at').notNull(),
+});
+export const familyBookActivity = sqliteTable('family_book_activity', {
+  id: text('id').primaryKey().notNull(), bookId: text('book_id').notNull().references(() => familyBooks.id),
+  actorUserId: text('actor_user_id').notNull(), actorName: text('actor_name').notNull(), action: text('action').notNull(),
+  targetId: text('target_id'), targetName: text('target_name'), createdAt: text('created_at').notNull(),
+}, (table) => [index('family_book_activity_book_created_idx').on(table.bookId, table.createdAt, table.id)]);
+export const notificationReadStates = sqliteTable('notification_read_states', {
+  userId: text('user_id').notNull(), notificationId: text('notification_id').notNull(), readAt: text('read_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.notificationId] }),
+  index('notification_read_states_owner_time_idx').on(table.userId, table.readAt)]);
+export const notificationPreferences = sqliteTable('notification_preferences', {
+  userId: text('user_id').primaryKey().notNull(), settingsJson: text('settings_json').notNull(),
+  revision: integer('revision').notNull(), updatedAt: text('updated_at').notNull(),
+}, (table) => [check('notification_preferences_revision', sql`${table.revision} >= 1`)]);

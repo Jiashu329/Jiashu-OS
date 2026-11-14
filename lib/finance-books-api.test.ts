@@ -82,3 +82,19 @@ void test('family management does not disclose database failures', async (t) => 
   const f = fixture(t); f.breakStorage();
   const result = await f.handlers.GET(f.request()); assert.equal(result.status, 503); assert.doesNotMatch(await result.text(), /SECRET_DATABASE_INTERNAL|SELECT|family_books/);
 });
+
+void test('owners invite read-only members and explicitly change roles with CAS while members cannot promote themselves',async(t)=>{
+  const f=fixture(t);
+  const response=await f.handlers.INVITE(f.request({email:'bob@example.invalid',role:'viewer'}),'own');assert.equal(response.status,200);
+  const {member}=await response.json() as {member:{id:string;bookId:string;role:string}};assert.equal(member.role,'viewer');
+  f.identity({userId:'bob',email:'bob@example.invalid'});
+  assert.equal((await f.handlers.RESPOND(f.request({action:'accept',expectedRevision:1}),member.id)).status,200);
+  const listed=await(await f.handlers.GET(f.request())).json() as {books:Array<{id:string;role:string;canWrite:boolean}>};
+  assert.equal(listed.books.find(item=>item.id===member.bookId)?.canWrite,false);
+  assert.equal((await f.handlers.REVOKE(f.request({action:'role',role:'editor',expectedRevision:2}),member.bookId,member.id)).status,403);
+  f.identity({userId:'alice',email:'alice@example.invalid'});
+  const promoted=await f.handlers.REVOKE(f.request({action:'role',role:'editor',expectedRevision:2}),'own',member.id);assert.equal(promoted.status,200);
+  const next=await promoted.json() as {member:{role:string;revision:number}};assert.equal(next.member.role,'editor');assert.equal(next.member.revision,3);
+  assert.equal((await f.handlers.REVOKE(f.request({action:'role',role:'viewer',expectedRevision:2}),'own',member.id)).status,409);
+  assert.equal((await f.handlers.REVOKE(f.request({action:'role',role:'owner',expectedRevision:3}),'own',member.id)).status,400);
+});

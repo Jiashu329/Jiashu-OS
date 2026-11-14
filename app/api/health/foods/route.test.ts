@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import * as library from '../../../../lib/food-library-catalog.ts';
+import * as service from '../../../../lib/food-library-service.ts';
 import { FOOD_CATALOG_SOURCES } from '../../../../lib/food-catalog.ts';
 import { foodCatalogImages } from '../../../../lib/food-catalog-images.ts';
 
@@ -10,7 +11,10 @@ function fixture() {
   let authenticated = true;
   const source = stripTypeScriptTypes(readFileSync(new URL('./route.ts', import.meta.url), 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
-  const bindings = { ...library, FOOD_CATALOG_SOURCES, foodCatalogImages,
+  const publicFoods = [0,50,100,150].flatMap((offset) => library.browseFoodLibrary({offset,limit:50}).foods);
+  const bindings = { ...library, ...service, FOOD_CATALOG_SOURCES, foodCatalogImages, nutritionDatabase:()=>({}),
+    readFoodLibrarySnapshot:async()=>({publicFoods,personalFoods:[],overrides:[],canManage:false}),
+    unavailable:()=>Response.json({code:'STORAGE_UNAVAILABLE'},{status:503}),
     apiUser: async () => authenticated ? { userId: 'synthetic-user' } : null,
     json: (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } }),
     unauthenticated: () => Response.json({ code: 'SIGN_IN_REQUIRED' }, { status: 401 }) };
@@ -62,4 +66,11 @@ test('a restored cross-brand category resets its response state without returnin
   assert.equal(data.category, ''); assert.equal(data.offset, 0); assert.equal(data.total, 28);
   assert.equal(data.categories.some((category) => category.name === '汉堡和卷'), false);
   assert.ok(data.foods.length > 0 && data.foods.every((food) => food.id.startsWith('luckin-cn:')));
+});
+
+test('a restored private filter is cleared in public scope without reading or exposing private templates', async () => {
+  const response=await fixture().get('?scope=public&brand=mine&category='+encodeURIComponent('自建食物')+'&offset=24');
+  assert.equal(response.status,200);
+  const data=await response.json() as {scope:string;brand:string;category:string;offset:number;total:number};
+  assert.equal(data.scope,'public');assert.equal(data.brand,'');assert.equal(data.category,'');assert.equal(data.offset,0);assert.equal(data.total,165);
 });

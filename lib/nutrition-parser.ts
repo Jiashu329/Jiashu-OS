@@ -152,7 +152,7 @@ function calorieEstimate(raw: unknown): NutritionEstimate | null {
 }
 
 /** Prefer catalog calculations; validated model estimates remain labeled, editable drafts. */
-export function buildNutritionDrafts(answer: string, request: NutritionParserRequest): { drafts: NutritionDraft[]; warnings: string[] } {
+export function buildNutritionDrafts(answer: string, request: NutritionParserRequest, options: { excludedFoodIds?: readonly string[] } = {}): { drafts: NutritionDraft[]; warnings: string[] } {
   if (typeof answer !== 'string' || answer.length > 10000) throw new NutritionParserError();
   let raw: unknown;
   try { raw = JSON.parse(answer); } catch { throw new NutritionParserError(); }
@@ -170,7 +170,7 @@ export function buildNutritionDrafts(answer: string, request: NutritionParserReq
     const name = value.name.trim(), amount = value.amount as number | null, unit = typeof value.unit === 'string' ? value.unit.trim() : null;
     const date = dateFromText(value.dateText, request), meal = validMeal(value.meal) ? value.meal
       : mealFromText(value.sourceText as string, value.dateText as string | null, request.text) ?? request.meal;
-    const candidates = searchFoods(name, 6);
+    const candidates = searchFoods(name, 50).filter((food) => !options.excludedFoodIds?.includes(food.id)).slice(0, 6);
     // The official display name carries its specification; a branded base name
     // may resolve only when exactly one specification matches.
     // A Luckin product is published for one specific cup/temperature/sweetness
