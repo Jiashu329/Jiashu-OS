@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
 import { parseDoubanProfile } from '../../lib/douban.ts';
 import { mergeDoubanDetails } from '../../lib/douban-details.ts';
+import { syntheticPhotoPNG } from './photo-fixture.mjs';
 
 const PROFILE = 'synthetic-douban-user';
 const STAMP = '2026-11-14T08:00:00.000Z';
@@ -55,6 +56,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanDataEpoch = 0;
   state.doubanResetReceipt = null; state.doubanLoseResetReply = false; state.doubanOtherOwnerItems = [];
   state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
+  state.doubanCoverBytes = new Map();
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
   await page.route('**/api/life/douban**', async route => {
@@ -105,7 +107,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         && value.domain === url.searchParams.get('domain') && value.subjectId === url.searchParams.get('subjectId'));
       if (!item?.coverUrl) return route.fulfill({ status: 404, contentType: 'text/plain', body: 'No stored cover' });
       if (state.doubanFailedCovers.has(item.subjectId)) return route.fulfill({ status: 502, contentType: 'text/plain', body: 'Synthetic cover unavailable' });
-      return route.fulfill({ status: 200, contentType: 'image/png', body: await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url)) });
+      return route.fulfill({ status: 200, contentType: 'image/png', body: state.doubanCoverBytes.get(item.subjectId) ?? await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url)) });
     }
     if (url.pathname === '/api/life/douban/import' && method === 'POST') {
       const profile = parseDoubanProfile(body.profile), items = body.items;
@@ -171,9 +173,29 @@ test.afterEach(async ({ page }, testInfo) => {
   expect(testInfo.synthetic.externalRequests, 'Synthetic library records must not contact Douban or another external service').toEqual([]);
   if (!page.isClosed()) await page.screenshot({ path: testInfo.outputPath('douban-acceptance.png'), fullPage: true });
 });
-async function openLibrary(page) {
-  await page.goto('/life/douban');
+async function openLibrary(page, url = '/life/douban') {
+  await page.goto(url);
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
+}
+async function openTools(page, section) {
+  const dialog = page.locator('#douban-tools-dialog');
+  if (!await dialog.isVisible()) await page.locator('#douban-tools-open').click();
+  await expect(dialog).toBeVisible();
+  await page.locator('[data-douban-tools-tab="' + section + '"]').click();
+  await expect(page.locator('#douban-tools-panel-' + section)).toBeVisible();
+}
+async function closeTools(page) {
+  if (await page.locator('#douban-tools-dialog').isVisible()) await page.locator('#douban-tools-close').click();
+  await expect(page.locator('#douban-tools-dialog')).toBeHidden();
+}
+async function selectKind(page, kind) {
+  const chip = page.locator('#douban-kind-chips [data-douban-kind="' + (kind || 'all') + '"]');
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+}
+async function expandDetail(page, section) {
+  const button = page.locator('[data-douban-expand="' + section + '"]');
+  if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') await button.click();
 }
 async function fits(page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'The book and media library must fit desktop and 390px layouts').toBe(true);
@@ -189,8 +211,10 @@ async function installExtensionMock(context, pages, options = {}) {
   await context.addInitScript(({ pages, options }) => {
     // The narrow project also exercises a resized desktop extension window.
     // Real iPhone/Safari support is deliberately not implied by this mock.
-    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 Synthetic Desktop Chrome/130.0.0.0 Safari/537.36' });
-    Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { mobile: false } });
+    if (!options.preserveUserAgent) {
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 Synthetic Desktop Chrome/130.0.0.0 Safari/537.36' });
+      Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { mobile: false } });
+    }
     const runId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111', results = new Map();
     const state = { calls: [], reads: 0, holdStep: options.holdStep ?? null, release: null, pending: false, lostReply: Boolean(options.lostReply),
       subjectPending: false, releaseSubject: null, holdSubject: options.holdSubject ?? null };
@@ -244,13 +268,18 @@ async function extensionCalls(page, action) {
 test('a personal profile is saved separately from explicit public syncing and limited sources remain visibly partial', async ({ page }, testInfo) => {
   await openLibrary(page);
   expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-empty-cta').click();
+  await expect(page.locator('#douban-tools-panel-manage')).toBeVisible();
+  await openTools(page, 'browser');
   await expect(page.locator('#douban-browser-sync')).toBeDisabled();
   if (testInfo.project.name === 'mobile-390-chromium') await expect(page.locator('#douban-browser-status')).toContainText('手机或当前浏览器暂不支持扩展同步');
+  await openTools(page, 'manage');
   await page.locator('#douban-profile').fill('https://www.douban.com/people/' + PROFILE + '/');
   await page.locator('#douban-save').click();
   await expect.poll(() => testInfo.synthetic.doubanConnection.profileId).toBe(PROFILE);
   expect(syncRequests(testInfo)).toEqual([]);
   expect(mutations(testInfo)[0].body).toEqual({ profile: 'https://www.douban.com/people/' + PROFILE + '/', expectedRevision: 0 });
+  await openTools(page, 'public');
   await page.locator('#douban-sync').click();
   await expect.poll(() => testInfo.synthetic.doubanRun?.status).toBe('partial');
   await expect(page.locator('#douban-sync-status')).toContainText(/部分|受限|限制/);
@@ -259,6 +288,8 @@ test('a personal profile is saved separately from explicit public syncing and li
   expect(syncRequests(testInfo)[0].body).toEqual({ expectedConnectionRevision: 1 });
   expect(syncRequests(testInfo).slice(1).every(request => request.body.runId === RUN_ID && Number.isInteger(request.body.expectedRunRevision))).toBe(true);
   expect(JSON.stringify(mutations(testInfo).map(request => request.body))).not.toMatch(/cookie|password|userId|synthetic-owner/);
+  await closeTools(page);
+  await expect(page.locator('#douban-tools-open')).toBeFocused();
   await fits(page);
   await page.locator('#douban-list').screenshot({ path: testInfo.outputPath('douban-library-cards.png') });
 });
@@ -271,11 +302,11 @@ test('movies, series, books, music and unclassified screen records stay searchab
   await page.locator('#douban-next').click();
   await expect.poll(() => testInfo.synthetic.requests.some(request => request.path === '/api/life/douban' && Number(new URLSearchParams(request.search).get('offset')) > 0)).toBe(true);
   for (const kind of KINDS) {
-    await page.locator('#douban-kind').selectOption(kind);
+    await selectKind(page, kind);
     await expect.poll(() => page.locator('#douban-list [data-douban-open]').count()).toBeGreaterThan(0);
     await expect(page.locator('#douban-list')).toContainText('合成' + ({ movie: '电影', series: '电视剧', book: '图书', music: '音乐', screen: '待分类影视' }[kind]));
   }
-  await page.locator('#douban-kind').selectOption('');
+  await selectKind(page, 'all');
   await page.locator('#douban-query').fill('合成电视剧11');
   await page.locator('#douban-search').click();
   await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
@@ -290,7 +321,7 @@ test('movies, series, books, music and unclassified screen records stay searchab
 
 test('pausing finishes only the current step and a page reload waits for an explicit resume', async ({ page }, testInfo) => {
   bind(testInfo.synthetic); testInfo.synthetic.doubanHoldStep = true;
-  await openLibrary(page); await page.locator('#douban-sync').click();
+  await openLibrary(page); await openTools(page, 'public'); await page.locator('#douban-sync').click();
   await expect.poll(() => testInfo.synthetic.doubanStepPending).toBe(true);
   await page.locator('#douban-stop').click();
   testInfo.synthetic.doubanReleaseStep();
@@ -300,6 +331,7 @@ test('pausing finishes only the current step and a page reload waits for an expl
   await page.reload();
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(syncRequests(testInfo)).toHaveLength(beforeReload);
+  await openTools(page, 'public');
   await page.locator('#douban-sync').click();
   await expect.poll(() => testInfo.synthetic.doubanRun.status).toBe('partial');
   expect(testInfo.synthetic.doubanItems).toHaveLength(4);
@@ -308,7 +340,7 @@ test('pausing finishes only the current step and a page reload waits for an expl
 
 test('an account change keeps the old-page profile draft local and blocks sending it as the next account', async ({ page }, testInfo) => {
   bind(testInfo.synthetic); await openLibrary(page);
-  await page.locator('#douban-profile-settings > summary').click();
+  await openTools(page, 'manage');
   const draft = 'https://www.douban.com/people/keep-this-profile-draft/';
   await page.locator('#douban-profile').fill(draft);
   testInfo.synthetic.owner = 'another-synthetic-account';
@@ -324,7 +356,7 @@ test('an account change keeps the old-page profile draft local and blocks sendin
 
 test('private files are normalized locally, previewed without writes and imported only after explicit confirmation', async ({ page }, testInfo) => {
   await openLibrary(page);
-  await page.locator('#douban-import-panel > summary').click();
+  await openTools(page, 'import');
   await page.locator('#douban-import-profile').fill(PROFILE);
   const rawItems = [{ title: '私密导入测试电影', url: 'https://movie.douban.com/subject/1234567/', type: 'movie',
     state: '看过', myRating: 4, collectionDate: '2026-11-12', myComment: '只属于本人的导入短评', score: 9.8,
@@ -374,7 +406,7 @@ test('private files are normalized locally, previewed without writes and importe
 
 test('saved private HTML stays inert while only normalized book records reach the preview and import requests', async ({ page }, testInfo) => {
   await openLibrary(page);
-  await page.locator('#douban-import-panel > summary').click();
+  await openTools(page, 'import');
   await page.locator('#douban-import-profile').fill(PROFILE);
   const savedHTML = `<!DOCTYPE html><html><head><title>本人读过的书(1)</title>
 <link rel="canonical" href="https://book.douban.com/people/${PROFILE}/collect">
@@ -425,6 +457,7 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
     rss: { status: 'failed', received: 0, errorCode: 'DOUBAN_SOURCE_BLOCKED' },
     message: '公开来源未全部完成，已保存获取到的两条音乐记录。' };
   await openLibrary(page);
+  await openTools(page, 'public');
   const screen = page.locator('[data-douban-source="screen"]'), book = page.locator('[data-douban-source="book"]');
   await expect(screen.locator('strong')).toContainText('读取超时');
   await expect(screen.locator('[data-douban-source-reason]')).toContainText('本次等待内没有返回');
@@ -454,6 +487,7 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
   await page.locator('#douban-import-domain').selectOption('music');
   await page.locator('#douban-import-files').setInputFiles(draftFile);
   await page.locator('#douban-import-completed').check();
+  await openTools(page, 'public');
   await page.locator('[data-douban-import-source="screen"]').click();
   await expect(page.locator('#douban-import-profile')).toHaveValue(draftProfile);
   await expect(page.locator('#douban-import-domain')).toHaveValue('music');
@@ -467,6 +501,7 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
   await page.locator('#douban-import-confirm').click();
   await expect(page.locator('#douban-import-retry')).toBeEnabled();
   const beforeRecovery = mutations(testInfo).length;
+  await openTools(page, 'public');
   await page.locator('[data-douban-import-source="screen"]').click();
   await expect(page.locator('#douban-import-profile')).toHaveValue(draftProfile);
   await expect(page.locator('#douban-import-domain')).toHaveValue('music');
@@ -480,6 +515,7 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
   expect(syncRequests(testInfo)).toEqual([]);
   expect(state.externalRequests).toEqual([]);
   await fits(page);
+  await openTools(page, 'public');
   await page.locator('#douban-sources').screenshot({ path: testInfo.outputPath('douban-source-failure-recovery.png') });
 });
 
@@ -587,6 +623,7 @@ test('desktop browser extension syncing starts explicitly and saves only normali
   await openLibrary(page);
   expect(await extensionCalls(page)).toEqual([]);
   expect(mutations(testInfo)).toEqual([]);
+  await openTools(page, 'browser');
   await page.locator('#douban-browser-connect').click();
   await expect(page.locator('#douban-browser-status')).toContainText('浏览器扩展可连接');
   expect((await extensionCalls(page)).map(call => call.body.action)).toEqual(['CONNECT']);
@@ -616,6 +653,7 @@ test('an unknown extension step waits for explicit retry and reuses its original
   bind(state);
   await installExtensionMock(context, [[extensionItem('book', 810)]], { lostReply: true });
   await openLibrary(page);
+  await openTools(page, 'browser');
   await page.locator('#douban-browser-sync').click();
   await expect(page.locator('#douban-browser-sync')).toHaveText('重试并继续浏览器同步');
   await expect(page.locator('#douban-browser-sync')).toBeEnabled();
@@ -640,11 +678,28 @@ test('pausing saves only the current browser page and switching website accounts
   bind(state);
   await installExtensionMock(context, [[extensionItem('book', 820)], [extensionItem('music', 821)]], { holdStep: 0 });
   await openLibrary(page);
-  await page.locator('#douban-import-panel > summary').click();
+  await openTools(page, 'import');
   await page.locator('#douban-import-profile').fill('keep-local-file-draft');
   await page.locator('#douban-import-files').setInputFiles({ name: 'keep-local-draft.json', mimeType: 'application/json', buffer: Buffer.from('[{"title":"尚未提交的本人草稿","url":"https://book.douban.com/subject/9999820/","state":"读过"}]') });
+  await openTools(page, 'browser');
+  await closeTools(page);
+  await page.locator('[data-navigation-page="health"]').click();
+  await expect(page.locator('#draft-guard-dialog')).toBeVisible();
+  await page.locator('#draft-guard-dialog [data-draft-choice="continue"]').click();
+  expect(new URL(page.url()).pathname).toBe('/life/douban');
+  await openTools(page, 'import');
+  await expect(page.locator('#douban-import-profile')).toHaveValue('keep-local-file-draft');
+  expect(await page.locator('#douban-import-files').evaluate(input => input.files[0]?.name)).toBe('keep-local-draft.json');
+  expect(mutations(testInfo)).toEqual([]);
+  await openTools(page, 'browser');
   await page.locator('#douban-browser-sync').click();
   await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.pending)).toBe(true);
+  await closeTools(page);
+  await expect(page.locator('#douban-workspace-progress')).toBeVisible();
+  expect(await extensionCalls(page, 'CANCEL')).toEqual([]);
+  expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
+  await page.locator('#douban-workspace-progress').click();
+  await expect(page.locator('#douban-tools-panel-browser')).toBeVisible();
   await page.locator('#douban-browser-stop').click();
   await page.evaluate(() => window.__doubanExtensionMock.release());
   await expect(page.locator('#douban-browser-status')).toContainText('已暂停浏览器同步');
@@ -678,8 +733,9 @@ test('clearing the personal library previews all own sources, waits for confirma
   const otherOwnerBefore = structuredClone(state.doubanOtherOwnerItems);
   state.doubanRun = newRun(state.doubanConnection);
   await openLibrary(page);
-  await page.locator('#douban-kind').selectOption('book');
+  await selectKind(page, 'book');
   await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  await openTools(page, 'manage');
   await page.locator('#douban-reset-panel > summary').click();
   expect(resetRequests(testInfo)).toEqual([]);
   await expect(page.locator('#douban-reset-confirm')).toBeHidden();
@@ -706,12 +762,14 @@ test('clearing the personal library previews all own sources, waits for confirma
   expect(command).toMatchObject({ action: 'commit', expectedEpoch: 0, confirmed: true });
   expect(command.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   expect(syncRequests(testInfo)).toEqual([]);
+  await openTools(page, 'public');
   await page.locator('#douban-sync').click();
   await expect.poll(() => state.doubanRun?.status).toBe('partial');
   expect(state.doubanItems).toHaveLength(4);
   expect(state.doubanDataEpoch).toBe(1);
   expect(syncRequests(testInfo)[0].body).toEqual({ expectedConnectionRevision: 2 });
   await fits(page);
+  await openTools(page, 'manage');
   await page.locator('#douban-reset-panel').screenshot({ path: testInfo.outputPath('douban-reset-confirmed.png') });
 });
 
@@ -720,7 +778,7 @@ test('an old import cannot resurrect cleared data and retrying an unknown clear 
   bind(state);
   state.doubanItems = [record('movie', 930)];
   await openLibrary(page);
-  await page.locator('#douban-import-panel > summary').click();
+  await openTools(page, 'import');
   await page.locator('#douban-import-files').setInputFiles({ name: 'stale-before-clear.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify([{ title: '清空前的本人导入草稿', url: 'https://book.douban.com/subject/9999930/', state: '读过' }])) });
   await page.locator('#douban-import-completed').check();
   await page.locator('#douban-import-preview').click();
@@ -735,6 +793,7 @@ test('an old import cannot resurrect cleared data and retrying an unknown clear 
   const stale = mutations(testInfo).find(request => request.path === '/api/life/douban/import' && request.body.action === 'commit');
   expect(stale.body.expectedDataEpoch).toBe(0);
   expect(state.doubanItems.map(item => item.subjectId)).toEqual(['9000931']);
+  await openTools(page, 'manage');
   await page.locator('#douban-reset-panel > summary').click();
   await page.locator('#douban-reset-preview').click();
   await expect(page.locator('#douban-reset-confirm')).toBeEnabled();
@@ -798,6 +857,7 @@ test('explicit local work enrichment displays movie, book and music facts separa
   await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成导演');
   await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
   await expect(page.locator('[data-douban-details="summary"]')).toContainText('应保留的原作品简介');
+  await expandDetail(page, 'cast');
   await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成演员12');
   await page.locator('#douban-detail-dialog').screenshot({ path: testInfo.outputPath('douban-work-details-dialog.png') });
   await page.locator('#douban-detail-close').click();
@@ -861,5 +921,160 @@ for (const change of ['account', 'epoch']) test('a pending local subject result 
     await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
   }
   expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('the six main destinations lead with the library and opening tools stays read-only at wide and narrow sizes', async ({ context, page }, testInfo) => {
+  bind(testInfo.synthetic);
+  testInfo.synthetic.doubanItems = Array.from({ length: 12 }, (_, index) => ({ ...record(KINDS[index % KINDS.length], 1100 + index),
+    coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s' + (1100 + index) + '.jpg', details: { year: 2023 + index % 3, doubanRating: 7.2 + index % 3 } }));
+  for (const [index, item] of testInfo.synthetic.doubanItems.entries()) testInfo.synthetic.doubanCoverBytes.set(item.subjectId,
+    syntheticPhotoPNG(180, 240, [[95, 129, 140], [169, 105, 87], [112, 128, 91], [154, 126, 82], [121, 113, 146]][index % 5].map(value => value + Math.floor(index / 5) * 12)));
+  await installExtensionMock(context, [], { preserveUserAgent: true });
+  await openLibrary(page);
+  const navigation = page.getByRole('navigation', { name: '主要页面', exact: true });
+  await expect(navigation.locator('[data-navigation-page]')).toHaveCount(6);
+  expect((await navigation.locator('[data-navigation-page]').allTextContents()).map(text => text.trim())).toEqual(['首页', '健康', '饮食', '书影音', '财务', '同步']);
+  await expect(navigation.locator('[data-navigation-page="douban"]')).toHaveAttribute('href', '/life/douban');
+  await expect(navigation.locator('[data-navigation-page="douban"]')).toHaveAttribute('aria-current', 'page');
+  await expect(navigation.locator('[aria-current]')).toHaveCount(1);
+  await expect(page.locator('.sidebar-utilities [data-context-path="/life/douban"]')).toHaveCount(0);
+  await expect(page.locator('#douban-list')).toBeVisible();
+  await expect(page.locator('#douban-tools-dialog')).toBeHidden();
+  await expect(page.locator('#douban-profile')).toBeHidden();
+  await expect(page.locator('#douban-import-files')).toBeHidden();
+  await expect(page.locator('#douban-sync')).toBeHidden();
+  const covers = page.locator('#douban-list img[data-douban-cover]');
+  await expect(covers).toHaveCount(12);
+  for (let index = 0; index < 12; index++) await covers.nth(index).scrollIntoViewIfNeeded();
+  await expect.poll(() => covers.evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
+  for (const section of ['browser', 'public', 'import', 'manage']) {
+    await openTools(page, section);
+    expect(mutations(testInfo)).toEqual([]);
+    expect(await extensionCalls(page)).toEqual([]);
+    if (['browser', 'manage'].includes(section)) await page.locator('#douban-tools-dialog').screenshot({ path: testInfo.outputPath('douban-tools-' + section + '.png') });
+    await closeTools(page);
+  }
+  await openTools(page, 'browser');
+  const browserTab = page.locator('[data-douban-tools-tab="browser"]');
+  await browserTab.focus(); await browserTab.press('ArrowRight');
+  await expect(page.locator('[data-douban-tools-tab="public"]')).toHaveAttribute('aria-selected', 'true');
+  await page.locator('[data-douban-tools-tab="public"]').press('End');
+  await expect(page.locator('[data-douban-tools-tab="manage"]')).toBeFocused();
+  await page.locator('[data-douban-tools-tab="manage"]').press('Home');
+  await expect(browserTab).toBeFocused();
+  await browserTab.press('ArrowLeft');
+  await expect(page.locator('[data-douban-tools-tab="manage"]')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#douban-tools-dialog')).toBeHidden();
+  await expect(page.locator('#douban-tools-open')).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath('douban-library-first.png'), fullPage: true });
+  const original = page.viewportSize();
+  expect(await navigation.locator('[data-navigation-page]').evaluateAll(links => links.every(link => {
+    const box = link.getBoundingClientRect(); return box.width >= 44 && box.height >= 44 && link.scrollWidth <= link.clientWidth + 1;
+  })), 'Navigation targets must remain readable and at least 44px at the project viewport').toBe(true);
+  await page.setViewportSize({ width: 320, height: original.height });
+  const boxes = await navigation.locator('[data-navigation-page]').evaluateAll(links => links.map(link => ({
+    width: link.getBoundingClientRect().width, height: link.getBoundingClientRect().height,
+    x: link.getBoundingClientRect().x, fits: link.scrollWidth <= link.clientWidth + 1,
+  })));
+  expect(boxes.every(box => box.width >= 44 && box.height >= 44 && box.fits), 'Every mobile navigation target must remain at least 44px with readable labels').toBe(true);
+  expect(boxes.every((box, index) => index === 0 || box.x >= boxes[index - 1].x + boxes[index - 1].width - 1)).toBe(true);
+  await expect(page.locator('[data-navigation-group="douban"]')).toBeHidden();
+  for (const section of ['browser', 'public', 'import', 'manage']) {
+    await openTools(page, section);
+    expect(await page.locator('#douban-tools-dialog').evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth + 1)).toBe(true);
+    expect(await page.locator('#douban-tools-panel-' + section).evaluate(panel => panel.scrollWidth <= panel.clientWidth + 1)).toBe(true);
+    if (['browser', 'manage'].includes(section)) await page.locator('#douban-tools-dialog').screenshot({ path: testInfo.outputPath('douban-tools-' + section + '-320.png') });
+    await closeTools(page);
+  }
+  await fits(page);
+  await page.screenshot({ path: testInfo.outputPath('douban-navigation-320.png'), fullPage: true });
+  expect(mutations(testInfo)).toEqual([]);
+  expect(await extensionCalls(page)).toEqual([]);
+});
+
+test('category chips, restored search and browser history keep the URL and sidebar context aligned before clearing filters', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [...Array.from({ length: 28 }, (_, index) => ({ ...record('book', 1200 + index), title: '目标图书' + index })),
+    { ...record('movie', 1250), title: '目标电影' }, { ...record('music', 1251), title: '目标音乐' }];
+  await openLibrary(page, '/life/douban?kind=book&q=%E7%9B%AE%E6%A0%87&profile=current&offset=24');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(4);
+  await expect(page.locator('#douban-kind-chips [data-douban-kind="book"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-context-kind="book"]')).toHaveAttribute('aria-current', 'page');
+  const contextURL = new URL(await page.locator('[data-context-kind="movie"]').getAttribute('href'), page.url());
+  expect(Object.fromEntries(contextURL.searchParams)).toEqual({ kind: 'movie', q: '目标', profile: 'current' });
+  await selectKind(page, 'movie');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  expect(new URL(page.url()).searchParams.get('offset')).toBeNull();
+  await expect(page.locator('[data-context-kind="movie"]')).toHaveAttribute('aria-current', 'page');
+  await page.goBack();
+  await expect(page.locator('#douban-kind-chips [data-douban-kind="book"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(4);
+  expect(new URL(page.url()).searchParams.get('offset')).toBe('24');
+  await page.goForward();
+  await expect(page.locator('#douban-kind-chips [data-douban-kind="movie"]')).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#douban-query').fill('目标电影');
+  await page.locator('#douban-search').click();
+  await expect(page.locator('#douban-list')).toContainText('目标电影');
+  expect(new URL(page.url()).searchParams.get('q')).toBe('目标电影');
+  await page.locator('#douban-reset-filters').click();
+  await expect(page.locator('#douban-query')).toHaveValue('');
+  await expect(page.locator('#douban-kind-chips [data-douban-kind="all"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-context-kind="all"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(24);
+  const params = new URL(page.url()).searchParams;
+  expect(params.has('q') || params.has('kind') || params.has('offset')).toBe(false);
+  expect(params.get('profile') ?? 'all').toBe('all');
+  expect(mutations(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('long work summaries, casts and track lists expand accessibly and Escape returns focus without a request', async ({ page }, testInfo) => {
+  bind(testInfo.synthetic);
+  testInfo.synthetic.doubanItems = [
+    { ...record('movie', 1300), details: { year: 2025, doubanRating: 8.8,
+      summary: Array.from({ length: 22 }, (_, index) => '第' + (index + 1) + '段合成作品简介：这是用于阅读长文的公开内容，不包含个人资料。').join('\n\n'),
+      cast: Array.from({ length: 24 }, (_, index) => '长名单合成演员' + (index + 1)) } },
+    { ...record('music', 1301), details: { artists: ['合成歌手'], tracks: Array.from({ length: 24 }, (_, index) => '长列表合成曲目' + (index + 1)) } },
+  ];
+  await openLibrary(page);
+  const opener = page.locator('#douban-list [data-douban-open="0"]');
+  await opener.focus(); await opener.press('Enter');
+  await expect(page.locator('#douban-detail-dialog')).toBeVisible();
+  const summary = page.locator('#douban-work-summary'), summaryToggle = page.locator('[data-douban-expand="summary"]');
+  await expect(summaryToggle).toHaveAttribute('aria-expanded', 'false');
+  const collapsedHeight = (await summary.boundingBox()).height;
+  await summaryToggle.focus(); await summaryToggle.press('Enter');
+  await expect(summaryToggle).toHaveAttribute('aria-expanded', 'true');
+  expect((await summary.boundingBox()).height).toBeGreaterThan(collapsedHeight);
+  const castToggle = page.locator('[data-douban-expand="cast"]');
+  await expect(castToggle).toHaveAttribute('aria-expanded', 'false');
+  await castToggle.focus(); await castToggle.press('Enter');
+  await expect(page.locator('[data-douban-long="cast"]')).toHaveAttribute('data-expanded', 'true');
+  await expect(page.locator('[data-douban-long="cast"]')).toContainText('长名单合成演员24');
+  expect(await page.locator('#douban-detail-dialog').evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth + 1)).toBe(true);
+  await page.locator('#douban-detail-dialog').screenshot({ path: testInfo.outputPath('douban-long-details-expanded.png') });
+  if (testInfo.project.name === 'mobile-390-chromium') {
+    const original = page.viewportSize();
+    await page.setViewportSize({ width: 320, height: original.height });
+    expect(await page.locator('#douban-detail-dialog').evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth + 1)).toBe(true);
+    await page.locator('#douban-detail-dialog').screenshot({ path: testInfo.outputPath('douban-long-details-320.png') });
+    await page.setViewportSize(original);
+  }
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#douban-detail-dialog')).toBeHidden();
+  await expect(opener).toBeFocused();
+  const music = page.locator('#douban-list [data-douban-open="1"]');
+  await music.focus(); await music.press('Enter');
+  const tracksToggle = page.locator('[data-douban-expand="tracks"]');
+  await expect(tracksToggle).toHaveAttribute('aria-expanded', 'false');
+  await tracksToggle.focus(); await tracksToggle.press('Enter');
+  await expect(page.locator('[data-douban-long="tracks"]')).toHaveAttribute('data-expanded', 'true');
+  await expect(page.locator('[data-douban-details="tracks"]')).toContainText('长列表合成曲目24');
+  await page.keyboard.press('Escape');
+  await expect(music).toBeFocused();
+  expect(mutations(testInfo)).toEqual([]);
   await fits(page);
 });

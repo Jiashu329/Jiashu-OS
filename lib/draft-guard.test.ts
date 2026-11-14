@@ -5,7 +5,7 @@ import { parseHTML } from 'linkedom';
 import { DRAFT_GUARD_SCRIPT } from './draft-guard.ts';
 
 interface Guard { reset(): void; saved(): void; failed(): void; close(): boolean; readonly dirty: boolean }
-function fixture() {
+function fixture(options:{trackWhenHidden?:boolean}={}) {
   const { window, document } = parseHTML('<!doctype html><html><head></head><body><a href="/next" id="next">下一页</a><dialog id="edit"><form id="form"><input id="value" name="value" value="原值"><button type="submit">保存</button></form></dialog></body></html>');
   const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
   Object.defineProperty(proto, 'open', { configurable: true, get(this: HTMLElement) { return this.hasAttribute('open'); } });
@@ -20,15 +20,15 @@ function fixture() {
   const form = document.getElementById('form')! as HTMLFormElement;
   form.requestSubmit = () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })); };
   const input = document.getElementById('value')! as HTMLInputElement;
-  let blocked = false; let busy = false; let discarded = 0;
+  let blocked = false; let busy = false; let active = true; let discarded = 0;
   const service = (window as unknown as { JiashuDraftGuards: { register(options: object): Guard } }).JiashuDraftGuards;
-  const guard = service.register({ form, dialog, label: '合成编辑', isBusy: () => busy, isBlocked: () => blocked, onDiscard: () => { discarded++; } });
+  const guard = service.register({ form, dialog, trackWhenHidden:options.trackWhenHidden,isActive:()=>active,label: '合成编辑', isBusy: () => busy, isBlocked: () => blocked, onDiscard: () => { discarded++; } });
   dialog.showModal(); guard.reset();
   const event = (name: string, target: Element | typeof window = input, data: object = {}) => { const e = new window.Event(name, { bubbles: true, cancelable: true }); Object.assign(e, data); target.dispatchEvent(e); return e; };
   const edit = (value: string) => { input.value = value; event('input'); };
   const choice = (name: string) => event('click', document.querySelector('[data-draft-choice="' + name + '"]')!, { button: 0 });
   const sheetOpen = () => document.getElementById('draft-guard-dialog')?.hasAttribute('open') === true;
-  return { window, document, dialog, form, input, guard, event, edit, choice, sheetOpen, location, history, navigated, block(value: boolean) { blocked = value; }, busy(value: boolean) { busy = value; }, service, get discarded() { return discarded; } };
+  return { window, document, dialog, form, input, guard, event, edit, choice, sheetOpen, location, history, navigated, block(value: boolean) { blocked = value; }, busy(value: boolean) { busy = value; }, active(value:boolean){active=value;}, service, get discarded() { return discarded; } };
 }
 
 test('unchanged or reverted values close directly without a draft prompt', () => {
@@ -72,6 +72,20 @@ test('beforeunload warns only for active unsaved fields', () => {
   const f = fixture(); assert.equal(f.event('beforeunload', f.window).defaultPrevented, false);
   f.edit('修改'); assert.equal(f.event('beforeunload', f.window).defaultPrevented, true);
   f.guard.saved(); assert.equal(f.event('beforeunload', f.window).defaultPrevented, false);
+});
+
+test('forms opt into protecting drafts after their tool dialog closes or their tab is hidden', () => {
+ const f=fixture({trackWhenHidden:true});f.edit('隐藏工具中的原文件或填写');f.dialog.close();const panel=f.document.createElement('section');panel.hidden=true;f.document.body.appendChild(panel);panel.appendChild(f.dialog);assert.equal(f.guard.dirty,true);assert.equal(f.event('beforeunload',f.window).defaultPrevented,true);
+ const navigation=f.event('click',f.document.getElementById('next')!,{button:0});assert.equal(navigation.defaultPrevented,true);assert.equal(f.navigated.length,0);assert.equal(f.sheetOpen(),true);f.choice('continue');assert.equal(f.input.value,'隐藏工具中的原文件或填写');assert.equal(f.dialog.open,false);assert.equal(panel.hidden,true);
+ f.active(false);assert.equal(f.guard.dirty,false);assert.equal(f.event('beforeunload',f.window).defaultPrevented,false);assert.equal(f.event('click',f.document.getElementById('next')!,{button:0}).defaultPrevented,false);assert.equal(f.navigated.length,0);assert.equal(f.input.value,'隐藏工具中的原文件或填写');
+});
+
+test('hidden pending operations stay protected without a discard action until their active owner finishes', () => {
+ const f=fixture({trackWhenHidden:true});f.dialog.close();f.form.hidden=true;f.busy(true);f.block(true);assert.equal(f.event('beforeunload',f.window).defaultPrevented,true);f.event('click',f.document.getElementById('next')!,{button:0});assert.equal(f.sheetOpen(),true);assert.equal((f.document.querySelector('[data-draft-choice="discard"]') as HTMLButtonElement).disabled,true);f.choice('discard');assert.equal(f.discarded,0);assert.equal(f.navigated.length,0);f.choice('continue');f.busy(false);f.block(false);f.guard.saved();assert.equal(f.event('beforeunload',f.window).defaultPrevented,false);
+});
+
+test('other forms keep the existing visibility behavior unless they opt into hidden tracking', () => {
+ const f=fixture();f.edit('其他页面的隐藏草稿');f.dialog.close();assert.equal(f.guard.dirty,false);assert.equal(f.event('beforeunload',f.window).defaultPrevented,false);assert.equal(f.event('click',f.document.getElementById('next')!,{button:0}).defaultPrevented,false);assert.equal(f.sheetOpen(),false);assert.equal(f.navigated.length,0);
 });
 
 test('same-document Back does not rewrite browser history and keeps the existing form draft', () => {

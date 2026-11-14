@@ -325,6 +325,82 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, location };
 }
 
+function openMediaTools(f: Awaited<ReturnType<typeof fixture>>, section: 'browser' | 'public' | 'import' | 'manage') {
+  const event = () => new f.window.Event('click', { bubbles: true, cancelable: true });
+  f.document.getElementById('douban-tools-open')!.dispatchEvent(event());
+  f.document.querySelector('[data-douban-tools-tab="' + section + '"]')!.dispatchEvent(event());
+  assert.equal(f.document.getElementById('douban-tools-dialog')?.hasAttribute('open'), true);
+  assert.equal(f.document.querySelector('[data-douban-tools-tab="' + section + '"]')?.getAttribute('aria-selected'), 'true');
+  assert.equal(f.document.getElementById('douban-tools-panel-' + section)?.hidden, false);
+}
+
+function mediaWorkspaceRecord(kind: DoubanRecord['kind'], subjectId: string, title: string): DoubanRecord {
+  const domain = kind === 'movie' || kind === 'series' ? 'screen' : kind;
+  const host = domain === 'screen' ? 'movie' : domain;
+  return { domain, kind, subjectId, title, profileId: 'synthetic-profile', url: 'https://' + host + '.douban.com/subject/' + subjectId + '/',
+    coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: '独立的个人短评', publishedAt: null, source: 'import',
+    observedAt: '2026-11-14T00:00:00.000Z', createdAt: '2026-11-14T00:00:00.000Z', updatedAt: '2026-11-14T00:00:00.000Z', metadataCheckedRunId: null };
+}
+
+for (const width of [1280, 390]) {
+  test(width + 'px minified media workspace starts with the library and opens every tool without external actions', { skip: !hasBuild }, async () => {
+    const f = await fixture('id="douban-page"', '/life/douban', width, {}, { foods: [], douban: {
+      connection: { profileId: null, revision: 0, updatedAt: null }, items: [],
+    } });
+    await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+    const main = [...f.document.querySelectorAll('.nav [data-navigation-page]')];
+    assert.deepEqual(main.map(item => item.getAttribute('data-navigation-page')), ['home', 'health', 'nutrition', 'douban', 'finance', 'sync']);
+    assert.equal(f.document.querySelector('[data-navigation-page="douban"]')?.getAttribute('aria-current'), 'page');
+    assert.equal(f.document.querySelector('[data-navigation-page="health"]')?.hasAttribute('aria-current'), false);
+    assert.equal(f.document.getElementById('douban-tools-dialog')?.hasAttribute('open'), false);
+    assert.ok(f.html.indexOf('id="douban-library-title"') < f.html.indexOf('id="douban-tools-dialog"'), 'the library precedes the management panel');
+    const before = f.requests.length;
+    for (const section of ['browser', 'public', 'import', 'manage'] as const) {
+      openMediaTools(f, section);
+      f.document.getElementById('douban-tools-close')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+      assert.equal(f.document.getElementById('douban-tools-dialog')?.hasAttribute('open'), false);
+    }
+    assert.equal(f.requests.length, before, 'opening tools only changes local presentation');
+    assert.equal(f.doubanExtensionMessages.length, 0); assert.ok(f.requests.every(request => request.method === 'GET'));
+    assert.ok(f.document.querySelector('#douban-tools-panel-manage #douban-reset-panel'), 'destructive maintenance stays inside management');
+  });
+
+  test(width + 'px minified category navigation preserves import drafts while searches, URL state and clearing filters remain read-only', { skip: !hasBuild }, async () => {
+    const items = [mediaWorkspaceRecord('movie', '8100001', '合成电影'), mediaWorkspaceRecord('book', '8100002', '合成书籍'), mediaWorkspaceRecord('music', '8100003', '合成音乐')];
+    const f = await fixture('id="douban-page"', '/life/douban', width, {}, { foods: [], douban: {
+      connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: '2026-11-14T00:00:00.000Z' }, items,
+    } });
+    const get = (id: string) => f.document.getElementById('douban-' + id)!;
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 3);
+    openMediaTools(f, 'import');
+    const input = get('import-profile') as HTMLInputElement; input.value = 'draft-source'; input.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+    const file = new File(['[]'], 'retained-private-draft.json', { type: 'application/json' });
+    Object.defineProperty(get('import-files'), 'files', { configurable: true, value: [file] });
+    get('import-files').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+    (get('import-completed') as HTMLInputElement).checked = true; get('import-completed').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+    get('tools-close').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    const leave = new f.window.Event('beforeunload', { cancelable: true }); f.window.dispatchEvent(leave);
+    assert.equal(leave.defaultPrevented, true, 'closing or hiding tools must retain file-draft departure protection');
+    f.document.querySelector('#douban-kind-chips [data-douban-kind="book"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 1 && f.location.search.includes('kind=book'));
+    assert.match(f.document.querySelector('#douban-list h3')?.textContent ?? '', /合成书籍/);
+    assert.equal(f.document.querySelector('[data-douban-kind="book"]')?.getAttribute('aria-pressed'), 'true');
+    assert.equal(f.document.querySelector('[data-navigation-group="douban"] [data-context-kind="book"]')?.getAttribute('aria-current'), 'page');
+    f.location.replace('/life/douban?kind=music'); f.window.dispatchEvent(new f.window.Event('popstate'));
+    await settle(() => f.document.querySelector('#douban-list h3')?.textContent?.includes('合成音乐') === true);
+    assert.equal(f.document.querySelector('[data-douban-kind="music"]')?.getAttribute('aria-pressed'), 'true');
+    (get('query') as HTMLInputElement).value = '不存在的作品'; get('search-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 0 && !get('empty').hidden);
+    assert.match(get('empty-text').textContent ?? '', /筛选|符合|没有/);
+    get('reset-filters').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settle(() => f.document.querySelectorAll('#douban-list .db-card').length === 3 && !f.location.search);
+    openMediaTools(f, 'import');
+    assert.equal(input.value, 'draft-source'); assert.equal((get('import-completed') as HTMLInputElement).checked, true);
+    assert.equal((get('import-files') as HTMLInputElement).files?.[0], file);
+    assert.equal(f.doubanImportBodies.length, 0); assert.ok(f.requests.every(request => request.method === 'GET'));
+  });
+}
+
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
   const f = await fixture('overview-content', '/');
   await settle(() => f.document.getElementById('refresh')?.getAttribute('disabled') === null);
@@ -640,6 +716,7 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   } });
   const get = (id: string) => f.document.getElementById('douban-browser-' + id)!;
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  openMediaTools(f, 'browser');
   assert.equal(f.doubanExtensionMessages.length, 0);
   assert.equal(f.doubanImportBodies.length, 0);
   get('sync').dispatchEvent(new f.window.Event('click', { bubbles: true }));
@@ -700,6 +777,7 @@ void test('minified media reset previews before confirmation, retains its bindin
   await settle(() => get('page').getAttribute('aria-busy') === 'false' && f.document.querySelectorAll('#douban-list .db-card').length === 2);
   assert.equal(f.doubanResetBodies.length, 0); assert.equal(f.doubanExtensionMessages.length, 0);
   assert.ok(f.requests.every(request => request.method === 'GET'));
+  openMediaTools(f, 'manage');
   get('reset-panel').setAttribute('open', '');
   get('reset-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
   await settle(() => !(get('reset-confirm') as HTMLButtonElement).disabled);
@@ -717,6 +795,7 @@ void test('minified media reset previews before confirmation, retains its bindin
   assert.ok(f.requests.every(request => request.method === 'GET' || request.path === '/api/life/douban/reset'), 'reset only writes its two explicit reviewed requests');
   assert.equal(f.requests.some(request => request.path === '/api/life/douban/sync'), false, 'a public-source sync also needs a new click');
   const raw = JSON.stringify([{ title: '明确重新预览的书籍', url: 'https://book.douban.com/subject/9999999/', state: '读过' }]);
+  openMediaTools(f, 'import');
   const file = new File([raw], 'new-generation.json', { type: 'application/json' });
   Object.defineProperty(get('import-files'), 'files', { configurable: true, value: [file] });
   get('import-files').dispatchEvent(new f.window.Event('change', { bubbles: true }));
@@ -768,6 +847,7 @@ test('minified media recovery distinguishes upstream failures and prepares an im
       rss: { status: 'failed', received: 0, errorCode: 'DOUBAN_SOURCE_BLOCKED' }, added: 2, updated: 0, unchanged: 0 },
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  openMediaTools(f, 'public');
   const source = (key: string) => f.document.querySelector('[data-douban-source="' + key + '"]')!;
   assert.match(source('screen').textContent ?? '', /超时/);
   assert.match(source('book').textContent ?? '', /拒绝|访问受限/);
@@ -786,6 +866,7 @@ test('minified media recovery distinguishes upstream failures and prepares an im
   source('book').querySelector('[data-douban-import-source]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   const get = (id: string) => f.document.getElementById('douban-' + id)!;
   assert.equal(get('import-panel').hasAttribute('open'), true);
+  assert.equal(get('tools-panel-import').hidden, false);
   assert.match((get('import-profile') as HTMLInputElement).value, /synthetic-profile/);
   assert.equal((get('import-domain') as unknown as HTMLSelectElement).value, 'book');
   (get('import-profile') as HTMLInputElement).value = 'another-private-profile';
@@ -801,6 +882,7 @@ test('minified private media file parser previews normalized personal fields wit
     connection: { profileId: null, revision: 0, updatedAt: null }, items: [], allowImportPreview: true,
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  openMediaTools(f, 'import');
   const get = (id: string) => f.document.getElementById('douban-' + id)!;
   (get('import-profile') as HTMLInputElement).value = 'synthetic-private-profile';
   get('import-profile').dispatchEvent(new f.window.Event('input', { bubbles: true }));

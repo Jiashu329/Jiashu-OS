@@ -4,7 +4,7 @@ if(!window.JiashuDraftGuards||window.JiashuDraftGuards.document!==document){
   window.JiashuDraftGuards=(()=>{
     const entries=new Set();let sheet=null;let choice=null;let choiceTrigger=null;
     function snapshot(form){return JSON.stringify([...form.querySelectorAll('input,select,textarea')].filter((field)=>!['hidden','submit','button','reset','file'].includes(field.type)&&!field.readOnly&&!field.hasAttribute('data-draft-ignore')).map((field,index)=>[field.name||field.id||index,field.type==='checkbox'||field.type==='radio'?field.checked:field.multiple?[...field.selectedOptions].map((option)=>option.value):field.value]));}
-    function visible(entry){if(!entry.form.isConnected||entry.isActive?.()===false)return false;if(entry.dialog)return entry.dialog.open;for(let node=entry.form;node;node=node.parentElement)if(node.hidden)return false;return true;}
+    function visible(entry){if(!entry.form.isConnected||entry.isActive?.()===false)return false;if(entry.trackWhenHidden===true)return true;if(entry.dialog)return entry.dialog.open;for(let node=entry.form;node;node=node.parentElement)if(node.hidden)return false;return true;}
     function value(entry){return entry.readValue?JSON.stringify(entry.readValue()):snapshot(entry.form);}
     function changed(entry){return visible(entry)&&!entry.isBlocked?.()&&(entry.isDirty?entry.isDirty():value(entry)!==entry.baseline);}
     function dirtyEntries(){return [...entries].filter(changed);}

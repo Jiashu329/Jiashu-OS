@@ -22,7 +22,7 @@ export const DOUBAN_EXTENSION_SCRIPT = String.raw`
   const compatible=()=>!mobile()&&(!window.navigator?.userAgent||/(?:Chrome|Chromium|Edg|HeadlessChrome)\//.test(window.navigator.userAgent));
   const supported=()=>compatible()&&typeof transport()?.sendMessage==='function';
   const outsideLocked=()=>accountChanged()||options.isLocked();
-  function message(text,error=false){el('status').textContent=text||'';el('status').classList.toggle('error',error);}
+  function message(text,error=false,reveal=true){el('status').textContent=text||'';el('status').classList.toggle('error',error);options.onProgress?.();if(error&&reveal&&!accountChanged())options.onError?.();}
   function notify(){update();options.onChange();}
   function update(){
    const connection=options.getConnection(),bound=profileOK(connection?.profileId)&&integer(connection?.revision),blocked=outsideLocked(),canUse=supported();
@@ -111,12 +111,12 @@ export const DOUBAN_EXTENSION_SCRIPT = String.raw`
    finally{state.subjectBusy=false;notify();}
   }
   function resetData(){state.run=null;state.pin=null;state.pendingStep=null;state.page=null;state.saved=0;state.added=0;state.updated=0;state.unchanged=0;state.pages=0;el('progress').hidden=true;}
-  function dataEpochChanged(epoch){if(state.subject&&state.subject.epoch!==epoch)cancelSubject();if(!state.pin||state.pin.dataEpoch===epoch)return;state.epochInvalidated=true;state.stop=true;cancel();resetData();message(epochMessage,true);notify();}
+  function dataEpochChanged(epoch){if(state.subject&&state.subject.epoch!==epoch)cancelSubject();if(!state.pin||state.pin.dataEpoch===epoch)return;state.epochInvalidated=true;state.stop=true;cancel();resetData();message(epochMessage,true,false);notify();}
   function discard(){if(state.busy)return;cancel();resetData();message('本次浏览器同步已结束，已保存的记录仍保留。');notify();}
   function freeze(){state.frozen=true;state.stop=true;cancelSubject();cancel();state.page=null;state.pendingStep=null;message('登录账号已变化，浏览器同步已停止，后续返回不会保存。请刷新后继续。',true);notify();}
   el('sync').addEventListener('click',sync);el('connect').addEventListener('click',connect);el('login').addEventListener('click',login);el('stop').addEventListener('click',()=>{if(state.busy){state.stop=true;message('正在完成并保存当前页，随后暂停。');notify();}});el('reset').addEventListener('click',()=>{if(!outsideLocked()&&!state.busy&&!state.page?.commit)discard();});el('form').addEventListener('submit',event=>event.preventDefault());
   message(!compatible()?'手机或当前浏览器暂不支持扩展同步，请使用电脑 Chrome／Edge，或下方文件导入。':supported()?'点击检测连接，或直接通过浏览器同步。打开本页不会自动读取豆瓣。':'首次使用请按下方指引安装扩展，再检测连接。');update();
-  return{update,isBusy:()=>state.busy||state.subjectBusy,hasPending:pending,isLocked:locked,accountChanged:freeze,dataEpochChanged,discard,readSubject,cancelSubject};
+  return{update,isBusy:()=>state.busy||state.subjectBusy,hasPending:pending,isLocked:locked,accountChanged:freeze,dataEpochChanged,discard,readSubject,cancelSubject,workspaceState:()=>({active:state.busy||pending()||Boolean(state.run),resumable:Boolean(state.run&&!state.run.done),busy:state.busy,hasPending:pending(),progressText:el('status').textContent||''})};
  }};
 })();
 `;

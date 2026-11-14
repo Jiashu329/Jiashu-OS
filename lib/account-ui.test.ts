@@ -118,7 +118,7 @@ void test('account page keeps auth navigation and data scope explanations while 
   const { document } = parseHTML(html);
   assert.equal(document.querySelector('.sidebar-account')?.getAttribute('href'), '/account');
   assert.equal(document.querySelector('.sidebar-account')?.getAttribute('aria-current'), 'page');
-  assert.equal(document.querySelectorAll('[data-navigation-page]').length, 5);
+  assert.equal(document.querySelectorAll('[data-navigation-page]').length, 6);
   assert.equal((document.querySelector('[data-account-owner-only]') as HTMLElement).hidden, true);
   assert.match(document.querySelector('main')?.textContent ?? '', /健康与饮食/);
   assert.match(document.querySelector('main')?.textContent ?? '', /多人分别登录不会自动共享账本/);
