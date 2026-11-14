@@ -183,6 +183,13 @@
       "when": 1794659747320,
       "tag": "0025_douban_data_resets",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1794660299926,
+      "tag": "0026_owner_requested_douban_reset",
+      "breakpoints": true
     }
   ]
 }
