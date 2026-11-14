@@ -13,7 +13,7 @@ test('browser acceptance fixture refuses managed preview substitution and expose
 });
 
 test('all synthetic fixture pages emit parseable inline scripts', () => {
-  for (const pathname of ['/', '/health', '/health/nutrition', '/health/records', '/health/weight-plan', '/finance', '/finance/goals', '/finance/runway', '/finance/review', '/data/backup', '/sync/templates']) {
+  for (const pathname of ['/', '/health', '/health/review', '/health/nutrition', '/health/records', '/health/weight-plan', '/finance', '/finance/goals', '/finance/runway', '/finance/review', '/data/backup', '/sync/templates']) {
     const html = renderBrowserFixture(pathname);
     assert.ok(html, pathname);
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter(([, attributes]) => !/type=["']application\//.test(attributes));

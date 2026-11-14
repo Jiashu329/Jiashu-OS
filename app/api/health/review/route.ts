@@ -7,6 +7,7 @@ import { readWeeklyActions } from '../../../../db/health-weekly-actions-store';
 import { shiftWeekDay } from '../../../../lib/health-weekly-actions';
 import { readWithDeadline } from '../../../../lib/read-deadline';
 import { buildHealthWeeklyReview, HealthWeekValidationError, parseHealthWeekQuery } from '../../../../lib/health-weekly';
+import { buildHealthWeeklyFocus } from '../../../../lib/health-weekly-focus';
 import { apiUser, json, unauthenticated, unavailable } from '../../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
         readWithDeadline(readWeeklyActions(env.DB, user.userId, [selection.previousStart, selection.weekStart, shiftWeekDay(selection.weekStart, 7)])),
       ]),
     ]);
-    return json(buildHealthWeeklyReview(health.measurements, settings, selection, now, {
+    const review = buildHealthWeeklyReview(health.measurements, settings, selection, now, {
       nutrition: nutrition.status === 'fulfilled' ? nutrition.value : [],
       weightPlan: weightPlan.status === 'fulfilled' ? weightPlan.value : null,
       actions: actions.status === 'fulfilled' ? { previous: actions.value[0], current: actions.value[1], next: actions.value[2] } : undefined,
@@ -38,7 +39,8 @@ export async function GET(request: Request) {
         weightPlan: weightPlan.status === 'fulfilled' ? 'ready' : 'unavailable',
         actions: actions.status === 'fulfilled' ? 'ready' : 'unavailable',
       },
-    }));
+    });
+    return json({ ...review, focus: buildHealthWeeklyFocus(review) });
   } catch (error) {
     if (error instanceof HealthWeekValidationError) return json({ error: error.message, code: error.code }, 400);
     return unavailable();

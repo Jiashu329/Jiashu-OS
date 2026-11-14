@@ -9,12 +9,15 @@ import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
 import ts from 'typescript';
 import { buildHomeOverview } from './home-overview.ts';
-import { buildHealthSummary } from './health.ts';
+import { buildHealthSummary, type HealthMeasurement } from './health.ts';
 import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
 import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
 import { calculateNutritionNeeds, parseNutritionNeedsInput, type NutritionNeedsInput } from './nutrition-needs.ts';
+import { buildHealthWeeklyReview, parseHealthWeekQuery, type HealthWeeklyReview } from './health-weekly.ts';
+import { buildHealthWeeklyFocus } from './health-weekly-focus.ts';
+import { emptyGoalSettings } from './health-goals.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
@@ -99,7 +102,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable' } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
@@ -153,7 +156,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
         ? { status: 'ready', text: '静息代谢与日常维持需求不同，活动程度会影响估算。', message: null, provider: 'MiniMax', model: 'MiniMax-M3' }
         : { status: 'unavailable', text: null, message: 'AI 解读暂不可用，公式估算仍可参考。' } });
     }
-    if (method !== 'GET') throw new Error('Unexpected automatic production write: ' + method + ' ' + path);
+    if (method !== 'GET') { requests.push({ path, method }); throw new Error('Unexpected automatic production write: ' + method + ' ' + path); }
     // The account chrome now performs an independent identity read. Preserve
     // the business-call assertions below while also enforcing its read-only,
     // payload-free contract instead of counting it as a data/model operation.
@@ -169,6 +172,10 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     if (path === '/api/ai/settings') return Response.json({ scope: 'site', canManage: catalog.aiCanManage !== false, settings: { configured: catalog.aiConfigured === true, model: 'MiniMax-M3', region: 'cn', revision: 0, updatedAt: null, lastTestStatus: null, lastTestAt: null }, storageReady: true });
     if (path === '/api/health/import') return Response.json({ checkedAt: new Date().toISOString(), attempts: [], batches: [], metricStatus: [] });
     const parsed = new URL(path, location.origin);
+    if (parsed.pathname === '/api/health/review') {
+      const review = catalog.weeklyReview ?? buildHealthWeeklyReview([], emptyGoalSettings(), parseHealthWeekQuery(parsed.searchParams));
+      return Response.json({ ...review, focus: buildHealthWeeklyFocus(review) });
+    }
     const emptyMealStates = { breakfast:'unrecorded',lunch:'unrecorded',dinner:'unrecorded',snack:'unrecorded' } as const;
     if (parsed.pathname === '/api/health/nutrition') {
       const selection = parseNutritionQuery(parsed.searchParams);
@@ -464,6 +471,32 @@ for (const [width, ai] of [[390, 'ready'], [1280, 'unavailable']] as const) {
     get('needs-weight').dispatchEvent(new f.window.Event('input', { bubbles: true }));
     assert.equal(get('needs-result').hidden, true, 'changed inputs invalidate the older result');
     assert.equal((get('goal-calories') as HTMLInputElement).value, targets.calories, 'invalidating a preview must retain the separate goal draft');
+  });
+}
+
+for (const width of [390, 1280]) {
+  test('minified weekly review leads with a verified priority and explicitly fills an unsaved action at ' + width + 'px', { skip: !hasBuild }, async () => {
+    const now = new Date('2026-11-14T04:00:00Z');
+    const selection = parseHealthWeekQuery(new URLSearchParams({ week: '2026-11-02' }), now);
+    const measurements: HealthMeasurement[] = ['2026-11-02', '2026-11-03', '2026-11-04', '2026-10-26', '2026-10-27', '2026-10-28'].map((day, index) => ({
+      id: 'synthetic-weekly-' + day, metric: 'sleep', value: index < 3 ? 5.5 : 7.5, unit: 'hours', aggregation: 'daily', source: 'synthetic',
+      startDate: day + 'T00:00:00+08:00', endDate: day + 'T08:00:00+08:00',
+    }));
+    const review = buildHealthWeeklyReview(measurements, { ...emptyGoalSettings(), targets: { steps: null, sleep: 7, active_energy: null }, effectiveFrom: '2026-10-01' }, selection, now);
+    const focus = buildHealthWeeklyFocus(review);
+    const f = await fixture('id="weekly-page"', '/health/review?week=2026-11-02', width, {}, { foods: [], weeklyReview: review });
+    await settle(() => f.document.getElementById('weekly-page')?.getAttribute('aria-busy') === 'false');
+    assert.equal(f.document.getElementById('weekly-content')?.hidden, false);
+    assert.equal(f.document.getElementById('weekly-focus-headline')?.textContent, focus.headline);
+    assert.match(f.document.getElementById('weekly-focus-primary')?.textContent ?? '', /5\.5/);
+    assert.equal(f.document.getElementById('weekly-details')?.hasAttribute('open'), false);
+    assert.equal((f.document.getElementById('weekly-action-text') as HTMLTextAreaElement).value, '');
+    assert.ok(f.requests.every(request => request.method === 'GET'));
+    f.document.getElementById('weekly-focus-use-action')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settle(() => (f.document.getElementById('weekly-action-text') as HTMLTextAreaElement).value === focus.suggestedAction?.text);
+    assert.match(f.document.getElementById('weekly-focus-action-message')?.textContent ?? '', /保存|草稿/);
+    assert.ok(f.requests.every(request => request.method === 'GET'), 'adopting a suggestion must not save it automatically');
+    assert.ok(f.document.getElementById('weekly-metrics')?.children.length, 'all detailed metrics remain available');
   });
 }
 

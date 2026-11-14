@@ -9,6 +9,7 @@ import type { GoalTargets } from '../../../../lib/health-goals.ts';
 import { buildHealthSummary, measurementDay, measurementKey, type HealthMeasurement } from '../../../../lib/health.ts';
 import { buildBodyComposition } from '../../../../lib/body-composition.ts';
 import * as weekly from '../../../../lib/health-weekly.ts';
+import { buildHealthWeeklyFocus, type HealthWeeklyFocus } from '../../../../lib/health-weekly-focus.ts';
 import * as recordsStore from '../../../../db/health-records-store.ts';
 import { readWeightPlanSettings, writeWeightPlanSettings } from '../../../../db/weight-plan-store.ts';
 import { listNutritionEntries } from '../../../../db/nutrition-store.ts';
@@ -19,7 +20,7 @@ import { readWithDeadline } from '../../../../lib/read-deadline.ts';
 const NOW = new Date('2026-11-12T08:00:00.000Z');
 const ORIGIN = 'https://synthetic-weekly.example';
 interface ApiError { code: string; error: string }
-async function readReview(response: Response): Promise<weekly.HealthWeeklyReview> { return await response.json() as weekly.HealthWeeklyReview; }
+async function readReview(response: Response): Promise<weekly.HealthWeeklyReview & { focus: HealthWeeklyFocus }> { return await response.json() as weekly.HealthWeeklyReview & { focus: HealthWeeklyFocus }; }
 async function readError(response: Response): Promise<ApiError> { return await response.json() as ApiError; }
 
 function loadExports(path: URL, bindings: Record<string, unknown>, names: string[]): Record<string, unknown> {
@@ -56,7 +57,7 @@ function fixture(t: TestContext) {
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable']);
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
-    ...shared, ...repository, ...weekly, env, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay, readWithDeadline,
+    ...shared, ...repository, ...weekly, env, buildHealthWeeklyFocus, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay, readWithDeadline,
     parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, NOW),
     buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], NOW, args[4]),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
@@ -202,6 +203,9 @@ void test('an empty review keeps unrecorded days and unset goals empty', async (
   const f = fixture(t);
   const data = await readReview(await f.get());
   assert.equal(data.metrics.length, 4);
+  assert.ok(data.focus.headline);
+  assert.ok(data.focus.summary);
+  assert.ok((data.focus.primary ? 1 : 0) + data.focus.secondary.length <= 3);
   for (const metric of data.metrics) {
     assert.equal(metric.currentAverage, null);
     assert.equal(metric.previousAverage, null);
@@ -211,6 +215,33 @@ void test('an empty review keeps unrecorded days and unset goals empty', async (
     assert.equal(metric.currentAchievedDays, null);
     assert.ok(metric.currentPoints.every((point) => point.value === null));
   }
+});
+
+void test('weekly priorities explain only the signed-in user’s completed-day evidence without saving an action', async (t) => {
+  const f = fixture(t);
+  await f.setGoals('alice', { steps: null, sleep: 7, active_energy: null });
+  await f.setGoals('bob', { steps: null, sleep: 7, active_energy: null });
+  for (const day of ['2026-11-09', '2026-11-10', '2026-11-11']) {
+    f.record('alice', daily('sleep', day, 5.5, 'alice-private-source'));
+    f.record('bob', daily('sleep', day, 8, 'bob-private-source'));
+  }
+  f.record('alice', daily('sleep', '2026-11-12', 0, 'unfinished-today'));
+  const alice = await readReview(await f.get('userId=bob'));
+  assert.equal(alice.focus.primary?.metric, 'sleep');
+  assert.equal(alice.focus.primary?.kind, 'attention');
+  assert.match(alice.focus.primary?.evidence ?? '', /5\.5/);
+  assert.ok(alice.focus.suggestedAction?.text);
+  assert.deepEqual(alice.actions, { previous: null, current: null, next: null }, 'reading priorities must not persist suggested actions');
+  assert.equal(JSON.stringify(alice.focus).includes('private-source'), false);
+  assert.equal(JSON.stringify(alice.focus).includes('unfinished-today'), false);
+  f.signIn('bob');
+  const bob = await readReview(await f.get());
+  assert.notDeepEqual(bob.focus, alice.focus);
+  assert.deepEqual(bob.actions, { previous: null, current: null, next: null });
+  assert.ok([bob.focus.primary, ...bob.focus.secondary].filter(Boolean).every(item => {
+    const url = new URL(item!.href, ORIGIN);
+    return url.origin === ORIGIN && ['/health', '/health/nutrition', '/sync'].includes(url.pathname);
+  }));
 });
 
 void test('unavailable storage returns an error rather than an empty health review', async (t) => {

@@ -8,6 +8,7 @@ import { withPageAccount } from '../lib/page-account.ts';
 import { renderHomeApp } from '../home-ui.ts';
 import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderHealthRecordsPage } from '../health-records-page.ts';
+import { renderHealthWeeklyPage } from '../health-weekly-page.ts';
 import { renderFinanceApp } from '../finance-ui.ts';
 import { renderFinanceGoalsPage } from '../finance-goals-page.ts';
 import { renderShortcutTemplatesPage } from '../shortcut-templates-page.ts';
@@ -22,6 +23,7 @@ function renderSyntheticPage(pathname) {
   if (pathname === '/') return renderHomeApp();
   if (pathname === '/health/nutrition') return renderNutritionPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/health/review') return renderHealthWeeklyPage();
   if (pathname === '/health') return renderApp();
   if (pathname === '/health/weight-plan') return renderWeightPlanPage();
   if (pathname === '/finance') return renderFinanceApp(BROWSER_FIXTURE_OWNER);
