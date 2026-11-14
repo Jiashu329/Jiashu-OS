@@ -1,6 +1,6 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.0';
+export const EXTENSION_VERSION = '1.0.1';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -24,6 +24,11 @@ const MESSAGES = {
   DOUBAN_BROWSER_NETWORK: '豆瓣页面暂时无法读取，已停止该来源。',
 };
 const SAFE_CODES = new Set(Object.keys(MESSAGES));
+// Diagnostics are fixed labels, never text, URLs, HTML, or browser exceptions.
+const ERROR_REASONS = new Set(['input', 'document', 'structure_limit', 'account_link', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
+  'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity',
+  'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page']);
+function safeReason(value) { return typeof value === 'string' && ERROR_REASONS.has(value) ? value : undefined; }
 function failure(code, retryAfter) { return { ok: false, error: { code, message: MESSAGES[code] ?? MESSAGES.DOUBAN_BROWSER_INVALID, ...(retryAfter === undefined ? {} : { retryAfter }) } }; }
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function sourceProgress() { return { status: 'pending', start: 0, pages: 0, segmentPages: 0, received: 0, total: null, lastPageIds: null, errorCode: null }; }
@@ -125,12 +130,12 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
       if (active !== run || run.status === 'cancelled') return failure('RUN_NOT_FOUND');
       if (!plain(page) || !Array.isArray(page.items) || page.items.length > 30 || !Number.isSafeInteger(page.total) || page.total < 0 || page.total > 100000
         || page.nextStart !== null && (!Number.isSafeInteger(page.nextStart) || page.nextStart <= source.start || page.nextStart > 100000)
-        || page.accountProfileId !== null && typeof page.accountProfileId !== 'string') throw { code: 'DOUBAN_BROWSER_INVALID' };
-      if (page.accountProfileId !== null && page.accountProfileId !== run.profileId) throw { code: 'DOUBAN_BROWSER_PROFILE_MISMATCH' };
-      if (source.total !== null && source.total !== page.total) throw { code: 'DOUBAN_BROWSER_INVALID' };
+        || page.accountProfileId !== null && typeof page.accountProfileId !== 'string') throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'result_shape' };
+      if (page.accountProfileId !== null && page.accountProfileId !== run.profileId) throw { code: 'DOUBAN_BROWSER_PROFILE_MISMATCH', reason: 'account_mismatch' };
+      if (source.total !== null && source.total !== page.total) throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'total_changed' };
       if (page.accountProfileId !== null) run.accountProfileId = page.accountProfileId;
       const keys = page.items.map(item => domain + ':' + item.subjectId);
-      if (new Set(keys).size !== keys.length || keys.some(key => run.seen.has(key)) || page.items.some(item => item.domain !== domain)) throw { code: 'DOUBAN_BROWSER_INVALID' };
+      if (new Set(keys).size !== keys.length || keys.some(key => run.seen.has(key)) || page.items.some(item => item.domain !== domain)) throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'duplicate_page' };
       items = page.items.map(item => ({ ...item, source: 'import' }));
       for (const key of keys) run.seen.add(key);
       source.pages++; source.segmentPages++; source.received += items.length; source.total = page.total; source.lastPageIds = keys.join(',');
@@ -139,11 +144,16 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
     } catch (error) {
       if (active !== run || run.status === 'cancelled') return failure('RUN_NOT_FOUND');
       const code = SAFE_CODES.has(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID';
+      const reason = safeReason(error?.reason);
       source.status = ['DOUBAN_BROWSER_LOGIN_REQUIRED', 'DOUBAN_BROWSER_CHALLENGE', 'DOUBAN_BROWSER_BLOCKED', 'DOUBAN_BROWSER_RATE_LIMITED', 'DOUBAN_BROWSER_PROFILE_MISMATCH'].includes(code) ? 'blocked' : 'failed';
       source.errorCode = code;
+      if (reason) source.errorReason = reason;
       if (source.status === 'blocked') run.attentionTabId = run.tabs[domain] ?? null;
       if (code === 'DOUBAN_BROWSER_RATE_LIMITED' || code === 'DOUBAN_BROWSER_PROFILE_MISMATCH') {
-        for (const key of DOMAINS) if (run.sources[key].status === 'pending') { run.sources[key].status = 'blocked'; run.sources[key].errorCode = code; }
+        for (const key of DOMAINS) if (run.sources[key].status === 'pending') {
+          run.sources[key].status = 'blocked'; run.sources[key].errorCode = code;
+          if (reason) run.sources[key].errorReason = reason;
+        }
       }
     } finally { run.busy = false; }
     run.step++; finalize(run);
@@ -185,13 +195,16 @@ async function readOwnedPage(chromeApi, run, domain) {
   const expected = new URL(collectionUrl(run.profileId, domain, source.start));
   let here;
   try { here = new URL(tab.url); } catch { throw { code: 'DOUBAN_BROWSER_LOGIN_REQUIRED' }; }
-  if (here.protocol !== 'https:' || here.hostname !== HOSTS[domain] || here.port || here.username || here.password || ![expected.pathname, expected.pathname + '/'].includes(here.pathname)) throw { code: 'DOUBAN_BROWSER_LOGIN_REQUIRED' };
-  await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', files: ['collector-parser.js', 'collector.js'] });
+  if (here.protocol !== 'https:' || here.hostname !== HOSTS[domain] || here.port || here.username || here.password || ![expected.pathname, expected.pathname + '/'].includes(here.pathname)) throw { code: 'DOUBAN_BROWSER_LOGIN_REQUIRED', reason: 'document_position' };
+  try { await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', files: ['collector-parser.js', 'collector.js'] }); }
+  catch { throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'script_unavailable' }; }
   if (run.status !== 'running') throw { code: 'DOUBAN_BROWSER_INVALID' };
-  const results = await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: collectOwnedPage,
-    args: [{ runId: run.id, profileId: run.profileId, domain, start: source.start, url: expected.href, firstPage }] });
+  let results;
+  try { results = await chromeApi.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: collectOwnedPage,
+    args: [{ runId: run.id, profileId: run.profileId, domain, start: source.start, url: expected.href, firstPage }] }); }
+  catch { throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'document_unavailable' }; }
   const result = results?.[0]?.result;
-  if (!result?.ok) throw { code: SAFE_CODES.has(result?.errorCode) ? result.errorCode : 'DOUBAN_BROWSER_INVALID' };
+  if (!result?.ok) throw { code: SAFE_CODES.has(result?.errorCode) ? result.errorCode : 'DOUBAN_BROWSER_INVALID', reason: safeReason(result?.errorReason) ?? (plain(result) ? undefined : 'result_shape') };
   return result.page;
 }
 function cancelOwnedRead(runId) {
@@ -201,18 +214,19 @@ function cancelOwnedRead(runId) {
 async function collectOwnedPage(request) {
   const allowed = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
   const expected = new URL(request.url); let controller; let timer;
-  const invalid = code => { throw { code }; };
+  const invalid = (code, reason) => { throw { code, reason }; };
   try {
     if (location.protocol !== 'https:' || location.hostname !== allowed[request.domain] || location.port || location.username || location.password
       || expected.origin !== location.origin || expected.pathname !== '/people/' + request.profileId + '/collect'
-      || ![expected.pathname, expected.pathname + '/'].includes(location.pathname)) invalid('DOUBAN_BROWSER_LOGIN_REQUIRED');
-    if (typeof globalThis.JiashuDoubanCollector?.parseCollection !== 'function') invalid('DOUBAN_BROWSER_INVALID');
+      || ![expected.pathname, expected.pathname + '/'].includes(location.pathname)) invalid('DOUBAN_BROWSER_LOGIN_REQUIRED', 'document_position');
+    if (typeof globalThis.JiashuDoubanCollector?.parseCollection !== 'function') invalid('DOUBAN_BROWSER_INVALID', 'script_unavailable');
     controller = new AbortController(); globalThis.__jiashuDoubanRead = { runId: request.runId, controller };
     const timeout = new Promise((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject({ code: 'DOUBAN_BROWSER_TIMEOUT' }); }, 15000); });
     const read = async () => {
       let html;
       if (request.firstPage) {
-        if (Number(new URL(location.href).searchParams.get('start') ?? '0') !== request.start) invalid('DOUBAN_BROWSER_INVALID');
+        if (Number(new URL(location.href).searchParams.get('start') ?? '0') !== request.start) invalid('DOUBAN_BROWSER_INVALID', 'document_position');
+        if (typeof document.documentElement?.outerHTML !== 'string') invalid('DOUBAN_BROWSER_INVALID', 'document_unavailable');
         html = document.documentElement.outerHTML;
       } else {
         let response;
@@ -239,7 +253,11 @@ async function collectOwnedPage(request) {
     return await Promise.race([read(), timeout]);
   } catch (error) {
     const safe = ['INVALID', 'TOO_LARGE', 'LOGIN_REQUIRED', 'CHALLENGE', 'BLOCKED', 'PROFILE_MISMATCH', 'RATE_LIMITED', 'NETWORK', 'TIMEOUT'].map(code => 'DOUBAN_BROWSER_' + code);
-    return { ok: false, errorCode: safe.includes(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID' };
+    const reasons = ['input', 'document', 'structure_limit', 'account_link', 'heading', 'total', 'rows', 'item_url', 'item_title', 'item_comment',
+      'item_rating', 'item_date', 'duplicate_items', 'item_range', 'pagination_query', 'pagination_offset', 'pagination_incomplete', 'subject_identity',
+      'subject_structure', 'account_mismatch', 'collection_identity', 'script_unavailable', 'document_unavailable', 'document_position', 'result_shape', 'total_changed', 'duplicate_page'];
+    return { ok: false, errorCode: safe.includes(error?.code) ? error.code : 'DOUBAN_BROWSER_INVALID',
+      ...(typeof error?.reason === 'string' && reasons.includes(error.reason) ? { errorReason: error.reason } : {}) };
   } finally {
     clearTimeout(timer); controller?.abort();
     if (globalThis.__jiashuDoubanRead?.runId === request.runId) delete globalThis.__jiashuDoubanRead;

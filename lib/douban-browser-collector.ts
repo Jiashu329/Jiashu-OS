@@ -8,6 +8,11 @@ export interface DoubanBrowserCollectionPage {
   accountProfileId: string | null;
 }
 export interface DoubanBrowserSubjectMetadata { kind: 'movie' | 'series' | 'book' | 'music' | null; coverUrl: string | null }
+/** Fixed diagnostic labels only; never include page text, addresses or user data. */
+export type DoubanBrowserCollectorReason = 'input' | 'document' | 'structure_limit' | 'account_navigation' | 'account_mismatch'
+  | 'collection_identity' | 'heading' | 'total' | 'rows' | 'item_url' | 'item_title' | 'item_comment' | 'item_rating'
+  | 'item_date' | 'duplicate_items' | 'item_range' | 'pagination_query' | 'pagination_offset' | 'pagination_incomplete'
+  | 'subject_identity' | 'subject_structure';
 type ParserDocument = Pick<DocumentFragment, 'querySelector' | 'querySelectorAll'>;
 
 /**
@@ -26,22 +31,24 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
     BLOCKED: '豆瓣暂时限制读取，本次读取已停止。',
     PROFILE_MISMATCH: '豆瓣页面或当前登录账户与所选主页不一致，请核对后重试。',
   };
-  function fail(code = 'INVALID'): never {
-    const error = new Error(messages[code] ?? messages.INVALID) as Error & { code: string };
-    error.name = 'DoubanBrowserCollectorError'; error.code = 'DOUBAN_BROWSER_' + code; throw error;
+  function fail(code = 'INVALID', reason?: DoubanBrowserCollectorReason): never {
+    const error = new Error(messages[code] ?? messages.INVALID) as Error & { code: string; reason?: DoubanBrowserCollectorReason };
+    error.name = 'DoubanBrowserCollectorError'; error.code = 'DOUBAN_BROWSER_' + code;
+    if (reason) error.reason = reason;
+    throw error;
   }
   function compact(value: string | null | undefined) { return (value ?? '').replace(/\s+/g, ' ').trim(); }
   function controls(value: string, includeSpace = false): boolean {
     for (const char of value) { const code = char.charCodeAt(0); if (code <= 31 || code >= 127 && code <= 159 || includeSpace && code === 32) return true; }
     return false;
   }
-  function clean(value: string, maximum: number): string {
-    if (!value || value.length > maximum || controls(value)) fail();
+  function clean(value: string, maximum: number, reason: 'item_title' | 'item_comment'): string {
+    if (!value || value.length > maximum || controls(value)) fail('INVALID', reason);
     return value;
   }
   function context(profileId: string, domain: DoubanDomain, start: number) {
     if (typeof profileId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profileId)
-      || !Object.hasOwn(hosts, domain) || !Number.isSafeInteger(start) || start < 0 || start > limits.total) fail();
+      || !Object.hasOwn(hosts, domain) || !Number.isSafeInteger(start) || start < 0 || start > limits.total) fail('INVALID', 'input');
     return 'https://' + hosts[domain] + '/people/' + profileId + '/collect';
   }
   function safeURL(raw: unknown, base?: string): URL | null {
@@ -52,20 +59,20 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
   }
   function collectionLocation(raw: unknown, domain: DoubanDomain, profileId: string, base: string): URL {
     const url = safeURL(raw, base), path = '/people/' + profileId + '/collect';
-    if (!url || url.protocol !== 'https:' || url.hostname !== hosts[domain] || ![path, path + '/'].includes(url.pathname) || url.hash) fail('PROFILE_MISMATCH');
+    if (!url || url.protocol !== 'https:' || url.hostname !== hosts[domain] || ![path, path + '/'].includes(url.pathname) || url.hash) fail('PROFILE_MISMATCH', 'collection_identity');
     const allowed: Record<string, RegExp> = { start: /^(0|[1-9]\d*)$/, sort: /^time$/, rating: /^all$/, filter: /^all$/, mode: /^(?:grid|list)$/ };
-    for (const [key, value] of url.searchParams) if (!Object.hasOwn(allowed, key) || url.searchParams.getAll(key).length !== 1 || !allowed[key].test(value)) fail();
+    for (const [key, value] of url.searchParams) if (!Object.hasOwn(allowed, key) || url.searchParams.getAll(key).length !== 1 || !allowed[key].test(value)) fail('INVALID', 'pagination_query');
     return url;
   }
   function documentFrom(html: string): ParserDocument {
     if (typeof html !== 'string' || html.length > limits.htmlBytes || new TextEncoder().encode(html).byteLength > limits.htmlBytes) fail('TOO_LARGE');
-    if (!html.trim() || /<!ENTITY\b/i.test(html) || /<!DOCTYPE(?!\s+html\s*>)/i.test(html)) fail();
-    let tokens = 0; const expression = /</g; while (expression.exec(html)) if (++tokens > limits.tokens) fail();
+    if (!html.trim() || /<!ENTITY\b/i.test(html) || /<!DOCTYPE(?!\s+html\s*>)/i.test(html)) fail('INVALID', 'document');
+    let tokens = 0; const expression = /</g; while (expression.exec(html)) if (++tokens > limits.tokens) fail('INVALID', 'structure_limit');
     let doc: ParserDocument;
     try {
       if (parseHTML) doc = parseHTML(html);
       else { const template = document.createElement('template'); template.innerHTML = html; doc = template.content; }
-    } catch { return fail(); }
+    } catch { return fail('INVALID', 'document'); }
     const title = compact(doc.querySelector('title')?.textContent);
     if (/禁止访问|访问受限|访问被拒绝|403 Forbidden/i.test(title)) fail('BLOCKED');
     if (/登录跳转|^豆瓣\s*[-–—]?\s*登[录陆]$/.test(title) || doc.querySelector('form[action*="accounts.douban.com"] input[type="password"], #login-form input[type="password"]')) fail('LOGIN_REQUIRED');
@@ -77,10 +84,18 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
     let found: string | null = null;
     for (const link of links) {
       if (!/^(?:个人主页|我的主页|my (?:profile|home))$/i.test(compact(link.textContent))) continue;
-      const url = safeURL(link.getAttribute('href'), 'https://www.douban.com/');
-      const match = url && /^(?:www\.)?douban\.com$/.test(url.hostname) && !url.search && !url.hash ? /^\/people\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(url.pathname) : null;
-      if (!match) fail();
-      if (match[1] !== expected || found && found !== match[1]) fail('PROFILE_MISMATCH');
+      const raw = link.getAttribute('href');
+      if (typeof raw !== 'string' || !raw || raw.length > 2048 || /\\/.test(raw) || controls(raw, true)) fail('INVALID', 'account_navigation');
+      let url: URL; try { url = new URL(raw, 'https://www.douban.com/'); } catch { return fail('INVALID', 'account_navigation'); }
+      if (url.protocol !== 'https:' || !/^(?:www\.)?douban\.com$/.test(url.hostname) || url.username || url.password || url.port) fail('INVALID', 'account_navigation');
+      // Douban's signed-in global navigation uses /mine/, a redirect without an
+      // account ID. Its presence cannot prove which person is signed in. Query
+      // and fragment tracking on this local-only link do not change that fact.
+      if (/^\/mine\/?$/.test(url.pathname)) continue;
+      const match = /^\/people\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(url.pathname);
+      if (!match) fail('INVALID', 'account_navigation');
+      if (match[1] !== expected || found && found !== match[1]) fail('PROFILE_MISMATCH', 'account_mismatch');
+      if (url.search || url.hash) fail('INVALID', 'account_navigation');
       found = match[1];
     }
     return found;
@@ -112,7 +127,7 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
   }
   function day(raw: string): string | null {
     const value = /\b\d{4}-\d{2}-\d{2}\b/.exec(raw)?.[0] ?? null;
-    if (value && (value < '1970-01-01' || value > '2100-12-31' || !Number.isFinite(Date.parse(value + 'T12:00:00Z')) || new Date(value + 'T12:00:00Z').toISOString().slice(0, 10) !== value)) fail();
+    if (value && (value < '1970-01-01' || value > '2100-12-31' || !Number.isFinite(Date.parse(value + 'T12:00:00Z')) || new Date(value + 'T12:00:00Z').toISOString().slice(0, 10) !== value)) fail('INVALID', 'item_date');
     return value;
   }
   function parseCollection(html: string, profileId: string, domain: DoubanDomain, start = 0): DoubanBrowserCollectionPage {
@@ -122,45 +137,46 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
     }
     const heading = compact(doc.querySelector('h1')?.textContent) || compact(doc.querySelector('title')?.textContent);
     const completed = domain === 'screen' ? /看过的(?:电影|电视剧|影视)/ : domain === 'book' ? /读过的书/ : /听过的音乐/;
-    if (!completed.test(heading)) fail();
+    if (!completed.test(heading)) fail('INVALID', 'heading');
     const counter = compact(doc.querySelector('.subject-num')?.textContent);
     const totalText = /\/\s*(\d+)/.exec(counter)?.[1] ?? /[（(]\s*(\d+)\s*[)）]/.exec(heading)?.[1];
     const total = totalText === undefined ? null : Number(totalText);
-    if (total === null || !Number.isSafeInteger(total) || total < 0 || total > limits.total) fail();
+    if (total === null || !Number.isSafeInteger(total) || total < 0 || total > limits.total) fail('INVALID', 'total');
     const rows = [...doc.querySelectorAll('.item-show, .grid-view > .item, .interest-list > .subject-item')];
-    if (rows.length > limits.pageItems || !rows.length && (total !== 0 || start !== 0) || total === 0 && rows.length > 0) fail();
+    if (rows.length > limits.pageItems || !rows.length && (total !== 0 || start !== 0) || total === 0 && rows.length > 0) fail('INVALID', 'rows');
     const items: DoubanRecordInput[] = rows.map(row => {
       const anchor = row.querySelector('.title > a, li.title > a, .info .title a, .info h2 > a');
       const subject = subjectURL(anchor?.getAttribute('href'), domain);
-      if (!subject) return fail();
-      const title = clean(compact(anchor?.querySelector('em')?.textContent || anchor?.textContent), 500);
+      if (!subject) return fail('INVALID', 'item_url');
+      const title = clean(compact(anchor?.querySelector('em')?.textContent || anchor?.textContent), 500, 'item_title');
       const stars = [...row.querySelectorAll('[class]')].map(node => /^\s*rating([1-5])-t\s*$/.exec(node.getAttribute('class') ?? '')?.[1]).filter(Boolean);
-      if (new Set(stars).size > 1) fail();
+      if (new Set(stars).size > 1) fail('INVALID', 'item_rating');
       const comment = compact(row.querySelector('.comment')?.textContent);
       return { domain, ...subject, title, kind: domain, coverUrl: images(row, '.pic img, img'), rating: stars.length ? Number(stars[0]) as DoubanRecordInput['rating'] : null,
-        markedDate: day(compact(row.querySelector('div.date, span.date, .date')?.textContent)), comment: comment ? clean(comment, 2000) : null, publishedAt: null, source: 'import' };
+        markedDate: day(compact(row.querySelector('div.date, span.date, .date')?.textContent)), comment: comment ? clean(comment, 2000, 'item_comment') : null, publishedAt: null, source: 'import' };
     });
-    if (new Set(items.map(item => item.subjectId)).size !== items.length || items.length > total || start + items.length > total) fail();
+    if (new Set(items.map(item => item.subjectId)).size !== items.length) fail('INVALID', 'duplicate_items');
+    if (items.length > total || start + items.length > total) fail('INVALID', 'item_range');
     const nextLinks = [...doc.querySelectorAll('.paginator .next a, .paginator a[rel="next"], a[rel="next"]')];
     let nextStart: number | null = null;
     for (const next of nextLinks) {
       const target = collectionLocation(next.getAttribute('href'), domain, profileId, base), value = target.searchParams.get('start');
-      if (!value || !/^(?:0|[1-9]\d*)$/.test(value)) fail();
+      if (!value || !/^(?:0|[1-9]\d*)$/.test(value)) fail('INVALID', 'pagination_offset');
       const offset = Number(value);
-      if (!Number.isSafeInteger(offset) || offset <= start || offset > limits.total || offset !== start + items.length || offset >= total || nextStart !== null && nextStart !== offset) fail();
+      if (!Number.isSafeInteger(offset) || offset <= start || offset > limits.total || offset !== start + items.length || offset >= total || nextStart !== null && nextStart !== offset) fail('INVALID', 'pagination_offset');
       nextStart = offset;
     }
-    if ((start + items.length < total) !== (nextStart !== null)) fail();
+    if ((start + items.length < total) !== (nextStart !== null)) fail('INVALID', 'pagination_incomplete');
     return { items, nextStart, total, accountProfileId };
   }
   function parseSubject(html: string, domain: DoubanDomain, subjectId: string): DoubanBrowserSubjectMetadata {
     context('subject', domain, 0);
-    if (typeof subjectId !== 'string' || !/^[1-9]\d{0,15}$/.test(subjectId)) fail();
+    if (typeof subjectId !== 'string' || !/^[1-9]\d{0,15}$/.test(subjectId)) fail('INVALID', 'input');
     const base = 'https://' + hosts[domain] + '/subject/' + subjectId + '/', doc = documentFrom(html);
     let canonical = false;
     for (const node of doc.querySelectorAll('link[rel="canonical"], meta[property="og:url"]')) {
       const found = subjectURL(node.getAttribute(node.nodeName.toLowerCase() === 'meta' ? 'content' : 'href'), domain, base);
-      if (!found || found.subjectId !== subjectId) fail();
+      if (!found || found.subjectId !== subjectId) fail('INVALID', 'subject_identity');
       canonical = true;
     }
     const types = new Set<string>(), structuredImages: unknown[] = [];
@@ -184,7 +200,8 @@ export function createDoubanBrowserCollector(parseHTML?: (html: string) => Parse
       }
       visit(json, 0, !Array.isArray(json));
     }
-    if (!canonical && !bound || !compact(doc.querySelector('h1')?.textContent) && !doc.querySelector('#info, #mainpic') && ![...types].some(value => supported.includes(value))) fail();
+    if (!canonical && !bound) fail('INVALID', 'subject_identity');
+    if (!compact(doc.querySelector('h1')?.textContent) && !doc.querySelector('#info, #mainpic') && ![...types].some(value => supported.includes(value))) fail('INVALID', 'subject_structure');
     const fields = [...doc.querySelectorAll('#info .pl')].map(label => {
       const text = compact(label.textContent), match = /^([^:：]{1,20})\s*[:：]\s*(.*)$/.exec(text), values = [match?.[2] ?? ''];
       let sibling = label.nextSibling;

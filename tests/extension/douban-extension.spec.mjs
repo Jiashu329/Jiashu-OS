@@ -30,7 +30,7 @@ function collectionHTML(domain, start = 0) {
     + '<link rel="stylesheet" href="https://private-import.invalid/style"><style>@import url(https://private-import.invalid/import);body{background:url(https://private-import.invalid/background)}</style>'
     + '<script>globalThis.__doubanExtensionRawExecuted=true;fetch("https://private-import.invalid/script")</script>' : '';
   return '<!doctype html><html><head><title>合成用户' + label + '(' + total + ')</title><link rel="icon" href="data:,"><link rel="canonical" href="' + collection + '"></head><body>'
-    + '<div id="db-global-nav"><div class="nav-user-account"><a href="https://www.douban.com/people/' + PROFILE + '/">个人主页</a></div></div>'
+    + '<div id="db-global-nav"><div class="nav-user-account"><a href="https://www.douban.com/mine/">个人主页</a></div></div>'
     + '<h1>合成用户' + label + '(' + total + ')</h1><span class="subject-num">' + (start + 1) + '-' + (start + 1) + ' / ' + total + '</span>'
     + '<div class="grid-view"><div class="item"><div class="pic"><img data-original="https://img1.doubanio.com/view/subject/s/public/s' + subjectId + '.jpg"></div>'
     + '<div class="info"><ul><li class="title"><a href="https://' + hosts[domain] + '.douban.com/subject/' + subjectId + '/"><em>' + title + '</em></a></li>'
@@ -119,7 +119,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.0', protocolVersion: 1 } });
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.1', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
@@ -129,7 +129,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   expect(collectionRequests(requests)).toEqual([]);
 });
 
-test('native isolated-world collection returns normalized completed pages, replays a step and keeps raw HTML and login credentials local', async ({ extension }) => {
+test('native collection with the real mine navigation returns all three sources only to the owning page without activating raw HTML', async ({ extension }) => {
   const { page, context, worker, requests } = extension;
   await page.goto(ORIGIN + '/life/douban');
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
@@ -141,10 +141,14 @@ test('native isolated-world collection returns normalized completed pages, repla
   for (let step = 0; step < 4; step++) {
     const payload = message('STEP', { runId, step, requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-' + String(step + 1).padStart(12, '0') });
     const result = await bridge(page, payload);
-    expect(result).toMatchObject({ ok: true, data: { runId, step: step + 1 } });
+    expect(result).toMatchObject({ ok: true, data: { runId, step: step + 1, progress: { accountProfileId: null } } });
     expect(result.data.items).toHaveLength(1);
     results.push(result);
     if (step === 0) {
+      const anotherOwner = await bridge(page, { ...payload, ownerKey: '22222222-3333-4444-8555-666666666666' });
+      expect(anotherOwner).toMatchObject({ ok: false, error: { code: 'RUN_NOT_FOUND' } });
+      expect(anotherOwner).not.toHaveProperty('data.items');
+      expect(collectionRequests(requests)).toHaveLength(1);
       replayedFirst = await bridge(page, payload);
       expect(replayedFirst).toEqual(result);
       expect(collectionRequests(requests)).toHaveLength(1);
@@ -156,11 +160,13 @@ test('native isolated-world collection returns normalized completed pages, repla
   expect(items.map(item => item.kind)).toEqual(['screen', 'screen', 'book', 'music']);
   expect(items.every(item => item.source === 'import' && item.rating === 4 && item.markedDate === '2026-11-12' && item.comment === '扩展合成个人短评')).toBe(true);
   expect(items.map(item => Object.keys(item).sort())).toEqual(Array.from({ length: 4 }, () => ['domain', 'subjectId', 'url', 'title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'].sort()));
-  expect(results.at(-1)).toMatchObject({ data: { done: true, progress: { status: 'completed', received: 4, pages: 4, accountProfileId: PROFILE } } });
+  expect(results.at(-1)).toMatchObject({ data: { done: true, progress: { status: 'completed', received: 4, pages: 4, accountProfileId: null,
+    sources: { screen: { status: 'complete', received: 2 }, book: { status: 'complete', received: 1 }, music: { status: 'complete', received: 1 } } } } });
   const poll = await bridge(page, message('POLL', { runId }));
   expect(poll).toMatchObject({ ok: true, data: { done: true, step: 4 } });
   expect(poll.data).not.toHaveProperty('items');
   expect(collectionRequests(requests)).toHaveLength(4);
+  expect(collectionRequests(requests).every(request => new URL(request.url).pathname === '/people/' + PROFILE + '/collect')).toBe(true);
   expect(collectionRequests(requests).map(request => request.nativeLogin)).toEqual([true, true, true, true]);
   expect(JSON.stringify({ results, replayedFirst, poll })).not.toMatch(new RegExp(RAW_SECRET + '|' + COOKIE_SECRET + '|private-import\\.invalid|<iframe|<script'));
   const sourcePage = context.pages().find(tab => tab.url().startsWith('https://movie.douban.com/people/'));

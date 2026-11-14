@@ -3,7 +3,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom/worker';
 import { minify } from 'vite';
-import { createDoubanBrowserCollector, renderDoubanBrowserCollectorFactory } from './douban-browser-collector.ts';
+import { createDoubanBrowserCollector, renderDoubanBrowserCollectorFactory, type DoubanBrowserCollectorReason } from './douban-browser-collector.ts';
 import { parseDoubanRecord, type DoubanDomain } from './douban.ts';
 
 const parser = createDoubanBrowserCollector(html => parseHTML(html).document);
@@ -44,6 +44,20 @@ void test('absent account proof stays unknown, matching navigation is reported, 
   throws(() => parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '', globalNav('someone_else')), 'mine', 'screen'), 'PROFILE_MISMATCH');
   const unrelated = '<aside><a href="https://www.douban.com/people/someone_else/">个人主页</a></aside>';
   assert.equal(parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '', unrelated), 'mine', 'screen').accountProfileId, null);
+});
+
+void test('real signed-in global navigation uses /mine/ without proving the account on all three domains', () => {
+  for (const domain of ['screen', 'book', 'music'] as const) for (const href of ['https://www.douban.com/mine/', '/mine/', '//www.douban.com/mine/', 'https://www.douban.com/mine', '/mine/?from=nav%20account#profile']) {
+    const nav = '<div id="db-global-nav" class="global-nav"><div class="top-nav-info"><ul><li class="nav-user-account"><a class="bn-more" href="#">合成账户的帐号</a>'
+      + '<div class="more-items"><ul><li><a href="' + href + '">个人主页</a></li></ul></div></li></ul></div></div>';
+    const result = parser.parseCollection(page(domain, ['1234567'], 1, null, 'grid', '', nav), 'mine', domain);
+    assert.equal(result.items.length, 1); assert.equal(result.total, 1); assert.equal(result.accountProfileId, null);
+    throws(() => parser.parseCollection(page(domain, ['1234567'], 1, null, 'grid', '', nav + globalNav('someone_else')), 'mine', domain), 'PROFILE_MISMATCH');
+  }
+  for (const href of ['https://evil.invalid/mine/', '//www.douban.com.evil.invalid/mine/', 'http://www.douban.com/mine/', 'https://SECRET@www.douban.com/mine/', 'javascript:alert(1)']) {
+    const nav = globalNav('mine').replace('https://www.douban.com/people/mine/', href);
+    throws(() => parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '', nav), 'mine', 'screen'));
+  }
 });
 
 void test('declared collection identity and every next link must stay on the selected profile and fixed host', () => {
@@ -91,6 +105,39 @@ void test('inputs, size, structure and whitelist lengths are bounded before reta
   throws(() => parser.parseCollection(page().replace('合成 &amp; 名称第一季', 'x'.repeat(501)), 'mine', 'screen'));
   for (const offset of [-1, 0.5, Number.NaN, 100001]) throws(() => parser.parseCollection(page(), 'mine', 'screen', offset));
   throws(() => parser.parseCollection(page(), 'mine/../other', 'screen'));
+});
+
+void test('validation diagnostics use fixed reason enums without page text, addresses or private fields', () => {
+  const cases: Array<[DoubanBrowserCollectorReason, () => unknown]> = [
+    ['input', () => parser.parseCollection(page(), '../SECRET', 'screen')],
+    ['document', () => parser.parseCollection('<!ENTITY private SYSTEM "https://private.invalid/SECRET">' + page(), 'mine', 'screen')],
+    ['structure_limit', () => parser.parseCollection('<div>'.repeat(30001), 'mine', 'screen')],
+    ['account_navigation', () => parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '', globalNav('mine').replace('/people/mine/', '/private/SECRET')), 'mine', 'screen')],
+    ['account_mismatch', () => parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '', globalNav('SECRET')), 'mine', 'screen')],
+    ['collection_identity', () => parser.parseCollection(page('screen', ['1234567'], 1, null, 'grid', '<link rel="canonical" href="https://movie.douban.com/people/SECRET/collect">'), 'mine', 'screen')],
+    ['heading', () => parser.parseCollection(page().replaceAll('看过的电影', '想看的电影 SECRET'), 'mine', 'screen')],
+    ['total', () => parser.parseCollection(page().replaceAll('(1)', '').replace('<span class="subject-num">1-1 / 1</span>', ''), 'mine', 'screen')],
+    ['rows', () => parser.parseCollection(page('screen', [], 1), 'mine', 'screen')],
+    ['item_url', () => parser.parseCollection(page().replaceAll('/subject/1234567/', '/subject/1234567/?token=SECRET'), 'mine', 'screen')],
+    ['item_title', () => parser.parseCollection(page().replace('合成 &amp; 名称第一季', 'SECRET'.repeat(100)), 'mine', 'screen')],
+    ['item_comment', () => parser.parseCollection(page().replace('自己的 &lt;短评&gt;', 'SECRET'.repeat(400)), 'mine', 'screen')],
+    ['item_rating', () => parser.parseCollection(page().replace('<span class="rating4-t"></span>', '<span class="rating4-t"></span><span class="rating5-t"></span>'), 'mine', 'screen')],
+    ['item_date', () => parser.parseCollection(page().replace('2026-11-14', '2026-02-30'), 'mine', 'screen')],
+    ['duplicate_items', () => parser.parseCollection(page('screen', ['1234567', '1234567'], 2), 'mine', 'screen')],
+    ['item_range', () => parser.parseCollection(page(), 'mine', 'screen', 1)],
+    ['pagination_query', () => parser.parseCollection(page('screen', ['1234567'], 2, 1).replace('mode=grid', 'mode=grid&amp;token=SECRET'), 'mine', 'screen')],
+    ['pagination_offset', () => parser.parseCollection(page('screen', ['1234567'], 2, 1).replace('start=1', 'start=2'), 'mine', 'screen')],
+    ['pagination_incomplete', () => parser.parseCollection(page('screen', ['1234567'], 2), 'mine', 'screen')],
+    ['subject_identity', () => parser.parseSubject('<h1>SECRET</h1>', 'screen', '1234567')],
+    ['subject_structure', () => parser.parseSubject('<link rel="canonical" href="https://movie.douban.com/subject/1234567/">', 'screen', '1234567')],
+  ];
+  for (const [reason, operation] of cases) assert.throws(operation, (error: unknown) => {
+    assert.ok(error instanceof Error && 'reason' in error && 'code' in error);
+    assert.equal(error.reason, reason);
+    assert.ok(typeof error.code === 'string' && ['DOUBAN_BROWSER_INVALID', 'DOUBAN_BROWSER_PROFILE_MISMATCH'].includes(error.code));
+    assert.doesNotMatch(error.message + JSON.stringify(error), /SECRET|PRIVATE|private\.invalid|<h1>/);
+    return true;
+  });
 });
 
 void test('subject metadata uses bound evidence: TV beats Movie, generic Movie stays unknown', () => {
