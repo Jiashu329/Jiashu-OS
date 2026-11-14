@@ -192,12 +192,27 @@ void test('weekly actions and identical month-close operation IDs belong to inde
 });
 
 void test('complete backups expose only their owner and foreign global-ID previews reveal no stored content', async (t) => {
-  const { db } = fixture(t); await importFor(db, 'alice', 9123, 'Alice-private-watch'); await importFor(db, 'bob', 2345, 'Bob-private-watch');
+  const { db, sqlite } = fixture(t); await importFor(db, 'alice', 9123, 'Alice-private-watch'); await importFor(db, 'bob', 2345, 'Bob-private-watch');
   await createNutritionEntry(db, 'alice', nutrition('Alice-private-food'), ID, NOW);
   await createNutritionEntry(db, 'bob', nutrition('Bob-private-food'), SECOND_ID, NOW);
+  for (const [owner, label] of [['alice', 'Alice'], ['bob', 'Bob']] as const) {
+    sqlite.prepare(`INSERT INTO douban_items
+      (user_id,profile_id,domain,subject_id,kind,title,url,rating,marked_date,comment,source,observed_at,created_at,updated_at)
+      VALUES (?,'same-profile','book','1000000','book',?,'https://book.douban.com/subject/1000000/',5,?,?,'import',?,?,?)`)
+      .run(owner, label + '-private-douban', DAY, label + '-private-douban-comment', NOW, NOW, NOW);
+  }
   await saveAISettings(db, 'alice', { apiKey: 'sk-synthetic-alice-private', model: 'MiniMax-M3', region: 'cn', expectedRevision: 0 }, MASTER, NOW);
   const alice = await exportDataBackup(db, 'alice', NOW); const bob = await exportDataBackup(db, 'bob', NOW);
-  assert.equal(Object.keys(bob.tables).length, 30); assert.equal(BACKUP_TABLE_NAMES.length, 30);
+  assert.equal(Object.keys(bob.tables).length, 31); assert.equal(BACKUP_TABLE_NAMES.length, 31);
+  for (const [backup, label] of [[alice, 'Alice'], [bob, 'Bob']] as const) {
+    assert.deepEqual(Object.keys(backup.tables).sort(), [...BACKUP_TABLE_NAMES].sort());
+    assert.equal(backup.tables.douban_items.length, 1);
+    assert.equal(backup.tables.douban_items[0].title, label + '-private-douban');
+    assert.equal(backup.tables.douban_items[0].comment, label + '-private-douban-comment');
+    for (const excluded of ['douban_connections', 'douban_sync_runs', 'douban_import_receipts']) {
+      assert.equal(Object.hasOwn(backup.tables, excluded), false);
+    }
+  }
   assert.doesNotMatch(JSON.stringify(bob), /Alice-private|sk-synthetic|key_ciphertext|token_hash/);
   assert.doesNotMatch(JSON.stringify(alice), /Bob-private|sk-synthetic|key_ciphertext|token_hash/);
   const forged = structuredClone(bob); const oldId = String(forged.tables.nutrition_entries[0].id);
