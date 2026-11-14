@@ -462,7 +462,7 @@ test('390px production assistant fixture preserves navigation and accessible laz
   const f = await fixture('ha-intro-cards', '/health/assistant', 390);
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:760px\)/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length, 5);
+  assert.equal(f.document.querySelectorAll('.nav-link').length, 6);
   assert.equal(f.document.getElementById('health-chat')?.getAttribute('data-initialized'), 'true');
   await settle(() => f.requests.length === 1 && f.document.getElementById('health-chat-context')?.hidden === false);
   assert.equal(f.document.getElementById('health-chat-panel')?.hidden, false);
@@ -481,7 +481,7 @@ test('390px production backup page initializes every inline script and gates res
   const f = await fixture('id="backup-file"', '/data', 390);
   assert.match(f.html, /name="viewport"/);
   assert.match(f.html, /@media\(max-width:700px\)/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length, 5);
+  assert.equal(f.document.querySelectorAll('.nav-link').length, 6);
   assert.equal(f.document.querySelector('label[for="backup-file"]')?.textContent, '选择完整备份，或清单与全部分卷');
   const file = f.document.getElementById('backup-file')! as HTMLInputElement;
   const preview = f.document.getElementById('backup-preview')! as HTMLButtonElement;
@@ -573,7 +573,7 @@ test('390px minified nutrition opens direct recording with lazy history and prot
   const f=await fixture('id="nutrition-page"','/health/nutrition?compose=1',390,foreignStorage);
   await settle(()=>f.document.getElementById('nutrition-page')?.getAttribute('aria-busy')==='false'&&f.document.getElementById('nutrition-content')?.hidden===false);
   assert.match(f.html,/name="viewport"/);
-  assert.equal(f.document.querySelectorAll('.nav-link').length,5);
+  assert.equal(f.document.querySelectorAll('.nav-link').length,6);
   assert.equal(f.document.querySelector('[data-navigation-page="nutrition"]')?.getAttribute('aria-current'),'page');
   assert.equal(f.document.getElementById('nutrition-total')?.textContent,'—');
   const ids=[...f.document.querySelectorAll('[id]')].map((element)=>element.id);
