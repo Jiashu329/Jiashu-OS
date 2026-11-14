@@ -815,7 +815,13 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   assert.doesNotMatch(JSON.stringify(subject) + JSON.stringify(f.doubanMetadataBodies), /独立的个人短评|markedDate|cookie|password|rawHTML/i);
   assert.match(status.textContent ?? '', /识别影视 1 条/);
   button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settleWork(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2 && status.textContent?.includes('浏览器同步完成') === true,
+  // START is recorded before its promise resolves; the previous completion
+  // text can still be present there. Wait for this refresh's persisted page
+  // and idle controls so it cannot leak unfinished work into the next VM.
+  await settleWork(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2
+    && f.doubanExtensionMessages.filter(body => body.action === 'STEP').length === 2
+    && f.doubanImportBodies.filter(body => body.action === 'commit').length === 2
+    && !(button as HTMLButtonElement).disabled && status.textContent?.includes('浏览器同步完成') === true,
     () => 'repeat sync must finish without downgrading known works: ' + status.textContent);
   assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 1);
   assert.equal(f.doubanMetadataBodies.length, 1);
