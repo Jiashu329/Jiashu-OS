@@ -1,3 +1,4 @@
+import { fetchDoubanSubjectMetadata } from './douban-metadata.ts';
 import { DOMParser } from 'linkedom/worker';
 import { DOUBAN_HOSTS, doubanSubjectUrl, normalizeDoubanCover, parseDoubanProfile, parseDoubanRecord, validDoubanDay } from './douban.ts';
 import type { DoubanDomain, DoubanRecordInput } from './douban.ts';
@@ -187,27 +188,10 @@ export async function fetchDoubanRSS(profileId: string, options: DoubanFetchOpti
   return items;
 }
 
-/** A separate optional request; a missing explicit subtype stays unclassified. */
+/** A separate optional request; generic Movie JSON-LD cannot overrule TV evidence. */
 export async function fetchDoubanSubjectKind(subjectId: string, options: DoubanFetchOptions = {}): Promise<'movie' | 'series' | null> {
-  const url = doubanSubjectUrl('screen', subjectId), doc = documentFrom(await read(url, false, options));
-  const proof = canonicalSubject(doc.querySelector('meta[property="og:url"]')?.getAttribute('content') ?? doc.querySelector('link[rel="canonical"]')?.getAttribute('href') ?? null, 'screen');
-  const types = new Set<string>();
-  for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
-    let json: unknown; try { json = JSON.parse(script.textContent ?? ''); } catch { continue; }
-    const visit = (value: unknown, depth = 0) => {
-      if (depth > 4 || !value || typeof value !== 'object') return;
-      if (Array.isArray(value)) { if (value.length > 100) return; for (const item of value) visit(item, depth + 1); return; }
-      const item = value as Record<string, unknown>;
-      const own = canonicalSubject(typeof item.url === 'string' ? new URL(item.url, url).href : null, 'screen');
-      if (own?.subjectId === subjectId) for (const type of Array.isArray(item['@type']) ? item['@type'] : [item['@type']]) if (typeof type === 'string') types.add(type);
-      if (item['@graph']) visit(item['@graph'], depth + 1);
-    };
-    try { visit(json); } catch { /* A malformed metadata URL is not subtype proof. */ }
-  }
-  if (types.has('TVSeries') && types.has('Movie')) return invalid();
-  if (types.has('TVSeries')) return 'series';
-  if (types.has('Movie')) return 'movie';
-  if (proof?.subjectId !== subjectId || !doc.querySelector('#info') || !compact(doc.querySelector('h1')?.textContent)) return invalid();
-  if ([...doc.querySelectorAll('#info .pl')].some(node => /^(?:集数|单集片长)\s*[:：]?\s*$/.test(compact(node.textContent)))) return 'series';
-  return null;
+  const metadata = await fetchDoubanSubjectMetadata('screen', subjectId, options);
+  return metadata.kind === 'movie' || metadata.kind === 'series' ? metadata.kind : null;
 }
+
+export { read as readDoubanSource, documentFrom as parseDoubanSourceDocument };

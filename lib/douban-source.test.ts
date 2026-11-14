@@ -95,7 +95,7 @@ test('RSS rejects malformed, external-entity and cross-domain-status feeds inste
 test('screen subtypes require explicit subject-bound metadata; a title or a book cannot stand in for a series', async () => {
   for (const [type, kind] of [['Movie', 'movie'], ['TVSeries', 'series']] as const) {
     let calls = 0;
-    assert.equal(await fetchDoubanSubjectKind('1234567', { fetch: async () => { calls++; return htmlResponse('<script type="application/ld+json">' + JSON.stringify({ '@type': type, url: '/subject/1234567/' }) + '</script>'); } }), kind);
+    assert.equal(await fetchDoubanSubjectKind('1234567', { fetch: async () => { calls++; return htmlResponse('<script type="application/ld+json">' + JSON.stringify({ '@type': type, url: '/subject/1234567/' }) + '</script>' + (type === 'Movie' ? '<div id="info"><span class="pl">片长:</span>112分钟</div>' : '')); } }), kind);
     assert.equal(calls, 1);
   }
   const proof = '<meta property="og:url" content="https://movie.douban.com/subject/1234567/"><h1>名称里写第一季也不能猜</h1><div id="info">';

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
 import { parseDoubanProfile } from '../../lib/douban.ts';
 
@@ -42,6 +43,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanConnection = { profileId: null, profileUrl: null, revision: 0, updatedAt: null };
   state.doubanItems = []; state.doubanRun = null; state.doubanHoldStep = false; state.doubanStepPending = false;
   state.doubanImportPreview = null; state.doubanImportReceipts = new Map(); state.doubanLoseImportReply = false;
+  state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
   await page.route('**/api/life/douban**', async route => {
@@ -51,6 +53,31 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': state.owner }, body: JSON.stringify(value) });
     const fail = (message, code, status = 409) => send({ error: message, code }, status);
     if (url.pathname === '/api/life/douban' && method === 'GET') return send(listResult(state, url.searchParams));
+    if ((url.pathname === '/api/life/douban/metadata' && method === 'POST') || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
+      const item = state.doubanItems.find(value => value.profileId === body.profileId && value.domain === body.domain && value.subjectId === body.subjectId);
+      if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
+      if (body.expectedUpdatedAt !== item.updatedAt) return fail('条目已更新，请重新核对。', 'DOUBAN_ITEM_CONFLICT');
+      if (url.pathname.endsWith('/classification')) {
+        if (body.domain !== 'screen' || !['movie', 'series'].includes(body.kind)) return fail('请选择电影或电视剧。', 'DOUBAN_INVALID_CLASSIFICATION', 400);
+        item.kind = body.kind;
+        item.updatedAt = new Date(Date.parse(STAMP) + ++state.doubanMetadataVersion).toISOString();
+        return send({ item });
+      }
+      if (body.confirmed !== true) return fail('请明确确认补全此条目。', 'DOUBAN_METADATA_CONFIRMATION_REQUIRED', 400);
+      const metadata = state.doubanMetadataResults.get(item.subjectId);
+      if (!metadata || metadata.unavailable) return send({ item, changed: false, metadata: { status: 'unavailable', message: '合成来源暂不可用，原记录仍保留。' } });
+      if (metadata.kind) item.kind = metadata.kind;
+      if (metadata.coverUrl) item.coverUrl = metadata.coverUrl;
+      item.updatedAt = new Date(Date.parse(STAMP) + ++state.doubanMetadataVersion).toISOString();
+      return send({ item, changed: true, metadata: { status: 'complete' } });
+    }
+    if (url.pathname === '/api/life/douban/cover' && method === 'GET') {
+      const item = state.doubanItems.find(value => value.profileId === url.searchParams.get('profileId')
+        && value.domain === url.searchParams.get('domain') && value.subjectId === url.searchParams.get('subjectId'));
+      if (!item?.coverUrl) return route.fulfill({ status: 404, contentType: 'text/plain', body: 'No stored cover' });
+      if (state.doubanFailedCovers.has(item.subjectId)) return route.fulfill({ status: 502, contentType: 'text/plain', body: 'Synthetic cover unavailable' });
+      return route.fulfill({ status: 200, contentType: 'image/png', body: await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url)) });
+    }
     if (url.pathname === '/api/life/douban/import' && method === 'POST') {
       const profile = parseDoubanProfile(body.profile), items = body.items;
       if (!Array.isArray(items) || !items.length || items.some(item => item.source !== 'import')) return fail('请提交本地解析后的本人资料。', 'SYNTHETIC_IMPORT_INVALID', 400);
@@ -360,4 +387,100 @@ test('source failures distinguish timeouts from blocks and offer recovery withou
   expect(state.externalRequests).toEqual([]);
   await fits(page);
   await page.locator('#douban-sources').screenshot({ path: testInfo.outputPath('douban-source-failure-recovery.png') });
+});
+
+test('all media covers including private imports use owned same-origin images and missing or failed covers retain an image fallback', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = KINDS.map((kind, index) => ({ ...record(kind, 500 + index), source: 'import',
+    coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p' + (500 + index) + '.jpg' }));
+  state.doubanItems[2].coverUrl = null;
+  state.doubanFailedCovers.add(state.doubanItems[1].subjectId);
+  await openLibrary(page);
+  const covers = page.locator('#douban-list img[data-douban-cover]');
+  await expect(covers).toHaveCount(KINDS.length);
+  for (let index = 0; index < KINDS.length; index++) await covers.nth(index).scrollIntoViewIfNeeded();
+  await expect(covers.nth(1)).toHaveAttribute('data-douban-cover', 'failed');
+  await expect(covers.nth(1)).toHaveAttribute('src', /^data:image\/svg\+xml/);
+  await expect(covers.nth(2)).toHaveAttribute('data-douban-cover', 'missing');
+  await expect(covers.nth(2)).toHaveAttribute('src', /^data:image\/svg\+xml/);
+  for (const index of [0, 3, 4]) {
+    await expect(covers.nth(index)).toHaveAttribute('data-douban-cover', 'available');
+    const url = new URL(await covers.nth(index).getAttribute('src'), page.url());
+    expect(url.origin).toBe(new URL(page.url()).origin);
+    expect(url.pathname).toBe('/api/life/douban/cover');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ profileId: PROFILE, domain: state.doubanItems[index].domain, subjectId: state.doubanItems[index].subjectId });
+  }
+  await expect.poll(() => covers.evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
+  expect(state.requests.filter(request => request.path === '/api/life/douban/cover')).toHaveLength(4);
+  expect(state.requests.filter(request => /metadata|classification/.test(request.path))).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
+  await page.locator('#douban-list').screenshot({ path: testInfo.outputPath('douban-owned-cover-images.png') });
+});
+
+test('metadata completion waits for an explicit batch action and preserves records when one source is unavailable', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('screen', 600), { ...record('book', 601), source: 'import' }, record('music', 602)];
+  state.doubanMetadataResults.set(state.doubanItems[0].subjectId, { kind: 'series', coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p600.jpg' });
+  state.doubanMetadataResults.set(state.doubanItems[1].subjectId, { kind: 'book', coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p601.jpg' });
+  state.doubanMetadataResults.set(state.doubanItems[2].subjectId, { unavailable: true });
+  await openLibrary(page);
+  const metadataRequests = () => state.requests.filter(request => request.path === '/api/life/douban/metadata');
+  expect(metadataRequests()).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-metadata').click();
+  await expect.poll(() => metadataRequests().length).toBe(3);
+  await expect(page.locator('#douban-metadata')).toBeEnabled();
+  expect(state.doubanItems[0].kind).toBe('series');
+  expect(state.doubanItems[1].coverUrl).toContain('/p601.jpg');
+  expect(state.doubanItems[2].coverUrl).toBeNull();
+  expect(state.doubanItems[2].title).toBe('合成音乐602');
+  expect(state.doubanItems).toHaveLength(3);
+  expect(metadataRequests().every(request => request.method === 'POST')).toBe(true);
+  expect(metadataRequests().map(request => request.body)).toEqual(expect.arrayContaining(['screen', 'book', 'music'].map((domain, index) =>
+    ({ profileId: PROFILE, domain, subjectId: String(9000600 + index), expectedUpdatedAt: STAMP, confirmed: true }))));
+  await expect(page.locator('#douban-metadata-status')).toContainText('暂无法获取 1 条');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(3);
+  await expect(page.locator('#douban-list [data-douban-open="0"] img')).toHaveAttribute('data-douban-cover', 'available');
+  await expect(page.locator('#douban-list [data-douban-open="1"] img')).toHaveAttribute('data-douban-cover', 'available');
+  await expect(page.locator('#douban-list [data-douban-open="2"] img')).toHaveAttribute('data-douban-cover', 'missing');
+  expect(syncRequests(testInfo)).toEqual([]);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
+});
+
+test('manual movie or series classification is an explicit saved choice and an account change blocks the old-page choice', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('screen', 700), record('screen', 701)];
+  await openLibrary(page);
+  await page.locator('#douban-list [data-douban-open="0"]').click();
+  await expect(page.locator('#douban-classification-form')).toBeVisible();
+  await expect(page.locator('#douban-classification-kind')).toHaveValue('');
+  await page.locator('#douban-classification-kind').selectOption('series');
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-classification-save').click();
+  await expect.poll(() => state.doubanItems[0].kind).toBe('series');
+  await expect(page.locator('#douban-classification-status')).toContainText('分类已保存为电视剧');
+  const classificationRequests = () => state.requests.filter(request => request.path === '/api/life/douban/classification');
+  expect(classificationRequests()).toHaveLength(1);
+  expect(classificationRequests()[0].method).toBe('PUT');
+  expect(classificationRequests()[0].body).toEqual({ profileId: PROFILE, domain: 'screen', subjectId: '9000700', kind: 'series', expectedUpdatedAt: STAMP });
+  if (await page.locator('#douban-detail-dialog').isVisible()) await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-list [data-douban-open="1"]').click();
+  await page.locator('#douban-classification-kind').selectOption('movie');
+  state.owner = 'another-synthetic-account';
+  await page.locator('#douban-classification-save').click();
+  await expect(page.locator('html')).toHaveAttribute('data-account-changed', '');
+  await expect(page.locator('#douban-classification-kind')).toHaveValue('movie');
+  await expect(page.locator('#douban-classification-save')).toBeDisabled();
+  expect(classificationRequests()).toHaveLength(1);
+  expect(state.doubanItems[1].kind).toBe('screen');
+  expect(state.requests.filter(request => request.path === '/api/life/douban/metadata')).toEqual([]);
+  expect(syncRequests(testInfo)).toEqual([]);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
 });

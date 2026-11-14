@@ -560,8 +560,21 @@ void test('Douban collection backups restore only personal source records withou
   assert.equal(target.sqlite.prepare('SELECT comment FROM douban_items WHERE user_id=?').get('bob')?.comment,'BOB-PRIVATE-COMMENT');
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_connections').get()?.n,0);
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_sync_runs').get()?.n,0);
-  assert.ok(target.sqlite.prepare('SELECT metadata_checked_run_id FROM douban_items WHERE user_id=?').all('restored').every(row=>row.metadata_checked_run_id===null));
+  assert.deepEqual(target.sqlite.prepare('SELECT domain,metadata_checked_run_id FROM douban_items WHERE user_id=? ORDER BY domain').all('restored').map(row=>({...row})),[
+    {domain:'book',metadata_checked_run_id:null},{domain:'screen',metadata_checked_run_id:'manual-kind'},
+  ]);
   const repeat=await previewDataRestore(target.db,'restored',backup);assert.equal(repeat.total.added,0);assert.equal(repeat.total.conflicts,0);
+});
+
+void test('restoring confirmed movie and series classifications protects them while unknown screen records remain eligible for metadata',async(t)=>{
+  const source=fixture(t);
+  for(const [index,kind] of ['movie','series','screen'].entries())seedDouban(source.sqlite,'alice',doubanRow({subject_id:String(index+1),kind,url:`https://movie.douban.com/subject/${index+1}/`}),A);
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  assert.deepEqual(target.sqlite.prepare('SELECT kind,metadata_checked_run_id FROM douban_items WHERE user_id=? ORDER BY subject_id').all('restored').map(row=>({...row})),[
+    {kind:'movie',metadata_checked_run_id:'manual-kind'},{kind:'series',metadata_checked_run_id:'manual-kind'},{kind:'screen',metadata_checked_run_id:null},
+  ]);
+  assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
 });
 
 void test('Douban business changes are previewed as conflicts while a newer unchanged observation is retained',async(t)=>{

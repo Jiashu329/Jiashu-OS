@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { doubanSubjectUrl, type DoubanRecordInput } from '../lib/douban.ts';
-import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRun,
+import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRecord, readDoubanRun,
   startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
 
 const T1 = '2026-11-14T08:00:00.000Z', T2 = '2026-11-14T08:01:00.000Z', T3 = '2026-11-14T08:02:00.000Z';
@@ -370,4 +370,69 @@ test('a private or authoritative update arriving after public-step planning reje
   assert.equal(saved.total, 1); assert.equal(saved.items[0].comment, 'private concurrent value'); assert.equal(saved.items[0].rating, 5); assert.equal(saved.items[0].kind, 'movie');
   const current = await readDoubanRun(f.db, 'alice', run.id);
   assert.equal(current?.revision, run.revision); assert.deepEqual([current?.added, current?.updated, current?.unchanged], [1, 0, 0]);
+});
+
+test('saved-record lookup resolves covers and metadata only inside the authenticated owner, profile and media domain', async t => {
+  const { db } = fixture(t);
+  const cover = 'https://img1.doubanio.com/view/subject/s/public/s1.jpg';
+  await importRecords(db, [privateRecord('1', 'book', { coverUrl: cover, comment: 'ALICE_ONLY' })]);
+  await importRecords(db, [privateRecord('1', 'book', { comment: 'BOB_ONLY' })], { userId: 'bob' });
+  const key = { profileId: 'alice_douban', domain: 'book' as const, subjectId: '1' };
+  const saved = await readDoubanRecord(db, 'alice', key);
+  assert.equal(saved?.coverUrl, cover); assert.equal(saved?.comment, 'ALICE_ONLY');
+  assert.equal((await readDoubanRecord(db, 'bob', key))?.comment, 'BOB_ONLY');
+  assert.equal(await readDoubanRecord(db, 'alice', { ...key, profileId: 'other_profile' }), null);
+  assert.equal(await readDoubanRecord(db, 'alice', { ...key, domain: 'screen' }), null);
+  assert.equal(await readDoubanRecord(db, "alice' OR 1=1 --", key), null);
+  await assert.rejects(readDoubanRecord(db, 'alice', { ...key, subjectId: '../1' }));
+});
+
+test('an explicit manual media kind survives collection, RSS, classification steps and later imported category values', async t => {
+  const { db, sqlite } = fixture(t); let run = await connected(db);
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'movie')]));
+  sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'series')], { now: T3 }));
+  let saved = await readDoubanRecord(db, 'alice', { profileId: 'alice_douban', domain: 'screen', subjectId: '1' });
+  assert.equal(saved?.kind, 'movie'); assert.equal(saved?.metadataCheckedRunId, 'manual-kind'); assert.equal(run.updated, 0);
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'series', { source: 'rss', markedDate: null, publishedAt: '2026-11-13T00:00:00.000Z' })], { now: T3 }));
+  run = await commitDoubanStep(db, 'alice', step(run, [], { classification: { domain: 'screen', subjectId: '1', kind: 'series' }, now: T3 }));
+  saved = await readDoubanRecord(db, 'alice', { profileId: 'alice_douban', domain: 'screen', subjectId: '1' });
+  assert.equal(saved?.kind, 'movie'); assert.equal(saved?.metadataCheckedRunId, 'manual-kind');
+  await importRecords(db, [privateRecord('1', 'series')], { now: T3 });
+  saved = await readDoubanRecord(db, 'alice', { profileId: 'alice_douban', domain: 'screen', subjectId: '1' });
+  assert.equal(saved?.kind, 'movie'); assert.equal(saved?.metadataCheckedRunId, 'manual-kind');
+});
+
+test('newer RSS does not override a manually chosen type even when other RSS metadata can advance', async t => {
+  const { db, sqlite } = fixture(t); let run = await connected(db);
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'movie', { source: 'rss', markedDate: null, publishedAt: '2026-11-01T00:00:00.000Z' })]));
+  sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'series', { source: 'rss', markedDate: null, title: '更新后的公开名称', publishedAt: '2026-11-13T00:00:00.000Z' })], { now: T3 }));
+  const saved = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.equal(saved.kind, 'movie'); assert.equal(saved.title, '更新后的公开名称'); assert.equal(saved.metadataCheckedRunId, 'manual-kind'); assert.equal(run.updated, 1);
+});
+
+test('a same-kind manual choice after preview invalidates that import while ordinary metadata observations remain compatible', async t => {
+  const { db, sqlite } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'movie')]);
+  const items = [privateRecord('1', 'series')], input = { profileId: 'alice_douban', items };
+  const preview = await previewDoubanImport(db, 'alice', input);
+  sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  await assert.rejects(commitDoubanImport(db, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), now: T3 }), conflict);
+  const fresh = await previewDoubanImport(db, 'alice', input);
+  assert.notEqual(fresh.snapshotHash, preview.snapshotHash); assert.equal(fresh.unchanged, 1);
+  await commitDoubanImport(db, 'alice', { ...input, expectedSnapshotHash: fresh.snapshotHash, requestId: crypto.randomUUID(), now: T3 });
+  assert.equal((await listDoubanRecords(db, 'alice')).items[0].kind, 'movie');
+});
+
+test('the transactional import snapshot also detects a same-kind manual choice arriving after its final preparation read', async t => {
+  const f = fixture(t);
+  await importRecords(f.db, [privateRecord('1', 'movie')]);
+  const input = { profileId: 'alice_douban', items: [privateRecord('1', 'series'), privateRecord('2', 'book')] };
+  const preview = await previewDoubanImport(f.db, 'alice', input);
+  f.beforeBatch(() => { f.sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice' AND subject_id='1'").run(); });
+  await assert.rejects(commitDoubanImport(f.db, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), now: T3 }), conflict);
+  const saved = await listDoubanRecords(f.db, 'alice');
+  assert.equal(saved.total, 1); assert.equal(saved.items[0].kind, 'movie'); assert.equal(saved.items[0].metadataCheckedRunId, 'manual-kind');
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM douban_import_receipts').get()?.n, 1);
 });

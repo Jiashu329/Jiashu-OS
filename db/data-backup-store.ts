@@ -194,7 +194,10 @@ export async function restoreDataBackup(db: BackupDatabase, userId: string, inpu
     const columns = spec.columns.filter((c) => c !== 'sequence');
     for (const group of chunks(restored[table])) {
       const triggerRestore=table==='nutrition_day_status'?' ON CONFLICT(user_id,date) DO UPDATE SET complete=excluded.complete,meals_json=excluded.meals_json,revision=excluded.revision,updated_at=excluded.updated_at':'';
-      inserts.push(db.prepare(`INSERT INTO ${table} (user_id,${columns.join(',')}) SELECT ?,${columns.map((c) => `json_extract(value, '$.${c}')`).join(',')} FROM json_each(?) WHERE 1 ORDER BY CAST(key AS INTEGER)${triggerRestore}`).bind(userId,JSON.stringify(group)));
+      // Restoring a known classification is an explicit confirmation; preserve it through later metadata refreshes without exporting internal run markers.
+      const internalColumn=table==='douban_items'?',metadata_checked_run_id':'';
+      const internalValue=table==='douban_items'?",CASE WHEN json_extract(value,'$.domain')='screen' AND json_extract(value,'$.kind') IN ('movie','series') THEN 'manual-kind' ELSE NULL END":'';
+      inserts.push(db.prepare(`INSERT INTO ${table} (user_id,${columns.join(',')}${internalColumn}) SELECT ?,${columns.map((c) => `json_extract(value, '$.${c}')`).join(',')}${internalValue} FROM json_each(?) WHERE 1 ORDER BY CAST(key AS INTEGER)${triggerRestore}`).bind(userId,JSON.stringify(group)));
     }
   }
   const affected = existingFinanceAffected(plan.current,plan.additions);
