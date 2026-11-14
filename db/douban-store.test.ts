@@ -5,11 +5,13 @@ import test, { type TestContext } from 'node:test';
 import { doubanSubjectUrl, type DoubanRecordInput } from '../lib/douban.ts';
 import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRecord, readDoubanRun,
   startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
+import { commitDoubanReset, previewDoubanReset, readDoubanDataEpoch } from './douban-reset-store.ts';
 
 const T1 = '2026-11-14T08:00:00.000Z', T2 = '2026-11-14T08:01:00.000Z', T3 = '2026-11-14T08:02:00.000Z';
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../drizzle/0024_douban.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0025_douban_data_resets.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   let nextBatch: (() => void) | undefined, failStatement = -1;
   const batchSizes: number[] = [];
@@ -435,4 +437,58 @@ test('the transactional import snapshot also detects a same-kind manual choice a
   const saved = await listDoubanRecords(f.db, 'alice');
   assert.equal(saved.total, 1); assert.equal(saved.items[0].kind, 'movie'); assert.equal(saved.items[0].metadataCheckedRunId, 'manual-kind');
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM douban_import_receipts').get()?.n, 1);
+});
+
+async function clearRecords(db: DoubanDatabase, userId = 'alice') {
+  const preview = await previewDoubanReset(db, userId);
+  return commitDoubanReset(db, userId, { expectedEpoch: preview.epoch, expectedPreviewHash: preview.previewHash, requestId: crypto.randomUUID(), confirmed: true, now: T3 });
+}
+function simulateConcurrentClear(sqlite: DatabaseSync, userId = 'alice') {
+  sqlite.prepare('DELETE FROM douban_items WHERE user_id=?').run(userId);
+  sqlite.prepare('DELETE FROM douban_sync_runs WHERE user_id=?').run(userId);
+  sqlite.prepare('DELETE FROM douban_import_receipts WHERE user_id=?').run(userId);
+  sqlite.prepare(`INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at)
+    VALUES (?,1,?,?,?, ?,?)`).run(userId, crypto.randomUUID(), 'a'.repeat(64), '{}', T3, T3);
+}
+const epochConflict = (error: unknown) => error instanceof DoubanStoreError && error.code === 'DOUBAN_DATA_EPOCH_CONFLICT' && error.status === 409;
+
+void test('even an empty-target import preview is fenced by reset generation and a refreshed preview needs the explicit current epoch', async t => {
+  const { db } = fixture(t), input = { profileId: 'alice_douban', items: [privateRecord('77', 'book')] };
+  const before = await previewDoubanImport(db, 'alice', input); assert.equal(before.dataEpoch, 0); assert.equal(before.added, 1);
+  await clearRecords(db); assert.equal(await readDoubanDataEpoch(db, 'alice'), 1);
+  await assert.rejects(previewDoubanImport(db, 'alice', input), epochConflict);
+  await assert.rejects(commitDoubanImport(db, 'alice', { ...input, expectedSnapshotHash: before.snapshotHash, requestId: crypto.randomUUID() }), epochConflict);
+  const fresh = await previewDoubanImport(db, 'alice', { ...input, expectedDataEpoch: 1 }); assert.equal(fresh.dataEpoch, 1); assert.notEqual(fresh.snapshotHash, before.snapshotHash);
+  const receipt = await commitDoubanImport(db, 'alice', { ...input, expectedDataEpoch: 1, expectedSnapshotHash: fresh.snapshotHash, requestId: crypto.randomUUID() });
+  assert.equal(receipt.dataEpoch, 1); assert.equal((await listDoubanRecords(db, 'alice')).total, 1);
+  assert.equal((await previewDoubanImport(db, 'bob', input)).dataEpoch, 0, 'other actors retain epoch-zero compatibility');
+});
+
+void test('a clear winning after import planning rejects the first receipt and rolls back every chunk without resurrecting records', async t => {
+  const f = fixture(t); await importRecords(f.db, [privateRecord('1', 'book')]); await importRecords(f.db, [privateRecord('2', 'book')], { userId: 'bob' });
+  const input = { profileId: 'alice_douban', items: Array.from({ length: 101 }, (_, index) => privateRecord(String(1000 + index), 'book')) };
+  const preview = await previewDoubanImport(f.db, 'alice', input);
+  f.beforeBatch(() => simulateConcurrentClear(f.sqlite));
+  await assert.rejects(commitDoubanImport(f.db, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID() }), epochConflict);
+  assert.equal((await listDoubanRecords(f.db, 'alice')).total, 0); assert.equal((await listDoubanRecords(f.db, 'bob')).total, 1);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_import_receipts WHERE user_id='alice'").get()?.n, 0);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_import_receipts WHERE user_id='bob'").get()?.n, 1);
+});
+
+void test('a pre-clear import receipt cannot report replay success after clear, even when the target was emptied', async t => {
+  const { db } = fixture(t), original = await importRecords(db, [privateRecord('1', 'book')]);
+  await clearRecords(db); await assert.rejects(commitDoubanImport(db, 'alice', original.command), epochConflict);
+  assert.equal((await listDoubanRecords(db, 'alice')).total, 0);
+  for (const expectedDataEpoch of [-1, 0.5, null, '0'] as unknown as number[]) {
+    await assert.rejects(previewDoubanImport(db, 'alice', { profileId: 'alice_douban', items: [privateRecord()], expectedDataEpoch }), error => error instanceof DoubanStoreError && error.status === 400);
+  }
+});
+
+void test('clear after the import batch but before its response prevents a stale successful receipt from returning', async t => {
+  const f = fixture(t), input = { profileId: 'alice_douban', items: [privateRecord('1', 'book')] };
+  const preview = await previewDoubanImport(f.db, 'alice', input);
+  const racing = { prepare: f.db.prepare, async batch(commands: Parameters<DoubanDatabase['batch']>[0]) { const result = await f.db.batch(commands); await clearRecords(f.db); return result; } } as DoubanDatabase;
+  await assert.rejects(commitDoubanImport(racing, 'alice', { ...input, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID() }), epochConflict);
+  assert.equal((await listDoubanRecords(f.db, 'alice')).total, 0); assert.equal(await readDoubanDataEpoch(f.db, 'alice'), 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM douban_import_receipts').get()?.n, 0);
 });

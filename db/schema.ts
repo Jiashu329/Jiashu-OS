@@ -524,3 +524,9 @@ export const doubanImportReceipts = sqliteTable('douban_import_receipts', {
   userId: text('user_id').notNull(), requestId: text('request_id').notNull(), requestHash: text('request_hash').notNull(),
   receiptJson: text('receipt_json').notNull(), createdAt: text('created_at').notNull(),
 }, table => [primaryKey({ columns: [table.userId, table.requestId] })]);
+// A local deletion fence and counter-only receipt; never included in business backups.
+export const doubanDataResets = sqliteTable('douban_data_resets', {
+  userId: text('user_id').primaryKey().notNull(), dataEpoch: integer('data_epoch').notNull(),
+  lastRequestId: text('last_request_id').notNull(), lastRequestHash: text('last_request_hash').notNull(),
+  lastReceiptJson: text('last_receipt_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, table => [check('douban_data_resets_epoch', sql`typeof(${table.dataEpoch})='integer' AND ${table.dataEpoch} BETWEEN 1 AND 9007199254740991`)]);

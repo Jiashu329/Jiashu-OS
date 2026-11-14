@@ -1,4 +1,6 @@
 import { doubanSubjectUrl, parseDoubanProfile, parseDoubanRecord, type DoubanDomain, type DoubanRecordInput } from '../lib/douban.ts';
+import { readDoubanDataEpoch } from './douban-reset-store.ts';
+export { readDoubanDataEpoch } from './douban-reset-store.ts';
 
 export type DoubanDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export type DoubanRunStatus = 'running' | 'completed' | 'partial' | 'failed';
@@ -270,9 +272,9 @@ export async function countUnclassifiedDoubanRecords(db: DoubanDatabase, userId:
   return row?.n ?? 0;
 }
 
-export interface DoubanImportInput { profileId: string; items: DoubanRecordInput[] }
-export interface DoubanImportPreview { profileId: string; snapshotHash: string; total: number; added: number; updated: number; unchanged: number }
-export interface DoubanImportReceipt { profileId: string; requestId: string; total: number; added: number; updated: number; unchanged: number }
+export interface DoubanImportInput { profileId: string; items: DoubanRecordInput[]; expectedDataEpoch?: number }
+export interface DoubanImportPreview { profileId: string; dataEpoch: number; snapshotHash: string; total: number; added: number; updated: number; unchanged: number }
+export interface DoubanImportReceipt { profileId: string; dataEpoch: number; requestId: string; total: number; added: number; updated: number; unchanged: number }
 export interface DoubanImportCommand extends DoubanImportInput { expectedSnapshotHash: string; requestId: string; now?: string }
 type ImportSnapshot = Record<string, string | number | boolean | null> & { domain: string; subjectId: string; exists: number; manualKind: boolean };
 function businessSnapshots(keys: string[], old: Map<string, DoubanRecord>): ImportSnapshot[] {
@@ -292,6 +294,8 @@ async function digest(value: unknown) {
 }
 function importItems(input: DoubanImportInput) {
   const profileId = parseDoubanProfile(input.profileId).profileId;
+  const expectedDataEpoch = input.expectedDataEpoch === undefined ? 0 : input.expectedDataEpoch;
+  if (!Number.isSafeInteger(expectedDataEpoch) || expectedDataEpoch < 0) invalid('请先读取当前豆瓣资料，再预览本次导入。');
   if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 500) invalid('每次请导入1–500条豆瓣记录。');
   const keys = new Set<string>();
   const items = input.items.map(raw => {
@@ -301,10 +305,18 @@ function importItems(input: DoubanImportInput) {
     if (keys.has(key)) invalid('同一文件含重复豆瓣条目，请核对后去重再导入。');
     keys.add(key); return item;
   }).sort((a, b) => keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0);
-  return { profileId, items };
+  return { profileId, items, expectedDataEpoch };
 }
+function importEpochConflict(): never {
+  throw new DoubanStoreError('豆瓣资料已清空或重置，请重新读取当前资料后再预览导入。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+}
+async function assertImportEpoch(db: DoubanDatabase, userId: string, expectedDataEpoch: number) {
+  if (await readDoubanDataEpoch(db, userId) !== expectedDataEpoch) importEpochConflict();
+}
+const importEpochGuard = 'COALESCE((SELECT data_epoch FROM douban_data_resets WHERE user_id=?),0)=?';
 async function planDoubanImport(db: DoubanDatabase, userId: string, input: DoubanImportInput): Promise<ImportPlan> {
-  const { profileId, items } = importItems(input);
+  const { profileId, items, expectedDataEpoch } = importItems(input);
+  await assertImportEpoch(db, userId, expectedDataEpoch);
   const result = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=?
     AND domain||':'||subject_id IN (SELECT value FROM json_each(?))`)
     .bind(userId, profileId, JSON.stringify(items.map(keyOf))).all<DoubanRecord>();
@@ -320,15 +332,22 @@ async function planDoubanImport(db: DoubanDatabase, userId: string, input: Douba
   // Bind the preview to its owner, source profile, exact proposed content and
   // the affected business snapshot. Observations and ordinary classification
   // bookkeeping may change; an explicit manual classification remains an intent.
-  const snapshotHash = await digest([userId, profileId, requestHash, snapshots]);
-  return { preview: { profileId, snapshotHash, total: items.length, added, updated, unchanged }, requestHash, inputs: items, desired, snapshots, old };
+  const snapshotHash = await digest([userId, profileId, expectedDataEpoch, requestHash, snapshots]);
+  await assertImportEpoch(db, userId, expectedDataEpoch);
+  return { preview: { profileId, dataEpoch: expectedDataEpoch, snapshotHash, total: items.length, added, updated, unchanged }, requestHash, inputs: items, desired, snapshots, old };
 }
 export async function previewDoubanImport(db: DoubanDatabase, userId: string, input: DoubanImportInput): Promise<DoubanImportPreview> {
   return (await planDoubanImport(db, userId, input)).preview;
 }
-async function importReceipt(db: DoubanDatabase, userId: string, requestId: string) {
-  return db.prepare('SELECT request_hash AS requestHash,receipt_json AS receiptJson FROM douban_import_receipts WHERE user_id=? AND request_id=?')
-    .bind(userId, requestId).first<{ requestHash: string; receiptJson: string }>();
+async function importReceipt(db: DoubanDatabase, userId: string, requestId: string, dataEpoch: number) {
+  return db.prepare(`SELECT request_hash AS requestHash,receipt_json AS receiptJson FROM douban_import_receipts WHERE user_id=? AND request_id=? AND ${importEpochGuard}`)
+    .bind(userId, requestId, userId, dataEpoch).first<{ requestHash: string; receiptJson: string }>();
+}
+function importReceiptView(prior: { requestHash: string; receiptJson: string }, requestHash: string, dataEpoch: number): DoubanImportReceipt {
+  if (prior.requestHash !== requestHash) importConflict();
+  const receipt = JSON.parse(prior.receiptJson) as DoubanImportReceipt;
+  if ((receipt.dataEpoch ?? 0) !== dataEpoch) importEpochConflict();
+  return { ...receipt, dataEpoch };
 }
 const importBusinessColumns: Record<(typeof portableFields)[number], string> = {
   domain: 'domain', subjectId: 'subject_id', kind: 'kind', title: 'title', url: 'url', coverUrl: 'cover_url', rating: 'rating',
@@ -348,15 +367,17 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
   if (typeof command.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(command.requestId)
     || typeof command.expectedSnapshotHash !== 'string' || !/^[0-9a-f]{64}$/.test(command.expectedSnapshotHash)) invalid('请先预览文件，再确认本次导入。');
   const now = timestamp(command.now ?? new Date().toISOString()), requestId = command.requestId.toLowerCase();
-  const normalized = importItems(command), requestHash = await digest({ profileId: normalized.profileId, items: normalized.items });
-  const prior = await importReceipt(db, userId, requestId);
-  if (prior) { if (prior.requestHash !== requestHash) importConflict(); return JSON.parse(prior.receiptJson) as DoubanImportReceipt; }
+  const normalized = importItems(command), dataEpoch = normalized.expectedDataEpoch, requestHash = await digest({ profileId: normalized.profileId, items: normalized.items });
+  await assertImportEpoch(db, userId, dataEpoch);
+  const prior = await importReceipt(db, userId, requestId, dataEpoch);
+  if (prior) { await assertImportEpoch(db, userId, dataEpoch); return importReceiptView(prior, requestHash, dataEpoch); }
   const plan = await planDoubanImport(db, userId, normalized);
   if (plan.preview.snapshotHash !== command.expectedSnapshotHash) importConflict();
   const { snapshotHash: _snapshotHash, ...counts } = plan.preview;
   const receipt: DoubanImportReceipt = { ...counts, requestId };
   const statements: D1PreparedStatement[] = [db.prepare(`INSERT INTO douban_import_receipts (user_id,request_id,request_hash,receipt_json,created_at)
-    VALUES (?,?,?,?,?) ON CONFLICT(user_id,request_id) DO NOTHING`).bind(userId, requestId, requestHash, JSON.stringify(receipt), now)];
+    VALUES (?,?,?,CASE WHEN ${importEpochGuard} THEN ? ELSE NULL END,?) ON CONFLICT(user_id,request_id) DO NOTHING`)
+    .bind(userId, requestId, requestHash, userId, dataEpoch, JSON.stringify(receipt), now)];
   for (let offset = 0; offset < plan.inputs.length; offset += 100) {
     const snapshots = plan.snapshots.slice(offset, offset + 100);
     const rows = plan.desired.slice(offset, offset + 100).map(item => {
@@ -366,28 +387,30 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
     });
     // A failed NULL-safe snapshot guard deliberately violates this receipt's
     // NOT NULL constraint. D1 batch rolls every earlier chunk back atomically.
-    statements.push(db.prepare(`UPDATE douban_import_receipts SET receipt_json=CASE WHEN request_hash=? AND ${importSnapshotGuard}
+    statements.push(db.prepare(`UPDATE douban_import_receipts SET receipt_json=CASE WHEN request_hash=? AND ${importEpochGuard} AND ${importSnapshotGuard}
       THEN receipt_json ELSE NULL END WHERE user_id=? AND request_id=?`)
-      .bind(requestHash, JSON.stringify(snapshots), userId, plan.preview.profileId, userId, requestId));
+      .bind(requestHash, userId, dataEpoch, JSON.stringify(snapshots), userId, plan.preview.profileId, userId, requestId));
     statements.push(db.prepare(`INSERT INTO douban_items
       (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at)
       SELECT ?,?,json_extract(value,'$.domain'),json_extract(value,'$.subjectId'),json_extract(value,'$.kind'),json_extract(value,'$.title'),
         json_extract(value,'$.url'),json_extract(value,'$.coverUrl'),json_extract(value,'$.rating'),json_extract(value,'$.markedDate'),
         json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),'import',json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt')
-      FROM json_each(?) WHERE 1
+      FROM json_each(?) WHERE ${importEpochGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
         title=excluded.title,url=excluded.url,cover_url=excluded.cover_url,
         rating=excluded.rating,marked_date=excluded.marked_date,comment=excluded.comment,published_at=excluded.published_at,source='import',
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),updated_at=MAX(douban_items.updated_at,excluded.updated_at)`)
-      .bind(userId, plan.preview.profileId, JSON.stringify(rows)));
+      .bind(userId, plan.preview.profileId, JSON.stringify(rows), userId, dataEpoch));
   }
   try { await db.batch(statements); }
   catch {
-    const replay = await importReceipt(db, userId, requestId);
-    if (replay) { if (replay.requestHash !== requestHash) importConflict(); return JSON.parse(replay.receiptJson) as DoubanImportReceipt; }
+    await assertImportEpoch(db, userId, dataEpoch);
+    const replay = await importReceipt(db, userId, requestId, dataEpoch);
+    if (replay) { await assertImportEpoch(db, userId, dataEpoch); return importReceiptView(replay, requestHash, dataEpoch); }
     const current = await planDoubanImport(db, userId, normalized);
     if (current.preview.snapshotHash !== command.expectedSnapshotHash) importConflict();
     throw new DoubanStoreError('导入暂未确认完成，请保留本次预览和提交标识后重试。', 'DOUBAN_IMPORT_UNAVAILABLE', 503);
   }
+  await assertImportEpoch(db, userId, dataEpoch);
   return receipt;
 }

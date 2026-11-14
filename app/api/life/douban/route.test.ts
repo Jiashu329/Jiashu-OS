@@ -4,6 +4,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import * as store from '../../../../db/douban-store.ts';
+import * as resetStore from '../../../../db/douban-reset-store.ts';
 import * as model from '../../../../lib/douban.ts';
 import * as sync from '../../../../lib/douban-sync.ts';
 import { DoubanSourceError } from '../../../../lib/douban-source.ts';
@@ -50,6 +51,7 @@ function fixture(t: TestContext) {
   const get = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync }, ['GET']).GET;
   const put = load(new URL('./connection/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['PUT']).PUT;
   const importPost = load(new URL('./import/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['POST']).POST;
+  const resetPost = load(new URL('./reset/route.ts', import.meta.url), { ...shared, ...helpers, ...resetStore, ...sync }, ['POST']).POST;
   const post = load(new URL('./sync/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync, Date: ClockDate,
     advanceDoubanSyncStep: async (run: sync.DoubanRunForSync, dependencies: sync.DoubanSyncDependencies) => sync.advanceDoubanSyncStep(run, { ...dependencies,
       collection: async (profile, domain, start) => { outgoing.push(profile + ':' + domain + ':' + start); await beforeCollection?.(); const answer = collections.get(profile + ':' + domain + ':' + start); if (answer instanceof Error) throw answer; return answer ?? { items: [], nextStart: null, total: 0 }; },
@@ -71,6 +73,7 @@ function fixture(t: TestContext) {
     put(body: unknown = { profile: 'synthetic-owner', expectedRevision: 0 }, options?: Parameters<typeof request>[4]) { return request(put, '/api/life/douban/connection', 'PUT', body, options); },
     post(body: unknown, options?: Parameters<typeof request>[4]) { return request(post, '/api/life/douban/sync', 'POST', body, options); },
     import(body: unknown, options?: Parameters<typeof request>[4]) { return request(importPost, '/api/life/douban/import', 'POST', body, options); },
+    reset(body: unknown, options?: Parameters<typeof request>[4]) { return request(resetPost, '/api/life/douban/reset', 'POST', body, options); },
   };
 }
 async function body(response: Response) { return await response.json() as Record<string, any>; }
@@ -297,4 +300,75 @@ test('a subsequent public sync never sends privately imported screen subject IDs
   assert.equal(result.run.status, 'completed'); assert.equal(result.run.classification.checked, 0);
   assert.equal(f.outgoing.some(value => value.startsWith('subject:')), false);
   const library = await body(await f.get()); assert.equal(library.counts.screen, 1); assert.equal(library.items[0].source, 'import');
+});
+
+void test('reset endpoints require the actor, same-origin JSON, bounded input and an explicit reviewed commit', async t => {
+  const f = fixture(t); f.signIn(null); assert.equal((await f.reset({ action: 'preview' })).status, 401); f.signIn('alice');
+  for (const options of [{ origin: null }, { origin: 'https://elsewhere.example' }, { type: 'text/plain' }]) assert.equal((await f.reset({ action: 'preview' }, options)).status, options.type ? 415 : 403);
+  for (const value of [null, {}, { action: 'delete' }, { action: 'preview', userId: 'bob' }, { action: 'preview', cookie: 'PRIVATE' },
+    { action: 'commit', expectedEpoch: 0, expectedPreviewHash: 'a'.repeat(64), requestId: crypto.randomUUID(), confirmed: false },
+    { action: 'commit', expectedEpoch: '0', expectedPreviewHash: 'a'.repeat(64), requestId: crypto.randomUUID(), confirmed: true },
+    { action: 'commit', expectedEpoch: 0, expectedPreviewHash: 'bad', requestId: crypto.randomUUID(), confirmed: true }]) assert.equal((await f.reset(value)).status, 400);
+  assert.equal((await f.reset('{broken', { raw: true })).status, 400); assert.equal((await f.reset({}, { length: '4097' })).status, 413);
+  assert.deepEqual(f.queries, []); assert.deepEqual(f.outgoing, []);
+});
+
+async function importViaAPI(f: ReturnType<typeof fixture>, profile: string, items: model.DoubanRecordInput[], expectedDataEpoch = 0) {
+  const previewResponse = await f.import({ action: 'preview', profile, items, expectedDataEpoch }); assert.equal(previewResponse.status, 200);
+  const { preview } = await body(previewResponse); assert.equal(preview.dataEpoch, expectedDataEpoch);
+  const command = { action: 'commit', profile, items, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), confirmed: true, expectedDataEpoch };
+  const response = await f.import(command); assert.equal(response.status, 200); return { command, response: await body(response) };
+}
+async function resetViaAPI(f: ReturnType<typeof fixture>) {
+  const previewResponse = await f.reset({ action: 'preview' }); assert.equal(previewResponse.status, 200);
+  const { preview } = await body(previewResponse);
+  const command = { action: 'commit', expectedEpoch: preview.epoch, expectedPreviewHash: preview.previewHash, requestId: crypto.randomUUID(), confirmed: true };
+  const response = await f.reset(command); assert.equal(response.status, 200); return { preview, command, response: await body(response) };
+}
+
+void test('reset preview counts all own sources without deleting; commit clears own records, runs and receipts while retaining the binding', async t => {
+  const f = fixture(t); await f.put();
+  const started = await body(await f.post({ expectedConnectionRevision: 1 }));
+  await importViaAPI(f, 'first-source', [record('book', '11111', 'import')]); await importViaAPI(f, 'second-source', [record('music', '22222', 'import')]);
+  f.signIn('bob'); await f.put({ profile: 'bob-source', expectedRevision: 0 }); await importViaAPI(f, 'bob-source', [record('book', '33333', 'import')]);
+  f.signIn('alice'); const previewResponse = await f.reset({ action: 'preview' }); assert.equal(previewResponse.headers.get('Cache-Control'), 'no-store');
+  const { preview } = await body(previewResponse); assert.equal(preview.epoch, 0); assert.equal(preview.total, 2); assert.equal(preview.counts.book, 1); assert.equal(preview.counts.music, 1);
+  assert.equal((await body(await f.get())).total, 2); assert.equal((await body(await f.get())).dataEpoch, 0);
+  const cleared = await resetViaAPI(f); assert.equal(cleared.response.receipt.deleted, 2); assert.equal(cleared.response.receipt.epoch, 1);
+  const library = await body(await f.get()); assert.equal(library.total, 0); assert.equal(library.dataEpoch, 1); assert.equal(library.connection.profileId, 'synthetic-owner'); assert.equal(library.connection.revision, 2); assert.equal(library.lastRun, null);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_import_receipts WHERE user_id='alice'").get()?.n, 0);
+  assert.equal((await f.post({ expectedConnectionRevision: 1, runId: started.run.id, expectedRunRevision: started.run.revision })).status, 409);
+  f.signIn('bob'); const other = await body(await f.get()); assert.equal(other.total, 1); assert.equal(other.dataEpoch, 0); assert.equal(other.connection.profileId, 'bob-source');
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_import_receipts WHERE user_id='bob'").get()?.n, 1); assert.deepEqual(f.outgoing, []);
+});
+
+void test('clear invalidates stale previews and receipts, requires a current epoch for new imports, and old clear retries retain newly resynced data', async t => {
+  const f = fixture(t), profile = 'private-source', items = [record('book', '11111', 'import')];
+  const original = await importViaAPI(f, profile, items);
+  const oldPreview = (await body(await f.import({ action: 'preview', profile, items: [record('book', '22222', 'import')] }))).preview;
+  const reset = await resetViaAPI(f);
+  for (const command of [original.command, { action: 'preview', profile, items }, { action: 'preview', profile, items, expectedDataEpoch: 0 },
+    { action: 'commit', profile, items: [record('book', '22222', 'import')], expectedSnapshotHash: oldPreview.snapshotHash, requestId: crypto.randomUUID(), confirmed: true }]) {
+    const response = await f.import(command); assert.equal(response.status, 409); assert.equal((await body(response)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
+  }
+  for (const expectedDataEpoch of [null, '1', -1, 1.5]) assert.equal((await f.import({ action: 'preview', profile, items, expectedDataEpoch })).status, 400);
+  const fresh = await importViaAPI(f, profile, items, 1); assert.equal(fresh.response.receipt.dataEpoch, 1);
+  assert.deepEqual(await body(await f.import(fresh.command)), fresh.response);
+  const replay = await body(await f.reset(reset.command)); assert.deepEqual(replay, reset.response);
+  assert.equal((await body(await f.get())).total, 1); assert.equal((await body(await f.get())).dataEpoch, 1);
+  assert.equal((await f.reset({ ...reset.command, expectedPreviewHash: 'b'.repeat(64) })).status, 409);
+  assert.deepEqual(f.outgoing, []);
+});
+
+void test('a changed reset preview rejects without deleting and clear during a public read cannot restore any old page', async t => {
+  const f = fixture(t); await f.put();
+  await importViaAPI(f, 'private-source', [record('book', '11111', 'import')]);
+  const { preview } = await body(await f.reset({ action: 'preview' })); await importViaAPI(f, 'private-source', [record('book', '22222', 'import')]);
+  const stale = await f.reset({ action: 'commit', expectedEpoch: preview.epoch, expectedPreviewHash: preview.previewHash, requestId: crypto.randomUUID(), confirmed: true });
+  assert.equal(stale.status, 409); assert.equal((await body(stale)).code, 'DOUBAN_RESET_CONFLICT'); assert.equal((await body(await f.get())).total, 2);
+  const started = await body(await f.post({ expectedConnectionRevision: 1 })); f.collections.set('synthetic-owner:screen:0', { items: [record()], nextStart: null, total: 1 });
+  f.beforeCollection(async () => { await resetViaAPI(f); });
+  f.tick();
+  const late = await f.post({ expectedConnectionRevision: 1, runId: started.run.id, expectedRunRevision: started.run.revision }); assert.equal(late.status, 409);
+  const library = await body(await f.get()); assert.equal(library.total, 0); assert.equal(library.dataEpoch, 1); assert.equal(library.connection.revision, 2); assert.equal(library.lastRun, null);
 });

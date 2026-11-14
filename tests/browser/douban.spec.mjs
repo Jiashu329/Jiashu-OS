@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
 import { parseDoubanProfile } from '../../lib/douban.ts';
 
@@ -31,18 +32,27 @@ function listResult(state, params) {
   const owned = state.doubanItems.filter(item => scope !== 'current' || item.profileId === state.doubanConnection.profileId);
   const filtered = owned.filter(item => (!kind || kind === 'all' || item.kind === kind) && (!query || item.title.toLowerCase().includes(query)));
   const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
-  return { connection: state.doubanConnection, items: filtered.slice(offset, offset + limit), total: filtered.length,
+  return { connection: state.doubanConnection, dataEpoch: state.doubanDataEpoch, items: filtered.slice(offset, offset + limit), total: filtered.length,
     counts: Object.fromEntries(['all', ...KINDS].map(key => [key, key === 'all' ? owned.length : owned.filter(item => item.kind === key).length])),
     offset, limit, hasMore: offset + limit < filtered.length, lastRun: state.doubanRun };
 }
 const mutations = info => info.synthetic.requests.filter(request => request.path.startsWith('/api/life/douban') && request.method !== 'GET');
 const syncRequests = info => mutations(info).filter(request => request.path === '/api/life/douban/sync');
+const resetRequests = info => mutations(info).filter(request => request.path === '/api/life/douban/reset');
+function resetSnapshot(state) {
+  const counts = Object.fromEntries(['all', ...KINDS].map(kind => [kind, kind === 'all' ? state.doubanItems.length : state.doubanItems.filter(item => item.kind === kind).length]));
+  const latestUpdatedAt = state.doubanItems.map(item => item.updatedAt).sort().at(-1) ?? null;
+  return { epoch: state.doubanDataEpoch, total: state.doubanItems.length, counts, latestUpdatedAt,
+    previewHash: createHash('sha256').update(JSON.stringify({ epoch: state.doubanDataEpoch, items: state.doubanItems })).digest('hex') };
+}
 
 test.beforeEach(async ({ context, page }, testInfo) => {
   const state = syntheticState();
   state.doubanConnection = { profileId: null, profileUrl: null, revision: 0, updatedAt: null };
   state.doubanItems = []; state.doubanRun = null; state.doubanHoldStep = false; state.doubanStepPending = false;
   state.doubanImportPreview = null; state.doubanImportReceipts = new Map(); state.doubanLoseImportReply = false;
+  state.doubanDataEpoch = 0;
+  state.doubanResetReceipt = null; state.doubanLoseResetReply = false; state.doubanOtherOwnerItems = [];
   state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
@@ -53,6 +63,21 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': state.owner }, body: JSON.stringify(value) });
     const fail = (message, code, status = 409) => send({ error: message, code }, status);
     if (url.pathname === '/api/life/douban' && method === 'GET') return send(listResult(state, url.searchParams));
+    if (url.pathname === '/api/life/douban/reset' && method === 'POST') {
+      if (body.action === 'preview') return send({ preview: resetSnapshot(state) });
+      const payload = JSON.stringify(body), replay = state.doubanResetReceipt;
+      if (replay?.receipt.requestId === body.requestId) return replay.payload === payload ? send({ receipt: replay.receipt }) : fail('清空提交内容已变化。', 'DOUBAN_RESET_CONFLICT');
+      if (body.expectedEpoch !== state.doubanDataEpoch) return fail('豆瓣资料已在其他页面清空，请重新核对。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+      const snapshot = resetSnapshot(state);
+      if (body.action !== 'commit' || body.confirmed !== true || !/^[0-9a-f-]{36}$/i.test(body.requestId)
+        || body.expectedPreviewHash !== snapshot.previewHash) return fail('清空范围已变化，请重新查看范围后确认。', 'DOUBAN_RESET_CONFLICT');
+      const receipt = { requestId: body.requestId, epoch: ++state.doubanDataEpoch, deleted: snapshot.total, counts: snapshot.counts, clearedAt: STAMP };
+      state.doubanItems = []; state.doubanRun = null; state.doubanImportPreview = null; state.doubanImportReceipts.clear();
+      state.doubanConnection = { ...state.doubanConnection, revision: state.doubanConnection.revision + 1, updatedAt: STAMP };
+      state.doubanResetReceipt = { payload, receipt };
+      if (state.doubanLoseResetReply) { state.doubanLoseResetReply = false; return route.abort('connectionreset'); }
+      return send({ receipt });
+    }
     if ((url.pathname === '/api/life/douban/metadata' && method === 'POST') || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
       const item = state.doubanItems.find(value => value.profileId === body.profileId && value.domain === body.domain && value.subjectId === body.subjectId);
       if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
@@ -81,10 +106,12 @@ test.beforeEach(async ({ context, page }, testInfo) => {
     if (url.pathname === '/api/life/douban/import' && method === 'POST') {
       const profile = parseDoubanProfile(body.profile), items = body.items;
       if (!Array.isArray(items) || !items.length || items.some(item => item.source !== 'import')) return fail('请提交本地解析后的本人资料。', 'SYNTHETIC_IMPORT_INVALID', 400);
-      const snapshotHash = 'a'.repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items });
+      const expectedDataEpoch = body.expectedDataEpoch ?? 0;
+      if (expectedDataEpoch !== state.doubanDataEpoch) return fail('豆瓣资料已清空或更新，请重新预览后再保存。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+      const snapshotHash = ['a', 'b', 'c', 'd', 'e', 'f'][state.doubanDataEpoch % 6].repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items, dataEpoch: state.doubanDataEpoch });
       if (body.action === 'preview') {
         state.doubanImportPreview = { snapshotHash, payload };
-        return send({ preview: { ...profile, snapshotHash, total: items.length, added: items.length, updated: 0, unchanged: 0 } });
+        return send({ preview: { ...profile, snapshotHash, dataEpoch: state.doubanDataEpoch, total: items.length, added: items.length, updated: 0, unchanged: 0 } });
       }
       const replay = state.doubanImportReceipts.get(body.requestId);
       if (replay) return replay.payload === payload ? send({ receipt: replay.receipt }) : fail('原操作内容已变化。', 'DOUBAN_IMPORT_CONFLICT');
@@ -93,7 +120,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         return fail('导入预览已变化，请重新预览。', 'DOUBAN_IMPORT_CONFLICT');
       }
       state.doubanItems.push(...items.map(item => ({ ...item, profileId: profile.profileId, observedAt: STAMP, createdAt: STAMP, updatedAt: STAMP })));
-      const receipt = { profileId: profile.profileId, requestId: body.requestId, total: items.length, added: items.length, updated: 0, unchanged: 0 };
+      const receipt = { profileId: profile.profileId, requestId: body.requestId, dataEpoch: state.doubanDataEpoch, total: items.length, added: items.length, updated: 0, unchanged: 0 };
       state.doubanImportReceipts.set(body.requestId, { payload, receipt });
       if (state.doubanLoseImportReply) { state.doubanLoseImportReply = false; return route.abort('connectionreset'); }
       return send({ receipt });
@@ -621,6 +648,97 @@ test('pausing saves only the current browser page and switching website accounts
   expect(await page.locator('#douban-import-files').evaluate(input => input.files[0]?.name)).toBe('keep-local-draft.json');
   expect(state.doubanItems.map(item => item.kind)).toEqual(['book']);
   expect(mutations(testInfo).map(request => request.body.action)).toEqual(['preview', 'commit']);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('clearing the personal library previews all own sources, waits for confirmation and keeps the binding ready for an explicit fresh sync', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = KINDS.map((kind, index) => ({ ...record(kind, 900 + index, index === 2 ? 'previous-synthetic-profile' : PROFILE), source: ['collection', 'rss', 'import'][index % 3] }));
+  state.doubanOtherOwnerItems = [record('book', 999, 'another-synthetic-profile')];
+  const otherOwnerBefore = structuredClone(state.doubanOtherOwnerItems);
+  state.doubanRun = newRun(state.doubanConnection);
+  await openLibrary(page);
+  await page.locator('#douban-kind').selectOption('book');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  await page.locator('#douban-reset-panel > summary').click();
+  expect(resetRequests(testInfo)).toEqual([]);
+  await expect(page.locator('#douban-reset-confirm')).toBeHidden();
+  await page.locator('#douban-reset-preview').click();
+  await expect(page.locator('#douban-reset-result')).toBeVisible();
+  await expect(page.locator('#douban-reset-counts')).toContainText('当前账户的 5 条记录');
+  for (const label of ['电影', '电视剧', '书籍', '音乐', '待分类影视']) await expect(page.locator('#douban-reset-counts')).toContainText(label + ' 1 条');
+  expect(resetRequests(testInfo).map(request => request.body)).toEqual([{ action: 'preview' }]);
+  expect(state.doubanItems).toHaveLength(5);
+  expect(state.doubanDataEpoch).toBe(0);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await page.locator('#douban-reset-confirm').click();
+  await expect.poll(() => state.doubanDataEpoch).toBe(1);
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  await expect(page.locator('#douban-reset-status')).toContainText('删除 5 条记录，绑定主页保留');
+  expect(state.doubanItems).toEqual([]);
+  expect(state.doubanOtherOwnerItems).toEqual(otherOwnerBefore);
+  expect(state.doubanRun).toBeNull();
+  expect(state.doubanConnection.profileId).toBe(PROFILE);
+  expect(state.doubanConnection.revision).toBe(2);
+  await expect(page.locator('#douban-profile-link')).toHaveAttribute('href', 'https://www.douban.com/people/' + PROFILE + '/');
+  const command = resetRequests(testInfo).find(request => request.body.action === 'commit').body;
+  expect(Object.keys(command).sort()).toEqual(['action', 'expectedEpoch', 'expectedPreviewHash', 'requestId', 'confirmed'].sort());
+  expect(command).toMatchObject({ action: 'commit', expectedEpoch: 0, confirmed: true });
+  expect(command.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await page.locator('#douban-sync').click();
+  await expect.poll(() => state.doubanRun?.status).toBe('partial');
+  expect(state.doubanItems).toHaveLength(4);
+  expect(state.doubanDataEpoch).toBe(1);
+  expect(syncRequests(testInfo)[0].body).toEqual({ expectedConnectionRevision: 2 });
+  await fits(page);
+  await page.locator('#douban-reset-panel').screenshot({ path: testInfo.outputPath('douban-reset-confirmed.png') });
+});
+
+test('an old import cannot resurrect cleared data and retrying an unknown clear receipt preserves records synced afterward', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('movie', 930)];
+  await openLibrary(page);
+  await page.locator('#douban-import-panel > summary').click();
+  await page.locator('#douban-import-files').setInputFiles({ name: 'stale-before-clear.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify([{ title: '清空前的本人导入草稿', url: 'https://book.douban.com/subject/9999930/', state: '读过' }])) });
+  await page.locator('#douban-import-completed').check();
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  // Another page cleared this same account after the local import preview.
+  state.doubanDataEpoch = 1; state.doubanItems = [record('music', 931)];
+  state.doubanConnection = { ...state.doubanConnection, revision: 2 };
+  await page.locator('#douban-import-confirm').click();
+  await expect(page.locator('#douban-import-status')).toContainText(/已清空|重新预览/);
+  await expect(page.locator('#douban-import-confirm')).toBeDisabled();
+  expect(await page.locator('#douban-import-files').evaluate(input => input.files[0]?.name)).toBe('stale-before-clear.json');
+  const stale = mutations(testInfo).find(request => request.path === '/api/life/douban/import' && request.body.action === 'commit');
+  expect(stale.body.expectedDataEpoch).toBe(0);
+  expect(state.doubanItems.map(item => item.subjectId)).toEqual(['9000931']);
+  await page.locator('#douban-reset-panel > summary').click();
+  await page.locator('#douban-reset-preview').click();
+  await expect(page.locator('#douban-reset-confirm')).toBeEnabled();
+  state.doubanLoseResetReply = true;
+  await page.locator('#douban-reset-confirm').click();
+  await expect(page.locator('#douban-reset-retry')).toBeVisible();
+  await expect(page.locator('#douban-sync')).toBeDisabled();
+  await expect(page.locator('#douban-import-preview')).toBeDisabled();
+  expect(state.doubanDataEpoch).toBe(2);
+  expect(state.doubanItems).toEqual([]);
+  // A fresh sync in another page completed before this page retried the receipt.
+  state.doubanItems = [{ ...record('book', 932), source: 'import' }];
+  await page.locator('#douban-reset-retry').click();
+  await expect(page.locator('#douban-list')).toContainText('合成图书932');
+  await expect(page.locator('#douban-reset-status')).toContainText('原清空提交已核对');
+  const commits = resetRequests(testInfo).filter(request => request.body.action === 'commit');
+  expect(commits).toHaveLength(2);
+  expect(commits[1].body).toEqual(commits[0].body);
+  expect(commits[0].body.expectedEpoch).toBe(1);
+  expect(state.doubanItems.map(item => item.subjectId)).toEqual(['9000932']);
+  expect(state.doubanDataEpoch).toBe(2);
+  expect(state.doubanConnection.profileId).toBe(PROFILE);
   expect(syncRequests(testInfo)).toEqual([]);
   await fits(page);
 });

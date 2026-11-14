@@ -1,5 +1,7 @@
 import { CLIENT_REQUEST_SCRIPT } from './client-request.ts';
 
+export const DOUBAN_RESET_CONTENT = '<details class="db-connection" id="douban-reset-panel"><summary>清空我的全部书影音记录</summary><p class="db-note">清空当前网站账户保存的所有电影、电视剧、书籍和音乐，包含全部来源主页。豆瓣上的收藏不会被修改，本站绑定主页会保留。</p><form id="douban-reset-form"><button class="db-btn" id="douban-reset-preview" type="submit">查看清空范围</button></form><section id="douban-reset-result" hidden aria-label="待清空的书影音范围"><p class="db-note" id="douban-reset-counts"></p><p class="db-note">确认后会同时结束旧同步进度。清空完成后，可通过已绑定的豆瓣主页重新同步。</p><button class="db-btn" id="douban-reset-confirm" type="button" disabled>确认清空全部书影音记录</button></section><button class="db-btn" id="douban-reset-retry" type="button" hidden>重试原清空提交</button><p id="douban-reset-status" class="db-form-status" role="status" aria-live="polite"></p></details>';
+
 export const DOUBAN_IMPORT_CONTENT = '<details class="db-connection db-import-panel" id="douban-import-panel"><summary>导入私密记录或已有导出资料</summary><p class="db-note">导入你在本人豆瓣账号登录后保存的收藏页面，或已导出的 JSON、CSV、Obsidian Markdown。原文件只在当前浏览器解析；点击预览会将规范化条目发送本站核对，确认导入后才保存，不修改豆瓣。</p><details class="db-import-guide"><summary>如何准备导入文件</summary><ol class="db-note"><li>已有 Obsidian 豆瓣插件生成的 Markdown 笔记，可直接多选这些 .md 文件。</li><li>也可在自己的浏览器登录豆瓣，打开“看过”“读过”或“听过”的收藏列表，通过浏览器菜单逐页另存为 HTML，再选择对应类型导入。多页列表需逐页保存，单页文件不代表历史全量。</li><li>CSV／JSON 请保存为 UTF-8 文本，至少提供 title、url、state；state 使用“看过”“读过”或“听过”。个人字段 myRating（1–5）、myComment、collectionDate 可以缺省。电影／电视剧可用 type=movie／series 明确区分；无法确认的影视保留待分类，不按片名猜测。</li></ol><p class="db-note">myRating 是个人评分，不是豆瓣站点评分。无需向本站提供豆瓣密码或 Cookie。</p></details><form id="douban-import-form" novalidate><div class="db-import-fields"><label class="db-field"><span>这份资料所属的豆瓣主页或 ID</span><input class="db-control" id="douban-import-profile" type="text" maxlength="300" autocomplete="off" placeholder="填写资料所属的豆瓣主页"></label><label class="db-field"><span>文件（可多选）</span><input class="db-control" id="douban-import-files" type="file" multiple accept=".json,.csv,.md,.markdown,.html,.htm"></label><label class="db-field"><span>HTML 收藏页类型</span><select class="db-control" id="douban-import-domain"><option value="">自动识别</option><option value="screen">影视</option><option value="book">书籍</option><option value="music">音乐</option></select></label></div><label class="db-import-check"><input id="douban-import-completed" type="checkbox"><span>这些资料属于上方主页，导入的是已看过、已读过或已听过的记录。没有状态的条目按此确认处理；明确的想看、在看等记录仍会跳过。</span></label><p class="db-note">最多 100 个文件、合计 8 MiB；每个 HTML 文件最多 2 MiB；单次最多 500 条。文件需为 UTF-8 文本。文件只保留在本页内存，离开或刷新后需重新选择。导入不改变当前豆瓣连接。</p><div class="db-import-actions"><button class="db-btn" id="douban-import-preview" type="submit">解析并预览</button><button class="db-btn" id="douban-import-clear" type="button">清空本次资料</button></div></form><section id="douban-import-result" class="db-import-result" hidden aria-labelledby="douban-import-result-title"><h3 id="douban-import-result-title">导入预览</h3><p id="douban-import-counts" class="db-note"></p><ul id="douban-import-sample" class="db-import-sample"></ul><p id="douban-import-warnings" class="db-note"></p><p class="db-note">预览不会保存。确认导入后，已有记录中经你导入的个人评分、短评和标记日期会优先保留，后续公开同步不会用缺失值抹去。</p><button class="db-btn primary" id="douban-import-confirm" type="button" disabled>确认导入</button></section><button class="db-btn" id="douban-import-retry" type="button" hidden>重试原导入</button><p class="db-form-status" id="douban-import-status" role="status" aria-live="polite"></p></details>';
 
 export const DOUBAN_CSS = String.raw`
@@ -15,9 +17,10 @@ export const DOUBAN_SCRIPT = String.raw`
 (()=>{
 const el=id=>document.getElementById('douban-'+id),pageSize=24;
 const kinds={movie:'电影',series:'电视剧',book:'书籍',music:'音乐',screen:'待分类影视'},sourceNames={collection:'公开收藏页',rss:'近期 RSS',import:'资料导入'};
-const importState={busy:false,sequence:0,items:null,profileId:null,preview:null,fingerprint:null,pending:null,touched:false,baseline:''};
+const importState={busy:false,sequence:0,items:null,profileId:null,dataEpoch:null,preview:null,fingerprint:null,pending:null,touched:false,baseline:''};
 const metadataState={busy:false,stop:false};
-const state={connection:null,profileBaseline:'',profileRevision:0,profileConflict:false,profileBusy:false,items:[],total:0,counts:{},kind:'',query:'',scope:'all',offset:0,hasMore:false,loading:false,loadSequence:0,controller:null,run:null,syncing:false,stop:false,trigger:null,detailItem:null,detailBusy:false,detailConflict:false};
+const resetState={busy:false,preview:null,pending:null};
+const state={connection:null,dataEpoch:null,profileBaseline:'',profileRevision:0,profileConflict:false,profileBusy:false,items:[],total:0,counts:{},kind:'',query:'',scope:'all',offset:0,hasMore:false,loading:false,loadSequence:0,controller:null,run:null,syncing:false,stop:false,trigger:null,detailItem:null,detailBusy:false,detailConflict:false};
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const changedAccount=()=>Boolean(window.JiashuAccountSession?.changed);
@@ -31,7 +34,7 @@ function dateText(value){if(typeof value!=='string'||!value)return'未提供';co
 function rating(value){return Number.isInteger(value)&&value>=1&&value<=5?'个人评分 '+value+' / 5':'未评分';}
 function status(message,error=false){el('status').textContent=message||'';el('status').classList.toggle('error',error);el('retry').hidden=!error;}
 function profileStatus(message,error=false){el('profile-status').textContent=message||'';el('profile-status').classList.toggle('error',error);}
-function mutationLocked(){return Boolean(browserSync?.isLocked())||changedAccount()||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending);}
+function mutationLocked(){return resetState.busy||Boolean(resetState.pending)||Boolean(browserSync?.isLocked())||changedAccount()||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending);}
 function classificationDirty(){return Boolean(state.detailItem?.domain==='screen'&&el('classification-kind').value!==(state.detailItem.kind==='screen'?'':state.detailItem.kind));}
 function classificationStatus(message,error=false){el('classification-status').textContent=message||'';el('classification-status').classList.toggle('error',error);}
 function controls(){
@@ -42,7 +45,31 @@ function controls(){
  el('stop').textContent=state.stop?'暂停中…':'暂停';el('reload-profile').disabled=locked;
  el('metadata').disabled=locked||state.loading||state.items.length===0;el('metadata').textContent=metadataState.busy?'正在补全本页…':'补全本页封面与分类';el('metadata-stop').hidden=!metadataState.busy;el('metadata-stop').disabled=metadataState.stop;el('metadata-stop').textContent=metadataState.stop?'暂停中…':'暂停补全';
  el('classification-kind').disabled=locked||state.detailConflict;el('classification-save').disabled=locked||state.detailConflict||state.detailItem?.domain!=='screen'||!['movie','series'].includes(el('classification-kind').value);el('classification-save').textContent=state.detailBusy?'正在保存…':'保存分类';
- el('previous').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||state.offset===0;el('next').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||!state.hasMore;for(const id of ['query','kind','scope','search','retry'])el(id).disabled=state.syncing||metadataState.busy||Boolean(browserSync?.isBusy())||changedAccount();importControls();browserSync?.update();
+ el('previous').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||state.offset===0;el('next').disabled=state.loading||metadataState.busy||Boolean(browserSync?.isBusy())||state.syncing||!state.hasMore;for(const id of ['query','kind','scope','search','retry'])el(id).disabled=state.syncing||metadataState.busy||Boolean(browserSync?.isBusy())||changedAccount();importControls();resetControls();browserSync?.update();
+}
+function resetStatus(message,error=false){el('reset-status').textContent=message||'';el('reset-status').classList.toggle('error',error);}
+function invalidateResetPreview(){if(resetState.pending)return;resetState.preview=null;el('reset-result').hidden=true;el('reset-confirm').disabled=true;}
+function applyDataEpoch(epoch){
+ if(!integer(epoch)||state.dataEpoch!==null&&epoch<state.dataEpoch)throw new Error('书影音资料版本未能核对，请刷新后重新读取。');
+ const previous=state.dataEpoch;state.dataEpoch=epoch;if(previous===null||previous===epoch)return;
+ importState.pending=null;invalidateImport();importStatus('书影音资料已清空或重置，旧预览和旧提交已停止。原文件仍保留，如需导入请重新预览。',true);invalidateResetPreview();browserSync?.dataEpochChanged(epoch);state.run=null;state.items=[];state.total=0;state.counts={};state.offset=0;state.hasMore=false;renderRun(null);el('sync-status').textContent='书影音资料已清空或重置，旧同步进度已结束。点击同步可重新读取。';metadataStatus('');renderRecords();if(state.detailItem){state.detailConflict=true;classificationStatus('该记录已清空或重置，旧分类不能保存。请关闭详情后重新读取。',true);}
+}
+function resetControls(){const blocked=changedAccount()||state.loading||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending)||Boolean(browserSync?.isLocked());el('reset-preview').disabled=blocked||resetState.busy||Boolean(resetState.pending)||!integer(state.dataEpoch);el('reset-confirm').disabled=blocked||resetState.busy||Boolean(resetState.pending)||!resetState.preview||resetState.preview.epoch!==state.dataEpoch;el('reset-retry').hidden=!resetState.pending;el('reset-retry').disabled=blocked||resetState.busy;}
+function resetCounts(counts){return ['movie','series','book','music','screen'].map(kind=>kinds[kind]+' '+counts[kind]+' 条').join(' · ');}
+function validResetCounts(counts,total){return counts&&['all','movie','series','book','music','screen'].every(key=>integer(counts[key]))&&counts.all===total&&['movie','series','book','music','screen'].reduce((sum,key)=>sum+counts[key],0)===total;}
+async function previewReset(){
+ if(el('reset-preview').disabled||mutationLocked()||state.loading)return;resetState.busy=true;invalidateResetPreview();controls();resetStatus('正在核对当前账户的全部书影音记录…');
+ try{const result=await requestJSON('/api/life/douban/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'preview'})});if(changedAccount())return;const preview=result.preview;if(!preview||!integer(preview.epoch)||!integer(preview.total)||!validResetCounts(preview.counts,preview.total)||typeof preview.previewHash!=='string'||!/^[a-f0-9]{64}$/i.test(preview.previewHash)||preview.latestUpdatedAt!==null&&(typeof preview.latestUpdatedAt!=='string'||Number.isNaN(Date.parse(preview.latestUpdatedAt))))throw new Error('清空范围未能核对，请重新查看。');const changedEpoch=preview.epoch!==state.dataEpoch;applyDataEpoch(preview.epoch);if(changedEpoch){await load(true);if(changedAccount())return;if(state.dataEpoch!==preview.epoch)throw new Error('书影音资料范围已变化，请重新查看。');}resetState.preview=preview;el('reset-counts').textContent='将清空当前账户的 '+preview.total+' 条记录：'+resetCounts(preview.counts)+'。';el('reset-result').hidden=false;resetStatus('范围已核对，尚未清空。点击“确认清空全部书影音记录”才会执行。');}
+ catch(error){if(!changedAccount())resetStatus(error.message||'暂时无法核对清空范围，请稍后重试。',true);}
+ finally{resetState.busy=false;controls();}
+}
+async function commitReset(retry=false){
+ if(resetState.busy||changedAccount()||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||importState.pending||browserSync?.isLocked())return;
+ if(!retry){const preview=resetState.preview;if(!preview||preview.epoch!==state.dataEpoch)return;resetState.pending={action:'commit',expectedEpoch:preview.epoch,expectedPreviewHash:preview.previewHash,requestId:crypto.randomUUID(),confirmed:true};}
+ const body=resetState.pending;if(!body)return;resetState.busy=true;controls();resetStatus(retry?'正在核对原清空提交，不会再次清空后来保存的记录…':'正在清空当前账户的书影音记录…');
+ try{const result=await requestJSON('/api/life/douban/reset',{method:'POST',timeoutMs:65000,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(changedAccount())return;const receipt=result.receipt;if(!receipt||receipt.requestId!==body.requestId||receipt.epoch!==body.expectedEpoch+1||!integer(receipt.deleted)||!validResetCounts(receipt.counts,receipt.deleted)||typeof receipt.clearedAt!=='string'||Number.isNaN(Date.parse(receipt.clearedAt)))throw new Error('清空回执未能核对，请保留本页并重试原清空提交。');resetState.pending=null;invalidateResetPreview();if(receipt.epoch>state.dataEpoch)applyDataEpoch(receipt.epoch);state.offset=0;await load(true);if(changedAccount())return;resetStatus((retry?'原清空提交已核对':'清空提交已确认')+'：删除 '+receipt.deleted+' 条记录，绑定主页保留。'+(el('status').classList.contains('error')?'列表读取暂未完成，请点击“重新读取记录”核对。':'当前列表已重新读取，可通过浏览器重新同步。'));}
+ catch(error){if(!changedAccount()){if([400,409,413,415,422].includes(error?.status)){resetState.pending=null;invalidateResetPreview();await load(true);resetStatus((error.message||'清空未执行，资料范围已变化。')+' 请重新查看清空范围后确认。',true);}else resetStatus((error.message||'清空结果尚未确认。')+' 请保留本页，点击“重试原清空提交”。',true);}}
+ finally{resetState.busy=false;controls();}
 }
 function resetProfile(connection){state.profileBaseline=canonicalProfile(connection.profileId)||'';state.profileRevision=connection.revision;state.profileConflict=false;el('profile').value=state.profileBaseline;guard?.reset();el('reload-profile').hidden=true;}
 function presentConnection(connection,preserve){
@@ -103,7 +130,7 @@ function syncUrl(push=false){const params=new URLSearchParams();if(state.query)p
 async function load(preserve=true){
  if(changedAccount())return;const sequence=++state.loadSequence;state.controller?.abort();const controller=new AbortController();state.controller=controller;state.loading=true;el('page').setAttribute('aria-busy','true');status('正在读取已保存的书影音…');controls();
  try{const params=new URLSearchParams({offset:state.offset,limit:pageSize,profile:state.scope});if(state.kind)params.set('kind',state.kind);if(state.query)params.set('q',state.query);const data=await requestJSON('/api/life/douban?'+params,{signal:controller.signal});if(sequence!==state.loadSequence||changedAccount())return;
-  if(!Array.isArray(data.items)||!integer(data.total)||data.items.length>60||!data.counts||data.items.some(item=>!item||typeof item.title!=='string'||!subjectURL(item)))throw new Error('书影音记录格式暂时无法读取。');if(data.total>0&&state.offset>=data.total){state.offset=0;syncUrl();return load(preserve);}presentConnection(data.connection,preserve);state.items=data.items;state.total=data.total;state.counts=data.counts;state.hasMore=data.hasMore===true;renderRun(data.lastRun);renderRecords();status('');syncUrl();
+  if(!Array.isArray(data.items)||!integer(data.total)||data.items.length>60||!data.counts||data.items.some(item=>!item||typeof item.title!=='string'||!subjectURL(item)))throw new Error('书影音记录格式暂时无法读取。');if(data.total>0&&state.offset>=data.total){state.offset=0;syncUrl();return load(preserve);}applyDataEpoch(data.dataEpoch??0);if(resetState.preview&&!resetState.pending){invalidateResetPreview();resetStatus('列表已重新读取，请重新查看清空范围后确认。');}presentConnection(data.connection,preserve);state.items=data.items;state.total=data.total;state.counts=data.counts;state.hasMore=data.hasMore===true;renderRun(data.lastRun);renderRecords();status('');syncUrl();
  }catch(error){if(sequence===state.loadSequence&&error?.name!=='AbortError')status(error.message||'暂时无法读取书影音，请稍后重试。',true);}
  finally{if(sequence===state.loadSequence){state.loading=false;state.controller=null;el('page').setAttribute('aria-busy','false');controls();}}
 }
@@ -171,22 +198,22 @@ function recoverSourceImport(domain){
  const panel=el('import-panel');panel.open=true;panel.setAttribute('open','');panel.scrollIntoView?.({behavior:'smooth',block:'start'});
  if(changedAccount()){importStatus('登录账号已变化，原导入资料已保留。请刷新后继续。',true);return;}
  if(importState.pending){importStatus('原导入结果尚未确认，资料和提交已保留。请先点击“重试原导入”，不会替换为另一类记录。',true);return;}
- if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||browserSync?.isLocked()){importStatus('当前操作仍在进行，已有导入填写已保留。请等待完成后再选择导入来源。',true);return;}
+ if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||resetState.busy||resetState.pending||browserSync?.isLocked()){importStatus('当前操作仍在进行，已有导入填写已保留。请等待完成后再选择导入来源。',true);return;}
  if(importDirty()){importStatus('已有未保存的导入资料，原主页、类型和文件已保留。请先完成或清空本次资料，再选择另一类记录。',true);return;}
  const profileId=recoveryProfile(state.run);if(!profileId){importStatus('这次同步结果与当前连接的来源主页未能核对。请先确认自己的豆瓣连接，原导入填写未修改。',true);return;}
  invalidateImport();importState.touched=true;el('import-profile').value=canonicalProfile(profileId);el('import-domain').value=domain;el('import-form').dispatchEvent(new Event('input',{bubbles:true}));controls();
  const label={screen:'看过的影视',book:'读过的书',music:'听过的音乐'}[domain];importStatus('已选择“'+label+'”的来源主页和 HTML 类型。请在本人豆瓣账号中保存对应收藏页，选择文件并预览；尚未发送或保存导入记录。');el('import-files').focus();
 }
 function importControls(){
- const pending=Boolean(importState.pending),locked=importState.busy||pending||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||Boolean(browserSync?.isLocked())||changedAccount();
+ const pending=Boolean(importState.pending),locked=importState.busy||pending||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||resetState.busy||Boolean(resetState.pending)||Boolean(browserSync?.isLocked())||changedAccount();
  for(const id of ['import-profile','import-files','import-domain','import-completed'])el(id).disabled=locked;
- el('import-preview').disabled=locked;el('import-clear').disabled=locked;el('import-retry').hidden=!pending;el('import-retry').disabled=importState.busy||state.syncing||metadataState.busy||state.detailBusy||Boolean(browserSync?.isLocked())||changedAccount();
- el('import-confirm').disabled=locked||!importState.preview||importState.fingerprint!==importFingerprint()||!el('import-completed').checked;
+ el('import-preview').disabled=locked;el('import-clear').disabled=locked;el('import-retry').hidden=!pending;el('import-retry').disabled=importState.busy||state.syncing||metadataState.busy||state.detailBusy||resetState.busy||Boolean(resetState.pending)||Boolean(browserSync?.isLocked())||changedAccount();
+ el('import-confirm').disabled=locked||!importState.preview||importState.dataEpoch!==state.dataEpoch||importState.fingerprint!==importFingerprint()||!el('import-completed').checked;
 }
-function invalidateImport(){if(importState.pending)return;importState.sequence++;importState.items=null;importState.profileId=null;importState.preview=null;importState.fingerprint=null;el('import-result').hidden=true;for(const id of ['import-counts','import-sample','import-warnings'])el(id).textContent='';importControls();}
+function invalidateImport(){if(importState.pending)return;importState.sequence++;importState.items=null;importState.profileId=null;importState.dataEpoch=null;importState.preview=null;importState.fingerprint=null;el('import-result').hidden=true;for(const id of ['import-counts','import-sample','import-warnings'])el(id).textContent='';importControls();}
 function clearImport(force=false){
  if(importState.busy||importState.pending&&!force)return;
- importState.sequence++;importState.items=null;importState.profileId=null;importState.preview=null;importState.fingerprint=null;importState.pending=null;importState.touched=false;el('import-files').value='';el('import-domain').value='';el('import-completed').checked=false;el('import-result').hidden=true;for(const id of ['import-counts','import-sample','import-warnings'])el(id).textContent='';importState.baseline=el('import-profile').value;importGuard?.reset();controls();
+ importState.sequence++;importState.items=null;importState.profileId=null;importState.dataEpoch=null;importState.preview=null;importState.fingerprint=null;importState.pending=null;importState.touched=false;el('import-files').value='';el('import-domain').value='';el('import-completed').checked=false;el('import-result').hidden=true;for(const id of ['import-counts','import-sample','import-warnings'])el(id).textContent='';importState.baseline=el('import-profile').value;importGuard?.reset();controls();
 }
 function readImportProfile(){
  const raw=el('import-profile').value.trim();if(canonicalProfile(raw))return raw;
@@ -197,7 +224,7 @@ function readImportProfile(){
 }
 function importBodyFits(body){if(new TextEncoder().encode(JSON.stringify(body)).byteLength>4*1024*1024)throw new Error('规范化后的导入记录超过 4 MiB，请减少本次文件后重试。');}
 async function previewImport(){
- if(mutationLocked())return;
+ if(mutationLocked())return;if(!integer(state.dataEpoch)){importStatus('请等待书影音资料读取完成后再预览。',true);return;}const dataEpoch=state.dataEpoch;
  let profileId,files;try{profileId=readImportProfile();files=importFiles();if(!files.length)throw new Error('先选择本人导出的文件。');if(!el('import-completed').checked)throw new Error('请先确认资料所属主页和已完成标记。');if(files.length>100||files.reduce((sum,file)=>sum+file.size,0)>8*1024*1024)throw new Error('每次最多 100 个文件、合计 8 MiB。');}catch(error){importStatus(error.message,true);return;}
  invalidateImport();importState.busy=true;importState.touched=true;const sequence=++importState.sequence,stamp=importFingerprint(),domain=el('import-domain').value;controls();importStatus('正在本地解析文件，再核对本站已有记录…');
  try{
@@ -208,34 +235,35 @@ async function previewImport(){
   if(sequence!==importState.sequence||changedAccount()||stamp!==importFingerprint())return;
   if(!Array.isArray(parsed?.items)||!parsed.items.length)throw new Error('没有可导入的已完成记录。请核对导出文件、状态和所属类型。');
   if(parsed.items.length>500||parsed.items.some(item=>item?.source!=='import'||!subjectURL(item)))throw new Error('导入记录格式或数量不符合要求，请核对文件。');
-  const body={action:'preview',profile:profileId,items:parsed.items};importBodyFits(body);
+  const body={action:'preview',profile:profileId,items:parsed.items,expectedDataEpoch:dataEpoch};importBodyFits(body);
   const result=await requestJSON('/api/life/douban/import',{method:'POST',timeoutMs:65000,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(sequence!==importState.sequence||changedAccount()||stamp!==importFingerprint())return;const preview=result.preview;
-  if(!preview||preview.profileId!==profileId||preview.total!==parsed.items.length||!['added','updated','unchanged'].every(key=>integer(preview[key]))||typeof preview.snapshotHash!=='string'||!/^[a-f0-9]{64}$/i.test(preview.snapshotHash))throw new Error('导入预览未能核对，请重新预览。');
-  importState.items=parsed.items;importState.profileId=profileId;importState.preview=preview;importState.fingerprint=stamp;
+  if(!preview||(preview.dataEpoch??0)!==dataEpoch||state.dataEpoch!==dataEpoch||preview.profileId!==profileId||preview.total!==parsed.items.length||!['added','updated','unchanged'].every(key=>integer(preview[key]))||typeof preview.snapshotHash!=='string'||!/^[a-f0-9]{64}$/i.test(preview.snapshotHash))throw new Error('导入预览未能核对，请重新预览。');
+  importState.items=parsed.items;importState.profileId=profileId;importState.dataEpoch=dataEpoch;importState.preview=preview;importState.fingerprint=stamp;
   el('import-counts').textContent='主页 '+profileId+' · '+preview.total+' 条记录：新增 '+preview.added+'、更新 '+preview.updated+'、未变化 '+preview.unchanged+'。';
   el('import-sample').innerHTML=parsed.items.slice(0,8).map(item=>'<li>'+esc(item.title)+' · '+esc(kinds[item.kind]||'待分类影视')+' · '+esc(rating(item.rating))+(item.markedDate?' · 标记 '+esc(item.markedDate):'')+'</li>').join('');
   const warnings=Array.isArray(parsed.warnings)?parsed.warnings.filter(value=>typeof value==='string').slice(0,8):[];
   el('import-warnings').textContent='本地跳过 '+(integer(parsed.skipped)?parsed.skipped:0)+' 条，去重 '+(integer(parsed.duplicates)?parsed.duplicates:0)+' 条。'+warnings.join(' ');
   el('import-result').hidden=false;importStatus('预览完成，尚未保存。核对所属主页、记录和更新数量后，点击“确认导入”。');
- }catch(error){if(sequence===importState.sequence&&!changedAccount())importStatus(error.message||'本次预览未完成，原文件仍在本页，可调整后重试。',true);}
+ }catch(error){if(sequence===importState.sequence&&!changedAccount()){if(error?.code==='DOUBAN_DATA_EPOCH_CONFLICT'){invalidateImport();await load(true);importStatus('书影音资料已清空或重置，旧预览已停止。原文件仍保留，请重新预览。',true);}else importStatus(error.message||'本次预览未完成，原文件仍在本页，可调整后重试。',true);}}
  finally{importState.busy=false;controls();}
 }
 async function commitImport(retry=false){
- if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||browserSync?.isLocked()||changedAccount())return;
- if(!retry){if(!importState.preview||!importState.items||importState.fingerprint!==importFingerprint()||!el('import-completed').checked)return;try{const body={action:'commit',profile:importState.profileId,items:importState.items,expectedSnapshotHash:importState.preview.snapshotHash,requestId:crypto.randomUUID(),confirmed:true};importBodyFits(body);importState.pending=JSON.parse(JSON.stringify(body));}catch(error){importStatus(error.message||'无法创建安全的导入提交，请保留本页重试。',true);return;}}
+ if(importState.busy||state.syncing||state.profileBusy||metadataState.busy||state.detailBusy||resetState.busy||resetState.pending||browserSync?.isLocked()||changedAccount())return;
+ if(!retry){if(!importState.preview||!importState.items||!integer(importState.dataEpoch)||importState.dataEpoch!==state.dataEpoch||importState.fingerprint!==importFingerprint()||!el('import-completed').checked)return;try{const body={action:'commit',profile:importState.profileId,items:importState.items,expectedSnapshotHash:importState.preview.snapshotHash,expectedDataEpoch:importState.dataEpoch,requestId:crypto.randomUUID(),confirmed:true};importBodyFits(body);importState.pending=JSON.parse(JSON.stringify(body));}catch(error){importStatus(error.message||'无法创建安全的导入提交，请保留本页重试。',true);return;}}
  const body=importState.pending;if(!body)return;importState.busy=true;controls();importStatus(retry?'正在重试原导入，不会新建重复提交…':'正在保存已确认的导入记录…');
  try{
   const result=await requestJSON('/api/life/douban/import',{method:'POST',timeoutMs:65000,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(changedAccount())return;
-  const receipt=result.receipt;if(!receipt||receipt.profileId!==body.profile||receipt.requestId!==body.requestId||receipt.total!==body.items.length||!['added','updated','unchanged'].every(key=>integer(receipt[key])))throw new Error('导入回执未能核对，请保留本页并重试原导入。');
+  if(state.dataEpoch!==body.expectedDataEpoch){const error=new Error('书影音资料已清空或重置，旧提交已停止。');error.code='DOUBAN_DATA_EPOCH_CONFLICT';error.status=409;throw error;}const receipt=result.receipt;if(!receipt||(receipt.dataEpoch??0)!==body.expectedDataEpoch||receipt.profileId!==body.profile||receipt.requestId!==body.requestId||receipt.total!==body.items.length||!['added','updated','unchanged'].every(key=>integer(receipt[key])))throw new Error('导入回执未能核对，请保留本页并重试原导入。');
   importState.busy=false;clearImport(true);importGuard?.saved();importStatus('导入已保存：新增 '+receipt.added+'、更新 '+receipt.updated+'、未变化 '+receipt.unchanged+' 条。');state.offset=0;state.scope='all';state.kind='';state.query='';el('scope').value='all';el('kind').value='';el('query').value='';await load(true);
  }catch(error){
-  if(!changedAccount()){importGuard?.failed();if([400,409,413,415,422].includes(error?.status)){importState.pending=null;invalidateImport();importStatus((error.message||'本次导入未写入。')+' 请重新预览后确认。',true);}else importStatus((error.message||'导入结果暂未确认。')+' 请保留本页，点击“重试原导入”核对同一提交。',true);}
+  if(!changedAccount()){importGuard?.failed();if(error?.code==='DOUBAN_DATA_EPOCH_CONFLICT'){importState.pending=null;invalidateImport();await load(true);importStatus('书影音资料已清空或重置，旧提交已停止，不会恢复旧记录。原文件仍保留，如需导入请重新预览。',true);}else if([400,409,413,415,422].includes(error?.status)){importState.pending=null;invalidateImport();importStatus((error.message||'本次导入未写入。')+' 请重新预览后确认。',true);}else importStatus((error.message||'导入结果暂未确认。')+' 请保留本页，点击“重试原导入”核对同一提交。',true);}
  }finally{importState.busy=false;controls();}
 }
 guard=window.JiashuDraftGuards?.register({form:el('profile-form'),label:'豆瓣主页关联',durable:false,isDirty:profileDirty,isBusy:()=>state.profileBusy||state.syncing||metadataState.busy,isBlocked:()=>state.profileBusy||state.syncing||metadataState.busy,canSave:()=>!state.profileConflict&&!changedAccount(),onDiscard:()=>{el('profile').value=state.profileBaseline;controls();}})||null;
 importGuard=window.JiashuDraftGuards?.register({form:el('import-form'),label:'书影音导入资料与待确认提交',durable:false,isDirty:importDirty,isBusy:()=>importState.busy,isBlocked:()=>importState.busy,canSave:()=>false,onDiscard:()=>clearImport(true)})||null;
 detailGuard=window.JiashuDraftGuards?.register({form:el('classification-form'),dialog:el('detail-dialog'),label:'书影音手动分类',durable:false,isDirty:classificationDirty,isBusy:()=>state.detailBusy,isBlocked:()=>state.detailBusy,canSave:()=>false,onDiscard:()=>{el('classification-kind').value=['movie','series'].includes(state.detailItem?.kind)?state.detailItem.kind:'';controls();}})||null;
+el('reset-form').addEventListener('submit',event=>{event.preventDefault();previewReset();});el('reset-confirm').addEventListener('click',()=>commitReset(false));el('reset-retry').addEventListener('click',()=>commitReset(true));
 el('profile').addEventListener('input',()=>{el('reload-profile').hidden=!profileDirty()&&!state.profileConflict;controls();if(profileDirty())profileStatus('主页填写尚未保存。保存只更新关联，不会开始同步。');});
 el('profile-form').addEventListener('submit',event=>{event.preventDefault();saveProfile(false);});el('disconnect').addEventListener('click',()=>saveProfile(true));
 el('reload-profile').addEventListener('click',()=>{if(mutationLocked())return;const reload=()=>{resetProfile(state.connection);load(false);};if(guard?.confirm)guard.confirm(reload);else if(!profileDirty())reload();else profileStatus('填写尚未保存，请先保存，或还原为已保存主页后重读。',true);});
@@ -252,8 +280,9 @@ el('list').addEventListener('click',event=>{const button=event.target.closest('[
 el('classification-form').addEventListener('submit',event=>{event.preventDefault();saveClassification();});el('classification-kind').addEventListener('change',()=>{if(state.detailBusy||state.detailConflict)return;classificationStatus('分类选择尚未保存。');controls();});
 el('detail-close').addEventListener('click',closeDetail);el('detail-dialog').addEventListener('cancel',event=>{event.preventDefault();closeDetail();});el('detail-dialog').addEventListener('close',()=>{if(state.trigger?.isConnected)state.trigger.focus();});
 window.addEventListener('popstate',()=>{if(metadataState.busy||state.syncing||browserSync?.isBusy()||changedAccount())return;readLocation();load(true);});document.addEventListener('jiashu-account-changed',()=>{state.stop=true;metadataState.stop=true;browserSync?.accountChanged();state.controller?.abort();state.loadSequence++;importState.sequence++;state.loading=false;el('page').setAttribute('aria-busy','false');status('登录账号已变化，请刷新后继续。',true);metadataStatus('登录账号已变化，补全已停止，请刷新后继续。',true);controls();});
-browserSync=window.JiashuDoubanExtensionUI?.create({el:id=>el('browser-'+id),requestJSON,getConnection:()=>state.connection,isAccountChanged:changedAccount,isLocked:()=>changedAccount()||state.loading||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending)||state.profileConflict||profileDirty(),validItem:item=>Boolean(subjectURL(item)&&typeof item.title==='string'&&Object.hasOwn(kinds,item.kind)),onChange:controls,onSaved:()=>load(true)})||null;
+browserSync=window.JiashuDoubanExtensionUI?.create({el:id=>el('browser-'+id),requestJSON,getConnection:()=>state.connection,isAccountChanged:changedAccount,isLocked:()=>changedAccount()||state.loading||state.profileBusy||state.syncing||metadataState.busy||state.detailBusy||importState.busy||Boolean(importState.pending)||resetState.busy||Boolean(resetState.pending)||state.profileConflict||profileDirty(),getDataEpoch:()=>state.dataEpoch,validItem:item=>Boolean(subjectURL(item)&&typeof item.title==='string'&&Object.hasOwn(kinds,item.kind)),onChange:controls,onSaved:()=>load(true)})||null;
 if(browserSync)window.JiashuDraftGuards?.register({form:el('browser-form'),label:'浏览器同步与待确认保存',durable:false,isDirty:()=>browserSync.hasPending(),isBusy:()=>browserSync.isBusy(),isBlocked:()=>browserSync.isBusy(),canSave:()=>false,onDiscard:()=>browserSync.discard()});
+window.JiashuDraftGuards?.register({form:el('reset-form'),label:'书影音清空与待确认提交',durable:false,isDirty:()=>Boolean(resetState.pending),isBusy:()=>resetState.busy,isBlocked:()=>resetState.busy,canSave:()=>false,onDiscard:()=>{if(resetState.busy)return;resetState.pending=null;invalidateResetPreview();controls();}});
 readLocation();load(false);
 })();
 `;

@@ -104,7 +104,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; lastRun?: unknown; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[] } } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[] } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   Object.defineProperty(window,'__JIASHU_PAGE_OWNER__',{value:'synthetic-production-owner',configurable:false});
@@ -148,7 +148,9 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const doubanMetadataBodies: Array<Record<string, unknown>> = [];
   const doubanClassificationBodies: Array<Record<string, unknown>> = [];
   const doubanExtensionMessages: Array<Record<string, unknown>> = [];
+  const doubanResetBodies: Array<Record<string, unknown>> = [];
   const browserReceipts = new Map<string, Record<string, unknown>>();
+  const resetReceipts = new Map<string, Record<string, unknown>>();
   if (catalog.douban?.browserExtensionItems) {
     const imported = catalog.douban.browserExtensionItems;
     const source = (complete = false) => ({ status: complete ? 'complete' : 'pending', pages: complete ? 1 : 0, received: 0, total: complete ? 0 : null, errorCode: null });
@@ -180,17 +182,31 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       requests.push({ path, method });
       const body = JSON.parse(String(options?.body));
       doubanImportBodies.push(body);
+      assert.equal(body.expectedDataEpoch, catalog.douban.dataEpoch ?? 0, 'every minified import pins the current data epoch');
       assert.ok(Array.isArray(body.items));
       const added = body.items.filter((input: DoubanRecordInput) => !catalog.douban!.items.some(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId)).length;
-      if (body.action === 'preview') return Response.json({ preview: { profileId: body.profile, profileUrl: 'https://www.douban.com/people/' + body.profile + '/',
+      if (body.action === 'preview') return Response.json({ preview: { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, profileUrl: 'https://www.douban.com/people/' + body.profile + '/',
         snapshotHash: 'a'.repeat(64), total: body.items.length, added, updated: 0, unchanged: body.items.length - added } });
       assert.ok(catalog.douban.browserExtensionItems, 'file-preview fixtures never commit private records');
       assert.equal(body.action, 'commit'); assert.equal(body.confirmed, true);
       if (!browserReceipts.has(body.requestId)) {
         for (const item of body.items) if (!catalog.douban.items.some(old => old.profileId === body.profile && old.domain === item.domain && old.subjectId === item.subjectId)) catalog.douban.items.push({ ...item, profileId: body.profile, observedAt: '2026-11-14T12:00:00.000Z', createdAt: '2026-11-14T12:00:00.000Z', updatedAt: '2026-11-14T12:00:00.000Z', metadataCheckedRunId: null });
-        browserReceipts.set(body.requestId, { profileId: body.profile, requestId: body.requestId, total: body.items.length, added, updated: 0, unchanged: body.items.length - added });
+        browserReceipts.set(body.requestId, { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, requestId: body.requestId, total: body.items.length, added, updated: 0, unchanged: body.items.length - added });
       }
       return Response.json({ receipt: browserReceipts.get(body.requestId) });
+    }
+    if (method === 'POST' && path === '/api/life/douban/reset' && catalog.douban?.allowReset) {
+      requests.push({ path, method }); const body = JSON.parse(String(options?.body)); doubanResetBodies.push(body);
+      const dataEpoch = catalog.douban.dataEpoch ?? 0, counts = { all: catalog.douban.items.length, movie: 0, series: 0, screen: 0, book: 0, music: 0 };
+      for (const item of catalog.douban.items) counts[item.kind]++;
+      if (body.action === 'preview') return Response.json({ preview: { epoch: dataEpoch, total: counts.all, counts, latestUpdatedAt: catalog.douban.items.map(item => item.updatedAt).sort().at(-1) ?? null, previewHash: 'b'.repeat(64) } });
+      assert.equal(body.action, 'commit'); assert.equal(body.confirmed, true);
+      if (resetReceipts.has(body.requestId)) return Response.json({ receipt: resetReceipts.get(body.requestId) });
+      assert.equal(body.expectedEpoch, dataEpoch); assert.equal(body.expectedPreviewHash, 'b'.repeat(64));
+      const receipt = { requestId: body.requestId, epoch: dataEpoch + 1, deleted: counts.all, counts, clearedAt: '2026-11-14T12:00:00.000Z' };
+      resetReceipts.set(body.requestId, receipt); catalog.douban.dataEpoch = dataEpoch + 1; catalog.douban.items.splice(0); catalog.douban.lastRun = null; browserReceipts.clear();
+      catalog.douban.connection = { ...catalog.douban.connection, revision: catalog.douban.connection.revision + 1, updatedAt: receipt.clearedAt };
+      return Response.json({ receipt });
     }
     if (catalog.douban && (method === 'POST' && path === '/api/life/douban/metadata' && catalog.douban.allowMetadata
       || method === 'PUT' && path === '/api/life/douban/classification' && catalog.douban.allowClassification)) {
@@ -238,7 +254,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       for (const item of rows) counts[item.kind]++;
       const filtered = rows.filter(item => !kind || kind === 'all' || item.kind === kind);
       const offset = Number(parsed.searchParams.get('offset') ?? 0), limit = Number(parsed.searchParams.get('limit') ?? 24);
-      return Response.json({ connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
+      return Response.json({ dataEpoch: catalog.douban?.dataEpoch ?? 0, connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
         items: filtered.slice(offset, offset + limit), total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
     }
     if (parsed.pathname === '/api/health/review') {
@@ -291,7 +307,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, location };
+  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, location };
 }
 
 test('production home initializes and displays an empty but available overview without model calls', { skip: !hasBuild }, async () => {
@@ -601,6 +617,7 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   await settle(() => get('status').textContent?.includes('浏览器同步完成') === true);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'START', 'STEP']);
   assert.deepEqual(f.doubanImportBodies.map(body => body.action), ['preview', 'commit']);
+  assert.deepEqual(f.doubanImportBodies.map(body => body.expectedDataEpoch), [0, 0]);
   assert.deepEqual(f.doubanImportBodies[1].items, [item]);
   assert.equal(f.doubanImportBodies[1].profile, 'synthetic-profile');
   assert.equal(f.doubanImportBodies[1].confirmed, true);
@@ -612,6 +629,46 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   await settle(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2
     && f.doubanImportBodies.filter(body => body.action === 'commit').length === 2 && get('status').textContent?.includes('浏览器同步完成') === true);
   assert.equal(f.document.querySelectorAll('#douban-list .db-card').length, 1, 'a new explicit refresh reconciles the saved subject rather than duplicating it');
+});
+
+void test('minified media reset previews before confirmation, retains its binding and pins the new epoch without automatically syncing', { skip: !hasBuild }, async () => {
+  const stamp = '2026-11-14T00:00:00.000Z';
+  const items: DoubanRecord[] = (['movie', 'book'] as const).map((kind, index) => ({
+    profileId: index ? 'older-profile' : 'synthetic-profile', domain: kind === 'movie' ? 'screen' : 'book', subjectId: String(1234567 + index), kind,
+    title: '待清空的合成记录 ' + kind, url: 'https://' + (kind === 'movie' ? 'movie' : 'book') + '.douban.com/subject/' + (1234567 + index) + '/',
+    coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: '合成私密短评', publishedAt: null, source: 'import', observedAt: stamp, createdAt: stamp, updatedAt: stamp, metadataCheckedRunId: null,
+  }));
+  const library = { connection: { profileId: 'synthetic-profile', revision: 3, updatedAt: stamp }, items, dataEpoch: 0, allowReset: true, allowImportPreview: true, browserExtensionItems: [] as DoubanRecordInput[] };
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: library });
+  const get = (id: string) => f.document.getElementById('douban-' + id)!;
+  await settle(() => get('page').getAttribute('aria-busy') === 'false' && f.document.querySelectorAll('#douban-list .db-card').length === 2);
+  assert.equal(f.doubanResetBodies.length, 0); assert.equal(f.doubanExtensionMessages.length, 0);
+  assert.ok(f.requests.every(request => request.method === 'GET'));
+  get('reset-panel').setAttribute('open', '');
+  get('reset-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle(() => !(get('reset-confirm') as HTMLButtonElement).disabled);
+  assert.deepEqual(f.doubanResetBodies, [{ action: 'preview' }]); assert.equal(library.dataEpoch, 0); assert.equal(library.items.length, 2);
+  assert.match(get('reset-counts').textContent ?? '', /2 条记录/); assert.equal(f.document.querySelectorAll('#douban-list .db-card').length, 2, 'preview keeps all saved cards');
+  get('reset-confirm').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => get('reset-status').textContent?.includes('绑定主页保留') === true && get('page').getAttribute('aria-busy') === 'false');
+  assert.equal(f.doubanResetBodies.length, 2); const commit = f.doubanResetBodies[1];
+  assert.equal(commit.action, 'commit'); assert.equal(commit.confirmed, true); assert.equal(commit.expectedEpoch, 0); assert.equal(commit.expectedPreviewHash, 'b'.repeat(64)); assert.match(String(commit.requestId), /^[0-9a-f-]{36}$/);
+  assert.equal(library.dataEpoch, 1); assert.equal(library.items.length, 0); assert.equal(library.connection.profileId, 'synthetic-profile'); assert.equal(library.connection.revision, 4);
+  assert.equal(f.document.querySelectorAll('#douban-list .db-card').length, 0); assert.match(get('total').textContent ?? '', /共 0 条/);
+  assert.equal((get('profile') as HTMLInputElement).value, 'https://www.douban.com/people/synthetic-profile/');
+  assert.equal(get('profile-link').getAttribute('href'), 'https://www.douban.com/people/synthetic-profile/');
+  assert.equal(f.doubanExtensionMessages.length, 0, 'reset cannot connect or start the installed extension');
+  assert.ok(f.requests.every(request => request.method === 'GET' || request.path === '/api/life/douban/reset'), 'reset only writes its two explicit reviewed requests');
+  assert.equal(f.requests.some(request => request.path === '/api/life/douban/sync'), false, 'a public-source sync also needs a new click');
+  const raw = JSON.stringify([{ title: '明确重新预览的书籍', url: 'https://book.douban.com/subject/9999999/', state: '读过' }]);
+  const file = new File([raw], 'new-generation.json', { type: 'application/json' });
+  Object.defineProperty(get('import-files'), 'files', { configurable: true, value: [file] });
+  get('import-files').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  (get('import-completed') as HTMLInputElement).checked = true; get('import-completed').dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  get('import-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle(() => get('import-result').hidden === false);
+  assert.deepEqual(f.doubanImportBodies.map(body => [body.action, body.expectedDataEpoch]), [['preview', 1]], 'an explicit new file preview uses the epoch received after reset');
+  assert.equal(library.items.length, 0, 'a fresh preview cannot restore cleared records'); assert.equal(f.doubanExtensionMessages.length, 0);
 });
 
 test('minified media enrichment and manual classification only write after their explicit actions', { skip: !hasBuild }, async () => {
@@ -703,6 +760,7 @@ test('minified private media file parser previews normalized personal fields wit
   assert.equal(f.doubanImportBodies.length, 1);
   const body = f.doubanImportBodies[0];
   assert.equal(body.action, 'preview');
+  assert.equal(body.expectedDataEpoch, 0);
   const items = body.items as Array<Record<string, unknown>>;
   assert.equal(items[0].rating, 4);
   assert.equal(items[0].comment, '合成私人短评');
