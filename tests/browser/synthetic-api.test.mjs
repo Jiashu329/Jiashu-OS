@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syntheticState, interceptSyntheticAPI, DAY, ACCOUNT_ID } from './synthetic-api.mjs';
 import { FinanceMetadataConflictError } from '../../db/finance-store.ts';
+import { ACTIVE_FOOD_CATALOG_RELEASE } from '../../lib/food-catalog.ts';
+import { presentNutritionEntry } from '../../lib/nutrition.ts';
 
 async function fixture() {
   const state = syntheticState();
@@ -28,9 +30,18 @@ test('browser API fixtures use current nutrition normalization, replay a lost ba
   const replay = await request('/api/health/nutrition/batch', 'POST', { entries: [draft] }, 'synthetic-replay-key');
   assert.equal(replay.body.replayed, true); assert.equal(state.entries.length, 1);
   const entryId = state.entries[0].id;
-  await request('/api/health/nutrition/' + entryId, 'PATCH', { ...draft, protein: '20', expectedRevision: 1 });
+  const initialSnapshot = structuredClone(state.histories.get(entryId)[0]);
+  await request('/api/health/nutrition/' + entryId, 'PATCH', { ...draft, protein: '20',
+    food: { id: 'mcd-cn:49:28', amount: 1, unit: '份', catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE }, expectedRevision: 1 });
+  const priorCreatedAt = state.entries[0].createdAt;
   const restored = await request('/api/health/nutrition/' + entryId + '/restore', 'POST', { revision: 1, expectedRevision: 2 });
   assert.equal(restored.body.entry.revision, 3); assert.equal(restored.body.entry.protein, '10.0');
+  assert.equal(state.entries[0].proteinTenth, 100);
+  assert.equal(presentNutritionEntry(state.entries[0]).protein, '10.0');
+  assert.equal(Object.hasOwn(state.entries[0], 'protein'), false, 'fixture storage must keep the real internal Entry format');
+  assert.equal(state.entries[0].createdAt, priorCreatedAt);
+  assert.equal(Object.hasOwn(state.entries[0], 'food'), false, 'a manual source snapshot clears a later catalog selection');
+  assert.deepEqual(state.histories.get(entryId)[0], initialSnapshot, 'restoring adds a revision without mutating the source snapshot');
   const history = await request('/api/health/nutrition/' + entryId + '/history');
   assert.equal(history.body.history.length, 3); assert.equal(history.body.history[2].action, 'restore');
   const review = await request('/api/health/nutrition?date=' + DAY);
@@ -40,6 +51,26 @@ test('browser API fixtures use current nutrition normalization, replay a lost ba
   assert.equal((await request('/api/health/records')).body.today, DAY);
   assert.equal((await request('/api/overview')).status, 200);
   assert.equal((await request('/api/unexpected')).status, 501);
+});
+
+test('browser restoration replays a saved food snapshot without reparsing a catalog selection', async () => {
+  const { state, request } = await fixture();
+  const selection = { id: 'mcd-cn:49:28', amount: 1, unit: '份', catalogRelease: ACTIVE_FOOD_CATALOG_RELEASE };
+  const draft = { date: DAY, meal: 'lunch', name: '食物快照', portion: '1份', calories: null, carbs: null, protein: null, fat: null, note: '', food: selection };
+  const created = await request('/api/health/nutrition', 'POST', draft, 'saved-food');
+  const entryId = created.body.entry.id;
+  const original = structuredClone(state.histories.get(entryId)[0]);
+  await request('/api/health/nutrition/' + entryId, 'PATCH', { ...draft, food: null, calories: '100', protein: '20', expectedRevision: 1 });
+  const restored = await request('/api/health/nutrition/' + entryId + '/restore', 'POST', { revision: 1, expectedRevision: 2 });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.entry.revision, 3);
+  assert.deepEqual(state.entries[0].food, original.after.food);
+  assert.equal(state.entries[0].caloriesTenth, original.after.caloriesTenth);
+  assert.equal(state.entries[0].proteinTenth, original.after.proteinTenth);
+  assert.equal(restored.body.entry.protein, original.after.protein);
+  assert.deepEqual(state.histories.get(entryId)[0], original);
+  assert.equal(state.histories.get(entryId).length, 3);
+
 });
 
 test('browser finance conflict fixture uses the production metadata conflict code and retains the pending edit', async () => {

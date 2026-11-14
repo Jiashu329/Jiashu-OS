@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseDateRangeQuery } from '../lib/date-range.ts';
+import { makeP2HealthMeasurements } from '../tests/browser/p2-api.mjs';
 import { withPageAccount } from '../lib/page-account.ts';
 import { renderHomeApp } from '../home-ui.ts';
 import { renderNutritionPage } from '../nutrition-page.ts';
@@ -36,6 +38,17 @@ export function renderBrowserFixture(pathname) {
   return html === null ? null : withPageAccount(html, BROWSER_FIXTURE_OWNER);
 }
 
+// Browser-managed downloads can bypass Playwright route interception. This one
+// read-only boundary serves deterministic synthetic bytes, never user storage.
+export function browserFixtureHealthExport(url) {
+  const range = parseDateRangeQuery(url.searchParams);
+  return {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': 'attachment; filename="jiashu-health-' + range.from + '_' + range.to + '.json"' },
+    body: JSON.stringify({ version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt: new Date().toISOString(),
+      measurements: makeP2HealthMeasurements().filter(row => row.startDate.slice(0, 10) >= range.from && row.startDate.slice(0, 10) <= range.to) }),
+  };
+}
+
 export function assertBrowserFixtureEnvironment(environment = process.env) {
   if (environment.SITES_MANAGED_LINUX_CONTAINER === '1') {
     throw new Error('Browser acceptance fixture is CI/local-only. In managed Sites use sites-preview and the shared browser; this fixture cannot replace that infrastructure.');
@@ -53,6 +66,11 @@ export function startBrowserFixture() {
     response.setHeader('Referrer-Policy', 'no-referrer');
     if (request.method !== 'GET') { response.writeHead(405).end('Fixture server never writes.'); return; }
     if (url.pathname === '/__browser-fixture-health') { response.writeHead(200).end('synthetic-only'); return; }
+    if (url.pathname === '/api/health/export') {
+      try { const file = browserFixtureHealthExport(url); response.writeHead(200, file.headers).end(file.body); }
+      catch { response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'Invalid synthetic export range' })); }
+      return;
+    }
     if (url.pathname.startsWith('/api/')) { response.writeHead(501).end('API must be intercepted by the acceptance test.'); return; }
     const html = renderBrowserFixture(url.pathname);
     if (html !== null) { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.writeHead(200).end(html); return; }

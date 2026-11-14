@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { syntheticState, interceptSyntheticAPI, DAY, ACCOUNT_ID } from './synthetic-api.mjs';
 import { p2State, shiftDay } from './p2-api.mjs';
@@ -33,11 +34,16 @@ test('a custom health range stays aligned across chart navigation, assistant han
   expect(writes(testInfo)).toEqual([]);
   await page.reload();
   await expect(page.locator('#health-range-selected')).toContainText(nextFrom);
+  // Exercise real synthetic HTTP download headers; native downloads may bypass route mocks.
+  await page.route('**/api/health/export?**', route => route.continue());
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#health-export-chart').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('jiashu-health-' + nextFrom + '_' + to + '.json');
-  await expect.poll(() => testInfo.synthetic.requests.some((request) => request.path === '/api/health/export' && request.search === '?from=' + nextFrom + '&to=' + to)).toBe(true);
+  const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
+  expect(exported).toMatchObject({ version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai' });
+  expect(exported.measurements.length).toBeGreaterThan(0);
+  for (const row of exported.measurements) { expect(row.startDate.slice(0, 10) >= nextFrom && row.startDate.slice(0, 10) <= to).toBe(true); }
   await fits(page);
 });
 

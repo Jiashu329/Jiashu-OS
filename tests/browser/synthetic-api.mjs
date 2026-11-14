@@ -95,7 +95,16 @@ export async function interceptSyntheticAPI(context, state) {
       const before = presentNutritionEntry(entry);
       const restored = item[2] === 'restore' ? state.histories.get(entry.id).find((event) => event.revision === body.revision)?.after : null;
       if (item[2] === 'restore' && !restored) return fail('合成历史版本不存在。', 'NUTRITION_HISTORY_NOT_FOUND', 404);
-      Object.assign(entry, makeEntry(restored ?? { ...before, ...body }, entry.id, entry.revision + 1));
+      if (restored) {
+        // Restore the recorded values, not a fresh create request/catalog lookup.
+        // History is an API view; storage keeps normalized tenths and snapshots.
+        const { calories, carbs, protein, fat, deleted, ...snapshot } = structuredClone(restored);
+        delete entry.food;
+        delete entry.provenance;
+        Object.assign(entry, snapshot, { id: entry.id, createdAt: before.createdAt,
+          revision: before.revision + 1, updatedAt: stamp(),
+          carbsTenth: snapshot.carbsTenth ?? null, proteinTenth: snapshot.proteinTenth ?? null, fatTenth: snapshot.fatTenth ?? null });
+      } else Object.assign(entry, makeEntry({ ...before, ...body }, entry.id, entry.revision + 1));
       state.histories.get(entry.id).push({ revision: entry.revision, action: restored ? 'restore' : 'edit', createdAt: stamp(), before, after: presentNutritionEntry(entry) });
       return send({ entry: presentNutritionEntry(entry) });
     }

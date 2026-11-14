@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { syntheticState, interceptSyntheticAPI, DAY } from './synthetic-api.mjs';
+import { presentNutritionEntry } from '../../lib/nutrition.ts';
 
 test.beforeEach(async ({ context }, testInfo) => {
   const state = syntheticState();
@@ -208,7 +209,7 @@ test('record history shows prior nutrients and restores a selected revision as a
   await restore.click();
   await expect(page.locator('#nutrition-record-history-status')).toContainText('已恢复');
   expect(testInfo.synthetic.entries[0].revision).toBe(3);
-  expect(testInfo.synthetic.entries[0].protein).toBe('10.0');
+  expect(presentNutritionEntry(testInfo.synthetic.entries[0]).protein).toBe('10.0');
   expect(testInfo.synthetic.histories.get(entryId)).toHaveLength(3);
   const operation = testInfo.synthetic.requests.find((request) => request.path.endsWith('/restore'));
   expect(operation.body).toMatchObject({ revision: 1, expectedRevision: 2 });
