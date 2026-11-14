@@ -293,3 +293,71 @@ test('saved private HTML stays inert while only normalized book records reach th
   expect(syncRequests(testInfo)).toEqual([]);
   await fits(page);
 });
+
+test('source failures distinguish timeouts from blocks and offer recovery without replacing a private draft or unknown receipt', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('music', 40), record('music', 41)];
+  state.doubanRun = { ...newRun(state.doubanConnection), revision: 5, status: 'partial', phase: 'done', added: 2, finishedAt: STAMP,
+    sources: { screen: { ...source('failed'), errorCode: 'DOUBAN_SOURCE_TIMEOUT' },
+      book: { ...source('blocked'), errorCode: 'DOUBAN_SOURCE_BLOCKED' }, music: source('complete', 2) },
+    rss: { status: 'failed', received: 0, errorCode: 'DOUBAN_SOURCE_BLOCKED' },
+    message: '公开来源未全部完成，已保存获取到的两条音乐记录。' };
+  await openLibrary(page);
+  const screen = page.locator('[data-douban-source="screen"]'), book = page.locator('[data-douban-source="book"]');
+  await expect(screen.locator('strong')).toContainText('读取超时');
+  await expect(screen.locator('[data-douban-source-reason]')).toContainText('本次等待内没有返回');
+  await expect(book.locator('strong')).toContainText('访问受限');
+  await expect(book.locator('[data-douban-source-reason]')).toContainText('暂不允许本站读取此公开页面');
+  await expect(page.locator('[data-douban-source="rss"] [data-douban-source-reason]')).toContainText('暂不允许本站读取此公开页面');
+  await expect(page.locator('[data-douban-source="music"]')).toContainText(/已读取/);
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(2);
+  for (const [domain, host] of [['screen', 'movie'], ['book', 'book'], ['music', 'music']]) {
+    const url = new URL(await page.locator('[data-douban-collection="' + domain + '"]').first().getAttribute('href'));
+    expect(url.href).toBe('https://' + host + '.douban.com/people/' + PROFILE + '/collect');
+  }
+  expect(mutations(testInfo)).toEqual([]);
+  expect(state.externalRequests).toEqual([]);
+
+  await page.locator('[data-douban-import-source="book"]').click();
+  await expect(page.locator('#douban-import-panel')).toHaveAttribute('open', '');
+  expect(parseDoubanProfile(await page.locator('#douban-import-profile').inputValue()).profileId).toBe(PROFILE);
+  await expect(page.locator('#douban-import-domain')).toHaveValue('book');
+  await expect(page.locator('#douban-import-completed')).not.toBeChecked();
+  const draftProfile = 'https://www.douban.com/people/retained-private-profile/';
+  const draftFile = { name: 'retained-private-music.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify([
+    { title: '保留原私密音乐草稿', url: 'https://music.douban.com/subject/8765432/', type: 'music', state: '听过',
+      myRating: 3, collectionDate: '2026-11-11', myComment: '这条资料属于原导入草稿' },
+  ])) };
+  await page.locator('#douban-import-profile').fill(draftProfile);
+  await page.locator('#douban-import-domain').selectOption('music');
+  await page.locator('#douban-import-files').setInputFiles(draftFile);
+  await page.locator('#douban-import-completed').check();
+  await page.locator('[data-douban-import-source="screen"]').click();
+  await expect(page.locator('#douban-import-profile')).toHaveValue(draftProfile);
+  await expect(page.locator('#douban-import-domain')).toHaveValue('music');
+  expect(await page.locator('#douban-import-files').evaluate(input => input.files[0]?.name)).toBe(draftFile.name);
+  await expect(page.locator('#douban-import-status')).toContainText(/保留|未保存|原.*草稿/);
+  expect(mutations(testInfo)).toEqual([]);
+
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  state.doubanLoseImportReply = true;
+  await page.locator('#douban-import-confirm').click();
+  await expect(page.locator('#douban-import-retry')).toBeEnabled();
+  const beforeRecovery = mutations(testInfo).length;
+  await page.locator('[data-douban-import-source="screen"]').click();
+  await expect(page.locator('#douban-import-profile')).toHaveValue(draftProfile);
+  await expect(page.locator('#douban-import-domain')).toHaveValue('music');
+  await expect(page.locator('#douban-import-profile')).toBeDisabled();
+  await expect(page.locator('#douban-import-retry')).toBeEnabled();
+  expect(mutations(testInfo)).toHaveLength(beforeRecovery);
+  await page.locator('#douban-import-retry').click();
+  await expect(page.locator('#douban-list')).toContainText('保留原私密音乐草稿');
+  expect(state.doubanItems).toHaveLength(3);
+  expect(state.doubanConnection.profileId).toBe(PROFILE);
+  expect(syncRequests(testInfo)).toEqual([]);
+  expect(state.externalRequests).toEqual([]);
+  await fits(page);
+  await page.locator('#douban-sources').screenshot({ path: testInfo.outputPath('douban-source-failure-recovery.png') });
+});

@@ -530,6 +530,35 @@ for (const width of [390, 1280]) {
   });
 }
 
+test('minified media recovery distinguishes upstream failures and prepares an import without replacing a private draft', { skip: !hasBuild }, async () => {
+  const stamp = '2026-11-14T10:09:27.728Z';
+  const progress = (status: string, errorCode: string | null, received = 0) => ({ status, errorCode, pages: received ? 1 : 0, received, total: received || null });
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: stamp }, items: [],
+    lastRun: { profileId: 'synthetic-profile', connectionRevision: 1, status: 'partial', updatedAt: stamp,
+      sources: { screen: progress('failed', 'DOUBAN_SOURCE_TIMEOUT'), book: progress('blocked', 'DOUBAN_SOURCE_BLOCKED'), music: progress('complete', null, 2) },
+      rss: { status: 'failed', received: 0, errorCode: 'DOUBAN_SOURCE_BLOCKED' }, added: 2, updated: 0, unchanged: 0 },
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  const source = (key: string) => f.document.querySelector('[data-douban-source="' + key + '"]')!;
+  assert.match(source('screen').textContent ?? '', /超时/);
+  assert.match(source('book').textContent ?? '', /拒绝|访问受限/);
+  assert.match(source('rss').textContent ?? '', /拒绝|访问受限/);
+  assert.equal(source('screen').querySelector('[data-douban-collection]')?.getAttribute('href'), 'https://movie.douban.com/people/synthetic-profile/collect');
+  assert.equal(source('book').querySelector('[data-douban-collection]')?.getAttribute('href'), 'https://book.douban.com/people/synthetic-profile/collect');
+  source('book').querySelector('[data-douban-import-source]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  const get = (id: string) => f.document.getElementById('douban-' + id)!;
+  assert.equal(get('import-panel').hasAttribute('open'), true);
+  assert.match((get('import-profile') as HTMLInputElement).value, /synthetic-profile/);
+  assert.equal((get('import-domain') as unknown as HTMLSelectElement).value, 'book');
+  (get('import-profile') as HTMLInputElement).value = 'another-private-profile';
+  get('import-profile').dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  source('screen').querySelector('[data-douban-import-source]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  assert.equal((get('import-profile') as HTMLInputElement).value, 'another-private-profile');
+  assert.equal((get('import-domain') as unknown as HTMLSelectElement).value, 'book');
+  assert.ok(f.requests.every(request => request.method === 'GET'), 'recovery only prepares local options; no upstream sync or import is submitted');
+});
+
 test('minified private media file parser previews normalized personal fields without uploading the raw file or saving records', { skip: !hasBuild }, async () => {
   const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
     connection: { profileId: null, revision: 0, updatedAt: null }, items: [], allowImportPreview: true,
