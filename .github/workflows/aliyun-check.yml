@@ -1,0 +1,41 @@
+name: Self-hosted checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  selfhost:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:selfhost
+      - run: npm run test:selfhost:smoke
+      - name: Check deployment scripts
+        run: |
+          for script in deploy/aliyun/*.sh; do bash -n "$script"; done
+          node --check deploy/aliyun/check-ci.mjs
+          node --test deploy/aliyun/delivery.test.mjs
+      - name: Build and exercise the Docker deployment on the CI host only
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+          ALIYUN_PUBLIC_ORIGIN: https://www.treefund.asia
+        run: |
+          bash deploy/aliyun/build-bundle.sh "$DEPLOY_SHA" "$RUNNER_TEMP/jiashu-ci-bundle"
+          sudo bash deploy/aliyun/bootstrap.sh --app-dir /opt/jiashu-ci --bundle "$RUNNER_TEMP/jiashu-ci-bundle" --public-origin "$ALIYUN_PUBLIC_ORIGIN" --confirm-empty-test-site
+          sudo bash deploy/aliyun/deploy.sh --app-dir /opt/jiashu-ci --bundle "$RUNNER_TEMP/jiashu-ci-bundle"
+      - name: Stop only the CI test container
+        if: always()
+        run: |
+          if sudo test -f /opt/jiashu-ci/current.env; then
+            sudo docker compose --project-directory /opt/jiashu-ci --project-name jiashu-test --env-file /opt/jiashu-ci/current.env -f /opt/jiashu-ci/compose.yml stop app
+          fi

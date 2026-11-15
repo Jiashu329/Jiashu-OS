@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+dist
+outputs
+.env*
+.dev.vars*
+.wrangler
+.next
+playwright-report
+test-results
+*.sqlite*
+*.db
+*.pem
+*.key
+private

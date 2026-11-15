@@ -1,6 +1,7 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    SELFHOST_AUTH_PROVIDER?: 'local';
     APP_OWNER_USER_ID?: string;
     APP_OWNER_EMAIL?: string;
     AI_PROVIDER?: string;

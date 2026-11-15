@@ -1,4 +1,4 @@
-import { sites } from '@openai/sites-vite-plugin';
+import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
 import { defineConfig } from 'vite';
@@ -35,6 +35,18 @@ const localBindingConfig = {
 };
 
 export default defineConfig(async () => {
+  if (process.env.APP_DEPLOY_TARGET === 'node') {
+    return {
+      css: { postcss: { plugins: [tailwindcss()] } },
+      resolve: {
+        alias: [
+          { find: /^cloudflare:workers$/, replacement: fileURLToPath(new URL('./selfhost/env.ts', import.meta.url)) },
+          { find: /^.*\/douban-extension-package\.generated(?:\.ts)?$/, replacement: fileURLToPath(new URL('./outputs/selfhost-extension.generated.ts', import.meta.url)) },
+        ],
+      },
+      plugins: [vinext({ nextConfig: { output: 'standalone' } })],
+    };
+  }
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
@@ -45,7 +57,10 @@ export default defineConfig(async () => {
   process.env.CLOUDFLARE_CF_FETCH_ENABLED ??= 'false';
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
-  const { cloudflare } = await import('@cloudflare/vite-plugin');
+  const [{ cloudflare }, { sites }] = await Promise.all([
+    import('@cloudflare/vite-plugin'),
+    import('@openai/sites-vite-plugin'),
+  ]);
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },

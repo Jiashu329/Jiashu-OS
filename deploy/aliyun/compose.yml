@@ -1,0 +1,36 @@
+name: jiashu-test
+services:
+  app:
+    image: ${APP_IMAGE:?An immutable image ID is required}
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./app.env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      APP_COMMIT_SHA: ${APP_COMMIT_SHA:?A verified source commit is required}
+    ports:
+      - "127.0.0.1:${APP_BIND_PORT:-3100}:3000"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/_selfhost/healthz').then(async r=>{const d=await r.json();process.exit(r.ok&&d.ok===true&&d.commitSha===process.env.APP_COMMIT_SHA?0:1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6

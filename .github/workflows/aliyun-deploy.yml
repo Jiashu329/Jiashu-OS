@@ -1,0 +1,120 @@
+name: Aliyun deployment
+on:
+  workflow_run:
+    workflows: [Application checks, Browser acceptance, Douban extension acceptance, Self-hosted checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Read-only inspection, explicit first bootstrap, or deployment
+        type: choice
+        options: [inspect, bootstrap, deploy]
+        default: inspect
+      bootstrap_confirm:
+        description: For bootstrap only, enter BOOTSTRAP-JIASHU-TEST
+        type: string
+        required: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: aliyun-production-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+      sha: ${{ steps.gate.outputs.sha }}
+      operation: ${{ steps.gate.outputs.operation }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DEPLOY_OPERATION: ${{ inputs.operation || 'deploy' }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
+        run: node deploy/aliyun/check-ci.mjs
+  inspect:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true' && needs.gate.outputs.operation == 'inspect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Read server metadata only
+        env:
+          ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
+          ALIYUN_USER: ${{ secrets.ALIYUN_USER }}
+          ALIYUN_SSH_KEY: ${{ secrets.ALIYUN_SSH_KEY }}
+          ALIYUN_KNOWN_HOSTS: ${{ secrets.ALIYUN_KNOWN_HOSTS }}
+          ALIYUN_SSH_PORT: ${{ vars.ALIYUN_SSH_PORT || '22' }}
+        run: |
+          config=$(bash deploy/aliyun/ssh-config.sh)
+          ssh -T -F "$config" jiashu-aliyun 'bash -s' < deploy/aliyun/inspect.sh
+      - if: always()
+        run: rm -f "$RUNNER_TEMP/jiashu-deploy-key" "$RUNNER_TEMP/jiashu-known-hosts" "$RUNNER_TEMP/jiashu-ssh-config"
+  build-and-deploy:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true' && needs.gate.outputs.operation != 'inspect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build an immutable image bundle
+        env:
+          DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+          ALIYUN_PUBLIC_ORIGIN: ${{ vars.ALIYUN_PUBLIC_ORIGIN || 'https://www.treefund.asia' }}
+        run: |
+          bash deploy/aliyun/build-bundle.sh "$DEPLOY_SHA" "$RUNNER_TEMP/jiashu-bundle"
+      - name: Recheck the source before touching the server
+        id: final-gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+          DEPLOY_OPERATION: ${{ needs.gate.outputs.operation }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
+        run: node deploy/aliyun/check-ci.mjs
+      - name: Deploy only the verified bundle
+        if: steps.final-gate.outputs.ready == 'true'
+        env:
+          ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
+          ALIYUN_USER: ${{ secrets.ALIYUN_USER }}
+          ALIYUN_SSH_KEY: ${{ secrets.ALIYUN_SSH_KEY }}
+          ALIYUN_KNOWN_HOSTS: ${{ secrets.ALIYUN_KNOWN_HOSTS }}
+          ALIYUN_SSH_PORT: ${{ vars.ALIYUN_SSH_PORT || '22' }}
+          ALIYUN_DEPLOY_PATH: ${{ vars.ALIYUN_DEPLOY_PATH || '/opt/jiashu-test' }}
+          ALIYUN_PUBLIC_ORIGIN: ${{ vars.ALIYUN_PUBLIC_ORIGIN || 'https://www.treefund.asia' }}
+          ALIYUN_BIND_PORT: ${{ vars.ALIYUN_BIND_PORT || '3100' }}
+          OPERATION: ${{ needs.gate.outputs.operation }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+          DEPLOY_OPERATION: ${{ needs.gate.outputs.operation }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
+        run: bash deploy/aliyun/upload-and-run.sh "$OPERATION" "$RUNNER_TEMP/jiashu-bundle"
+      - if: always()
+        run: rm -f "$RUNNER_TEMP/jiashu-deploy-key" "$RUNNER_TEMP/jiashu-known-hosts" "$RUNNER_TEMP/jiashu-ssh-config"

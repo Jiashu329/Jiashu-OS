@@ -8,6 +8,9 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "node scripts/build-release.mjs",
+    "build:selfhost": "node scripts/build-selfhost.mjs",
+    "start:selfhost": "node dist/standalone/selfhost/server.mjs",
+    "test:selfhost:smoke": "node scripts/test-selfhost-smoke.mjs",
     "test": "node scripts/run-tests.mjs unit",
     "test:production": "node scripts/run-tests.mjs production",
     "typecheck": "tsc --noEmit",

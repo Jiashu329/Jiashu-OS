@@ -1,3 +1,4 @@
+import { env } from 'cloudflare:workers';
 import { chatGPTSignInPath, chatGPTSignOutPath, getChatGPTUser, requireChatGPTUser } from '../chatgpt-auth';
 import { renderAccountPage } from '../../account-page';
 import { withPageAccount } from '../../lib/page-account';
@@ -10,6 +11,7 @@ export async function GET(request: Request) {
   const signedOut = new URL(request.url).searchParams.get('signedOut') === '1';
   const user = signedOut ? await getChatGPTUser('/account?signedOut=1') : await requireChatGPTUser('/account');
   const html = renderAccountPage({
+    ...(env.SELFHOST_AUTH_PROVIDER === 'local' ? { authMode: 'selfhost' as const } : {}),
     signInHref: chatGPTSignInPath('/account'),
     signOutHref: chatGPTSignOutPath('/account?signedOut=1'),
   });

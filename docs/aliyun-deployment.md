@@ -1,0 +1,74 @@
+# 阿里云测试站与 GitHub 自动更新
+
+当前目标是独立空库测试站：Alibaba Cloud Linux 4、`root@8.159.158.122:22`、现有域名 `https://www.treefund.asia`。当前个人主页和 HTTPS 服务必须保留。自动化仅管理 `/opt/jiashu-test` 以及 `127.0.0.1:3100` 的应用容器；**不修改 Nginx、不占用 80/443、不删除既有目录或数据库**。
+
+## 一次性配置
+
+1. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Secrets** 分别新增四项，名称和值分别填写，不把私钥放到聊天、源码或 Actions 日志：
+
+   | Secret 名称 | 内容 |
+   | --- | --- |
+   | `ALIYUN_HOST` | `8.159.158.122` |
+   | `ALIYUN_USER` | `root` |
+   | `ALIYUN_SSH_KEY` | 服务器已授权的专用部署 Ed25519 私钥全文 |
+   | `ALIYUN_KNOWN_HOSTS` | `8.159.158.122 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHMg0hn9zHh53eQKAsqJrTwnSVFBE0UD2aG56w3C7SCH`（已通过服务器控制台核对） |
+
+   固定入口：`https://github.com/Jiashu329/Jiashu-OS/settings/secrets/actions`。
+
+2. Variables 使用以下默认值，无需把普通配置作为密码：
+
+   | Variable | 默认值 |
+   | --- | --- |
+   | `ALIYUN_DEPLOY_ENABLED` | `false`，验证完测试站后才改 `true` |
+   | `ALIYUN_SSH_PORT` | `22` |
+   | `ALIYUN_DEPLOY_PATH` | `/opt/jiashu-test` |
+   | `ALIYUN_PUBLIC_ORIGIN` | `https://www.treefund.asia` |
+   | `ALIYUN_BIND_PORT` | `3100` |
+
+3. 打开 **Actions → Aliyun deployment → Run workflow**，在 `main` 选择 `inspect`。此操作不要求开启自动部署，只返回 OS、架构、Docker/Compose、指定监听端口与 Nginx 检测状态，不输出环境文件或证书配置。
+
+4. 确认服务器已有可用 Docker Engine、Compose v2、Python 3、`flock`、`curl`、`ss`、`sha256sum`。若缺少 Docker，应先按 Alibaba Cloud Linux 4 的受支持方式安装，不能直接套用 Ubuntu 命令或替换现有容器服务。
+
+5. 同一提交的四项检查全部成功后，在同一工作流选择 `bootstrap`，确认栏输入 `BOOTSTRAP-JIASHU-TEST`。Bootstrap 会检查现有服务和目录，只创建本应用标记目录、空库持久卷、0600 环境与初始登录文件，并启动 loopback 测试服务。既有 `app.env` 不会被新随机密钥覆盖；非空且无标记的目录、已占用的首次应用端口都会拒绝。
+
+已准备镜像包时，等价的一次性服务器命令为：
+
+```sh
+sudo bash /path/to/verified-bundle/bootstrap.sh \
+  --app-dir /opt/jiashu-test \
+  --bundle /path/to/verified-bundle \
+  --public-origin https://www.treefund.asia \
+  --port 3100 --confirm-empty-test-site
+```
+
+初始用户名默认 `admin`；随机口令只保存在服务器 `/opt/jiashu-test/initial-login.txt`（0600）。仅在阿里云私密控制台读取该文件，不在 Actions 运行 `cat`，也不把内容发到聊天。会话密钥与 AI 配置主密钥存在独立的 `app.env`，后续部署不会重建。迁移真实数据和现有密钥不属于这次空库测试站初始化。
+
+## 验证与域名切换
+
+构建使用 Node.js 24：`npm ci` 后执行 `npm run build:selfhost`。`npm run test:selfhost:smoke` 会启动独立 HTTP 服务，只在 GitHub CI 或允许启动独立服务的测试环境运行；托管 Sites 环境不运行此 HTTP 测试。
+
+在仓库根目录构建当前提交的镜像：
+
+```sh
+commit_sha=$(git rev-parse HEAD)
+docker build -f selfhost/Dockerfile \
+  --build-arg APP_COMMIT_SHA="$commit_sha" \
+  --build-arg SELFHOST_PUBLIC_ORIGIN=https://www.treefund.asia \
+  -t "jiashu-test:$commit_sha" .
+```
+
+先检查 `http://127.0.0.1:3100/_selfhost/healthz` 返回 `ok:true` 且 `commitSha` 与部署提交一致。登录检查须通过 HTTPS 域名进行；生产会话 Cookie 保持 Secure，不为外网 HTTP 关闭保护。
+
+现有 `www.treefund.asia` 仍显示个人主页时，保留原虚拟主机、证书路径、旧站目录及其回退副本。检查真实 Nginx 配置后，人工合并 [location 示例](../deploy/aliyun/nginx-location.example.conf)，执行 `nginx -t` 后再 reload。不要把示例当作完整服务器配置覆盖现站。后续自动更新永远不执行该切换步骤。
+
+## 自动更新顺序
+
+`main` 更新后，现有 Application checks、Browser acceptance、Douban extension acceptance 和新增 Self-hosted checks 各自执行。部署工作流核对**同一个提交**的四项最新执行全部成功，并核对它仍是 `main` 当前头。PR、fork 或尚未完成／失败的提交不触发部署。
+
+启用 `ALIYUN_DEPLOY_ENABLED=true` 后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单，经严格 host-key 验证的 SSH/SCP 传输，服务器 `docker load`。不依赖服务器访问 GHCR，也不会从运行目录直接 `git pull`。
+
+服务器校验镜像 ID、提交标签和压缩包摘要，使用全局部署锁防止并发；同一版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
+
+新版本必须通过带本次 SHA 的 readiness 检查才成为 current release。没有本次 schema 变化时，失败可恢复上一镜像；本次发生或无法确认迁移时不自动降级数据库或恢复旧备份，停止新 app 并要求前向修复，避免覆盖新数据。回滚不会触碰现有主页或 Nginx。备份和旧镜像不自动清理，可在确认容量与保留策略后单独安排归档。
+
+`/opt/jiashu-test/backups` 保存迁移前一致备份，`releases/<SHA>` 保存非秘密发布记录，`current.env` 只包含不可变镜像 ID、提交和 loopback 端口。服务器私密 `app.env`、登录口令及 SQLite 数据均不进入镜像或 GitHub 工件。

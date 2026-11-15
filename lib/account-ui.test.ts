@@ -10,8 +10,8 @@ async function settled(check: () => boolean) {
   assert.ok(check(), 'Account identity did not settle');
 }
 
-function fixture(responses: Array<Response | Promise<Response>>, expectedOwner = 'alice', pageOwner = '') {
-  const { window, document } = parseHTML(`<html><body><a href="/account"><span data-current-account-avatar>我</span><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></a><button data-account-retry data-account-sidebar-retry hidden>重新确认账户</button><main><p data-account-status role="status"></p><dl data-account-profile hidden><dd data-current-account-name></dd><dd data-current-account-email></dd></dl><button data-account-retry hidden>重试</button><a data-account-sign-in hidden>登录</a><a data-account-sign-out>退出</a><a data-account-owner-only hidden>管理使用名单</a></main></body></html>`);
+function fixture(responses: Array<Response | Promise<Response>>, expectedOwner = 'alice', pageOwner = '', localAuth = false) {
+  const { window, document } = parseHTML(`<html><body><a href="/account"><span data-current-account-avatar>我</span><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></a><button data-account-retry data-account-sidebar-retry hidden>重新确认账户</button><main${localAuth ? ' data-account-auth-provider="local"' : ''}><p data-account-status role="status"></p><dl data-account-profile hidden><dd data-current-account-name></dd><dd data-current-account-email></dd></dl><button data-account-retry hidden>重试</button><a data-account-sign-in hidden>登录</a><a data-account-sign-out>退出</a><a data-account-owner-only hidden>管理使用名单</a></main></body></html>`);
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const bound: string[] = [];
   const guard = { changed: false, bind(owner: string) { bound.push(owner); if (expectedOwner && owner !== expectedOwner) { this.changed = true; document.dispatchEvent(new window.Event('jiashu-account-changed')); return false; } return true; } };
@@ -56,6 +56,23 @@ void test('a signed-out session clears identity and offers the existing ChatGPT 
   assert.equal((f.document.querySelector('[data-account-sign-out]') as HTMLElement).hidden, true);
   assert.equal((f.document.querySelector('[data-account-owner-only]') as HTMLElement).hidden, true);
   assert.deepEqual(f.bound, []); assert.equal(f.requests.length, 1);
+});
+
+void test('the self-hosted account page and expired session explain the independent administrator account', async () => {
+  const local = renderAccountPage({ signInHref: '/signin-with-chatgpt', signOutHref: '/signout-with-chatgpt', authMode: 'selfhost' });
+  const { document } = parseHTML(local);
+  assert.equal(document.querySelector('main')?.getAttribute('data-account-auth-provider'), 'local');
+  assert.equal(document.querySelector('#account-current-title')?.textContent, '当前测试账户');
+  assert.equal(document.querySelector('[data-account-sign-in]')?.textContent, '使用测试账号重新登录');
+  assert.match(document.querySelector('main')?.textContent ?? '', /测试数据与原网站分开保存/);
+  assert.doesNotMatch(document.querySelector('main')?.textContent ?? '', /ChatGPT/);
+  const sites = renderAccountPage({ signInHref: '/signin-with-chatgpt', signOutHref: '/signout-with-chatgpt' });
+  assert.match(sites, /当前 ChatGPT 账户/);
+  assert.equal(parseHTML(sites).document.querySelector('main')?.hasAttribute('data-account-auth-provider'), false);
+  const f = fixture([Response.json({}, { status: 401 })], 'alice', '', true);
+  await settled(() => f.status().getAttribute('data-account-status') === 'signed-out');
+  assert.match(f.status().textContent, /服务器管理员提供的账号/);
+  assert.doesNotMatch(f.status().textContent, /ChatGPT/);
 });
 
 void test('a switched account is never displayed in the old document and can only be continued by refresh', async () => {
