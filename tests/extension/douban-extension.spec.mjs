@@ -14,6 +14,7 @@ const hosts = { screen: 'movie', book: 'book', music: 'music' };
 const SUBJECT_IDS = { screen: '9400000', book: '9500000', music: '9600000' };
 const assetTypes = {
   '/favicon.ico': 'image/x-icon', '/apple-touch-icon.png': 'image/png', '/manifest.webmanifest': 'application/manifest+json',
+  '/tmdb-logo.svg': 'image/svg+xml',
   '/brand/logo-192.png': 'image/png', '/brand/favicon-32.png': 'image/png', '/brand/icon-192.png': 'image/png',
   '/brand/icon-512.png': 'image/png', '/brand/icon-maskable-512.png': 'image/png',
 };
@@ -151,7 +152,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
   expect(subjectRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.5', protocolVersion: 1 } });
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.6', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
