@@ -25,6 +25,7 @@ jobs:
           for script in deploy/aliyun/*.sh; do bash -n "$script"; done
           node --check deploy/aliyun/check-ci.mjs
           node --test deploy/aliyun/delivery.test.mjs
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/aliyun/nginx-test-site.test.py
       - name: Build and exercise the Docker deployment on the CI host only
         env:
           DEPLOY_SHA: ${{ github.sha }}

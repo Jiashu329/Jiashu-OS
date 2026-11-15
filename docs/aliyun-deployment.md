@@ -1,6 +1,6 @@
 # 阿里云测试站与 GitHub 自动更新
 
-当前目标是独立空库测试站：Alibaba Cloud Linux 4、`root@8.159.158.122:22`、现有域名 `https://www.treefund.asia`。当前个人主页和 HTTPS 服务必须保留。自动化仅管理 `/opt/jiashu-test` 以及 `127.0.0.1:3100` 的应用容器；**不修改 Nginx、不占用 80/443、不删除既有目录或数据库**。
+当前目标是独立空库测试站：Alibaba Cloud Linux 4、`root@8.159.158.122:22`、域名 `https://www.treefund.asia`。`treefund.asia` 保留个人主页，已有业务接口继续工作。后续自动更新仅管理 `/opt/jiashu-test` 以及 `127.0.0.1:3100` 的应用容器，不修改 Nginx、证书或既有数据。首次接入域名通过单独的服务器设置工作流完成。
 
 ## 一次性配置
 
@@ -27,7 +27,7 @@
 
 3. 打开 **Actions → Aliyun deployment → Run workflow**，在 `main` 选择 `inspect`。此操作不要求开启自动部署，只返回 OS、架构、Docker/Compose、指定监听端口与 Nginx 检测状态，不输出环境文件或证书配置。
 
-4. 确认服务器已有可用 Docker Engine、Compose v2、Python 3、`flock`、`curl`、`ss`、`sha256sum`。若缺少 Docker，应先按 Alibaba Cloud Linux 4 的受支持方式安装，不能直接套用 Ubuntu 命令或替换现有容器服务。
+4. 确认服务器已有可用 Docker Engine、Compose v2、Python 3、`flock`、`curl`、`ss`、`sha256sum`。缺少 Docker 时，可在 **Aliyun server setup** 选择 `install-docker`：按[阿里云官方方案](https://help.aliyun.com/zh/ecs/user-guide/install-and-use-docker)，仅从原生 ALinux4 仓库安装 `moby` 和 `docker-compose-plugin`。已有运行时或容器数据冲突时停止，不替换或卸载它们。
 
 5. 同一提交的四项检查全部成功后，在同一工作流选择 `bootstrap`，确认栏输入 `BOOTSTRAP-JIASHU-TEST`。Bootstrap 会检查现有服务和目录，只创建本应用标记目录、空库持久卷、0600 环境与初始登录文件，并启动 loopback 测试服务。既有 `app.env` 不会被新随机密钥覆盖；非空且无标记的目录、已占用的首次应用端口都会拒绝。
 
@@ -59,7 +59,7 @@ docker build -f selfhost/Dockerfile \
 
 先检查 `http://127.0.0.1:3100/_selfhost/healthz` 返回 `ok:true` 且 `commitSha` 与部署提交一致。登录检查须通过 HTTPS 域名进行；生产会话 Cookie 保持 Secure，不为外网 HTTP 关闭保护。
 
-现有 `www.treefund.asia` 仍显示个人主页时，保留原虚拟主机、证书路径、旧站目录及其回退副本。检查真实 Nginx 配置后，人工合并 [location 示例](../deploy/aliyun/nginx-location.example.conf)，执行 `nginx -t` 后再 reload。不要把示例当作完整服务器配置覆盖现站。后续自动更新永远不执行该切换步骤。
+首次接入时，在 **Aliyun server setup** 选择 `inspect`，审阅脱敏后的虚拟主机和 include 结构，并记录 `expectedHash`。应用就绪、同提交检查全部通过后，选择 `configure-web` 并填写该哈希。工具只接受已审阅的配置结构；配置变化时停止，先备份再检查和重载 Nginx。它保留 apex 主页及证书，仅为 www 复制原 HTTPS 虚拟主机并替换根路径，同时保留业务接口 include。后续自动更新不执行该切换步骤。[location 示例](../deploy/aliyun/nginx-location.example.conf)仅供参考，不能当作完整配置覆盖现站。
 
 ## 自动更新顺序
 

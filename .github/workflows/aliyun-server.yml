@@ -5,7 +5,7 @@ on:
       operation:
         description: One-time server setup; normal app updates use Aliyun deployment
         type: choice
-        options: [inspect, install-docker]
+        options: [inspect, install-docker, configure-web]
         default: inspect
       expected_config_hash:
         description: Reviewed Nginx snapshot SHA-256, required only for configure-web
@@ -15,7 +15,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: aliyun-production-${{ github.repository }}
+  group: aliyun-server-setup-${{ github.repository }}
   cancel-in-progress: false
 jobs:
   setup:
@@ -64,6 +64,7 @@ jobs:
               [[ "$EXPECTED_CONFIG_HASH" =~ ^[a-f0-9]{64}$ ]]
               [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
               ssh -T -F "$config" jiashu-aliyun "python3 - --apply --expected-hash '$EXPECTED_CONFIG_HASH' --expected-commit '$EXPECTED_COMMIT' --port 3100" < deploy/aliyun/nginx-test-site.py
+              ssh -T -F "$config" jiashu-aliyun "python3 - --expected-commit '$EXPECTED_COMMIT'" < deploy/aliyun/verify-live.py
               ;;
             *) exit 1 ;;
           esac

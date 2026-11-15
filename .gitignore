@@ -40,3 +40,4 @@ next-env.d.ts
 /.sites-runtime/
 *.tsbuildinfo
 .dev.vars*
+__pycache__/
