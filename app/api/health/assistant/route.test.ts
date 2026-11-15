@@ -41,7 +41,7 @@ function fixture() {
   const measuredAt = new Date(Date.now() - 1000).toISOString();
   const today = shanghaiDay(measuredAt);
   const shared = load(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => userId ? { userId, email: 'synthetic-private@example.test' } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const handlers = load(new URL('./route.ts', import.meta.url), {
     ...shared, env, ...rules, ...provider, ...chat, ...scopeRules, renderAssistantMarkdown, AISettingsCryptoError, AISettingsConflictError, SiteAISettingsUnavailableError,

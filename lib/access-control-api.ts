@@ -5,6 +5,7 @@ import type { AccessDatabase } from '../db/access-grants-store.ts';
 
 interface AccessUser { userId: string; email: string; isOwner: boolean }
 interface Dependencies {
+  unauthenticated?(message?: string): Response | Promise<Response>;
   user(): Promise<AccessUser | null>;
   ownerId(user: AccessUser): string | undefined;
   database(): AccessDatabase;
@@ -36,7 +37,7 @@ export function createAccessHandlers(deps: Dependencies) {
   };
   async function context(request: Request): Promise<AccessOwnerContext | Response> {
     const user = await deps.user();
-    if (!user) return deps.json({ error: '请先登录网站。', code: 'SIGN_IN_REQUIRED' }, 401);
+    if (!user) return deps.unauthenticated ? deps.unauthenticated('请先登录网站。') : deps.json({ error: '请先登录网站。', code: 'SIGN_IN_REQUIRED' }, 401);
     if (user.isOwner !== true) return deps.json({ error: '只有创建者可以管理允许访问的成员。', code: 'ACCESS_OWNER_REQUIRED' }, 403);
     const ownerUserId = deps.ownerId(user);
     assertAccessOwner(user.userId, ownerUserId);

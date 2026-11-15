@@ -58,3 +58,14 @@ test('only a bounded numeric 429 retry interval reaches the explicit retry UI',a
     await assert.rejects(request('/api/health/nutrition/photo'),(error:unknown)=>{assert.equal((error as {retryAfter?:number}).retryAfter,expected);return true;});
   }
 });
+
+void test('validation issues remain in the composed message without exposing a second appendable copy', async () => {
+  const request = fixture(async () => Response.json({ error: '请核对记录。', code: 'INVALID_HEALTH_RECORD',
+    issues: [{ path: 'value', message: '数值超出范围' }] }, { status: 422 }));
+  await assert.rejects(request('/api/health/records', { method: 'POST' }), (error: unknown) => {
+    const value = error as Error & { status: number; code: string };
+    assert.equal(value.status, 422); assert.equal(value.code, 'INVALID_HEALTH_RECORD');
+    assert.equal(Object.hasOwn(value, 'issues'), false, 'legacy callers must not append issues already included in the message');
+    assert.equal(value.message, '请核对记录。 数值超出范围'); return true;
+  });
+});

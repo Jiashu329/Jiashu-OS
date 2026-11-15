@@ -41,7 +41,7 @@ function fixture(t: TestContext) {
   let userId: string | null = 'alice';
   const env: { DB?: HealthGoalsDatabase } = { DB: db };
   const shared = loadHandlers(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => userId ? { userId } : null,
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => userId ? { userId } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
   const route = loadHandlers(new URL('./route.ts', import.meta.url), {
     ...shared, env, readGoalSettings, writeGoalSettings, HealthGoalConflictError, GoalValidationError, parseGoalUpdateInput, parseGoalSettingsInput,

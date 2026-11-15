@@ -46,6 +46,17 @@ async function manual(db: HealthImportDatabase, input: HealthSyncPayload, user =
   return writeHealthImport(db, user, input, null, { previewToken: preview.token, confirmSourceChanges: true });
 }
 function isConflict(code: string) { return (error: unknown) => error instanceof HealthImportConflictError && error.code === code; }
+function rollingPayload(exportedAt = '2026-11-09T10:00:00.000Z'): HealthSyncPayload {
+  const metrics = [
+    ['weight', 70, 'kg'], ['lean_body_mass', 55, 'kg'], ['steps', 7000, 'count'], ['active_energy', 500, 'kcal'], ['sleep', 7, 'hours'],
+  ] as const;
+  return parseSyncPayload({ version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt,
+    measurements: Array.from({ length: 30 }, (_, index) => metrics.map(([metric, value, unit]) => {
+      const day = '2026-10-' + String(index + 1).padStart(2, '0'), sample = metric === 'weight' || metric === 'lean_body_mass';
+      return { id: metric + '-' + index, metric, value, unit, source: 'selected-watch', startDate: day + 'T00:00:00.000Z',
+        aggregation: sample ? 'sample' : 'daily', ...(!sample ? { endDate: day + 'T08:00:00.000Z' } : {}) };
+    })).flat() });
+}
 
 test('manual preview performs no writes and submission requires its exact token', async (t) => {
   const f = fixture(t), input = payload();
@@ -194,6 +205,72 @@ test('unchanged and older exports explain skipped records and preserve newest ve
   const older = await previewHealthImport(f.db, 'alice', payload(2000, 'selected-phone'));
   assert.equal(older.skipped, 1); assert.equal(older.sourceChanges, 0);
   assert.match(older.examples[0].reason, /不晚于/);
+});
+
+test('repeated unchanged rolling exports advance every raw watermark without repeating rollback snapshots', async (t) => {
+  const f = fixture(t), input = rollingPayload(), first = await manual(f.db, input);
+  f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device', 'alice', 'watch', 'synthetic', '2026-11-09', null, null);
+  let latest = input, lastReceipt = first;
+  for (let round = 1; round <= 3; round++) {
+    latest = { ...input, exportedAt: '2026-11-09T1' + round + ':00:00.000Z' };
+    const receivedAt = '2026-11-09T1' + round + ':00:01.000Z';
+    lastReceipt = await writeHealthImport(f.db, 'alice', latest, 'device', {}, receivedAt);
+    assert.equal(lastReceipt.imported, 0); assert.equal(lastReceipt.skipped, 150); assert.equal(lastReceipt.canRevert, false);
+    const history = f.sqlite.prepare('SELECT before_json,after_json FROM health_import_batches WHERE user_id=? AND batch_id=?').get('alice', lastReceipt.batchId)!;
+    assert.deepEqual(JSON.parse(String(history.before_json)), []); assert.deepEqual(JSON.parse(String(history.after_json)), []);
+    const rows = current(f.sqlite); assert.equal(rows.length, 150);
+    assert.ok(rows.every(row => row.exported_at === latest.exportedAt && row.received_at === receivedAt));
+    assert.equal(f.sqlite.prepare('SELECT last_used_at FROM sync_devices WHERE id=?').get('device')?.last_used_at, receivedAt);
+  }
+  const replay = await writeHealthImport(f.db, 'alice', latest, null);
+  assert.equal(replay.replayed, true); assert.equal(replay.canRevert, false);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM health_import_batches').get()?.n, 4);
+  await assert.rejects(revertHealthImport(f.db, 'alice', lastReceipt.batchId, '仅更新接收版本'), isConflict('HEALTH_IMPORT_NOT_REVERSIBLE'));
+  await assert.rejects(revertHealthImport(f.db, 'alice', first.batchId, '旧内容批次'), isConflict('HEALTH_IMPORT_REVERT_CONFLICT'));
+  const older = parseSyncPayload({ ...input, exportedAt: '2026-11-09T12:30:00.000Z', measurements: input.measurements.map(row => ({ ...row, value: row.metric === 'weight' ? 69 : row.value })) });
+  const skipped = await manual(f.db, older); assert.equal(skipped.imported, 0); assert.equal(skipped.skipped, 150); assert.equal(skipped.canRevert, false);
+  assert.ok(current(f.sqlite).every(row => row.exported_at === latest.exportedAt));
+  assert.deepEqual(current(f.sqlite, 'bob'), []);
+});
+
+test('a mixed import reverts only changed content while preserving later unchanged-row watermarks', async (t) => {
+  const f = fixture(t), original = parseSyncPayload({ ...payload(), measurements: [...payload().measurements,
+    { id: 'weight-nine', metric: 'weight', value: 70, unit: 'kg', startDate: '2026-11-09T02:00:00.000Z', aggregation: 'sample', source: 'selected-scale' }] });
+  await manual(f.db, original);
+  const mixed = parseSyncPayload({ ...original, exportedAt: '2026-11-09T11:00:00.000Z', measurements: original.measurements.map(row => row.metric === 'steps' ? { ...row, value: 6000 } : row) });
+  const saved = await manual(f.db, mixed); assert.equal(saved.imported, 1); assert.equal(saved.skipped, 1); assert.equal(saved.canRevert, true);
+  const history = f.sqlite.prepare('SELECT before_json,after_json FROM health_import_batches WHERE batch_id=?').get(saved.batchId)!;
+  assert.deepEqual(JSON.parse(String(history.after_json)).map((row: { metric: string }) => row.metric), ['steps']);
+  assert.equal(JSON.parse(String(history.before_json)).length, 1);
+  const weight = mixed.measurements.find(row => row.metric === 'weight')!, later = { ...mixed, exportedAt: '2026-11-09T12:00:00.000Z', measurements: [weight] };
+  const unchanged = await manual(f.db, later); assert.equal(unchanged.canRevert, false);
+  await revertHealthImport(f.db, 'alice', saved.batchId, '撤销实际数值变化');
+  const rows = current(f.sqlite), steps = rows.find(row => row.metric === 'steps')!, storedWeight = rows.find(row => row.metric === 'weight')!;
+  assert.equal(JSON.parse(String(steps.measurement_json)).value, 5000); assert.equal(steps.exported_at, original.exportedAt);
+  assert.equal(storedWeight.exported_at, later.exportedAt); assert.equal(JSON.parse(String(storedWeight.measurement_json)).value, 70);
+  const stale = parseSyncPayload({ ...later, exportedAt: '2026-11-09T11:30:00.000Z', measurements: [{ ...weight, value: 69 }] });
+  assert.equal((await manual(f.db, stale)).skipped, 1);
+  assert.equal(current(f.sqlite).find(row => row.metric === 'weight')?.exported_at, later.exportedAt);
+});
+
+test('a same-value refresh after a changed import still prevents the older rollback', async (t) => {
+  const f = fixture(t); await manual(f.db, payload());
+  const changed = await manual(f.db, payload(6000, 'selected-watch', '2026-11-09T11:00:00.000Z'));
+  const refreshed = await manual(f.db, payload(6000, 'selected-watch', '2026-11-09T12:00:00.000Z'));
+  assert.equal(refreshed.imported, 0); assert.equal(refreshed.canRevert, false);
+  await assert.rejects(revertHealthImport(f.db, 'alice', changed.batchId, '已有后续同值同步'), isConflict('HEALTH_IMPORT_REVERT_CONFLICT'));
+  assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).value, 6000);
+  assert.equal(current(f.sqlite)[0].exported_at, '2026-11-09T12:00:00.000Z');
+});
+
+test('an unchanged watermark race fails atomically without a compact receipt or partial writes', async (t) => {
+  const f = fixture(t), input = rollingPayload(); await manual(f.db, input);
+  const newer = { ...input, exportedAt: '2026-11-09T11:00:00.000Z' }, preview = await previewHealthImport(f.db, 'alice', newer);
+  const key = measurementKey(input.measurements[0]);
+  f.race(() => f.sqlite.prepare('UPDATE health_measurements SET received_at=? WHERE user_id=? AND record_key=?').run('2026-11-09T12:00:00.000Z', 'alice', key));
+  await assert.rejects(writeHealthImport(f.db, 'alice', newer, null, { previewToken: preview.token }), isConflict('HEALTH_IMPORT_STALE'));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM health_import_batches').get()?.n, 1);
+  assert.ok(current(f.sqlite).every(row => row.exported_at === input.exportedAt));
 });
 
 test('1000 record batch uses bounded statements and can be entirely reverted', async (t) => {

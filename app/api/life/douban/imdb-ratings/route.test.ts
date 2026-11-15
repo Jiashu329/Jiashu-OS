@@ -31,7 +31,7 @@ function fixture() {
   const result = { items: [item], dataEpoch: 0,
     receipt: { requestId: REQUEST_ID, requested: 1, updated: 1, missing: 0, checkedAt: NOW },
     ratings: { status: 'complete', source: 'imdb-datasets' } };
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env: { DB: db }, ...shared, ...sourceStore, ...model, ...sync }, ['doubanDatabase', 'doubanGuard', 'doubanBody', 'doubanError']);
   const handler = load(new URL('./route.ts', import.meta.url), { env: {}, ...shared, ...helpers, ...sourceStore, ...ratingsStore, ...provider,
     syncDoubanIMDbRatings: async (database: unknown, owner: string, command: Record<string, unknown>) => {

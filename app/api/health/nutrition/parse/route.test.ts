@@ -26,7 +26,7 @@ function fixture() {
   const env = { DB: {} as D1Database, APP_OWNER_USER_ID: 'site-owner', AI_SETTINGS_ENCRYPTION_KEY: 'PRIVATE-MASTER' };
   const configReads: Array<{ user: string; revision?: number }> = [], quotaUsers: string[] = [];
   const outgoing: Array<{ user: string | null; input: parser.NutritionParserRequest }> = [];
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null },
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null },
     ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const nutrition = load(new URL('../_shared.ts', import.meta.url), { ...shared }, ['nutritionGuard', 'nutritionBody']);
   const handlers = load(new URL('./route.ts', import.meta.url), { env, ...shared, ...nutrition, ...parser, ...provider,

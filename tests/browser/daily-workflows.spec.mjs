@@ -131,6 +131,102 @@ test('nutrition goal conflicts retain the user targets until explicitly reading 
   await noHorizontalOverflow(page);
 });
 
+test('a slow initial goal read keeps saving gated and preserves typed targets before saving the confirmed revision', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  state.goals = { ...state.goals, revision: 7, calories: '1900.0', protein: '90.0', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  let release;
+  state.goalsReadGate = new Promise(resolve => { release = resolve; });
+  try {
+    await page.goto('/health/nutrition'); await ready(page);
+    await page.locator('#nutrition-goals > summary').click();
+    await expect(page.locator('#nutrition-goals-save')).toBeDisabled();
+    await page.locator('#nutrition-goal-calories').fill('2100');
+    await page.locator('#nutrition-goal-protein').fill('110');
+    await page.locator('#nutrition-goals-form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(state.requests.filter(request => request.path.endsWith('/nutrition/goals') && request.method === 'PUT')).toEqual([]);
+  } finally { release(); }
+  await expect(page.locator('#nutrition-goals-save')).toBeEnabled();
+  await expect(page.locator('#nutrition-goal-calories')).toHaveValue('2100');
+  await expect(page.locator('#nutrition-goal-protein')).toHaveValue('110');
+  await page.locator('#nutrition-goals-save').click();
+  await expect.poll(() => state.goals.revision).toBe(8);
+  await page.locator('#nutrition-goal-protein').fill('115');
+  await page.locator('#nutrition-goals-save').click();
+  await expect.poll(() => state.goals.revision).toBe(9);
+  const writes = state.requests.filter(request => request.path.endsWith('/nutrition/goals') && request.method === 'PUT');
+  expect(writes.map(request => request.body.expectedRevision)).toEqual([7, 8]);
+  expect(state.goals.protein).toBe('115.0');
+  await noHorizontalOverflow(page);
+});
+
+test('a failed initial goal read requires an explicit retry and never saves an assumed zero revision', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; state.failNextGoalsRead = true;
+  state.goals = { ...state.goals, revision: 4 };
+  await page.goto('/health/nutrition'); await ready(page);
+  await page.locator('#nutrition-goals > summary').click();
+  await expect(page.locator('#nutrition-goals-status')).toContainText('暂时不可读取');
+  await page.locator('#nutrition-goal-calories').fill('2050');
+  await expect(page.locator('#nutrition-goals-save')).toBeDisabled();
+  await page.locator('#nutrition-goals-reload').click();
+  await expect(page.locator('#nutrition-goals-save')).toBeEnabled();
+  await expect(page.locator('#nutrition-goal-calories')).toHaveValue('2050');
+  await page.locator('#nutrition-goals-save').click();
+  await expect.poll(() => state.goals.revision).toBe(5);
+  const writes = state.requests.filter(request => request.path.endsWith('/nutrition/goals') && request.method === 'PUT');
+  expect(writes).toHaveLength(1); expect(writes[0].body.expectedRevision).toBe(4);
+});
+
+test('a committed health write without a response times out, releases the dialog and retries only its original operation', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; state.hangNextHealthWrite = true;
+  await page.clock.install();
+  await page.goto('/health/records?metric=steps&compose=1');
+  await expect(page.locator('#records-dialog')).toBeVisible();
+  await page.locator('#records-value').fill('5678');
+  await page.locator('#records-reason').fill('超时后继续原操作');
+  await page.locator('#records-save').click();
+  await expect.poll(() => state.healthRecordReplays.size).toBe(1);
+  await expect(page.locator('#records-save')).toBeDisabled();
+  await page.keyboard.press('Escape'); await expect(page.locator('#records-dialog')).toBeVisible();
+  await page.clock.fastForward(30001);
+  await expect(page.locator('#records-form-error')).toContainText('超时');
+  await expect(page.locator('#records-save')).toBeEnabled();
+  await expect(page.locator('#records-save')).toHaveText('重试原操作');
+  await expect(page.locator('#records-value')).toBeDisabled();
+  await page.keyboard.press('Escape'); await expect(page.locator('#records-dialog')).not.toBeVisible();
+  await expect(page.locator('#records-pending')).toBeVisible();
+  await page.locator('#records-resume').click();
+  await expect(page.locator('#records-value')).toHaveValue('5678');
+  await page.locator('#records-save').click();
+  await expect(page.locator('#records-dialog')).not.toBeVisible();
+  await expect(page.locator('#records-list [data-health-record]')).toHaveCount(1);
+  const writes = state.requests.filter(request => request.path === '/api/health/records' && request.method === 'POST');
+  expect(writes).toHaveLength(2); expect(writes[0].key).toBe(writes[1].key); expect(writes[0].body).toEqual(writes[1].body);
+  expect(state.healthRecords).toHaveLength(1); expect(state.healthRecordReplays.size).toBe(1);
+  await noHorizontalOverflow(page);
+});
+
+test('temporary permission storage failures preserve the page and draft while a real sign-out still activates the account guard', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  await page.goto('/health/nutrition'); await ready(page);
+  await expect(page.locator('html')).not.toHaveAttribute('data-account-verifying', '');
+  const description = '权限恢复后继续整理的午餐';
+  await page.locator('#nutrition-ai-text').fill(description);
+  state.sessionFailure = { status: 503, body: { error: '权限存储暂时不可用。', code: 'ACCOUNT_ACCESS_UNAVAILABLE' } };
+  await page.locator('#nutrition-previous').click();
+  await expect(page.locator('#nutrition-retry')).toBeVisible();
+  await expect(page.locator('html')).not.toHaveAttribute('data-account-changed', '');
+  await expect(page.locator('#nutrition-ai-text')).toHaveValue(description);
+  await expect(page.locator('#nutrition-login')).not.toBeVisible();
+  state.sessionFailure = null;
+  await page.locator('#nutrition-retry').click();
+  await expect(page.locator('#nutrition-status')).not.toBeVisible();
+  await expect(page.locator('#nutrition-ai-text')).toHaveValue(description);
+  state.sessionFailure = { status: 401, body: { error: '请重新登录。', code: 'SIGN_IN_REQUIRED' } };
+  await page.locator('#nutrition-previous').click();
+  await expect(page.locator('html')).toHaveAttribute('data-account-changed', '');
+  expect(state.requests.filter(request => request.method !== 'GET')).toEqual([]);
+});
+
 test('finance metadata conflict preserves the edit and requires explicitly reading the latest revision', async ({ page }, testInfo) => {
   testInfo.synthetic.rejectNextAccountEdit = true;
   await page.goto('/finance?ledger=personal&currency=CNY');

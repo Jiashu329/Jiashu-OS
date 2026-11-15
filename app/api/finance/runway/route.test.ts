@@ -69,7 +69,7 @@ async function fixture(t: TestContext) {
     if (!table) return undefined;
     return sqlite.prepare('SELECT ledger FROM ' + table + ' WHERE user_id=? AND id=?').get(userId, options.goalId ?? options.accountId!)?.ledger as 'personal' | 'family' | undefined;
   }, () => env.DB !== undefined);
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null }, ['apiUser', 'json', 'isSameOrigin']);
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner } : null }, ['apiUser', 'json', 'isSameOrigin', 'unauthenticated']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), { ...shared, ...balanceChanges, ...finance, ...financeStore, ...bookFixture }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeBody', 'guardFinanceWrite']);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...financeShared, ...finance, ...financeStore, ...runwayRules, ...runwayStore, ...bookFixture, env }, ['GET', 'PUT']) as { GET(request: Request): Promise<Response>; PUT(request: Request): Promise<Response> };
   for (const [key, currency, type, userId, ledger, amountMinor] of [

@@ -8,7 +8,7 @@ export async function GET(request: Request) {
   // A public sign-out receipt has no account data and avoids immediately signing
   // the same ChatGPT account back in before the user has a chance to switch.
   const signedOut = new URL(request.url).searchParams.get('signedOut') === '1';
-  const user = signedOut ? await getChatGPTUser() : await requireChatGPTUser('/account');
+  const user = signedOut ? await getChatGPTUser('/account?signedOut=1') : await requireChatGPTUser('/account');
   const html = renderAccountPage({
     signInHref: chatGPTSignInPath('/account'),
     signOutHref: chatGPTSignOutPath('/account?signedOut=1'),

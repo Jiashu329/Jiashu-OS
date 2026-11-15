@@ -1,5 +1,5 @@
 import { FinanceValidationError, LEDGERS } from '../../../lib/finance';
-import { apiUser, isSameOrigin, json } from '../_shared';
+import { apiUser, isSameOrigin, json, unauthenticated } from '../_shared';
 import { FinanceIdempotencyConflictError, FinanceMetadataConflictError } from '../../../db/finance-store';
 import { FinanceBalanceChangeConflictError, FinanceLastBalanceError } from '../../../db/finance-balance-changes-store';
 import { FinanceBookError } from '../../../lib/finance-books';
@@ -7,7 +7,7 @@ import { FinanceBookError } from '../../../lib/finance-books';
 export { apiUser, json };
 
 export function financeUnauthenticated() {
-  return json({ error: '请先登录网站，再查看或更新账本。', code: 'SIGN_IN_REQUIRED' }, 401);
+  return unauthenticated('请先登录网站，再查看或更新账本。');
 }
 
 export function financeNotFound() {

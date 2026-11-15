@@ -3,14 +3,23 @@ import { redirect } from 'next/navigation';
 import { accountAccess } from './account-access';
 import { identityFromHeaders } from '../lib/account-identity';
 import type { SiteIdentity } from '../lib/account-identity';
+import { safeAccountRetryPath } from '../lib/account-retry';
 
 export type ChatGPTUser = SiteIdentity & { isOwner: boolean };
 const SIGN_IN_PATH = '/signin-with-chatgpt';
 const SIGN_OUT_PATH = '/signout-with-chatgpt';
 const CALLBACK_PATH = '/callback';
 
-export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
-  const access = await accountAccess(await headers());
+/** Preserve service failures separately from a signed-out or denied identity. */
+export async function getChatGPTAccess() {
+  return accountAccess(await headers());
+}
+
+export async function getChatGPTUser(returnToOnUnavailable?: string): Promise<ChatGPTUser | null> {
+  const access = await getChatGPTAccess();
+  if (!access.allowed && access.reason === 'unavailable' && returnToOnUnavailable !== undefined) {
+    redirect('/service-unavailable?returnTo=' + encodeURIComponent(safeAccountRetryPath(returnToOnUnavailable)));
+  }
   return access.allowed && access.identity ? { ...access.identity, isOwner: access.isOwner } : null;
 }
 
@@ -20,8 +29,9 @@ export async function getChatGPTIdentity(): Promise<SiteIdentity | null> {
 }
 
 export async function requireChatGPTUser(returnTo: string): Promise<ChatGPTUser> {
-  const access = await accountAccess(await headers());
+  const access = await getChatGPTAccess();
   if (access.allowed && access.identity) return { ...access.identity, isOwner: access.isOwner };
+  if (access.reason === 'unavailable') redirect('/service-unavailable?returnTo=' + encodeURIComponent(safeAccountRetryPath(returnTo)));
   if (access.identity) redirect('/access-denied');
   redirect(chatGPTSignInPath(returnTo));
 }

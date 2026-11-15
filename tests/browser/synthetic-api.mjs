@@ -1,5 +1,6 @@
 import { buildHomeOverview } from '../../lib/home-overview.ts';
-import { buildHealthSummary } from '../../lib/health.ts';
+import { buildHealthSummary, measurementKey } from '../../lib/health.ts';
+import { parseHealthRecordCreate } from '../../lib/health-records.ts';
 import { buildFinanceSummary, ACCOUNT_TYPES, CURRENCIES } from '../../lib/finance.ts';
 import { buildNutritionReview, parseNutritionQuery, parseNutritionCreate, presentNutritionEntry } from '../../lib/nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from '../../lib/nutrition-review.ts';
@@ -21,6 +22,8 @@ function makeEntry(input, id = crypto.randomUUID(), revision = 1) {
 export function syntheticState() {
   return {
     owner: BROWSER_FIXTURE_OWNER, requests: [], externalRequests: [], entries: [], histories: new Map(),
+    sessionFailure: null, goalsReadGate: null, failNextGoalsRead: false,
+    healthRecords: [], healthRecordReplays: new Map(), hangNextHealthWrite: false,
     dayStatus: { date: DAY, complete: false, revision: 0, meals: meals() },
     goals: { calories: null, carbs: null, protein: null, fat: null, revision: 0, createdAt: null, updatedAt: null },
     accounts: [{ id: ACCOUNT_ID, name: '合成验收账户', type: 'bank', ledger: 'personal', currency: 'CNY',
@@ -39,7 +42,7 @@ export async function interceptSyntheticAPI(context, state) {
     state.requests.push({ path: url.pathname, search: url.search, method, body, key: request.headers()['idempotency-key'] ?? null });
     const send = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Cache-Control': 'no-store' }, body: JSON.stringify(value) });
     const fail = (message, code, status = 409) => send({ error: message, code }, status);
-    if (url.pathname === '/api/session') return send({ userId: state.owner });
+    if (url.pathname === '/api/session') return state.sessionFailure ? send(state.sessionFailure.body, state.sessionFailure.status) : send({ userId: state.owner });
     if (await handleSyntheticPhoto({ route, state, url, method, body, send, fail })) return;
     if (await handleSyntheticNutritionTemplates({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
     if (await handleSyntheticP2({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
@@ -49,7 +52,21 @@ export async function interceptSyntheticAPI(context, state) {
         nutrition: { entries: state.entries, statuses: [state.dayStatus], goals: state.goals } });
       return send(overview);
     }
-    if (url.pathname === '/api/health/records' && method === 'GET') return send({ records: [], hasMore: false, nextCursor: null, today: DAY });
+    if (url.pathname === '/api/health/records' && method === 'GET') return send({ records: state.healthRecords, hasMore: false, nextCursor: null, today: DAY });
+    if (url.pathname === '/api/health/records' && method === 'POST') {
+      const key = request.headers()['idempotency-key'], payload = JSON.stringify(body), replay = state.healthRecordReplays.get(key);
+      if (replay) return replay.payload === payload ? send({ record: replay.record, replayed: true }, 201) : fail('原请求内容已变化。', 'HEALTH_RECORD_CONFLICT');
+      let command;
+      try { command = parseHealthRecordCreate(body, key); }
+      catch (error) { return send({ error: error.message, code: 'HEALTH_RECORD_INVALID', issues: error.issues }, 400); }
+      const recordKey = measurementKey(command.measurement);
+      if (state.healthRecords.some(record => record.recordKey === recordKey)) return fail('该日期已有此指标记录。', 'HEALTH_RECORD_CONFLICT');
+      const record = { recordKey, metric: command.measurement.metric, day: body.date, base: null, effective: command.measurement, override: command.measurement, deleted: false, revision: 1, updatedAt: stamp(), manual: true };
+      state.healthRecords.push(record); state.healthRecordReplays.set(key, { payload, record });
+      // The server has committed, but this request receives no headers before the client deadline.
+      if (state.hangNextHealthWrite) { state.hangNextHealthWrite = false; return; }
+      return send({ record, replayed: false }, 201);
+    }
     if (url.pathname === '/api/health/nutrition' && method === 'GET') {
       const selection = parseNutritionQuery(url.searchParams);
       return send({ ...buildNutritionReview(state.entries, selection), recentFoods: state.entries.map(presentNutritionEntry), dayStatus: { ...state.dayStatus, date: selection.date } });
@@ -57,9 +74,14 @@ export async function interceptSyntheticAPI(context, state) {
     if (url.pathname === '/api/health/nutrition/goals') {
       if (method === 'PUT') {
         if (state.rejectNextGoalEdit) { state.rejectNextGoalEdit = false; state.goals.revision++; return fail('其他页面已更新目标，请先核对最新内容。', 'NUTRITION_GOALS_CONFLICT'); }
-        state.goals = { ...state.goals, ...parseNutritionGoals(body).targets, revision: state.goals.revision + 1, updatedAt: stamp(), createdAt: state.goals.createdAt ?? stamp() };
+        const command = parseNutritionGoals(body);
+        if (command.expectedRevision !== state.goals.revision) return fail('目标版本已变化。', 'NUTRITION_GOALS_CONFLICT');
+        state.goals = { ...state.goals, ...command.targets, revision: state.goals.revision + 1, updatedAt: stamp(), createdAt: state.goals.createdAt ?? stamp() };
       }
-      return send({ goals: state.goals, weightPlan: null });
+      const goals = structuredClone(state.goals);
+      if (method === 'GET' && state.goalsReadGate) { const gate = state.goalsReadGate; state.goalsReadGate = null; await gate; }
+      if (method === 'GET' && state.failNextGoalsRead) { state.failNextGoalsRead = false; return fail('目标暂时不可读取，请重试。', 'SYNTHETIC_UNAVAILABLE', 503); }
+      return send({ goals, weightPlan: null });
     }
     if (url.pathname === '/api/health/nutrition/review') return send(buildNutritionInsight(state.entries, [state.dayStatus], parseNutritionInsightQuery(url.searchParams)));
     if (url.pathname.endsWith('/nutrition/favorites')) return send({ favorites: [] });

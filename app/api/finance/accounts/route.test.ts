@@ -80,7 +80,7 @@ async function fixture(t: TestContext) {
     return { scope, db: adapter(() => { if (shared && !active) throw new FinanceBookError('FINANCE_BOOK_ACCESS_REVOKED', 403, '访问权限已撤销。'); }) };
   };
   const publicFinanceBook = (scope: FinanceBookScope) => ({ id: scope.bookId ?? 'own', role: scope.role, accessRevision: scope.accessRevision, canManageMembers: scope.role === 'owner', canExport: scope.role === 'owner' });
-  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => actor ? { userId: actor } : null }, ['apiUser', 'json', 'isSameOrigin']);
+  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => actor ? { userId: actor } : null }, ['apiUser', 'json', 'isSameOrigin', 'unauthenticated']);
   const financeShared = load(new URL('../_shared.ts', import.meta.url), { ...shared, ...finance, ...stores, ...changeStores, FinanceBookError },
     ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);
   // Any accidental fallback to env.DB fails the test, including post-write details.

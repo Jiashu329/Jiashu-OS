@@ -53,7 +53,7 @@ function fixture(t: TestContext) {
   const env: { DB?: D1Database } = { DB: db };
   let userId: string | null = 'alice';
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => userId ? { userId } : null,
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => userId ? { userId } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable']);
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {

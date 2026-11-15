@@ -12,9 +12,9 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
 function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; personal?: 'failed'; nutrition?: 'pending'|'failed'; actions?: 'pending'|'failed' } = {}) {
   const logs: string[] = []; const owners: string[] = [];
   const shared = load(new URL('../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => options.signedIn === false ? null : { userId: 'synthetic-owner' },
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => options.signedIn === false ? null : { userId: 'synthetic-owner' },
     console: { error: (value: string) => logs.push(value) },
-  }, ['apiUser', 'json', 'storageDiagnostic', 'unavailable']);
+  }, ['apiUser', 'json', 'storageDiagnostic', 'unavailable', 'unauthenticated']);
   const { GET } = load(new URL('./route.ts', import.meta.url), {
     ...shared, env:{DB:{}},shanghaiDay:()=> '2026-11-11',readWithDeadline: <T>(operation: Promise<T>) => readWithDeadline(operation, 10),
     readNutritionRangeSnapshot:async(_db:unknown,owner:string)=>{owners.push(owner);if(options.nutrition==='pending')return new Promise(()=>{});if(options.nutrition==='failed')throw new Error('synthetic-private-food');return {entries:[],statuses:[]};},

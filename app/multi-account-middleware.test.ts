@@ -39,3 +39,13 @@ void test('authorized session reads permit identity verification while stale wri
   assert.equal((await app.middleware(new Request('https://site.example/api/session', { headers: { 'X-Page-Owner': 'alice' } }))).headers.get('x-middleware-next'), '1');
   assert.equal((await app.middleware(new Request('https://site.example/api/session', { method: 'POST' }))).status, 401);
 });
+
+void test('unavailable authorization storage is retryable without calling it sign-out or revoked access', async () => {
+  const app = fixture({ identity: { userId: 'alice' }, allowed: false, isOwner: false, reason: 'unavailable' });
+  const response = await app.middleware(new Request('https://site.example/api/session'));
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('Retry-After'), '3');
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal(response.headers.get('x-middleware-next'), null);
+  assert.equal((await response.json() as { code: string }).code, 'ACCOUNT_ACCESS_UNAVAILABLE');
+});

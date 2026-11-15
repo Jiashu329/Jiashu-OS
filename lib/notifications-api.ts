@@ -3,6 +3,7 @@ import { NotificationsError, parseNotificationMutation, parseNotificationsQuery 
 import { markNotificationsRead, readNotifications, writeNotificationSettings, type NotificationsDatabase } from '../db/notifications-store.ts';
 
 interface Dependencies {
+  unauthenticated?(message?: string): Response | Promise<Response>;
   user(): Promise<FinanceBookActor | null>;
   database(): NotificationsDatabase;
   json(value: unknown, status?: number): Response;
@@ -35,7 +36,7 @@ export function createNotificationsHandlers(deps: Dependencies) {
   };
   async function actor(request: Request, write = false): Promise<FinanceBookActor | Response> {
     const user = await deps.user();
-    if (!user) return deps.json({ error: '请先登录网站，再查看消息。', code: 'SIGN_IN_REQUIRED' }, 401);
+    if (!user) return deps.unauthenticated ? deps.unauthenticated('请先登录网站，再查看消息。') : deps.json({ error: '请先登录网站，再查看消息。', code: 'SIGN_IN_REQUIRED' }, 401);
     const owner = request.headers.get('X-Page-Owner');
     if ((write && !owner) || owner && owner !== user.userId) return deps.json({ error: '请刷新已登录页面后继续当前账户的操作。', code: 'ACCOUNT_CHANGED' }, 401);
     return user;

@@ -49,7 +49,7 @@ function fixture(options: { signedIn?: boolean } = {}) {
   let rejection: Error | null = null;
   let reads = 0;
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => options.signedIn === false ? null : ({ userId: 'synthetic-owner' }),
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => options.signedIn === false ? null : ({ userId: 'synthetic-owner' }),
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
   class SyncDeviceInvalidError extends Error {}
   const route = loadExports(new URL('./route.ts', import.meta.url), {
@@ -153,7 +153,7 @@ test('source conflict produces a safe persisted result while preserving the 409 
 
 test('failed server previews retain safe diagnostics while valid previews make no diagnostic or health writes', async () => {
   const attempts: SyncAttemptInput[] = []; let previews = 0;
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => ({ userId: 'synthetic-owner' }) }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => ({ userId: 'synthetic-owner' }) }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
   const route = loadExports(new URL('./preview/route.ts', import.meta.url), { ...shared, HealthValidationError, MAX_SYNC_BYTES, parseMobileSyncPayload, emptySyncSummary, syncPayloadSummary,
     saveSyncAttempt: async (owner: string, input: SyncAttemptInput) => { assert.equal(owner,'synthetic-owner'); attempts.push(input); },
     previewImport: async (_owner: string, _payload: HealthSyncPayload) => { previews++; return { token: 'a'.repeat(64) }; },

@@ -23,7 +23,7 @@ function fixture() {
   const lookups: Array<{ owner: string; key: DoubanRecordKey }> = [], requests: string[] = [];
   const warnings: unknown[][] = [];
   const db = {} as D1Database;
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null },
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null },
     ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env: { DB: db }, ...shared, ...model, DoubanStoreError, DoubanSyncError }, ['doubanDatabase', 'doubanError']);
   const handler = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...model, DoubanCoverError,

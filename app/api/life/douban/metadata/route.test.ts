@@ -41,7 +41,7 @@ function fixture(t: TestContext) {
   const env: { DB?: D1Database } = { DB: db };
   let user: string | null = 'alice', answer: DoubanSubjectMetadata | Error = { kind: 'series', coverUrl: COVER };
   let beforeFetch: (() => void) | undefined;
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env, ...shared, ...store, ...model, ...sync }, ['doubanDatabase', 'doubanGuard', 'doubanBody', 'doubanError']);
   const bindings = { ...shared, ...helpers, ...store, ...model, ...sync, ...details, ...metadataStore, DoubanSourceError,
     fetchDoubanSubjectMetadata: async (domain: string, subjectId: string) => { outgoing.push({ domain, subjectId }); beforeFetch?.(); if (answer instanceof Error) throw answer; return answer; } };

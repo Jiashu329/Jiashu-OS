@@ -48,6 +48,7 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
   const preview: HealthImportPreview = { token: await digest([userId, hash, state]), payloadHash: hash,
     total: payload.measurements.length, added: 0, updated: 0, skipped: 0, sourceChanges: 0, manualOverrides: 0,
     from: days[0] ?? null, to: days.at(-1) ?? null, metrics: [...new Set(payload.measurements.map((row) => METRIC_INFO[row.metric].label))], examples: [] };
+  const writes: Array<Omit<ImportBase, 'receivedAt'>> = [];
   const changes: Array<{ before: ImportBase | null; after: Omit<ImportBase, 'receivedAt'> }> = [];
   const attemptSummary = syncPayloadSummary(payload);
   for (const measurement of payload.measurements) {
@@ -64,7 +65,13 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     const manual = old.overrideJson !== null || old.deleted === 1;
     countSyncOutcome(attemptSummary, measurement, !old.base ? 'added' : !newer ? (payload.exportedAt === old.base.exportedAt && same ? 'unchanged' : 'older') : same ? 'unchanged' : 'updated', manual);
     if (manual && newer) preview.manualOverrides++;
-    if (newer) changes.push({ before: old.base, after: { recordKey: key, metric: measurement.metric, day: measurementDay(measurement), measurementJson: JSON.stringify(measurement), exportedAt: payload.exportedAt } });
+    if (newer) {
+      const after = { recordKey: key, metric: measurement.metric, day: measurementDay(measurement), measurementJson: JSON.stringify(measurement), exportedAt: payload.exportedAt };
+      // Every accepted export advances the raw version so an older source cannot
+      // overwrite it. Only content changes need full snapshots for rollback.
+      writes.push(after);
+      if (!same) changes.push({ before: old.base, after });
+    }
     // Prefer source changes, then regular examples; keep the response bounded.
     const example = { recordKey: key, day: measurementDay(measurement), metric: METRIC_INFO[measurement.metric].label, action,
       before: prior?.value ?? null, after: measurement.value, oldSource: prior?.source ?? null, newSource: measurement.source ?? null,
@@ -72,7 +79,7 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     if (sourceChange) preview.examples.unshift(example); else preview.examples.push(example);
   }
   preview.examples = preview.examples.slice(0, 12);
-  return { preview, state, changes, hash, attemptSummary };
+  return { preview, state, writes, changes, hash, attemptSummary };
 }
 function replaySummary(summary: SyncAttemptSummary, reverted: boolean): SyncAttemptSummary {
   return { ...summary, metrics: summary.metrics.map((metric) => ({ ...metric, added: 0, updated: 0, older: 0, unchanged: reverted ? 0 : metric.received })) };
@@ -104,6 +111,7 @@ export async function writeHealthImport(db: HealthImportDatabase, userId: string
     throw new HealthImportConflictError('HEALTH_IMPORT_SOURCE_CONFIRMATION', '本次导入将切换已有记录的来源，请查看预览并明确确认。');
   }
   const operation = crypto.randomUUID();
+  const writes = prepared.writes.map((row) => ({ ...row, receivedAt: now }));
   const after = prepared.changes.map((row) => ({ ...row.after, receivedAt: now }));
   const before = prepared.changes.map((row) => ({ recordKey: row.after.recordKey, base: row.before }));
   const receipt = { ok: true, batchId: prepared.hash, imported: prepared.preview.added + prepared.preview.updated,
@@ -123,7 +131,7 @@ export async function writeHealthImport(db: HealthImportDatabase, userId: string
     FROM json_each(?) WHERE ${receiptGuard}
     ON CONFLICT(user_id,record_key) DO UPDATE SET metric=excluded.metric,day=excluded.day,measurement_json=excluded.measurement_json,
       exported_at=excluded.exported_at,received_at=excluded.received_at`)
-    .bind(userId, JSON.stringify(after), userId, prepared.hash, operation),
+    .bind(userId, JSON.stringify(writes), userId, prepared.hash, operation),
   ...syncDiagnosticStatements(db, userId, payload, now, { batchId: prepared.hash, operationId: operation,
     importedCount: receipt.imported, skippedCount: receipt.skipped }),
   db.prepare(`INSERT INTO health_syncs (user_id,payload_hash,exported_at,received_at,measurement_count)

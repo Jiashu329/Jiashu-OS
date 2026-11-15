@@ -3,7 +3,8 @@ import { splitBackupVolumes } from './backup-volumes.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from '../db/data-backup-store.ts';
 import type { BackupDatabase } from '../db/data-backup-store.ts';
 
-interface Dependencies { user(): Promise<{ userId: string } | null>; database(): BackupDatabase; json(value: unknown, status?: number, headers?: Record<string,string>): Response; unavailable(): Response }
+interface Dependencies {
+  unauthenticated?(message?: string): Response | Promise<Response>; user(): Promise<{ userId: string } | null>; database(): BackupDatabase; json(value: unknown, status?: number, headers?: Record<string,string>): Response; unavailable(): Response }
 async function body(request: Request) {
   const limit = VOLUME_BACKUP_LIMITS.maxBytes + 128 * 1024;
   const size = Number(request.headers.get('content-length'));
@@ -26,7 +27,7 @@ export function createDataBackupHandlers(deps: Dependencies) {
   };
   return {
     async GET(request?: Request) {
-      const user = await deps.user(); if (!user) return deps.json({ error:'请先登录网站，再导出完整备份。',code:'SIGN_IN_REQUIRED' },401);
+      const user = await deps.user(); if (!user) return deps.unauthenticated ? deps.unauthenticated('请先登录网站，再导出完整备份。') : deps.json({ error:'请先登录网站，再导出完整备份。',code:'SIGN_IN_REQUIRED' },401);
       const changed=ownerChanged(request,user.userId);if(changed)return changed;
       try {
         const format=request?new URL(request.url).searchParams.get('format'):null;
@@ -38,7 +39,7 @@ export function createDataBackupHandlers(deps: Dependencies) {
       catch (error) { return errorResponse(error); }
     },
     async POST(request: Request) {
-      const user = await deps.user(); if (!user) return deps.json({ error:'请先登录网站，再恢复备份。',code:'SIGN_IN_REQUIRED' },401);
+      const user = await deps.user(); if (!user) return deps.unauthenticated ? deps.unauthenticated('请先登录网站，再恢复备份。') : deps.json({ error:'请先登录网站，再恢复备份。',code:'SIGN_IN_REQUIRED' },401);
       const changed=ownerChanged(request,user.userId);if(changed)return changed;
       if (request.headers.get('origin') !== new URL(request.url).origin) return deps.json({ error:'请从已登录的网站页面恢复备份。',code:'INVALID_ORIGIN' },403);
       if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return deps.json({ error:'请上传 JSON 完整备份。' },415);

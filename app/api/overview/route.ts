@@ -1,7 +1,7 @@
 import { readHealth } from '../../../db/health-repository';
 import { financeOverview } from '../../../db/finance-repository';
 import { buildHomeOverview } from '../../../lib/home-overview';
-import { apiUser, json, storageDiagnostic } from '../_shared';
+import { apiUser, json, storageDiagnostic, unauthenticated } from '../_shared';
 import { readWithDeadline } from '../../../lib/read-deadline';
 import { env } from 'cloudflare:workers';
 import { readNutritionRangeSnapshot } from '../../../db/nutrition-store';
@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const user = await apiUser();
-  if (!user) return json({ error: '请先登录网站，再查看个人总览。', code: 'SIGN_IN_REQUIRED' }, 401);
+  if (!user) return unauthenticated('请先登录网站，再查看个人总览。');
   const today=shanghaiDay(new Date().toISOString());
   const [health, personal, family, nutrition, actions] = await Promise.allSettled([
     readWithDeadline(readHealth(user.userId, 90)),

@@ -36,7 +36,7 @@ async function settled(check: () => boolean) {
 }
 
 type RequestLog = { url: string; method: string; body: any; key: string | null };
-function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<Record<string, any>>; foodSources?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean; templates?: NutritionTemplate[] } = {}) {
+function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<Record<string, any>>; foodSources?: Array<Record<string, any>>; storageFails?: boolean; storage?: Map<string, string>; drafts?: Array<Record<string, any>>; yesterdayEntries?: Array<Record<string, any>>; search?: string; goals?: Record<string, any>; review?: Record<string, any>; history?: Array<Record<string, any>>; durable?: Map<string, any>; durableFails?: boolean; templates?: NutritionTemplate[]; goalRead?: () => Promise<Response> } = {}) {
   const { window, document } = parseHTML(renderNutritionPage('test'));
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -60,6 +60,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   const favorites: Array<Record<string, any>> = [];
   let nextBatch: (() => Promise<Response>) | undefined;
   let nextGoal: (() => Promise<Response>) | undefined;
+  const goalReads: Array<() => Promise<Response>> = options.goalRead ? [options.goalRead] : [];
   let nextRestore: (() => Promise<Response>) | undefined;
   let nextTemplate: (() => Promise<Response>) | undefined;
   let nextPhoto: (() => Promise<Response>) | undefined;
@@ -88,6 +89,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
       try{let saved:NutritionTemplate;if(method==='POST'){saved={...parseNutritionTemplate(body),id:key,revision:1,createdAt:DAY,updatedAt:DAY,archivedAt:null};templates.push(saved);}else{const item=templates.find(row=>row.id===id);if(!item)return Response.json({error:'模板不存在'},{status:404});if(body.expectedRevision!==item.revision)return Response.json({error:'模板已经更新'},{status:409});if(method==='DELETE'){Object.assign(item,{revision:item.revision+1,archivedAt:DAY});}else{const{expectedRevision:_,...definition}=body;Object.assign(item,parseNutritionTemplate(definition),{revision:item.revision+1});}saved=item;}templateReceipts.set(key,{serialized,template:structuredClone(saved)});return Response.json({template:saved,replayed:false});}catch(error){return Response.json({error:(error as Error).message},{status:400});}
     }
     if (parsed.pathname.endsWith('/goals')) {
+      if(method==='GET'){const handler=goalReads.shift();if(handler)return handler();}
       if(method==='PUT'){const handler=nextGoal;nextGoal=undefined;if(handler)return handler();if(body.expectedRevision!==goals.revision)return Response.json({error:'目标已经更新',code:'NUTRITION_CONFLICT'},{status:409});goals={...goals,...body,revision:goals.revision+1};}
       return Response.json({goals,weightPlan:null});
     }
@@ -145,6 +147,7 @@ function fixture(options: { entries?: Array<Record<string, any>>; foods?: Array<
   return { window, document, requests, entries, favorites, templates, storage, location, el, click, input, submit, event, get focused() { return focused; },
     nextBatch(handler: () => Promise<Response>) { nextBatch = handler; },
     nextGoal(handler: () => Promise<Response>) { nextGoal = handler; },
+    nextGoalRead(handler: () => Promise<Response>) { goalReads.push(handler); },
     nextRestore(handler: () => Promise<Response>) { nextRestore = handler; },
     nextTemplate(handler: () => Promise<Response>) { nextTemplate = handler; },
     nextPhoto(handler: () => Promise<Response>) { nextPhoto = handler; },
@@ -300,6 +303,75 @@ test('goal conflicts preserve typed values and require reading the latest revisi
   const writes=f.requests.filter(request=>request.method==='PUT');
   assert.deepEqual(writes.map(request=>request.body.expectedRevision),[1,2]);
   assert.equal(writes[1].body.protein,'95.0');
+});
+
+test('an initial goals read blocks submission and preserves values typed before the first response', async () => {
+  let finish!:(value:Response)=>void;
+  const f=fixture({goalRead:()=>new Promise(resolve=>{finish=resolve;})});await f.ready();await settled(()=>Boolean(finish));
+  assert.equal(f.el('goals-save').disabled,true);assert.equal(f.el('goals-reload').disabled,true);
+  assert.equal(f.el('goal-protein').disabled,false);f.input('goal-protein','95');f.submit('goals-form');
+  assert.equal(f.requests.filter(row=>row.method==='PUT').length,0,'the submit handler must reject a synthetic submit as well as disable the button');
+  assert.match(f.el('goals-status').textContent??'',/读取/);
+  finish(Response.json({goals:{calories:null,carbs:null,protein:null,fat:null,revision:0},weightPlan:null}));
+  await settled(()=>!f.el('goals-save').disabled);assert.equal(f.el('goal-protein').value,'95');assert.match(f.el('goals-status').textContent??'',/填写保留/);
+  f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  assert.equal(f.el('goal-protein').value,'95');f.input('goal-protein','96');f.submit('goals-form');await settled(()=>f.requests.filter(row=>row.method==='PUT').length===2&&!f.el('goals-save').disabled);
+  assert.deepEqual(f.requests.filter(row=>row.method==='PUT').map(row=>row.body.expectedRevision),[0,1]);
+});
+
+test('failed initial goals loading requires a successful retry without clearing the typed draft', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:2},goalRead:async()=>Response.json({error:'合成读取失败'},{status:503})});await f.ready();
+  await settled(()=>!f.el('goals-reload').hidden&&!f.el('goals-reload').disabled);f.input('goal-protein','95');f.submit('goals-form');
+  assert.equal(f.requests.filter(row=>row.method==='PUT').length,0);assert.equal(f.el('goals-save').disabled,true);
+  f.click('goals-reload');await settled(()=>!f.el('goals-save').disabled);assert.equal(f.el('goal-protein').value,'95');
+  f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  assert.equal(f.requests.find(row=>row.method==='PUT')?.body.expectedRevision,2);assert.match(f.el('goal-progress').textContent??'',/95.0 g/);
+});
+
+test('a superseded goals reload cannot replace a later confirmed PUT or reset its revision', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:1}});await f.ready();await settled(()=>f.el('goal-protein').value==='80.0');
+  f.input('goal-protein','95');f.setGoals({protein:'90.0',revision:2});f.submit('goals-form');await settled(()=>!f.el('goals-reload').hidden&&!f.el('goals-reload').disabled);
+  let finishOld!:(value:Response)=>void;f.nextGoalRead(()=>new Promise(resolve=>{finishOld=resolve;}));f.click('goals-reload');await settled(()=>Boolean(finishOld));
+  // A second read supersedes the first even if another controller dispatches it while the retry button is disabled.
+  f.click('goals-reload');await settled(()=>!f.el('goals-save').disabled);assert.equal(f.el('goal-protein').value,'95');
+  f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  finishOld(Response.json({goals:{calories:null,carbs:null,protein:'90.0',fat:null,revision:2},weightPlan:null}));
+  await new Promise<void>(resolve=>setImmediate(resolve));await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.equal(f.el('goal-protein').value,'95');assert.match(f.el('goal-progress').textContent??'',/95.0 g/);assert.match(f.el('goals-status').textContent??'',/目标已保存/);
+  f.input('goal-protein','96');f.submit('goals-form');await settled(()=>f.requests.filter(row=>row.method==='PUT').length===3&&!f.el('goals-save').disabled);
+  assert.deepEqual(f.requests.filter(row=>row.method==='PUT').map(row=>row.body.expectedRevision),[1,2,3]);
+});
+
+test('an older goals revision cannot clear a conflict or replace the last confirmed targets', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:1}});await f.ready();await settled(()=>f.el('goal-protein').value==='80.0');
+  f.input('goal-protein','95');f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  f.input('goal-protein','96');f.setGoals({protein:'100.0',revision:3});f.submit('goals-form');await settled(()=>!f.el('goals-reload').hidden&&!f.el('goals-reload').disabled);
+  f.nextGoalRead(async()=>Response.json({goals:{calories:null,carbs:null,protein:'80.0',fat:null,revision:1},weightPlan:null}));f.click('goals-reload');
+  await settled(()=>f.el('goals-status').textContent?.includes('较早')===true);assert.equal(f.el('goal-protein').value,'96');assert.equal(f.el('goals-save').disabled,true);assert.match(f.el('goal-progress').textContent??'',/95.0 g/);
+  f.submit('goals-form');assert.equal(f.requests.filter(row=>row.method==='PUT').length,2);
+  f.click('goals-reload');await settled(()=>!f.el('goals-save').disabled);assert.equal(f.el('goal-protein').value,'96');f.submit('goals-form');
+  await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);assert.equal(f.requests.filter(row=>row.method==='PUT').at(-1)?.body.expectedRevision,3);
+});
+
+test('a pending goals save blocks reload and duplicate submission until its reply is confirmed', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:1}});await f.ready();await settled(()=>f.el('goal-protein').value==='80.0');
+  let finish!:(value:Response)=>void;f.nextGoal(()=>new Promise(resolve=>{finish=resolve;}));f.input('goal-protein','95');f.submit('goals-form');await settled(()=>Boolean(finish));
+  const reads=f.requests.filter(row=>row.method==='GET'&&row.url.endsWith('/goals')).length;
+  assert.equal(f.el('goals-reload').disabled,true);assert.equal(f.el('goal-protein').disabled,true);f.click('goals-reload');f.submit('goals-form');
+  assert.equal(f.requests.filter(row=>row.method==='GET'&&row.url.endsWith('/goals')).length,reads);assert.equal(f.requests.filter(row=>row.method==='PUT').length,1);
+  f.setGoals({protein:'95.0',revision:2});finish(Response.json({goals:{calories:null,carbs:null,protein:'95.0',fat:null,revision:2},weightPlan:null}));
+  await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);assert.equal(f.el('goal-protein').disabled,false);assert.equal(f.el('goals-save').disabled,false);
+});
+
+test('a regressing goals save reply stays unconfirmed until a fresh read establishes the saved revision', async () => {
+  const f=fixture({goals:{protein:'80.0',revision:1}});await f.ready();await settled(()=>f.el('goal-protein').value==='80.0');
+  f.nextGoal(async()=>{f.setGoals({protein:'95.0',revision:2});return Response.json({goals:{calories:null,carbs:null,protein:'80.0',fat:null,revision:1},weightPlan:null});});
+  f.input('goal-protein','95');f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('保存结果未确认')===true);
+  assert.equal(f.el('goal-protein').value,'95');assert.equal(f.el('goals-save').disabled,true);assert.match(f.el('goal-progress').textContent??'',/80.0 g/);
+  f.submit('goals-form');assert.equal(f.requests.filter(row=>row.method==='PUT').length,1);
+  f.click('goals-reload');await settled(()=>!f.el('goals-save').disabled);assert.equal(f.el('goal-protein').value,'95');assert.match(f.el('goal-progress').textContent??'',/95.0 g/);
+  f.input('goal-protein','96');f.submit('goals-form');await settled(()=>f.el('goals-status').textContent?.includes('目标已保存')===true);
+  assert.deepEqual(f.requests.filter(row=>row.method==='PUT').map(row=>row.body.expectedRevision),[1,2]);
 });
 
 test('nutrient review switches trends and uses only complete days with that nutrient filled for averages', async () => {

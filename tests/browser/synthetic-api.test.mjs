@@ -85,3 +85,44 @@ test('browser finance conflict fixture uses the production metadata conflict cod
   const latest = await request('/api/finance/accounts/' + ACCOUNT_ID);
   assert.equal(latest.body.account.metadataRevision, 2);
 });
+
+test('browser health fixture commits a timed-out write once and only replays its exact original key and payload', async () => {
+  const { state, request } = await fixture();
+  const key = '22222222-2222-4222-8222-222222222222';
+  const body = { metric: 'steps', value: 5678, date: DAY, capturedAt: new Date().toISOString(), reason: '原提交' };
+  state.hangNextHealthWrite = true;
+  assert.equal(await request('/api/health/records', 'POST', body, key), undefined);
+  assert.equal(state.healthRecords.length, 1);
+  const replay = await request('/api/health/records', 'POST', body, key);
+  assert.equal(replay.status, 201); assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.record.effective.value, 5678); assert.equal(state.healthRecords.length, 1);
+  assert.equal((await request('/api/health/records', 'POST', { ...body, value: 1 }, key)).status, 409);
+  assert.equal((await request('/api/health/records')).body.records.length, 1);
+  assert.equal((await request('/api/health/records', 'POST', { ...body, unsupported: true }, '33333333-3333-4333-8333-333333333333')).status, 400);
+});
+
+test('browser goals fixture retains a delayed GET snapshot and rejects stale target revisions', async () => {
+  const { state, request } = await fixture();
+  state.goals = { ...state.goals, revision: 7, calories: '1900.0' };
+  let release;
+  state.goalsReadGate = new Promise(resolve => { release = resolve; });
+  const delayed = request('/api/health/nutrition/goals');
+  for (let count = 0; count < 20 && state.goalsReadGate; count++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.goalsReadGate, null, 'the route must capture its snapshot before delaying the reply');
+  const body = { calories: '2100', carbs: null, protein: '110', fat: null, expectedRevision: 7 };
+  const saved = await request('/api/health/nutrition/goals', 'PUT', body);
+  assert.equal(saved.body.goals.revision, 8); release();
+  assert.equal((await delayed).body.goals.revision, 7);
+  assert.equal((await request('/api/health/nutrition/goals', 'PUT', body)).status, 409);
+  assert.equal(state.goals.calories, '2100.0'); assert.equal(state.goals.revision, 8);
+});
+
+test('browser permission fixture distinguishes unavailable storage from a signed-out session', async () => {
+  const { state, request } = await fixture();
+  state.sessionFailure = { status: 503, body: { error: '权限服务暂时不可用。', code: 'ACCOUNT_ACCESS_UNAVAILABLE' } };
+  assert.deepEqual(await request('/api/session'), { status: 503, body: state.sessionFailure.body });
+  state.sessionFailure = null;
+  assert.equal((await request('/api/session')).body.userId, state.owner);
+  state.sessionFailure = { status: 401, body: { error: '请重新登录。', code: 'SIGN_IN_REQUIRED' } };
+  assert.equal((await request('/api/session')).status, 401);
+});

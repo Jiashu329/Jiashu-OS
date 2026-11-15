@@ -48,7 +48,7 @@ function fixture(t: TestContext) {
   let beforeCollection: (() => Promise<void>) | null = null;
   const outgoing: string[] = [];
   class ClockDate extends Date { constructor(value: number | string = clock) { super(value); } static now() { return clock; } }
-  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
+  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('./_shared.ts', import.meta.url), { env, ...shared, ...store, ...model, ...sync }, ['doubanDatabase', 'presentDoubanConnection', 'doubanGuard', 'doubanBody', 'doubanError']);
   const get = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync, ...library, ...libraryModel }, ['GET']).GET;
   const libraryHandlers = load(new URL('./library/route.ts', import.meta.url), { ...shared, ...helpers, ...sync, ...library }, ['PUT', 'POST']);

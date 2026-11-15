@@ -7,6 +7,7 @@ import { identityFromHeaders, pageAccountFailure } from '../../lib/account-ident
 import type { SiteIdentity } from '../../lib/account-identity.ts';
 import { resolveAccess } from '../../db/access-grants-store.ts';
 import { resolveOwnerIdentity } from '../../db/owner-identity-store.ts';
+import { safeAccountRetryPath } from '../../lib/account-retry.ts';
 
 export interface AccessResult { identity: SiteIdentity | null; allowed: boolean; isOwner: boolean; reason?: string }
 export class RedirectSignal extends Error { readonly destination: string; constructor(destination: string) { super(destination); this.destination = destination; } }
@@ -44,14 +45,20 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
     { env, identityFromHeaders, resolveAccess, resolveOwnerIdentity, console: { error(value: string) { diagnostics.push(value); } } }, ['accountAccess']);
   let currentHeaders = new Headers();
   const auth = load<{
-    getChatGPTUser(): Promise<(SiteIdentity & { isOwner: boolean }) | null>;
+    getChatGPTAccess(): Promise<AccessResult>;
+    getChatGPTUser(returnToOnUnavailable?: string): Promise<(SiteIdentity & { isOwner: boolean }) | null>;
     getChatGPTIdentity(): Promise<SiteIdentity | null>;
     requireChatGPTUser(returnTo: string): Promise<SiteIdentity & { isOwner: boolean }>;
     chatGPTSignInPath(returnTo: string): string; chatGPTSignOutPath(returnTo?: string): string;
   }>(new URL('../../app/chatgpt-auth.ts', import.meta.url), {
-    headers: async () => currentHeaders, accountAccess, identityFromHeaders,
+    headers: async () => currentHeaders, accountAccess, identityFromHeaders, safeAccountRetryPath,
     redirect(destination: string): never { throw new RedirectSignal(destination); },
-  }, ['getChatGPTUser', 'getChatGPTIdentity', 'requireChatGPTUser', 'chatGPTSignInPath', 'chatGPTSignOutPath']);
+  }, ['getChatGPTAccess', 'getChatGPTUser', 'getChatGPTIdentity', 'requireChatGPTUser', 'chatGPTSignInPath', 'chatGPTSignOutPath']);
+  const api = load<{
+    apiUser(): ReturnType<typeof auth.getChatGPTUser>;
+    unauthenticated(message?: string): Promise<Response>;
+    json(value: unknown, status?: number, headers?: Record<string, string>): Response;
+  }>(new URL('../../app/api/_shared.ts', import.meta.url), { getChatGPTUser: auth.getChatGPTUser, getChatGPTAccess: auth.getChatGPTAccess }, ['apiUser', 'unauthenticated', 'json']);
   const { middleware } = load<{ middleware: (request: Request) => Promise<Response> }>(new URL('../../middleware.ts', import.meta.url), {
     accountAccess, pageAccountFailure, NextResponse: {
       json: (value: unknown, options: ResponseInit) => Response.json(value, options),
@@ -59,7 +66,7 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
     },
   }, ['middleware']);
   function identity(userId: string, email: string) { return new Headers({ 'oai-authenticated-user-id': userId, 'oai-authenticated-user-email': email }); }
-  return { sqlite, db, env, auth, middleware, accountAccess, diagnostics, identity,
+  return { sqlite, db, env, auth, api, middleware, accountAccess, diagnostics, identity,
     signIn(userId: string | null, email = '') { currentHeaders = userId ? identity(userId, email) : new Headers(); },
     headers() { return new Headers(currentHeaders); },
   };

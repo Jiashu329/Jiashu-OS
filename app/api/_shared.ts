@@ -1,4 +1,4 @@
-import { getChatGPTUser } from '../chatgpt-auth';
+import { getChatGPTAccess, getChatGPTUser } from '../chatgpt-auth';
 
 export const noStoreHeaders = {
   'Cache-Control': 'no-store',
@@ -14,8 +14,17 @@ export async function apiUser() {
   return getChatGPTUser();
 }
 
-export function unauthenticated() {
-  return json({ error: '请先在此浏览器中登录网站，再重试。', code: 'SIGN_IN_REQUIRED' }, 401);
+export async function unauthenticated(signInMessage = '请先在此浏览器中登录网站，再重试。') {
+  // A handler can lose access storage after middleware has already authorized
+  // this request. Recheck only this rejected path, without cross-request state.
+  const access = await getChatGPTAccess();
+  if (!access.identity) return json({ error: signInMessage, code: 'SIGN_IN_REQUIRED' }, 401);
+  if (!access.allowed && access.reason !== 'unavailable') {
+    return json({ error: '当前账号尚未获得使用权限，或权限已停用。请联系网站管理员。', code: 'ACCOUNT_NOT_ALLOWED' }, 403);
+  }
+  // Even if storage recovered during the recheck, the original handler has no
+  // authorized actor and must not execute its business operation in this turn.
+  return json({ error: '暂时无法核对网站使用权限，请保留当前页面并稍后重试。', code: 'ACCOUNT_ACCESS_UNAVAILABLE' }, 503, { 'Retry-After': '3' });
 }
 
 export function storageDiagnostic(module: 'health' | 'overview-health' | 'overview-personal' | 'overview-family' | 'overview-nutrition' | 'data-backup', reason: 'read_timeout' | 'storage_failure' = 'storage_failure') {

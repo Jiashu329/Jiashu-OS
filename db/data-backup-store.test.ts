@@ -9,7 +9,7 @@ import { createNutritionTemplate, replaceNutritionTemplate, archiveNutritionTemp
 import { readWeightCycleState, writeWeightCycle } from './weight-cycles-store.ts';
 import { patchFinanceAccount } from './finance-store.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from './data-backup-store.ts';
-import { previewHealthImport, writeHealthImport } from './health-import-store.ts';
+import { HealthImportConflictError, previewHealthImport, revertHealthImport, writeHealthImport } from './health-import-store.ts';
 import { parseSyncPayload } from '../lib/health.ts';
 import { writeHealthRecord } from './health-records-store.ts';
 import { parseHealthRecordCreate } from '../lib/health-records.ts';
@@ -70,6 +70,7 @@ function semantic(backup:DataBackup){return Object.fromEntries(BACKUP_TABLE_NAME
 void test('complete backup roundtrips old records, real import receipts, edits, deleted nutrition and exact ordered finance history',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);
   assert.equal(backup.tables.health_measurements[0].day,'2024-01-01');assert.equal(backup.tables.health_import_batches.length,2);assert.equal(JSON.parse(backup.tables.health_import_batches[1].receipt_json as string).imported,0);
+  assert.deepEqual(JSON.parse(String(backup.tables.health_import_batches[1].before_json)),[]);assert.deepEqual(JSON.parse(String(backup.tables.health_import_batches[1].after_json)),[]);assert.equal(JSON.parse(String(backup.tables.health_import_batches[1].receipt_json)).canRevert,false);
   assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,31);
   for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations','nutrition_batches','nutrition_day_status'] as const) assert.ok(backup.tables[table].length>0);
   assert.equal(JSON.stringify(backup).includes('user_id'),false);assert.equal(JSON.stringify(backup).includes('synthetic-token-hash'),false);
@@ -79,6 +80,44 @@ void test('complete backup roundtrips old records, real import receipts, edits, 
   assert.deepEqual(target.sqlite.prepare('SELECT id FROM finance_balance_entries ORDER BY sequence').all().map((row)=>row.id),['initial:'+C,D]);
   assert.equal(target.sqlite.prepare('SELECT amount_minor FROM finance_balance_entries WHERE id=?').get(D)?.amount_minor,'9007199254740994');
   preview=await previewDataRestore(target.db,'restored-owner',backup);assert.equal(preview.total.added,0);assert.equal(preview.total.conflicts,0);const repeat=await restoreDataBackup(target.db,'restored-owner',backup,preview.previewHash);assert.equal(repeat.added,0);
+});
+
+void test('compact mixed health history and raw watermarks survive backup restore and remain safely reversible',async(t)=>{
+  const source=fixture(t),target=fixture(t),base=parseSyncPayload({version:1,source:'apple-health-shortcuts',timezone:'Asia/Shanghai',exportedAt:NOW,
+    measurements:[{id:'compact-weight',metric:'weight',value:70,unit:'kg',startDate:OLD,source:'synthetic scale',aggregation:'sample'},
+      {id:'compact-lean',metric:'lean_body_mass',value:55,unit:'kg',startDate:OLD,source:'synthetic scale',aggregation:'sample'}]});
+  const commit=async(db:D1Database,owner:string,input:typeof base,receivedAt:string)=>{const preview=await previewHealthImport(db,owner,input);return writeHealthImport(db,owner,input,null,{previewToken:preview.token},receivedAt);};
+  await commit(source.db,'alice',base,NOW);
+  const mixed={...base,exportedAt:'2026-11-10T05:00:00.000Z',measurements:base.measurements.map(row=>row.metric==='weight'?{...row,value:71}:row)},changed=await commit(source.db,'alice',mixed,mixed.exportedAt);
+  const fresh={...mixed,exportedAt:'2026-11-10T06:00:00.000Z'},refreshed=await commit(source.db,'alice',fresh,fresh.exportedAt);assert.equal(refreshed.canRevert,false);
+  const backup=await exportDataBackup(source.db,'alice',fresh.exportedAt),changeRow=backup.tables.health_import_batches.find(row=>row.batch_id===changed.batchId)!;
+  assert.equal(JSON.parse(String(changeRow.after_json)).length,1);assert.equal(JSON.parse(String(changeRow.before_json)).length,1);
+  const set=await splitBackupVolumes(backup),preview=await previewDataRestore(target.db,'restored',set);await restoreDataBackup(target.db,'restored',set,preview.previewHash);
+  assert.deepEqual(semantic(await exportDataBackup(target.db,'restored',fresh.exportedAt)),semantic(backup));
+  await assert.rejects(revertHealthImport(target.db,'restored',changed.batchId,'后续同值同步'),error=>error instanceof HealthImportConflictError&&error.code==='HEALTH_IMPORT_REVERT_CONFLICT');
+  await assert.rejects(revertHealthImport(target.db,'restored',refreshed.batchId,'没有内容修改'),error=>error instanceof HealthImportConflictError&&error.code==='HEALTH_IMPORT_NOT_REVERSIBLE');
+  const latest={...fresh,exportedAt:'2026-11-10T07:00:00.000Z',measurements:fresh.measurements.map(row=>row.metric==='weight'?{...row,value:72}:row)},last=await commit(target.db,'restored',latest,latest.exportedAt);
+  await revertHealthImport(target.db,'restored',last.batchId,'只撤销数值修改','2026-11-10T08:00:00.000Z');
+  const rows=target.sqlite.prepare('SELECT metric,measurement_json,exported_at FROM health_measurements WHERE user_id=?').all('restored');
+  assert.equal(JSON.parse(String(rows.find(row=>row.metric==='weight')?.measurement_json)).value,71);
+  assert.equal(rows.find(row=>row.metric==='lean_body_mass')?.exported_at,latest.exportedAt);
+  await exportDataBackup(target.db,'restored','2026-11-10T08:00:00.000Z');
+});
+
+void test('pre-optimization full unchanged health snapshots still restore, revert and acknowledge the old receipt',async(t)=>{
+  const source=fixture(t),target=fixture(t),base=parseSyncPayload({version:1,source:'apple-health-shortcuts',timezone:'Asia/Shanghai',exportedAt:NOW,
+    measurements:[{id:'legacy-unchanged',metric:'weight',value:70,unit:'kg',startDate:OLD,source:'synthetic scale',aggregation:'sample'}]});
+  let preview=await previewHealthImport(source.db,'alice',base);await writeHealthImport(source.db,'alice',base,null,{previewToken:preview.token},NOW);
+  const original=source.sqlite.prepare('SELECT record_key AS recordKey,metric,day,measurement_json AS measurementJson,exported_at AS exportedAt,received_at AS receivedAt FROM health_measurements WHERE user_id=?').get('alice')!;
+  const fresh={...base,exportedAt:'2026-11-10T05:00:00.000Z'};preview=await previewHealthImport(source.db,'alice',fresh);const saved=await writeHealthImport(source.db,'alice',fresh,null,{previewToken:preview.token},fresh.exportedAt);
+  const current=source.sqlite.prepare('SELECT record_key AS recordKey,metric,day,measurement_json AS measurementJson,exported_at AS exportedAt,received_at AS receivedAt FROM health_measurements WHERE user_id=?').get('alice')!;
+  const backup=await exportDataBackup(source.db,'alice',fresh.exportedAt),row=backup.tables.health_import_batches.find(item=>item.batch_id===saved.batchId)!;
+  row.before_json=JSON.stringify([{recordKey:original.recordKey,base:original}]);row.after_json=JSON.stringify([current]);row.receipt_json=JSON.stringify({...JSON.parse(String(row.receipt_json)),canRevert:true});
+  parseDataBackup(backup);const restorePreview=await previewDataRestore(target.db,'restored',backup);await restoreDataBackup(target.db,'restored',backup,restorePreview.previewHash);
+  await revertHealthImport(target.db,'restored',saved.batchId,'旧格式回退','2026-11-10T06:00:00.000Z');
+  assert.equal(target.sqlite.prepare('SELECT exported_at FROM health_measurements WHERE user_id=?').get('restored')?.exported_at,base.exportedAt);
+  const replay=await writeHealthImport(target.db,'restored',fresh,null);assert.equal(replay.replayed,true);assert.equal(replay.reverted,true);assert.equal(replay.canRevert,true);
+  await exportDataBackup(target.db,'restored','2026-11-10T06:00:00.000Z');
 });
 
 function legacyV1(backup:DataBackup) {

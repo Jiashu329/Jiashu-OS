@@ -39,7 +39,7 @@ function fixture(t: TestContext) {
     },
   } as unknown as D1Database;
   let user: string | null = 'browser-owner';
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser','json','unauthenticated','invalidOrigin','isSameOrigin']);
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser','json','unauthenticated','invalidOrigin','isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env: { DB: db }, ...shared, ...store, ...model, ...sync }, ['doubanDatabase','doubanGuard','doubanBody','doubanError']);
   const route = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...library, ...model, ...sync }, ['POST']).POST;
   return {

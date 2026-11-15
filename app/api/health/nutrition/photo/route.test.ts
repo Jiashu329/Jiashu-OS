@@ -23,7 +23,7 @@ function fixture(){
   const today=shanghaiDay(new Date().toISOString()),base={image:{dataUrl:TINY_JPEG_DATA_URL},date:today,meal:'lunch'};
   const env={DB:{}as D1Database,APP_OWNER_USER_ID:'site-owner',AI_SETTINGS_ENCRYPTION_KEY:'PRIVATE-MASTER'};
   const configs:Array<{user:string;revision?:number}>=[],quotaUsers:string[]=[],outgoing:Array<{user:string|null;input:photo.NutritionPhotoRequest}>=[];
-  const shared=load(new URL('../../../_shared.ts',import.meta.url),{getChatGPTUser:async()=>user?{userId:user}:null},['apiUser','json','unauthenticated','invalidOrigin','isSameOrigin']);
+  const shared=load(new URL('../../../_shared.ts',import.meta.url),{getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser:async()=>user?{userId:user}:null},['apiUser','json','unauthenticated','invalidOrigin','isSameOrigin']);
   const nutrition=load(new URL('../_shared.ts',import.meta.url),{...shared},['nutritionGuard']);
   const handlers=load(new URL('./route.ts',import.meta.url),{env,...shared,...nutrition,...photo,...images,...provider,AISettingsConflictError,AISettingsCryptoError,SiteAISettingsUnavailableError,
     readSiteAISettings:async(_db:unknown,configurationEnv:typeof env)=>{if(storageFailure)throw storageFailure;assert.equal(configurationEnv,env);return{revision};},

@@ -81,8 +81,8 @@ async function fixture(t: TestContext) {
     return sqlite.prepare('SELECT ledger FROM ' + table + ' WHERE user_id=? AND id=?').get(userId, options.goalId ?? options.accountId!)?.ledger as 'personal' | 'family' | undefined;
   }, () => env.DB !== undefined);
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => owner ? { userId: owner } : null,
-  }, ['apiUser', 'json', 'isSameOrigin']);
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner } : null,
+  }, ['apiUser', 'json', 'isSameOrigin', 'unauthenticated']);
   const financeShared = loadExports(new URL('../_shared.ts', import.meta.url), {
     ...shared, ...balanceChanges, ...finance, ...financeStore, ...bookFixture,
   }, ['apiUser', 'json', 'financeError', 'financeUnauthenticated', 'financeNotFound', 'financeBody', 'financeIdempotencyKey', 'invalidFinanceIdempotencyKey', 'guardFinanceWrite', 'validAccountId', 'ledgerFromRequest']);

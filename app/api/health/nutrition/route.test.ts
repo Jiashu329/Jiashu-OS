@@ -61,7 +61,7 @@ async function fixture(t: TestContext) {
   };
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner } : null });
   const bindings = { ...shared, ...nutritionRules, ...nutritionStore, ...nutritionGoals, ...nutritionGoalStore, readWeightPlanSettings, shanghaiDay, env };
   const nutritionShared = loadExports(new URL('./_shared.ts', import.meta.url), bindings);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...bindings, ...nutritionShared }) as { GET(request: Request): Promise<Response>; POST(request: Request): Promise<Response> };

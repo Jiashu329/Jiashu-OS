@@ -4,6 +4,7 @@ import { changeFinanceBookMember, inviteFinanceBookMember, listFinanceBookMember
 import type { FinanceBooksDatabase } from '../db/finance-books-store.ts';
 
 interface Dependencies {
+  unauthenticated?(message?: string): Response | Promise<Response>;
   user(): Promise<FinanceBookActor | null>;
   database(): FinanceBooksDatabase;
   json(value: unknown, status?: number): Response;
@@ -36,7 +37,7 @@ export function createFinanceBookHandlers(deps: Dependencies) {
   };
   async function actor(request: Request): Promise<FinanceBookActor | Response> {
     const user = await deps.user();
-    if (!user) return deps.json({ error: '请先登录网站，再查看家庭邀请。', code: 'SIGN_IN_REQUIRED' }, 401);
+    if (!user) return deps.unauthenticated ? deps.unauthenticated('请先登录网站，再查看家庭邀请。') : deps.json({ error: '请先登录网站，再查看家庭邀请。', code: 'SIGN_IN_REQUIRED' }, 401);
     const pageOwner = request.headers.get('X-Page-Owner');
     if (pageOwner && pageOwner !== user.userId) return deps.json({ error: '登录账号已变化，请刷新页面后继续。', code: 'ACCOUNT_CHANGED' }, 401);
     return user;

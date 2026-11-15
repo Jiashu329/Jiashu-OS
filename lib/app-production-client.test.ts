@@ -16,7 +16,7 @@ import { buildHealthSummary, type HealthMeasurement } from './health.ts';
 import { ACCOUNT_TYPES, CURRENCIES, buildFinanceSummary } from './finance.ts';
 import { buildNutritionReview, parseNutritionQuery } from './nutrition.ts';
 import { buildNutritionInsight, parseNutritionInsightQuery } from './nutrition-review.ts';
-import { EMPTY_NUTRITION_GOALS } from './nutrition-goals.ts';
+import { EMPTY_NUTRITION_GOALS, parseNutritionGoals, type NutritionGoals } from './nutrition-goals.ts';
 import { calculateNutritionNeeds, parseNutritionNeedsInput, type NutritionNeedsInput } from './nutrition-needs.ts';
 import { buildHealthWeeklyReview, parseHealthWeekQuery, type HealthWeeklyReview } from './health-weekly.ts';
 import { buildHealthWeeklyFocus } from './health-weekly-focus.ts';
@@ -34,6 +34,8 @@ import { personalLibraryFood } from './personal-food-library.ts';
 import { parseNutritionTemplate, type NutritionTemplate } from './nutrition-templates.ts';
 import type { ManagedLibraryFood } from './managed-food-catalog.ts';
 import { DEFAULT_NOTIFICATION_PREFERENCES } from './notifications.ts';
+import { measurementKey } from './health.ts';
+import { parseHealthRecordCreate, type HealthRecordView } from './health-records.ts';
 
 // These are minified-output DOM checks. They exercise initialization and actions,
 // not browser layout, CSS rendering, touch hit testing or iPhone integration.
@@ -117,7 +119,11 @@ function storage(seed: Record<string,string> = {}) {
 }
 type SyntheticTMDBCover = { imdbId: string; mediaType: 'movie' | 'tv'; tmdbId: number; posterPath: string; language: 'zh' | 'en' | null; matchedAt: string };
 type SyntheticTMDBResult = { status: 'matched' | 'not_configured' | 'missing_imdb' | 'no_match' | 'ambiguous' | 'episode_only' | 'no_poster' | 'rate_limited' | 'unavailable'; cover?: SyntheticTMDBCover; message?: string; retryAfter?: number };
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; coverSelectionFailure?: { attempt: number; message: string; delayMs: number }; allowTMDB?: boolean; allowIMDbRatings?: boolean; loseIMDbRatingReply?: boolean; imdbRatingResults?: Record<string, IMDbRating | null>; imdbRatingFailure?: { status: 429 | 503; message: string; retryAfter?: number }; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
+type ProductionFixtureHooks = {
+  fetch?: (path: string, options?: RequestInit) => Response | Promise<Response> | undefined;
+  timers?: { setTimeout: (callback: () => void, delay?: number) => unknown; clearTimeout: (timer: unknown) => void };
+};
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; coverSelectionFailure?: { attempt: number; message: string; delayMs: number }; allowTMDB?: boolean; allowIMDbRatings?: boolean; loseIMDbRatingReply?: boolean; imdbRatingResults?: Record<string, IMDbRating | null>; imdbRatingFailure?: { status: 429 | 503; message: string; retryAfter?: number }; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }, hooks: ProductionFixtureHooks = {}) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   for (const input of document.querySelectorAll('input[type=checkbox]')) (input as unknown as HTMLInputElement).checked = input.hasAttribute('checked');
@@ -195,6 +201,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null }, personal: { accounts: [] }, family: { accounts: [] }, nutrition: { entries: [], statuses: [], goals: EMPTY_NUTRITION_GOALS } });
   const fetch = async (url: string | URL, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
+    const override = hooks.fetch?.(path, options);
+    if (override !== undefined) { (path === '/api/session' ? identityRequests : requests).push({ path, method }); return override; }
     // Initializing any page must remain read-only, even when session storage
     // contains another signed-in owner's original pending requests.
     if (method === 'POST' && path === '/api/health/nutrition/needs' && catalog.nutritionNeeds) {
@@ -440,7 +448,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   };
   const context = { window, document, location, history, navigator: {}, sessionStorage, localStorage, fetch, URL, Blob, URLSearchParams, TextEncoder, TextDecoder, AbortController, DOMParser: window.DOMParser,
     crypto: webcrypto, Intl, Date, Event: window.Event, Element: window.Element, innerWidth: width,
-    Headers, setTimeout, clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
+    Headers, Response, setTimeout: hooks.timers?.setTimeout ?? setTimeout, clearTimeout: hooks.timers?.clearTimeout ?? clearTimeout, queueMicrotask, requestAnimationFrame: (callback: () => void) => { callback(); return 0; } };
   for (const [index, script] of [...document.querySelectorAll('script')].entries()) {
     if (script.getAttribute('src') || !script.textContent?.trim()) continue;
     runInNewContext(script.textContent, context, { timeout: 2000, filename: 'built-app-inline-' + index + '.js' });
@@ -1711,4 +1719,107 @@ test('minified incremental sync reuses fresh collection hints, refreshes one cha
   assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 8);
   assert.ok((f.document.getElementById('douban-browser-status')?.textContent?.length ?? 0) < 180);
   assert.equal(f.doubanTMDBBodies.length, 0); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
+});
+
+
+test('minified goal editor gates a delayed initial read, preserves early typing and saves only confirmed revisions', { skip: !hasBuild }, async () => {
+  let release!: (value: Response) => void, reads = 0;
+  let goals: NutritionGoals = { ...EMPTY_NUTRITION_GOALS, revision: 7, calories: '1900.0', protein: '90.0' };
+  const writes: Array<Record<string, unknown>> = [];
+  const f = await fixture('id="nutrition-page"', '/health/nutrition#nutrition-goals', 390, {}, { foods: [] }, {
+    fetch(path, options) {
+      if (path !== '/api/health/nutrition/goals') return;
+      if (options?.method !== 'PUT') { reads++; return reads === 1 ? new Promise<Response>(resolve => { release = resolve; }) : Response.json({ goals, weightPlan: null }); }
+      const body = JSON.parse(String(options.body)) as Record<string, unknown>, command = parseNutritionGoals(body);
+      writes.push(body); assert.equal(command.expectedRevision, goals.revision);
+      goals = { ...goals, ...command.targets, revision: goals.revision + 1 };
+      return Response.json({ goals, weightPlan: null });
+    },
+  });
+  await settle(() => Boolean(release));
+  const get = (id: string) => f.document.getElementById('nutrition-' + id)! as unknown as HTMLInputElement;
+  assert.equal(get('goals-save').disabled, true);
+  get('goal-calories').value = '2100'; get('goal-protein').value = '110';
+  get('goal-calories').dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  get('goals-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(writes.length, 0);
+  release(Response.json({ goals: structuredClone(goals), weightPlan: null }));
+  await settle(() => !get('goals-save').disabled);
+  assert.equal(get('goal-calories').value, '2100'); assert.equal(get('goal-protein').value, '110');
+  const save = () => get('goals-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  save(); await settle(() => goals.revision === 8 && !get('goals-save').disabled);
+  get('goal-protein').value = '115'; save(); await settle(() => goals.revision === 9 && !get('goals-save').disabled);
+  assert.deepEqual(writes.map(body => body.expectedRevision), [7, 8]); assert.equal(goals.protein, '115.0');
+});
+
+for (const hangingStage of ['headers', 'body'] as const) {
+  test('minified health write deadline releases a hanging ' + hangingStage + ' response and retries its original operation once', { skip: !hasBuild }, async () => {
+    const deadlines = new Map<number, () => void>(); let nextTimer = 100000;
+    const records: HealthRecordView[] = [], writes: Array<{ key: string; body: Record<string, unknown> }> = [];
+    let firstSignal: AbortSignal | null | undefined;
+    const timers: ProductionFixtureHooks['timers'] = {
+      setTimeout(callback, delay) { if (delay === 30000) { const id = nextTimer++; deadlines.set(id, callback); return id; } return setTimeout(callback, delay); },
+      clearTimeout(id) { if (typeof id === 'number' && deadlines.delete(id)) return; clearTimeout(id as Parameters<typeof clearTimeout>[0]); },
+    };
+    const f = await fixture('id="records-page"', '/health/records?metric=steps&compose=1', 390, {}, { foods: [] }, {
+      timers,
+      fetch(path, options) {
+        if (new URL(path, 'https://synthetic-production.example').pathname !== '/api/health/records') return;
+        if (options?.method !== 'POST') return Response.json({ records, today: new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10), hasMore: false, nextCursor: null });
+        const key = new Headers(options.headers).get('Idempotency-Key')!, body = JSON.parse(String(options.body)) as Record<string, unknown>;
+        writes.push({ key, body });
+        if (!records.length) {
+          const command = parseHealthRecordCreate(body, key);
+          records.push({ recordKey: measurementKey(command.measurement), metric: command.measurement.metric, day: String(body.date), base: null, effective: command.measurement, override: command.measurement, deleted: false, revision: 1, updatedAt: new Date().toISOString(), manual: true });
+        } else assert.deepEqual(writes[0], writes.at(-1), 'retry must retain the captured date, key and body');
+        if (writes.length === 1) {
+          firstSignal = options.signal;
+          if (hangingStage === 'headers') return new Promise<Response>(() => {});
+          const response = Response.json({}, { status: 201, headers: { 'X-Account-Owner': 'synthetic-production-owner' } });
+          Object.defineProperty(response, 'text', { value: () => new Promise<string>(() => {}) });
+          return response;
+        }
+        return Response.json({ record: records[0], replayed: true }, { status: 201 });
+      },
+    });
+    const get = (id: string) => f.document.getElementById('records-' + id)! as unknown as HTMLInputElement;
+    await settle(() => get('dialog').hasAttribute('open'));
+    get('value').value = '5678'; get('reason').value = '原操作的解释';
+    get('form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => writes.length === 1);
+    assert.equal(get('save').disabled, true); assert.equal(records.length, 1);
+    const expire = [...deadlines.values()][0]; assert.ok(expire, 'write must own a finite 30 second deadline'); expire();
+    await settle(() => !get('save').disabled && get('form-error').textContent?.includes('超时') === true);
+    assert.equal(firstSignal?.aborted, true); assert.equal(get('value').disabled, true);
+    assert.equal(get('save').textContent, '重试原操作');
+    get('dialog-close').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    assert.equal(get('dialog').hasAttribute('open'), false); assert.equal(get('pending').hidden, false);
+    get('resume').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    assert.equal(get('value').value, '5678');
+    get('form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle(() => writes.length === 2 && !get('dialog').hasAttribute('open') && get('list').querySelectorAll('[data-health-record]').length === 1);
+    assert.deepEqual(writes[0], writes[1]); assert.equal(records.length, 1); assert.equal(get('pending').hidden, true);
+  });
+}
+
+test('minified account guard retries permission storage failures without losing a draft but still freezes a true sign-out', { skip: !hasBuild }, async () => {
+  let failure: 503 | 401 | null = null;
+  const f = await fixture('id="nutrition-page"', '/health/nutrition', 390, {}, { foods: [] }, {
+    fetch(path) {
+      if (path === '/api/session' && failure) return Response.json({ error: failure === 503 ? '权限存储暂时不可用。' : '请重新登录。', code: failure === 503 ? 'ACCOUNT_ACCESS_UNAVAILABLE' : 'SIGN_IN_REQUIRED' }, { status: failure });
+    },
+  });
+  const get = (id: string) => f.document.getElementById('nutrition-' + id)! as unknown as HTMLInputElement;
+  await settle(() => get('page').getAttribute('aria-busy') === 'false' && !f.document.documentElement.hasAttribute('data-account-verifying'));
+  get('ai-text').value = '恢复权限后继续整理的午餐';
+  failure = 503; get('previous').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => !get('retry').hidden && get('page').getAttribute('aria-busy') === 'false');
+  assert.equal(f.document.documentElement.hasAttribute('data-account-changed'), false);
+  assert.equal(get('ai-text').value, '恢复权限后继续整理的午餐'); assert.equal(get('login').hidden, true);
+  failure = null; get('retry').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => get('status').hidden && get('page').getAttribute('aria-busy') === 'false');
+  assert.equal(get('ai-text').value, '恢复权限后继续整理的午餐');
+  failure = 401; get('previous').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => f.document.documentElement.hasAttribute('data-account-changed'));
+  assert.ok(f.requests.every(request => request.method === 'GET'));
 });

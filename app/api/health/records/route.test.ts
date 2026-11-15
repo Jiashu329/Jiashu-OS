@@ -72,7 +72,7 @@ async function fixture(t: TestContext) {
   };
   const db = adapter as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db }; let owner: string | null = 'alice';
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner } : null });
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner } : null });
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { env, ...health, ...composition, ...recordStore, ...importStore }, ['importHealth', 'readHealth', 'readHealthRange']);
   let bindings = { ...shared, ...repository, ...health, ...recordRules, ...recordStore, env };
   const recordsSharedPath = new URL('./_shared.ts', import.meta.url);

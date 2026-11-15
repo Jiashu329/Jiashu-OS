@@ -2,12 +2,12 @@ import { env } from 'cloudflare:workers';
 import { createManagedFoodHandlers } from '../../../../../lib/managed-food-api';
 import { readSiteAISettingsOwner } from '../../../../../db/site-ai-settings-store';
 import { browseFoodLibrary } from '../../../../../lib/food-library-catalog';
-import { apiUser, json } from '../../../_shared';
+import { apiUser, unauthenticated, json } from '../../../_shared';
 import { configuredAccessOwner } from '../../../../../lib/access-control';
 
 export const dynamic = 'force-dynamic';
 const handlers = createManagedFoodHandlers({
-  user:apiUser,
+  user:apiUser,unauthenticated,
   database() { if (!env.DB) throw new Error('Food library storage unavailable'); return env.DB; },
   ownerId(db) { return readSiteAISettingsOwner(db,env); },
   configuredOwnerId() { return configuredAccessOwner(env.APP_OWNER_USER_ID) ?? undefined; },

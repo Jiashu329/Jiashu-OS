@@ -25,7 +25,7 @@ function fixture() {
   const configReads: Array<{ user: string; revision?: number }> = [], quotaUsers: string[] = [];
   const configurations: provider.AIConfiguration[] = [];
   const outgoing: Array<{ user: string | null; input: needs.NutritionNeedsInput; configuration: provider.AIConfiguration }> = [];
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null },
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null },
     ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const nutrition = load(new URL('../_shared.ts', import.meta.url), { ...shared }, ['nutritionGuard', 'nutritionBody']);
   const handlers = load(new URL('./route.ts', import.meta.url), { env, ...shared, ...nutrition, ...needs, ...provider,

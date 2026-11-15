@@ -19,7 +19,7 @@ function fixture() {
   const env: { DB?: D1Database } = { DB: {} as D1Database };
   const reads: Array<{ owner: string; selection: { from: string; to: string }; kind: string }> = [];
   const shared = load(new URL('../../../_shared.ts', import.meta.url), {
-    getChatGPTUser: async () => owner ? { userId: owner } : null,
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner } : null,
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { ...shared, ...nutrition, NutritionConflictError, env }, ['nutritionDatabase', 'nutritionError']);
   const route = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...insight,

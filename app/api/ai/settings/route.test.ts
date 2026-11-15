@@ -102,7 +102,7 @@ async function fixture(t: TestContext) {
     await quotaHook?.();
     return result;
   };
-  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => owner ? { userId: owner, isOwner: ownerRole } : null });
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => owner ? { userId: owner, isOwner: ownerRole } : null });
   const bindings = { ...shared, ...settingsRules, ...settingsCrypto, ...settingsStore, ...siteSettingsStore, ...usageStore, ...provider, callHealthAssistant, consumeAIQuota, env, Date: RequestDate };
   const settingsShared = loadExports(new URL('./_shared.ts', import.meta.url), bindings);
   const route = loadExports(new URL('./route.ts', import.meta.url), { ...bindings, ...settingsShared }) as {

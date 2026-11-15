@@ -20,7 +20,7 @@ function fixture() {
   let user: string | null = 'alice', configured = true, status = 'matched', providerError: unknown, settingsError: unknown, readError: unknown;
   const calls: Array<{ operation: string; owner?: string; command?: unknown }> = [], db = {} as D1Database;
   const item = { ...body, kind: 'movie', details: { imdbId: cover.imdbId }, local: { note: '保留备注', revision: 2 }, cover: { mode: 'url', url: 'https://images.example.com/manual.jpg', revision: 2 }, tmdb: null as typeof cover | null, tmdbCoverUrl: null as string | null };
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env: { DB: db }, ...shared, ...sourceStore, ...model, ...sync }, ['doubanDatabase', 'doubanGuard', 'doubanBody', 'doubanError']);
   const handler = load(new URL('./route.ts', import.meta.url), { env: {}, ...shared, ...helpers, ...sourceStore, ...provider, ...coverModel,
     readDoubanTMDBItem: async (_db: unknown, owner: string, command: unknown) => { calls.push({ operation: 'read', owner, command }); if (readError) throw readError; return item; },

@@ -26,7 +26,7 @@ function fixture(t: TestContext) {
   } } as unknown as D1Database;
   const env: { DB?: D1Database } = { DB: db };
   let userId: string | null = 'alice';
-  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => userId ? { userId } : null }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
+  const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => userId ? { userId } : null }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
   const route = load(new URL('./route.ts', import.meta.url), { ...shared, ...store, ...model, env,
     weeklyActionWeek: (input: unknown) => model.weeklyActionWeek(input, NOW),
     parseWeeklyActionInput: (input: unknown) => model.parseWeeklyActionInput(input, NOW),

@@ -105,10 +105,12 @@ void test('an aborted shared request cannot send a mutation after a delayed iden
 });
 
 void test('a failed identity read leaves original owner bound and a retry can succeed without sending draft bytes early',async()=>{
-  const f=fixture({pageOwner:'alice'});f.identity(async()=>Response.json({error:'unavailable'},{status:503}));
+  const f=fixture({pageOwner:'alice'});f.identity(async()=>Response.json({error:'暂时无法核对使用权限',code:'ACCOUNT_ACCESS_UNAVAILABLE'},{status:503,headers:{'Retry-After':'3'}}));
   assert.equal((await f.fetch('/api/health/nutrition',{method:'POST',body:'private'})).status,503);
   assert.equal(f.guard.owner,'alice');assert.equal(f.guard.changed,false);assert.equal(f.calls.length,1);
   f.identity(async()=>Response.json({userId:'alice'}));assert.equal((await f.fetch('/api/health/nutrition',{method:'POST',body:'private'})).status,200);
+  assert.deepEqual(f.events,[]);assert.equal(f.attributes.has('data-account-changed'),false);
+  assert.equal(f.calls.at(-1)?.options.body,'private');
 });
 
 void test('external requests and the read-only identity endpoint do not receive owner headers',async()=>{

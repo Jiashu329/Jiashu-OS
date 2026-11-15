@@ -5,6 +5,7 @@ import { foodCatalogImages } from './food-catalog-images.ts';
 
 interface Actor { userId: string; isOwner?: boolean }
 interface Dependencies {
+  unauthenticated?(message?: string): Response | Promise<Response>;
   user(): Promise<Actor | null>; database(): ManagedFoodDatabase;
   ownerId(db: ManagedFoodDatabase): Promise<string>;
   /** Optional deployment-configured stable owner, never accepted from JSON. */
@@ -23,7 +24,7 @@ async function body(request: Request): Promise<unknown> {
   } finally { reader.releaseLock(); }
 }
 export function createManagedFoodHandlers(deps: Dependencies) {
-  const failure = (error: unknown) => error instanceof ManagedFoodError ? deps.json({ error: error.message, code: error.code },error.status)
+  const failure = (error: unknown) => error instanceof ManagedFoodError && error.code === 'SIGN_IN_REQUIRED' && deps.unauthenticated ? deps.unauthenticated('请先登录网站。') : error instanceof ManagedFoodError ? deps.json({ error: error.message, code: error.code },error.status)
     : error instanceof SyntaxError ? deps.json({ error:'请提交有效的食品JSON资料。',code:'MANAGED_FOOD_INVALID' },400)
       : deps.json({ error:'公共食物库暂时无法读取或保存，请保留原内容后重试。',code:'MANAGED_FOOD_UNAVAILABLE' },503);
   async function actor(request: Request) {

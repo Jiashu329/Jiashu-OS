@@ -27,7 +27,7 @@ function fixture(t: TestContext) {
   } } as unknown as D1Database;
   const env: { DB?: D1Database; APP_OWNER_USER_ID?: string; AI_SETTINGS_ENCRYPTION_KEY?: string } = { DB: db, APP_OWNER_USER_ID: 'owner', AI_SETTINGS_ENCRYPTION_KEY: MASTER };
   let actor: string | null = 'owner', isOwner = true;
-  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => actor ? { userId: actor, isOwner } : null });
+  const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => actor ? { userId: actor, isOwner } : null });
   const bindings = { ...shared, ...rules, ...cryptoRules, ...store, ...provider, env, checkTMDBToken: async (token: string) => { calls.push(token); await hook?.(); if (providerError) throw providerError; } };
   const settingsShared = load(new URL('./_shared.ts', import.meta.url), bindings);
   const route = load(new URL('./route.ts', import.meta.url), { ...bindings, ...settingsShared }) as { GET(): Promise<Response>; PUT(r: Request): Promise<Response>; DELETE(r: Request): Promise<Response> };
