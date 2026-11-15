@@ -69,7 +69,7 @@ docker build -f selfhost/Dockerfile \
 
 激活后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单。小型控制脚本通过严格 host-key 验证的 SSH/SCP 传送；镜像上传至保留一天的私有 GitHub Artifact，服务器凭短时签名 URL 通过 HTTPS 下载。签名仅通过 SSH stdin 下发，GitHub token 留在 CI。服务器校验外层 ZIP 摘要、唯一文件白名单及内层镜像归档摘要，再 `docker load`，无需配置 GHCR 凭据。
 
-服务器核对镜像内容、提交标签、平台与全部 RootFS 层，再固定使用目标 Docker 存储的本地不可变 ID，兼容 classic 与 Docker 29 containerd 存储差异。使用全局部署锁防止并发；同一镜像版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
+服务器核对镜像内容、提交标签、平台与全部 RootFS 层，再固定使用目标 Docker 存储的本地不可变 ID，兼容 classic 与 Docker 29 containerd 存储差异。使用全局部署锁防止并发；同一镜像版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。备份源连接保持只读，容器以应用 UID 维护必要的 WAL/SHM 辅助文件；快照完成后转为 root 所有、0600 权限。CI 包含真实第二版本升级及只读恢复验收。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
 
 传输异常时，可先运行 **Aliyun server setup → transport-test**。它只传送少量随机测试数据，对比 SSH QoS 与 HTTPS 吞吐，不执行测试载荷，也不修改应用或 Nginx。
 

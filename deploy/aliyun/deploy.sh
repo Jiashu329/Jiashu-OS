@@ -45,10 +45,14 @@ if [[ -f "$current_env" ]]; then
 fi
 phase=before-migrations
 migrations_changed=true
+backup_staging=''
 finish_on_error() {
   local status=$?
   trap - ERR HUP INT TERM
   set +e
+  if [[ -n ${backup_staging:-} && "$backup_staging" == "$app_dir/backups/.staging."* && -d "$backup_staging" && ! -L "$backup_staging" ]]; then
+    rm -rf -- "$backup_staging"
+  fi
   if [[ -n "$previous_image" ]] && { [[ "$phase" == before-migrations ]] || [[ "$migrations_changed" == false ]]; }; then
     cp -p "$release_dir/previous-compose.yml" "$app_dir/compose.yml"
     cp -p "$release_dir/previous.env" "$current_env"
@@ -67,13 +71,29 @@ trap finish_on_error ERR
 trap 'false' HUP INT TERM
 if [[ -f "$current_env" ]]; then compose "$current_env" stop app; fi
 if [[ -f "$app_dir/data/app.sqlite3" ]]; then
-  backup_name="$(date -u +%Y%m%dT%H%M%SZ)-${previous_sha:-initial}.sqlite3"
-  docker run --rm --network none --read-only --user 0:0 \
-    --mount "type=bind,src=$app_dir/data,dst=/data,readonly" \
-    --mount "type=bind,src=$app_dir/backups,dst=/backups" \
+  if [[ -L "$app_dir/data/app.sqlite3" ]]; then printf 'Database backup source must be a regular application file.\n' >&2; false; fi
+  backup_identity=$(docker run --rm --network none --read-only --entrypoint node "$image_id" -p 'process.getuid() + ":" + process.getgid()')
+  if [[ ! "$backup_identity" =~ ^[1-9][0-9]*:[1-9][0-9]*$ ]]; then printf 'Backup requires a verified non-root application UID/GID.\n' >&2; false; fi
+  if [[ $(stat -c '%u:%g' "$app_dir/data/app.sqlite3") != "$backup_identity" ]]; then printf 'Database ownership does not match the application image; it was not changed.\n' >&2; false; fi
+  backup_staging=$(mktemp -d "$app_dir/backups/.staging.XXXXXXXX")
+  chown "$backup_identity" "$backup_staging"
+  chmod 700 "$backup_staging"
+  backup_name="$(date -u +%Y%m%dT%H%M%SZ)-${previous_sha:-initial}-${backup_staging##*.}.sqlite3"
+  # The SQLite source connection remains readOnly:true. Its directory must be
+  # writable for WAL/SHM creation after a clean stop removed those sidecars.
+  # Run as the application owner so rollback can reopen any surviving sidecars.
+  docker run --rm --network none --read-only --user "$backup_identity" \
+    --mount "type=bind,src=$app_dir/data,dst=/data" \
+    --mount "type=bind,src=$backup_staging,dst=/backups" \
     --entrypoint node "$image_id" selfhost/backup.ts \
       --database /data/app.sqlite3 --output "/backups/$backup_name"
+  if [[ ! -f "$backup_staging/$backup_name" || -L "$backup_staging/$backup_name" ]]; then printf 'Backup did not produce a regular recovery file.\n' >&2; false; fi
+  ln -- "$backup_staging/$backup_name" "$app_dir/backups/$backup_name"
+  chown 0:0 "$app_dir/backups/$backup_name"
   chmod 600 "$app_dir/backups/$backup_name"
+  rm -- "$backup_staging/$backup_name"
+  rmdir -- "$backup_staging"
+  backup_staging=''
 fi
 install -m 600 "$candidate_compose" "$app_dir/compose.yml"
 phase=migrating

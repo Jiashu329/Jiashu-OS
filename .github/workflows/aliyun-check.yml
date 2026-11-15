@@ -37,6 +37,7 @@ jobs:
           bash deploy/aliyun/build-bundle.sh "$DEPLOY_SHA" "$RUNNER_TEMP/jiashu-ci-bundle"
           sudo bash deploy/aliyun/bootstrap.sh --app-dir /opt/jiashu-ci --bundle "$RUNNER_TEMP/jiashu-ci-bundle" --public-origin "$ALIYUN_PUBLIC_ORIGIN" --confirm-empty-test-site
           sudo bash deploy/aliyun/deploy.sh --app-dir /opt/jiashu-ci --bundle "$RUNNER_TEMP/jiashu-ci-bundle"
+          sudo env CI=true GITHUB_ACTIONS=true GITHUB_SHA="$DEPLOY_SHA" RUNNER_TEMP="$RUNNER_TEMP" bash scripts/test-selfhost-deploy-upgrade.sh
       - name: Stop only the CI test container
         if: always()
         run: |

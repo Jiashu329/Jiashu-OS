@@ -168,3 +168,31 @@ void test('a failed first migration rolls schema and ledger back together and ca
     assert.equal((await migrateDatabase(f)).changed, 1);
   } finally { f.cleanup(); }
 });
+
+void test('backup after a clean WAL shutdown permits same-owner sidecars and keeps the source unchanged', async () => {
+  const f = fixture();
+  try {
+    const writer = new SQLiteD1Database(f.path);
+    await writer.prepare('CREATE TABLE durable(value TEXT)').run();
+    await writer.prepare('INSERT INTO durable VALUES(?)').bind('preserved').run();
+    writer.close();
+    assert.equal(existsSync(`${f.path}-wal`), false);
+    assert.equal(existsSync(`${f.path}-shm`), false);
+    const before = readFileSync(f.path);
+    const owner = statSync(f.path).uid;
+    const output = join(f.root, 'recovery.sqlite3');
+    await backupDatabase(f.path, output);
+    assert.deepEqual(readFileSync(f.path), before);
+    for (const suffix of ['-wal', '-shm']) {
+      if (existsSync(`${f.path}${suffix}`)) assert.equal(statSync(`${f.path}${suffix}`).uid, owner);
+    }
+    const snapshot = new DatabaseSync(output, { readOnly: true });
+    try { assert.equal(snapshot.prepare('SELECT value FROM durable').get()!.value, 'preserved'); }
+    finally { snapshot.close(); }
+    const resumed = new SQLiteD1Database(f.path);
+    try {
+      await resumed.prepare('INSERT INTO durable VALUES(?)').bind('restart succeeds').run();
+      assert.equal(await resumed.prepare('SELECT COUNT(*) AS count FROM durable').first('count'), 2);
+    } finally { resumed.close(); }
+  } finally { f.cleanup(); }
+});
