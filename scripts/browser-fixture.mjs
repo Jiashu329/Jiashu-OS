@@ -18,6 +18,7 @@ import { renderWeightPlanPage } from '../weight-plan-page.ts';
 import { renderFinanceRunwayPage } from '../finance-runway-page.ts';
 import { renderFinanceReviewPage } from '../finance-review-page.ts';
 import { renderDataBackupPage } from '../data-backup-page.ts';
+import { renderMediaSettingsPage } from '../media-settings-page.ts';
 
 export const BROWSER_FIXTURE_OWNER = 'browser-acceptance-synthetic-owner';
 function renderSyntheticPage(pathname) {
@@ -26,6 +27,7 @@ function renderSyntheticPage(pathname) {
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/review') return renderHealthWeeklyPage();
   if (pathname === '/life/douban') return renderDoubanPage();
+  if (pathname === '/settings/media') return renderMediaSettingsPage();
   if (pathname === '/health') return renderApp();
   if (pathname === '/health/weight-plan') return renderWeightPlanPage();
   if (pathname === '/finance') return renderFinanceApp(BROWSER_FIXTURE_OWNER);

@@ -175,6 +175,7 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser, de
       for (const [key, aliases] of [['genres', ['genres', 'genre', '类型标签']], ['countries', ['countries', 'country', '国家']], ['languages', ['languages', 'language', '语言']]] as const) set(key, [...aliases], 'list');
       set('year', ['year', '年份'], 'number'); set('doubanRating', ['doubanRating', 'doubanScore', 'score', '豆瓣评分'], 'number'); set('ratingCount', ['ratingCount', '评分人数'], 'number');
       if (domain === 'screen') {
+        set('imdbId', ['imdbId', 'imdbID', 'IMDb']);
         set('directors', ['directors', 'director', '导演'], 'list'); set('writers', ['writers', 'author', '编剧'], 'list'); set('cast', ['cast', 'actor', 'actors', '主演', '演员'], 'list');
         set('releaseDates', ['releaseDates', 'datePublished', '上映日期'], 'list'); set('duration', ['duration', 'time', '片长']);
         set('episodes', ['episodes', 'episode', '集数'], 'number'); set('seasons', ['seasons', '季数'], 'number'); set('episodeDuration', ['episodeDuration', '单集片长']);

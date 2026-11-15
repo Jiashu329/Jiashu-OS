@@ -14,13 +14,14 @@ import { parseStoredFinanceReview } from './finance-review-close.ts';
 import { parseDoubanProfile, parseDoubanRecord } from './douban.ts';
 import { parseDoubanDetails } from './douban-details.ts';
 import { normalizeUserCoverUrl } from './douban-cover-selection.ts';
+import { parseTMDBCover } from './tmdb-cover.ts';
 
 export const BACKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const BACKUP_MAX_ROWS = 20000;
 export interface BackupLimits { maxBytes: number; maxRows: number }
 export const SINGLE_BACKUP_LIMITS: BackupLimits = { maxBytes: BACKUP_MAX_BYTES, maxRows: BACKUP_MAX_ROWS };
 export const VOLUME_BACKUP_LIMITS: BackupLimits = { maxBytes: 16 * 1024 * 1024, maxRows: 40000 };
-export const BACKUP_EXCLUDED = ['AI 凭据与调用计数', '同步设备与连接密钥', '豆瓣连接配置与同步诊断'] as const;
+export const BACKUP_EXCLUDED = ['AI 凭据与调用计数', '同步设备与连接密钥', '豆瓣连接配置与同步诊断', 'TMDB 访问凭据与连接配置'] as const;
 export type BackupRow = Record<string, string | number | null>;
 interface TableSpec { label: string; columns: readonly string[]; keys: readonly string[]; sequence?: boolean; globalId?: boolean }
 // Identifiers are application constants. File input never becomes a SQL identifier.
@@ -55,7 +56,7 @@ export const BACKUP_TABLES = {
   health_sync_diagnostics: { label: '逐指标同步核对', columns: ['scope','received_at','exported_at','submitted_count','imported_count','skipped_count','first_day','last_day'], keys: ['scope'] },
   health_weekly_actions: { label: '每周行动与反馈', columns: ['week_start','text','status','feedback','revision','created_at','updated_at'], keys: ['week_start'] },
   finance_month_closes: { label: '已确认月结与重结历史', columns: ['ledger','currency','month','version','operation_id','request_hash','snapshot_json','reason','closed_at'], keys: ['ledger','currency','month','version'] },
-  douban_items: { label: '豆瓣书影音收藏', columns: ['profile_id','domain','subject_id','kind','title','url','cover_url','rating','marked_date','comment','published_at','source','details_json','local_note','local_tags_json','local_hidden','local_revision','local_cover_url','observed_at','created_at','updated_at'], keys: ['profile_id','domain','subject_id'] },
+  douban_items: { label: '豆瓣书影音收藏', columns: ['profile_id','domain','subject_id','kind','title','url','cover_url','rating','marked_date','comment','published_at','source','details_json','local_note','local_tags_json','local_hidden','local_revision','local_cover_url','tmdb_cover_json','observed_at','created_at','updated_at'], keys: ['profile_id','domain','subject_id'] },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
@@ -112,7 +113,7 @@ function compatibleBackupRow(table: BackupTable, value: unknown): Record<string,
   if (table === 'finance_accounts') { const liquidity=defaultAccountLiquidity(String(row.type));return { metadata_revision:1,liquidity_kind:liquidity.liquidityKind,usable_bps:liquidity.usableBps, ...row }; }
   if (table === 'finance_goal_plans') return { revision:1, ...row };
   if (table === 'health_weight_plan_settings') return {cycle_id:'legacy',archived_at:null,...row};
-  if (table === 'douban_items') return {details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,...row};
+  if (table === 'douban_items') return {details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,tmdb_cover_json:'{}',...row};
   return row;
 }
 function nutritionSnapshot(row: Record<string, unknown>) {
@@ -199,6 +200,10 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     const details = parsedJson(r.details_json);
     const normalized = parseDoubanDetails(details);
     if (canonical(details) !== canonical(normalized)) backupFail('豆瓣作品详情不是规范格式。');
+    const tmdb = parsedJson(r.tmdb_cover_json);
+    const cover = parseTMDBCover(tmdb);
+    if (canonical(tmdb) !== canonical(cover ?? {}) || (cover && r.domain !== 'screen')) backupFail('TMDB 封面资料不是规范的影视匹配。');
+    if (cover && Date.parse(cover.matchedAt) > now + 5*60000) backupFail('TMDB 封面匹配时间不能晚于当前时间。');
     text(r.local_note,4000);
     if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(String(r.local_note))) backupFail('书影音备注含有不支持的控制字符。');
     const tags = parsedJson(r.local_tags_json);

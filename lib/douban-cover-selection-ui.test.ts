@@ -67,6 +67,18 @@ void test('preview URLs reject credentials, local addresses, uploads and oversiz
   for (const value of ['http://example.org/a.jpg', 'https://user:password@example.org/a.jpg', 'https://127.0.0.1/a', 'https://[::1]/a', 'https://images.local/a', 'https://home.internal/a', 'https://example.org:8443/a', 'data:image/jpeg;base64,a', 'https://example.org/\\a', 'https://example.org/' + '中'.repeat(300)]) assert.throws(() => normalizePreviewCoverUrl(value), /HTTPS/);
 });
 
+void test('the optional link is explained as a fallback after Douban and TMDB, and original mode removes that fallback', () => {
+  const f = fixture();
+  assert.match(f.detail.textContent, /封面依次尝试豆瓣、TMDB、自定义图片链接/);
+  assert.match(f.detail.textContent, /备用链接可选填，仅在豆瓣和 TMDB 封面都不可用时使用/);
+  assert.equal(f.detail.querySelector('option[value="original"]')?.textContent, '自动封面（无备用链接）');
+  assert.equal(f.detail.querySelector('option[value="url"]')?.textContent, '填写备用图片链接');
+  assert.equal(f.field('[data-douban-cover-original]').textContent, '移除备用链接');
+  assert.equal(f.field('[data-douban-cover-mode]').value, 'original');
+  assert.equal(f.field('[data-douban-cover-original]').disabled, true);
+  assert.doesNotMatch(f.detail.textContent, /手选封面|恢复豆瓣|Token/);
+});
+
 void test('opening and typing remain local; explicit current-image success is required before saving the owner-scoped selection', async () => {
   const f = fixture(); f.ui.open(); f.changeMode('url'); f.inputUrl('https://covers.example.org/book.jpg#preview');
   assert.equal(f.field('[data-douban-cover-preview-image]').hasAttribute('src'), false); assert.equal(f.requests.length, 0);
@@ -74,6 +86,7 @@ void test('opening and typing remain local; explicit current-image success is re
   f.click('[data-douban-cover-preview]'); const image = f.field('[data-douban-cover-preview-image]');
   assert.equal(image.getAttribute('src'), 'https://covers.example.org/book.jpg'); assert.equal(image.getAttribute('referrerpolicy'), 'no-referrer');
   assert.equal(f.field('[data-douban-cover-save]').disabled, true); f.imageEvent('load');
+  assert.match(f.field('[data-douban-cover-preview-status]').textContent ?? '', /保存后仅在豆瓣和 TMDB 封面都不可用时显示/);
   assert.equal(f.field('[data-douban-cover-save]').disabled, false); f.submit(); await settle(() => !f.ui.isBusy());
   assert.deepEqual(f.requests, [{ path: '/api/life/douban/cover-selection', method: 'PUT', body: { profileId: 'mine', domain: 'book', subjectId: '12345', expectedDataEpoch: 3, expectedLocalRevision: 4, mode: 'url', url: 'https://covers.example.org/book.jpg' } }]);
   assert.equal(f.saved.length, 1); assert.equal(f.saved[0].item.local.note, '我的独立备注'); assert.equal(f.ui.isDirty(), false);
@@ -87,19 +100,20 @@ void test('failed or obsolete previews preserve the link and cannot unlock a cha
   assert.equal(f.field('[data-douban-cover-save]').disabled, true); assert.equal(f.field('[data-douban-cover-preview-image]').hasAttribute('src'), false);
   f.click('[data-douban-cover-preview]'); f.imageEvent('error'); f.submit();
   assert.equal(f.requests.length, 0); assert.equal(f.field('[data-douban-cover-url]').value, 'https://covers.example.org/second.jpg');
-  assert.match(f.field('[data-douban-cover-preview-status]').textContent ?? '', /更换可访问.*恢复豆瓣原封面/);
+  assert.match(f.field('[data-douban-cover-preview-status]').textContent ?? '', /更换可访问.*移除备用链接/);
   f.inputUrl('https://localhost/private'); f.click('[data-douban-cover-preview]'); assert.equal(f.field('[data-douban-cover-preview-image]').hasAttribute('src'), false);
 });
 
-void test('restoring the original is an explicit save with no URL and note updates can advance the shared revision without losing a cover draft', async () => {
+void test('removing the fallback is an explicit save with no URL and note updates can advance the shared revision without losing a cover draft', async () => {
   const item: Item = { ...structuredClone(original), cover: { mode: 'url', url: 'https://covers.example.org/saved.jpg', revision: 4 } };
   const f = fixture(item); f.chooseUrl('https://covers.example.org/new.jpg');
   f.ui.updateItem({ ...item, local: { ...item.local, note: '新备注', revision: 9 }, cover: { ...item.cover, revision: 9 } });
   assert.equal(f.field('[data-douban-cover-url]').value, 'https://covers.example.org/new.jpg'); assert.equal(f.ui.isDirty(), true);
   f.submit(); await settle(() => !f.ui.isBusy()); assert.equal(f.requests[0].body.expectedLocalRevision, 9);
   f.click('[data-douban-cover-original]'); assert.equal(f.requests.length, 1); assert.equal(f.field('[data-douban-cover-save]').disabled, false);
+  assert.match(f.field('[data-douban-cover-status]').textContent ?? '', /已选择移除备用链接/);
   f.submit(); await settle(() => !f.ui.isBusy()); assert.deepEqual(f.requests[1].body, { profileId: 'mine', domain: 'book', subjectId: '12345', expectedDataEpoch: 3, expectedLocalRevision: 10, mode: 'original' });
-  assert.match(f.field('[data-douban-cover-status]').textContent ?? '', /已恢复使用豆瓣原封面/); assert.equal(f.ui.isDirty(), false);
+  assert.match(f.field('[data-douban-cover-status]').textContent ?? '', /备用链接已移除，将自动尝试豆瓣和 TMDB 封面/); assert.equal(f.ui.isDirty(), false);
 });
 
 void test('revision conflicts keep the draft and require a fresh record instead of overwriting a concurrent cover', async () => {

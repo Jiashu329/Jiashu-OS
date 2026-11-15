@@ -10,7 +10,7 @@ import { classifyDoubanLibrary, listDoubanLibrary, writeDoubanLocalRecord } from
 const NOW = '2026-11-15T08:00:00.000Z';
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
-  for (const migration of ['0024_douban', '0025_douban_data_resets', '0027_douban_subject_details', '0028_douban_browser_source', '0029_douban_library', '0030_douban_manual_cover']) sqlite.exec(readFileSync(new URL('../drizzle/' + migration + '.sql', import.meta.url), 'utf8'));
+  for (const migration of ['0024_douban', '0025_douban_data_resets', '0027_douban_subject_details', '0028_douban_browser_source', '0029_douban_library', '0030_douban_manual_cover', '0031_tmdb_covers_and_settings']) sqlite.exec(readFileSync(new URL('../drizzle/' + migration + '.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   const db = {
     prepare(sql: string) {
@@ -97,8 +97,8 @@ test('batch classification is atomic for stale records, wrong owners and duplica
 test('missing-only filtering matches shared core-field labels without requiring a site score', async t => {
   const { db, seed } = fixture(t), coverUrl = 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg';
   await seed('alice', [
-    { subjectId: '1', kind: 'movie', coverUrl, details: { summary: '完整简介', directors: ['导演'] } },
-    { subjectId: '2', kind: 'screen', coverUrl, details: { summary: '已有简介', directors: ['导演'] } },
+    { subjectId: '1', kind: 'movie', coverUrl, details: { imdbId: 'tt1234567', summary: '完整简介', directors: ['导演'] } },
+    { subjectId: '2', kind: 'screen', coverUrl, details: { imdbId: 'tt1234568', summary: '已有简介', directors: ['导演'] } },
     { subjectId: '3', domain: 'book', coverUrl, details: { summary: '书籍简介' } },
     { subjectId: '4', domain: 'music', details: { artists: ['音乐人'] } },
   ]);

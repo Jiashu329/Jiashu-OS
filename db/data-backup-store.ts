@@ -2,6 +2,7 @@ import { BACKUP_TABLE_NAMES, BACKUP_TABLES, SINGLE_BACKUP_LIMITS, BackupCapacity
 import type { BackupLimits, BackupRow, BackupTable, DataBackup } from '../lib/data-backup.ts';
 import { parseBackupInput } from '../lib/backup-volumes.ts';
 import { parseDoubanDetails } from '../lib/douban-details.ts';
+import { parseTMDBCover } from '../lib/tmdb-cover.ts';
 
 export type BackupDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export class BackupConflictError extends Error { readonly code = 'BACKUP_CONFLICT'; readonly status = 409; constructor(message = '备份与当前数据有差异，未写入任何记录。请重新预览并处理冲突。') { super(message); this.name = 'BackupConflictError'; } }
@@ -17,6 +18,7 @@ function retainsRicherDoubanData(prior: BackupRow, incoming: BackupRow): boolean
   const untouchedLocal = incoming.local_revision === 0 && incoming.local_note === '' && incoming.local_hidden === 0
     && JSON.parse(String(incoming.local_tags_json)).length === 0;
   const preserved = { ...incoming, details_json: prior.details_json, local_cover_url: incoming.local_cover_url ?? prior.local_cover_url,
+    tmdb_cover_json: parseTMDBCover(JSON.parse(String(incoming.tmdb_cover_json))) === null ? prior.tmdb_cover_json : incoming.tmdb_cover_json,
     ...(untouchedLocal ? {local_note:prior.local_note,local_tags_json:prior.local_tags_json,local_hidden:prior.local_hidden} : {}) };
   return Object.entries(nextDetails).every(([key, value]) => JSON.stringify(value) === JSON.stringify(oldDetails[key as keyof typeof oldDetails]))
     && comparableBackupRow('douban_items', prior) === comparableBackupRow('douban_items', preserved);

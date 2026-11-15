@@ -8,6 +8,7 @@ export interface DoubanSubjectDetails {
   languages?: string[];
   doubanRating?: number;
   ratingCount?: number;
+  imdbId?: string;
   directors?: string[];
   writers?: string[];
   cast?: string[];
@@ -59,7 +60,7 @@ export function createDoubanDetailsParser(onInvalid?: (message: string) => never
     artists: [100, 200], tracks: [300, 500] };
   const numberLimits: Record<string, [number, number, boolean]> = { year: [1, 2100, true], doubanRating: [0, 10, false], ratingCount: [0, 1000000000, true],
     episodes: [1, 100000, true], seasons: [1, 10000, true], pages: [1, 1000000, true] };
-  const fields = ['summary', 'alternateTitles', 'year', 'genres', 'countries', 'languages', 'doubanRating', 'ratingCount', 'directors', 'writers', 'cast',
+  const fields = ['summary', 'alternateTitles', 'year', 'genres', 'countries', 'languages', 'doubanRating', 'ratingCount', 'imdbId', 'directors', 'writers', 'cast',
     'releaseDates', 'duration', 'episodes', 'seasons', 'episodeDuration', 'authors', 'translators', 'publisher', 'publicationDate', 'pages', 'isbn',
     'binding', 'price', 'seriesTitle', 'artists', 'albumType', 'medium', 'label', 'releaseDate', 'tracks'];
   function invalid(): never {
@@ -92,7 +93,11 @@ export function createDoubanDetailsParser(onInvalid?: (message: string) => never
     for (const field of fields) {
       const value: unknown = descriptors[field]?.value;
       if (value === null || value === undefined) continue;
-      if (Object.hasOwn(textLimits, field)) {
+      if (field === 'imdbId') {
+        // This is an external title identifier, never a title search or rating.
+        if (typeof value !== 'string' || !/^tt[0-9]{7,10}$/.test(value)) return invalid();
+        result[field] = value;
+      } else if (Object.hasOwn(textLimits, field)) {
         const normalized = text(value, textLimits[field], field === 'summary');
         if (normalized !== undefined) result[field] = normalized;
       } else if (Object.hasOwn(listLimits, field)) {

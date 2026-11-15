@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jiashu OS 豆瓣同步",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "由你在 Jiashu OS 点击同步，沿用本机豆瓣登录状态读取已完成收藏。不会读取或上传登录凭据。",
   "minimum_chrome_version": "114",
   "permissions": [

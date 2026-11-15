@@ -313,6 +313,22 @@ export const aiUserSettings = sqliteTable('ai_user_settings', {
   lastTestAt: text('last_test_at'),
 });
 
+// Site-level control data. Credentials are authenticated ciphertext and excluded from business backups.
+export const tmdbSettings = sqliteTable('tmdb_settings', {
+  ownerId: text('owner_id').primaryKey().notNull(),
+  tokenCiphertext: text('token_ciphertext'),
+  tokenIv: text('token_iv'),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastTestStatus: text('last_test_status'),
+  lastTestAt: text('last_test_at'),
+}, table => [
+  check('tmdb_settings_revision', sql`typeof(${table.revision})='integer' AND ${table.revision} BETWEEN 1 AND 9007199254740991`),
+  check('tmdb_settings_token_pair', sql`(${table.tokenCiphertext} IS NULL AND ${table.tokenIv} IS NULL) OR (${table.tokenCiphertext} IS NOT NULL AND ${table.tokenIv} IS NOT NULL)`),
+  check('tmdb_settings_test_status', sql`${table.lastTestStatus} IS NULL OR ${table.lastTestStatus} IN ('success','failed')`),
+]);
+
 export const nutritionBatches = sqliteTable('nutrition_batches', {
   userId: text('user_id').notNull(),
   id: text('id').notNull(),
@@ -499,6 +515,7 @@ export const doubanItems = sqliteTable('douban_items', {
   publishedAt: text('published_at'), source: text('source').notNull(), observedAt: text('observed_at').notNull(),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), metadataCheckedRunId: text('metadata_checked_run_id'),
   detailsJson: text('details_json').notNull().default('{}'),
+  tmdbCoverJson: text('tmdb_cover_json').notNull().default('{}'),
   localCoverUrl: text('local_cover_url'),
   localNote: text('local_note').notNull().default(''), localTagsJson: text('local_tags_json').notNull().default('[]'),
   localHidden: integer('local_hidden').notNull().default(0), localRevision: integer('local_revision').notNull().default(0),

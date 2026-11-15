@@ -145,6 +145,43 @@ function scores(value = '8.7', count = '2,345') {
   return '<div id="interest_sectl"><div class="rating_self"><strong property="v:average">' + value + '</strong></div><div class="rating_sum"><span property="v:votes">' + count + '</span></div></div>';
 }
 
+void test('screen IMDb IDs come only from the current info label or official title link, without fetching IMDb ratings', () => {
+  const variants = [
+    info('IMDb', 'tt1234567'),
+    info('IMDB', '<span>tt1234567</span>'),
+    '<div id="info"><span class="pl">IMDb</span>: tt1234567<br></div>',
+    info('IMDb', '<a href="https://www.imdb.com/title/tt1234567/?ref_=douban">IMDb</a>'),
+    '<div id="info"><a href="http://imdb.com/title/tt1234567">tt1234567</a></div>',
+    info('IMDb', 'tt1234567') + '<aside class="recommendations"><a href="https://www.imdb.com/title/tt9999999/">其他电影</a></aside>',
+  ];
+  for (const body of variants) {
+    assert.deepEqual(parseDoubanSubjectMetadata(subject('screen', body), 'screen', id).details, { imdbId: 'tt1234567' });
+  }
+  for (const domain of ['book', 'music'] as const) assert.equal(parseDoubanSubjectMetadata(subject(domain, variants[0]), domain, id).details?.imdbId, undefined);
+});
+
+void test('IMDb IDs stay unknown for unrelated, malformed or conflicting evidence instead of guessing from names', () => {
+  const link = (url = 'https://www.imdb.com/title/tt1234567/', label = 'IMDb') => '<a href="' + url + '">' + label + '</a>';
+  const variants = [
+    link(), '<h2>tt1234567</h2>', info('又名', 'tt1234567'),
+    '<aside class="recommendations">' + info('IMDb', 'tt1234567') + '</aside>',
+    '<div id="info"><div class="recommendations">' + link() + '<span class="pl">IMDb:</span>tt1234567</div></div>',
+    info('IMDb', 'tt1234567') + info('IMDb', 'tt1234567'),
+    information([['IMDb', 'tt1234567'], ['IMDb', 'tt9999999']]),
+    info('IMDb', link('https://www.imdb.com/title/tt9999999/', 'tt1234567')),
+    info('IMDb', 'tt1234567 / tt9999999'),
+    ...['tt123456', 'tt12345678901', 'TT1234567', 'nm1234567', '电影名称',
+      'https://imdb.com.evil.invalid/title/tt1234567/', 'javascript:tt1234567'].map(value => info('IMDb', value)),
+    ...['https://www.imdb.com/name/nm1234567/', 'https://www.imdb.com/title/tt1234567/reference/',
+      'https://user:SECRET@www.imdb.com/title/tt1234567/', 'https://www.imdb.com:444/title/tt1234567/',
+      'https://imdb.com.evil.invalid/title/tt1234567/'].map(url => '<div id="info">' + link(url) + '</div>'),
+  ];
+  for (const body of variants) assert.equal(parseDoubanSubjectMetadata(subject('screen', body), 'screen', id).details?.imdbId, undefined, body);
+  const tooManyLinks = '<div id="info"><a href="https://www.imdb.com/title/tt1234567/">IMDb</a>' + '<a href="#">更多</a>'.repeat(600) + '</div>';
+  assert.equal(parseDoubanSubjectMetadata(subject('screen', tooManyLinks), 'screen', id).details?.imdbId, undefined);
+  assert.deepEqual(parseDoubanSubjectMetadata(subject('screen', info('IMDb', 'tt1234567890')), 'screen', id).details, { imdbId: 'tt1234567890' });
+});
+
 void test('screen subject details retain common metadata, full summary, credits and television fields', () => {
   const body = '<h1><span class="year">(2026)</span></h1>' + information([
     ['导演', '<a>导演甲</a> / <a>导演乙</a>'], ['编剧', '编剧甲 / 编剧乙'], ['主演', '<a>演员甲</a> / <a>演员乙</a>'],

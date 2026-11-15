@@ -4,7 +4,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { normalizeUserCoverUrl, UserCoverError } from '../lib/douban-cover-selection.ts';
 import { writeUserCover } from './douban-cover-selection-store.ts';
-import { commitDoubanStep, readDoubanRecord, startDoubanRun, writeDoubanConnection, type DoubanDatabase } from './douban-store.ts';
+import { commitDoubanStep, doubanDetailsJson, readDoubanRecord, startDoubanRun, writeDoubanConnection, type DoubanDatabase } from './douban-store.ts';
 import { listDoubanLibrary, writeDoubanLocalRecord } from './douban-library-store.ts';
 import { previewDoubanReset, commitDoubanReset } from './douban-reset-store.ts';
 import { saveDoubanSubjectMetadata } from './douban-metadata-store.ts';
@@ -16,7 +16,7 @@ function fixture(t:TestContext){
  for(const name of readdirSync(directory).filter(name=>/^\d+.*\.sql$/.test(name)).sort())sqlite.exec(readFileSync(new globalThis.URL(name,directory),'utf8'));
  t.after(()=>sqlite.close());
  const db={prepare(sql:string){const statement=sqlite.prepare(sql);let values:SQLInputValue[]=[];const bound={bind(...args:unknown[]){values=args as SQLInputValue[];return bound;},async first<T>(){return statement.get(...values)as T??null;},async all<T>(){return{results:statement.all(...values)as T[]};},execute(){return{results:statement.columns().length?statement.all(...values):(statement.run(...values),[])};}};return bound;},async batch(statements:Array<{execute():unknown}>){sqlite.exec('BEGIN');try{const result=statements.map(statement=>statement.execute());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}}as unknown as DoubanDatabase;
- const add=(owner='alice')=>sqlite.prepare(`INSERT INTO douban_items(user_id,profile_id,domain,subject_id,kind,title,url,cover_url,source,observed_at,created_at,updated_at,details_json)VALUES(?,?,'screen','1','movie','synthetic','https://movie.douban.com/subject/1/','https://img1.doubanio.com/view/photo/public/p1.jpg','browser',?,?,?,?)`).run(owner,key.profileId,NOW,NOW,NOW,JSON.stringify({summary:'简介',directors:['导演']}));
+ const add=(owner='alice')=>sqlite.prepare(`INSERT INTO douban_items(user_id,profile_id,domain,subject_id,kind,title,url,cover_url,source,observed_at,created_at,updated_at,details_json)VALUES(?,?,'screen','1','movie','synthetic','https://movie.douban.com/subject/1/','https://img1.doubanio.com/view/photo/public/p1.jpg','browser',?,?,?,?)`).run(owner,key.profileId,NOW,NOW,NOW,doubanDetailsJson({imdbId:'tt1234567',summary:'简介',directors:['导演']}));
  add();return{db,sqlite,add};
 }
 function command(revision=0){return{...key,expectedDataEpoch:0,expectedLocalRevision:revision,mode:'url' as const,url:URL};}

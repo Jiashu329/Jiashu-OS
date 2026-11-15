@@ -82,7 +82,7 @@ void test('valid hashes cannot turn same-length unknown table sets into a suppor
 
 void test('new signed sets include canonical personal Douban records and preserve nullable fields',async()=>{
   const backup:DataBackup={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables:Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,[]])) as unknown as DataBackup['tables']};
-  backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
+  backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,tmdb_cover_json:'{}',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
   const set=await splitBackupVolumes(backup);
   assert.equal(Object.keys(set.volumes[0].tables).length,31);
   assert.equal(set.manifest.totalRows,1);
@@ -96,7 +96,7 @@ void test('published 31-table volume rows without details verify their original 
   const tables=Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,table==='douban_items'?[row]:[]]));
   const set=await signedSingleVolume(tables),parsed=await parseBackupInput(set);
   assert.equal(Object.keys(parsed.backup.tables).length,31);
-  assert.deepEqual(parsed.backup.tables.douban_items,[{details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,...row}]);
+  assert.deepEqual(parsed.backup.tables.douban_items,[{details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,tmdb_cover_json:'{}',...row}]);
   assert.notEqual(await backupDigest(parsed.backup),set.manifest.setId);
   const edited=structuredClone(set);(edited.volumes[0].tables.douban_items[0] as Record<string,unknown>).title='被修改的旧记录';
   await assert.rejects(parseBackupInput(edited),BackupValidationError);

@@ -119,14 +119,15 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanResetReceipt = null; state.doubanLoseResetReply = false; state.doubanOtherOwnerItems = [];
   state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
   state.doubanLoseMetadataReply = false;
+  state.doubanAllowTMDB = false; state.doubanTMDBResults = new Map(); state.doubanLoseTMDBReply = false;
   state.doubanCoverBytes = new Map(); state.doubanLoseCoverReply = false; state.doubanCoverHold = false; state.doubanCoverPending = false;
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
   await page.route('**/api/life/douban**', async route => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), body = request.postDataJSON() ?? null;
     state.requests.push({ path: url.pathname, search: url.search, method, body });
-    const send = (value, status = 200) => route.fulfill({ status, contentType: 'application/json',
-      headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': state.owner }, body: JSON.stringify(value) });
+    const send = (value, status = 200, responseHeaders = {}) => route.fulfill({ status, contentType: 'application/json',
+      headers: { 'Cache-Control': 'no-store', 'X-Account-Owner': state.owner, ...responseHeaders }, body: JSON.stringify(value) });
     const fail = (message, code, status = 409) => send({ error: message, code }, status);
     if (url.pathname === '/api/life/douban' && method === 'GET') return send(listResult(state, url.searchParams));
     if (url.pathname === '/api/life/douban/reset' && method === 'POST') {
@@ -211,6 +212,24 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       item.updatedAt = nextVersion(state, item.updatedAt);
       if (method === 'PUT' && state.doubanLoseMetadataReply) { state.doubanLoseMetadataReply = false; return route.abort('connectionreset'); }
       return send({ item: presentRecord(item), changed: true, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
+    }
+    if (url.pathname === '/api/life/douban/tmdb' && method === 'POST' && state.doubanAllowTMDB) {
+      if (body.expectedDataEpoch !== state.doubanDataEpoch) return fail('收藏已重置，请重新读取后查找封面。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+      const item = state.doubanItems.find(item => item.profileId === body.profileId && item.domain === body.domain && item.subjectId === body.subjectId);
+      if (!item || body.domain !== 'screen' || body.confirmed !== true) return fail('请明确选择已保存的影视作品。', 'INVALID_DOUBAN_INPUT', 400);
+      const result = state.doubanTMDBResults.get(item.subjectId);
+      if (!result) return fail('本测试未授权此作品的 TMDB 请求。', 'SYNTHETIC_TMDB_NOT_ALLOWED', 400);
+      const saved = result.status === 'matched' && item.tmdb?.imdbId === item.details?.imdbId && JSON.stringify(item.tmdb) === JSON.stringify(result.cover);
+      if (!saved && body.expectedUpdatedAt !== item.updatedAt) return fail('作品资料已更新，请重新核对。', 'DOUBAN_RECORD_CONFLICT');
+      if (result.status === 'matched' && !saved) {
+        if (!result.cover || result.cover.imdbId !== item.details?.imdbId) return fail('合成 IMDb 匹配不一致。', 'SYNTHETIC_TMDB_INVALID', 400);
+        item.tmdb = structuredClone(result.cover); item.updatedAt = nextVersion(state, item.updatedAt);
+      }
+      if (state.doubanLoseTMDBReply) { state.doubanLoseTMDBReply = false; return route.abort('connectionreset'); }
+      const status = result.status === 'rate_limited' ? 429 : result.status === 'unavailable' ? 503 : 200;
+      return send({ item: presentRecord(item), changed: result.status === 'matched' && !saved, dataEpoch: state.doubanDataEpoch,
+        tmdb: { status: result.status, ...(result.message ? { message: result.message } : {}), ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}) },
+        ...(status >= 400 ? { error: result.message ?? 'TMDB 暂不可用。', code: status === 429 ? 'TMDB_RATE_LIMITED' : 'TMDB_UNAVAILABLE' } : {}) }, status, result.retryAfter ? { 'Retry-After': String(result.retryAfter) } : {});
     }
     if (url.pathname === '/api/life/douban/cover' && method === 'GET') {
       const item = state.doubanItems.find(value => value.profileId === url.searchParams.get('profileId')
@@ -347,7 +366,7 @@ async function installExtensionMock(context, pages, options = {}) {
     const runtime = { sendMessage(id, body, callback) {
       state.calls.push({ id, body: structuredClone(body) });
       const reply = value => queueMicrotask(() => callback(value));
-      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.5', protocolVersion: 1 } });
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.6', protocolVersion: 1 } });
       if (body.action === 'SUBJECT_CANCEL') return reply({ ok: true, data: { cancelled: true } });
       if (body.action === 'SUBJECT') {
         const key = body.domain + ':' + body.subjectId, metadata = options.subjects?.[key];
@@ -365,7 +384,7 @@ async function installExtensionMock(context, pages, options = {}) {
       const key = body.step + ':' + body.requestId;
       if (!results.has(key)) {
         state.reads++;
-        results.set(key, { ok: true, data: { runId, step: body.step + 1, progress: progress(body.step + 1), done: body.step + 1 === pages.length, items: pages[body.step].map(item => ({ ...item, source: (options.version ?? '1.0.5').split('.').map(Number)[2] >= 5 ? 'browser' : 'import' })) } });
+        results.set(key, { ok: true, data: { runId, step: body.step + 1, progress: progress(body.step + 1), done: body.step + 1 === pages.length, items: pages[body.step].map(item => ({ ...item, source: (options.version ?? '1.0.6').split('.').map(Number)[2] >= 5 ? 'browser' : 'import' })) } });
       }
       const complete = () => {
         state.pending = false; state.release = null;
@@ -1222,7 +1241,7 @@ test('explicit browser resync saves every collection page before classifying exi
   const subjects = Object.fromEntries(inputs.map((item, index) => ['screen:' + item.subjectId, { kind: index ? 'series' : 'movie',
     coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-new-' + index + '.jpg',
     details: { directors: ['合成导演'], ...(index ? { episodes: 12 } : { duration: '118分钟' }) } }]));
-  await installExtensionMock(context, [inputs, []], { subjects });
+  await installExtensionMock(context, [inputs, []], { version: '1.0.5', subjects });
   await openLibrary(page);
   expect(await extensionCalls(page)).toEqual([]);
   expect(mutations(testInfo)).toEqual([]);
@@ -1512,7 +1531,7 @@ async function openCoverEditor(page) {
   if (await editor.getAttribute('open') === null) await editor.locator('summary').click();
   await expect(page.locator('#douban-cover-form')).toBeVisible();
 }
-test('a user cover link is explicitly previewed, survives metadata enrichment and can be restored to the original cover', async ({ page }, testInfo) => {
+test('a custom fallback is explicitly previewed, stays saved when an official cover becomes available and can be removed', async ({ page }, testInfo) => {
   const state = testInfo.synthetic, images = await mockUserCoverImages(page);
   bind(state); state.doubanItems = [record('book', 1400)];
   state.doubanMetadataResults.set('9001400', { kind: 'book', coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s1400.jpg', details: { authors: ['合成作者'], summary: '保留用户封面的作品资料' } });
@@ -1536,14 +1555,15 @@ test('a user cover link is explicitly previewed, survives metadata enrichment an
   expect(images.requests.every(request => request.type === 'image' && !request.headers.referer && !request.headers.authorization)).toBe(true);
   await page.locator('[data-douban-metadata-item]').click();
   await expect(page.locator('[data-douban-details="book"]')).toContainText('合成作者');
-  await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', USER_COVER_URL);
-  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', USER_COVER_URL);
+  await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
+  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
+  expect(state.doubanItems[0].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 1 });
   expect(state.doubanItems[0].coverUrl).toContain('/s1400.jpg');
   await openCoverEditor(page);
   await page.locator('[data-douban-cover-original]').click();
   await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
   await page.locator('[data-douban-cover-save]').click();
-  await expect(page.locator('[data-douban-cover-status]')).toContainText('已恢复使用豆瓣原封面');
+  await expect(page.locator('[data-douban-cover-status]')).toContainText('备用链接已移除');
   await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
   expect(state.doubanItems[0].cover).toMatchObject({ mode: 'original', revision: 2 });
   const saves = mutations(testInfo).filter(request => request.path === '/api/life/douban/cover-selection');
@@ -1598,4 +1618,137 @@ test('invalid links stay local and a concurrent personal revision prevents an ol
   expect(state.doubanItems[0].cover?.mode ?? 'original').toBe('original');
   expect(mutations(testInfo).filter(request => request.path === '/api/life/douban/cover-selection')).toHaveLength(1);
   await fits(page);
+});
+
+
+const TMDB_POSTER_URL = 'https://image.tmdb.org/t/p/w500/synthetic-poster.jpg';
+function tmdbPoster(imdbId, tmdbId = 24680, posterPath = '/synthetic-poster.jpg') {
+  return { imdbId, mediaType: 'movie', tmdbId, posterPath, language: 'zh', matchedAt: STAMP };
+}
+async function mockTMDBImages(page, failingPaths = []) {
+  const requests = [], bytes = await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url));
+  await page.route('https://image.tmdb.org/**', async route => {
+    const request = route.request();
+    requests.push({ url: request.url(), type: request.resourceType(), headers: request.headers() });
+    if (failingPaths.some(path => request.url().endsWith(path))) return route.abort('failed');
+    return route.fulfill({ status: 200, contentType: 'image/png', body: bytes });
+  });
+  return requests;
+}
+function expectDirectTMDBImages(requests) {
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every(request => request.type === 'image')).toBe(true);
+  expect(requests.every(request => !request.headers.authorization && !request.headers.cookie && !request.headers['x-page-owner'] && !request.headers.referer)).toBe(true);
+}
+
+test('saved covers automatically fall through official, TMDB and custom URLs without changing their stored sources', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state);
+  const official = { ...record('movie', 1600), coverUrl: 'https://img1.doubanio.com/view/photo/public/p1600.jpg', details: { imdbId: 'tt0016000' }, tmdb: tmdbPoster('tt0016000') };
+  const tmdb = { ...record('movie', 1601), coverUrl: 'https://img1.doubanio.com/view/photo/public/p1601.jpg', details: { imdbId: 'tt0016001' }, tmdb: tmdbPoster('tt0016001') };
+  const custom = { ...record('movie', 1602), coverUrl: 'https://img1.doubanio.com/view/photo/public/p1602.jpg', details: { imdbId: 'tt0016002' }, tmdb: tmdbPoster('tt0016002', 24682, '/synthetic-final.jpg'), cover: { mode: 'url', url: USER_COVER_URL, revision: 2 }, local: { note: '', tags: [], hidden: false, revision: 2 } };
+  const stale = { ...record('movie', 1603), details: { imdbId: 'tt0016003' }, tmdb: tmdbPoster('tt0016999') };
+  state.doubanItems = [official, tmdb, custom, stale]; state.doubanFailedCovers.add(tmdb.subjectId); state.doubanFailedCovers.add(custom.subjectId);
+  const imageRequests = await mockTMDBImages(page, ['/synthetic-final.jpg']); await mockUserCoverImages(page);
+  await openLibrary(page);
+  await expect(page.locator('#douban-list .db-card').nth(0).locator('img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
+  await expect(page.locator('#douban-list .db-card').nth(1).locator('img')).toHaveAttribute('src', TMDB_POSTER_URL);
+  await expect(page.locator('#douban-list .db-card').nth(2).locator('img')).toHaveAttribute('src', USER_COVER_URL);
+  await expect(page.locator('#douban-list .db-card').nth(3).locator('img')).toHaveAttribute('data-douban-cover', 'missing');
+  await page.locator('#douban-list [data-douban-open="1"]').click();
+  await expect(page.locator('#douban-detail-body')).toContainText('tt0016001');
+  await expect(page.locator('#douban-detail-body [data-douban-tmdb-source]')).toContainText('TMDB');
+  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', TMDB_POSTER_URL);
+  expect(mutations(testInfo)).toEqual([]); expectDirectTMDBImages(imageRequests);
+  expect(state.doubanItems[0].coverUrl).toBe(official.coverUrl);
+  expect(state.doubanItems[2].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 2 });
+  await fits(page);
+});
+
+test('extension 1.0.6 preserves IMDb from Douban and saves TMDB after metadata while retaining a custom fallback', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state); state.doubanAllowTMDB = true;
+  const inputs = [extensionItem('movie', 1610), extensionItem('movie', 1611)];
+  state.doubanItems = inputs.map((input, index) => ({ ...record('movie', 1610 + index), ...input,
+    coverUrl: 'https://img1.doubanio.com/view/photo/public/p161' + index + '.jpg',
+    ...(index ? { local: { note: '保留本地备注', tags: ['保留'], hidden: false, revision: 3 }, cover: { mode: 'url', url: USER_COVER_URL, revision: 3 } } : {}) }));
+  const subjects = Object.fromEntries(inputs.map((item, index) => ['screen:' + item.subjectId,
+    { kind: 'movie', coverUrl: null, details: { directors: ['合成导演'], duration: '120分钟', imdbId: 'tt00161' + index + '0' } }]));
+  for (const [index, item] of inputs.entries()) state.doubanTMDBResults.set(item.subjectId, { status: 'matched', cover: tmdbPoster('tt00161' + index + '0', 24680 + index) });
+  state.doubanFailedCovers.add(inputs[0].subjectId);
+  const images = await mockTMDBImages(page); await mockUserCoverImages(page);
+  await installExtensionMock(context, [inputs], { version: '1.0.6', subjects });
+  await openLibrary(page); expect(mutations(testInfo)).toEqual([]);
+  await openTools(page, 'browser'); await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  const writes = mutations(testInfo), metadata = writes.filter(request => request.path.endsWith('/metadata')), tmdb = writes.filter(request => request.path.endsWith('/tmdb'));
+  expect(metadata).toHaveLength(2); expect(tmdb).toHaveLength(2);
+  for (const [index, item] of state.doubanItems.entries()) {
+    expect(item.details.imdbId).toBe('tt00161' + index + '0'); expect(item.tmdb.imdbId).toBe(item.details.imdbId);
+    expect(item.coverUrl).toContain('/p161' + index + '.jpg');
+    const save = metadata.find(request => request.body.subjectId === item.subjectId), lookup = tmdb.find(request => request.body.subjectId === item.subjectId);
+    expect(writes.indexOf(lookup)).toBeGreaterThan(writes.indexOf(save));
+    expect(lookup.body).toEqual({ profileId: PROFILE, domain: 'screen', subjectId: item.subjectId, expectedUpdatedAt: lookup.body.expectedUpdatedAt, expectedDataEpoch: 0, confirmed: true });
+    expect(Date.parse(lookup.body.expectedUpdatedAt)).toBeGreaterThan(Date.parse(save.body.expectedUpdatedAt));
+  }
+  expect(state.doubanItems[1].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 3 });
+  expect(state.doubanItems[1].local).toMatchObject({ note: '保留本地备注', tags: ['保留'], revision: 3 });
+  expect(JSON.stringify(tmdb.map(request => request.body))).not.toMatch(/合成个人短评|rating|comment|markedDate|cookie|password|rawHTML/i);
+  await closeTools(page);
+  await expect(page.locator('#douban-list .db-card').nth(0).locator('img')).toHaveAttribute('src', TMDB_POSTER_URL);
+  await expect(page.locator('#douban-list .db-card').nth(1).locator('img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
+  expectDirectTMDBImages(images); await fits(page);
+});
+
+test('missing TMDB configuration stops further poster calls while every Douban detail save continues', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state); state.doubanAllowTMDB = true;
+  const inputs = [extensionItem('screen', 1620), extensionItem('screen', 1621)];
+  const subjects = Object.fromEntries(inputs.map((item, index) => ['screen:' + item.subjectId,
+    { kind: 'movie', coverUrl: null, details: { imdbId: 'tt00162' + index + '0', duration: '120分钟' } }]));
+  for (const item of inputs) state.doubanTMDBResults.set(item.subjectId, { status: 'not_configured', message: 'TMDB 尚未配置，豆瓣资料继续保存。' });
+  await installExtensionMock(context, [inputs], { version: '1.0.6', subjects });
+  await openLibrary(page); await openTools(page, 'browser'); await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('收藏记录已同步，TMDB 封面仍有未完成条目');
+  await expect(page.locator('#douban-browser-status')).toContainText(/管理员尚未配置 TMDB/);
+  expect(mutations(testInfo).filter(request => request.path.endsWith('/metadata'))).toHaveLength(2);
+  expect(mutations(testInfo).filter(request => request.path.endsWith('/tmdb'))).toHaveLength(1);
+  expect(state.doubanItems.every(item => item.kind === 'movie' && item.details.imdbId && !item.tmdb)).toBe(true);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(2); await fits(page);
+});
+
+test('an unknown TMDB receipt retries the original poster body without rereading or resaving Douban details', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state); state.doubanAllowTMDB = true; state.doubanLoseTMDBReply = true;
+  const input = extensionItem('screen', 1630);
+  state.doubanTMDBResults.set(input.subjectId, { status: 'matched', cover: tmdbPoster('tt0016300') });
+  await mockTMDBImages(page);
+  await installExtensionMock(context, [[input]], { version: '1.0.6', subjects: { ['screen:' + input.subjectId]: { kind: 'movie', coverUrl: null, details: { imdbId: 'tt0016300', duration: '120分钟' } } } });
+  await openLibrary(page); await openTools(page, 'browser'); await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-sync')).toHaveText('重试并继续浏览器同步');
+  expect(state.doubanItems[0].tmdb.imdbId).toBe('tt0016300');
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
+  const posters = mutations(testInfo).filter(request => request.path.endsWith('/tmdb'));
+  expect(posters).toHaveLength(2); expect(posters[1].body).toEqual(posters[0].body);
+  expect(mutations(testInfo).filter(request => request.path.endsWith('/metadata'))).toHaveLength(1);
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  expect(await extensionCalls(page, 'START')).toHaveLength(1); await fits(page);
+});
+
+for (const [status, message] of [
+  ['not_configured', 'TMDB 尚未配置，未保存封面。'],
+  ['no_match', 'TMDB 未找到匹配的作品，未保存封面。'],
+  ['ambiguous', 'TMDB 存在多个匹配，未保存封面。'],
+  ['rate_limited', 'TMDB 请求频率受限，请稍后重试，未保存封面。'],
+]) test('an explicit TMDB lookup reports ' + status + ' without claiming or saving a poster', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state); state.doubanAllowTMDB = true;
+  const item = { ...record('movie', 1640), details: { imdbId: 'tt0016400' } }; state.doubanItems = [item];
+  state.doubanTMDBResults.set(item.subjectId, { status, message, ...(status === 'rate_limited' ? { retryAfter: 30 } : {}) });
+  await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click();
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('[data-douban-tmdb-item]').click();
+  if (status === 'rate_limited') {
+    await expect(page.locator('[data-douban-tmdb-status]')).toContainText('限流');
+    await expect(page.locator('[data-douban-tmdb-status]')).toContainText('30 秒');
+  } else await expect(page.locator('[data-douban-tmdb-status]')).toContainText(message);
+  expect(item.tmdb).toBeUndefined(); expect(item.coverUrl).toBeNull();
+  expect(mutations(testInfo).map(request => request.path)).toEqual(['/api/life/douban/tmdb']);
+  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('data-douban-cover', 'missing'); await fits(page);
 });

@@ -7,7 +7,7 @@ import { createDoubanDetailsParser, DOUBAN_DETAILS_MAX_BYTES, DoubanDetailsValid
 
 const details: DoubanSubjectDetails = {
   summary: '合成作品简介。\n\n第二段，保留作者的段落。', alternateTitles: ['Another Title', '别名'], year: 2026,
-  genres: ['剧情', '科幻'], countries: ['中国大陆'], languages: ['汉语普通话'], doubanRating: 8.7, ratingCount: 123456,
+  genres: ['剧情', '科幻'], countries: ['中国大陆'], languages: ['汉语普通话'], doubanRating: 8.7, ratingCount: 123456, imdbId: 'tt1234567',
   directors: ['导演甲'], writers: ['编剧甲'], cast: ['演员甲', '演员乙'], releaseDates: ['2026-11-01(中国大陆)'],
   duration: '118分钟 / 125分钟(导演剪辑版)', episodes: 12, seasons: 2, episodeDuration: '45分钟',
   authors: ['作者甲'], translators: ['译者乙'], publisher: '合成出版社', publicationDate: '2026-11', pages: 320,
@@ -66,6 +66,16 @@ void test('field types and numeric ranges are strict, including the independent 
   for (const raw of cases) assert.throws(() => parseDoubanDetails(raw), invalid);
   assert.deepEqual(parseDoubanDetails({ year: 1, doubanRating: 10, ratingCount: 1000000000, episodes: 100000, seasons: 10000, pages: 1000000 }),
     { year: 1, doubanRating: 10, ratingCount: 1000000000, episodes: 100000, seasons: 10000, pages: 1000000 });
+});
+
+void test('IMDb accepts only a bounded external title ID and never a URL, rating, whitespace or person ID', () => {
+  for (const imdbId of ['tt1234567', 'tt1234567890']) assert.deepEqual(parseDoubanDetails({ imdbId }), { imdbId });
+  for (const imdbId of ['', ' tt1234567', 'tt1234567 ', 'TT1234567', 'tt123456', 'tt12345678901', 'nm1234567',
+    'https://www.imdb.com/title/tt1234567/', 'tt1234567?ref_=x', 'tt1234567\n', 8.5, { id: 'tt1234567' }]) {
+    assert.throws(() => parseDoubanDetails({ imdbId }), invalid);
+  }
+  assert.deepEqual(mergeDoubanDetails({ imdbId: 'tt1234567', doubanRating: 8.5 }, { summary: '刷新简介' }),
+    { summary: '刷新简介', doubanRating: 8.5, imdbId: 'tt1234567' });
 });
 
 void test('individual strings, list sizes, and combined multilingual JSON bytes are bounded without silent truncation', () => {

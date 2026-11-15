@@ -33,7 +33,7 @@ globalThis.JiashuDoubanCollectorFactory = (function(parseHTML){const createDouba
         return typeof raw === 'number' && Number.isFinite(raw) && raw >= minimum && raw <= maximum
             && (decimal ? Math.abs(raw * 10 - Math.round(raw * 10)) < 1e-8 : Number.isInteger(raw)) ? raw : null;
     }
-    function content(root, lines = false) {
+    function content(root, lines = false, currentOnly = false) {
         let visited = 0;
         function walk(node, depth) {
             if (++visited > 10000 || depth > 30)
@@ -42,6 +42,8 @@ globalThis.JiashuDoubanCollectorFactory = (function(parseHTML){const createDouba
                 return node.textContent ?? '';
             const tag = node.nodeName.toUpperCase();
             if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'BUTTON'].includes(tag))
+                return '';
+            if (currentOnly && node.nodeType === 1 && relatedContext(node))
                 return '';
             if (tag === 'BR')
                 return lines ? '\n' : ' ';
@@ -63,6 +65,80 @@ globalThis.JiashuDoubanCollectorFactory = (function(parseHTML){const createDouba
                 return true;
         }
         return false;
+    }
+    function imdbTitleId(raw) {
+        if (typeof raw !== 'string' || raw.length > 2048 || /\s/.test(raw))
+            return null;
+        try {
+            const url = new URL(raw);
+            if (!['http:', 'https:'].includes(url.protocol) || !['imdb.com', 'www.imdb.com'].includes(url.hostname)
+                || url.username || url.password || url.port)
+                return null;
+            return /^\/title\/(tt[0-9]{7,10})\/?$/.exec(url.pathname)?.[1] ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
+    function subjectImdbId(info) {
+        if (!info || relatedContext(info))
+            return null;
+        const ids = new Set();
+        let ambiguous = false;
+        function links(root) {
+            const anchors = root.nodeName.toUpperCase() === 'A' ? [root] : [...root.querySelectorAll('a[href]')];
+            if (anchors.length > 600) {
+                ambiguous = true;
+                return [];
+            }
+            return anchors.filter(anchor => !relatedContext(anchor)).flatMap(anchor => {
+                const id = imdbTitleId(anchor.getAttribute('href'));
+                if (!id)
+                    return [];
+                const label = text(anchor.textContent, 100);
+                if (label && /^tt[0-9]+$/.test(label) && label !== id)
+                    ambiguous = true;
+                return [id];
+            });
+        }
+        for (const id of links(info))
+            ids.add(id);
+        const labels = [...info.querySelectorAll('.pl')];
+        if (labels.length > 600)
+            return null;
+        for (const label of labels) {
+            if (relatedContext(label))
+                continue;
+            const match = /^IMDb(?:\s*[:：]\s*(.*))?$/i.exec((label.textContent ?? '').trim());
+            if (!match)
+                continue;
+            const parts = [match[1] ?? ''], fieldLinks = links(label);
+            let sibling = label.nextSibling, visited = 0;
+            for (; sibling && visited < 600; sibling = sibling.nextSibling, visited++) {
+                if (sibling.nodeName.toUpperCase() === 'BR')
+                    break;
+                if (sibling.nodeType === 1) {
+                    const element = sibling;
+                    if (element.classList.contains('pl'))
+                        break;
+                    if (relatedContext(element))
+                        continue;
+                    parts.push(content(element, false, true));
+                    fieldLinks.push(...links(element));
+                }
+                else if (sibling.nodeType === 3)
+                    parts.push(sibling.textContent ?? '');
+            }
+            if (sibling && visited >= 600)
+                ambiguous = true;
+            const value = parts.join(' ').replace(/^\s*[:：]\s*/, '').replace(/\s+/g, ' ').trim();
+            const id = /^tt[0-9]{7,10}$/.test(value) ? value : imdbTitleId(value);
+            if (id)
+                ids.add(id);
+            else if (value && (!fieldLinks.length || /\btt[0-9]+/i.test(value)))
+                ambiguous = true;
+        }
+        return !ambiguous && ids.size === 1 ? [...ids][0] : null;
     }
     function subjectTracks(doc) {
         const identified = unique(doc, '#track-list');
@@ -189,6 +265,7 @@ globalThis.JiashuDoubanCollectorFactory = (function(parseHTML){const createDouba
         put('ratingCount', number(ratings?.querySelector('.rating_sum [property="v:votes"], [property="v:votes"]')?.textContent?.trim(), 1e9, 0)
             ?? (compatibleRating ? number(aggregateRating.ratingCount, 1e9, 0) : null));
         if (domain === 'screen') {
+            put('imdbId', subjectImdbId(info));
             put('directors', list(['导演'], structuredNames(json('director')), 100, 200, true));
             put('writers', list(['编剧'], structuredNames(json('screenwriter', 'creator')), 100, 200, true));
             put('cast', list(['主演'], structuredNames(json('actor')), 100, 200, true));

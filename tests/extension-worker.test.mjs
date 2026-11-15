@@ -52,7 +52,7 @@ function fixture(readPage, readSubject) {
 test('local Douban extension grants only collection hosts and never asks for Cookie or request interception permissions', () => {
   const manifest = JSON.parse(readFileSync(new URL('manifest.json', extensionRoot), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '1.0.5');
+  assert.equal(manifest.version, '1.0.6');
   assert.deepEqual(manifest.permissions.toSorted(), ['scripting', 'tabs']);
   assert.deepEqual(manifest.host_permissions.toSorted(), ['https://book.douban.com/*', 'https://movie.douban.com/*', 'https://music.douban.com/*']);
   assert.deepEqual(manifest.externally_connectable.matches, [productionOrigin + '/*']);
@@ -277,7 +277,7 @@ test('worker accepts only the production top-level media page before any collect
   }
   assert.equal(f.calls.reads.length + f.calls.created.length + f.calls.scripts.length, 0);
   const response = await f.send(message('CONNECT'), { ...sender, url: productionOrigin + '/life/douban?kind=book' });
-  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.5', protocolVersion: 1 } });
+  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.6', protocolVersion: 1 } });
 });
 
 test('message schemas reject injected URLs, credentials, non-string identities and malformed step fields', async () => {

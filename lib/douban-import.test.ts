@@ -151,7 +151,7 @@ void test('preview size, row, filename and field bounds remain explicit before a
 
 void test('explicit JSON details preserve normalized rich metadata independently of personal collection data', () => {
   const details = { summary: '作品摘要\n第二段', alternateTitles: ['原名', '原名'], year: 2020, genres: ['剧情'], countries: ['中国'], languages: ['普通话'],
-    doubanRating: 9.1, ratingCount: 1234, directors: ['导演甲'], writers: ['编剧乙'], cast: ['演员丙'], releaseDates: ['2020-01-01(中国大陆)'], duration: '112分钟' };
+    doubanRating: 9.1, ratingCount: 1234, imdbId: 'tt1234567', directors: ['导演甲'], writers: ['编剧乙'], cast: ['演员丙'], releaseDates: ['2020-01-01(中国大陆)'], duration: '112分钟' };
   const input = [{ ...base, details, director: '不采用的顶层旧字段', tags: ['不导入的个人标签'], unrelatedPrivateData: 'PRIVATE-DO-NOT-UPLOAD' }];
   const result = parseDoubanImportFiles([json(input)], options), item = result.items[0];
   assert.equal(item.rating, 4); assert.equal(item.markedDate, '2026-11-12'); assert.equal(item.comment, base.myComment);
@@ -159,6 +159,19 @@ void test('explicit JSON details preserve normalized rich metadata independently
   assert.doesNotMatch(JSON.stringify(item), /PRIVATE|tags|旧字段/);
   assert.deepEqual(browserParse([json(input)]), result);
   assert.equal(parseDoubanImportFiles([json([{ ...base, details: {} }])], options).items[0].details, undefined);
+});
+
+void test('explicit screen IMDb import fields retain title IDs without importing an IMDb score or changing personal data', () => {
+  for (const key of ['imdbId', 'imdbID', 'IMDb']) {
+    const files = [json([{ ...base, [key]: 'tt1234567', imdbRating: 9.3 }])];
+    const result = parseDoubanImportFiles(files, options);
+    assert.deepEqual(result.items[0].details, { imdbId: 'tt1234567' });
+    assert.equal(result.items[0].rating, 4); assert.equal(result.items[0].comment, base.myComment);
+    assert.deepEqual(browserParse(files), result);
+  }
+  for (const imdbId of ['tt123456', 'https://www.imdb.com/title/tt1234567/', 'nm1234567', 1234567]) {
+    invalid(() => parseDoubanImportFiles([json([{ ...base, imdbId }])], options), /详情/);
+  }
 });
 
 void test('plugin fields map by source domain and never confuse publication dates, site scores or artists with personal fields', () => {

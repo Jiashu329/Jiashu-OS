@@ -1,7 +1,7 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
 import { parseDoubanDetails } from './details-parser.js';
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.5';
+export const EXTENSION_VERSION = '1.0.6';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

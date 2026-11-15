@@ -28,6 +28,7 @@ import { buildFinanceReview, parseFinanceReviewQuery } from '../lib/finance-revi
 import type { DataBackup } from '../lib/data-backup.ts';
 import { parseDoubanDetails } from '../lib/douban-details.ts';
 import { classifyDoubanLibrary } from './douban-library-store.ts';
+import { serializeTMDBCover } from '../lib/tmdb-cover.ts';
 
 const NOW='2026-11-10T04:00:00.000Z'; const OLD='2024-01-01T04:00:00.000Z';
 const A='11111111-1111-4111-8111-111111111111'; const B='22222222-2222-4222-8222-222222222222'; const C='33333333-3333-4333-8333-333333333333'; const D='44444444-4444-4444-8444-444444444444'; const E='55555555-5555-4555-8555-555555555555'; const HASH='a'.repeat(64);
@@ -864,4 +865,79 @@ void test('backup manual cover fields allow only canonical public HTTPS URLs, ne
   }
   const valid=structuredClone(backup);valid.tables.douban_items[0].local_cover_url='https://covers.example.org/image.jpg';
   assert.doesNotThrow(()=>parseDataBackup(valid));
+});
+
+const tmdbCover = (overrides: Record<string,unknown> = {}) => ({imdbId:'tt0111161',mediaType:'movie',tmdbId:278,posterPath:'/synthetic-poster.jpg',language:'zh',matchedAt:NOW,...overrides});
+
+void test('IMDb details, manual links and TMDB fallback metadata roundtrip through the same 31 business tables and signed volumes',async(t)=>{
+  const source=fixture(t),manual='https://covers.example.org/my-edition.jpg',cover=serializeTMDBCover(tmdbCover());
+  const details=JSON.stringify(parseDoubanDetails({imdbId:'tt0111161',summary:'合成作品简介'}));
+  seedDouban(source.sqlite,'alice',doubanRow({details_json:details,local_cover_url:manual,tmdb_cover_json:cover}));
+  seedDouban(source.sqlite,'bob',doubanRow({tmdb_cover_json:serializeTMDBCover(tmdbCover({posterPath:'/BOB-PRIVATE-POSTER.jpg'}))}));
+  source.sqlite.prepare('INSERT INTO tmdb_settings (owner_id,token_ciphertext,token_iv,revision,created_at,updated_at) VALUES (?,?,?,?,?,?)').run('alice','SYNTHETIC-TMDB-ENCRYPTED-TOKEN','SYNTHETIC-TMDB-IV',1,NOW,NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(BACKUP_TABLE_NAMES.length,31);assert.equal(Object.keys(backup.tables).length,31);
+  assert.equal(backup.tables.douban_items[0].tmdb_cover_json,cover);
+  assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE-POSTER|SYNTHETIC-TMDB|tmdb_settings|token_ciphertext|token_iv|encryption_key/);
+  for(const input of [backup,await splitBackupVolumes(backup)]){
+    const target=fixture(t),preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+    const restored=target.sqlite.prepare('SELECT details_json,local_cover_url,tmdb_cover_json FROM douban_items').get();
+    assert.equal(restored?.details_json,details);assert.equal(restored?.local_cover_url,manual);assert.equal(restored?.tmdb_cover_json,cover);
+    assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM tmdb_settings').get()?.n,0);
+  }
+});
+
+void test('published single files and originally signed volumes without TMDB fields preserve later matches, IMDb details and manual links',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');
+  const legacy=await exportDataBackup(source.db,'alice',NOW);delete legacy.tables.douban_items[0].tmdb_cover_json;
+  assert.equal(parseDataBackup(legacy).tables.douban_items[0].tmdb_cover_json,'{}');
+  const setId=await backupDigest(legacy),volume={kind:'jiashu-os-backup-volume',version:1,setId,exportedAt:NOW,partIndex:1,totalParts:1,tables:legacy.tables};
+  const descriptor={partIndex:1,rowCount:1,byteLength:new TextEncoder().encode(JSON.stringify(volume)).byteLength,sha256:await backupDigest(volume)};
+  const signed={kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:NOW,totalRows:1,volumes:[descriptor]},volumes:[volume]};
+  for(const input of [legacy,signed]){
+    const target=fixture(t),cover=serializeTMDBCover(tmdbCover()),manual='https://covers.example.org/later.jpg';
+    const details=JSON.stringify(parseDoubanDetails({imdbId:'tt0111161'}));
+    seedDouban(target.sqlite,'restored',doubanRow({details_json:details,local_cover_url:manual,tmdb_cover_json:cover,local_revision:9}));
+    const preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);assert.equal(preview.total.skipped,1);assert.equal(preview.total.added,0);
+    await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    const row=target.sqlite.prepare('SELECT details_json,local_cover_url,tmdb_cover_json FROM douban_items').get();
+    assert.equal(row?.details_json,details);assert.equal(row?.local_cover_url,manual);assert.equal(row?.tmdb_cover_json,cover);
+  }
+});
+
+void test('different TMDB matches conflict and a concurrent fallback change invalidates restore atomically',async(t)=>{
+  const source=fixture(t),first=serializeTMDBCover(tmdbCover()),next=serializeTMDBCover(tmdbCover({posterPath:'/next-poster.jpg'}));
+  seedDouban(source.sqlite,'alice',doubanRow({tmdb_cover_json:first}));
+  seedDouban(source.sqlite,'alice',doubanRow({subject_id:'1234567',url:'https://movie.douban.com/subject/1234567/'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);
+  seedDouban(target.sqlite,'restored',doubanRow({tmdb_cover_json:next}));
+  const conflict=await previewDataRestore(target.db,'restored',backup);
+  assert.equal(conflict.canRestore,false);
+  assert.ok(conflict.tables.find(table=>table.table==='douban_items')?.conflictExamples[0]?.differences?.some(field=>field.field==='tmdb_cover_json'));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,conflict.previewHash),BackupConflictError);
+  target.sqlite.prepare('UPDATE douban_items SET tmdb_cover_json=?').run(first);
+  const preview=await previewDataRestore(target.db,'restored',backup);assert.equal(preview.canRestore,true);
+  target.mutateNextBatch(()=>target.sqlite.prepare('UPDATE douban_items SET tmdb_cover_json=?').run(next));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT tmdb_cover_json FROM douban_items').get()?.tmdb_cover_json,next);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,1);
+  assert.notEqual((await previewDataRestore(target.db,'restored',backup)).previewHash,preview.previewHash);
+});
+
+void test('backup TMDB fallback accepts only fixed provider metadata and rejects arbitrary URLs, malformed identifiers and non-screen matches',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  const bad=[null,0,[],{url:'https://example.org/poster.jpg'},tmdbCover({url:'https://example.org/poster.jpg'}),
+    tmdbCover({imdbId:'tt123'}),tmdbCover({imdbId:'https://www.imdb.com/title/tt0111161/'}),tmdbCover({mediaType:'screen'}),
+    tmdbCover({tmdbId:0}),tmdbCover({tmdbId:Number.MAX_SAFE_INTEGER+1}),tmdbCover({posterPath:'https://image.tmdb.org/t/p/w500/image.jpg'}),
+    tmdbCover({posterPath:'/../secret.jpg'}),tmdbCover({posterPath:'/image.svg'}),tmdbCover({posterPath:'/image.jpg?token=secret'}),
+    tmdbCover({language:'fr'}),tmdbCover({matchedAt:'2099-01-01T00:00:00.000Z'})];
+  for(const value of bad){const invalid=structuredClone(backup);invalid.tables.douban_items[0].tmdb_cover_json=JSON.stringify(value);assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+  for(const value of [null,0]){const invalid=structuredClone(backup);invalid.tables.douban_items[0].tmdb_cover_json=value;assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+  const nonScreen=structuredClone(backup);Object.assign(nonScreen.tables.douban_items[0],{domain:'book',kind:'book',url:'https://book.douban.com/subject/1292052/',tmdb_cover_json:serializeTMDBCover(tmdbCover())});
+  assert.throws(()=>parseDataBackup(nonScreen),BackupValidationError);
+  const withSettings=structuredClone(backup) as unknown as {tables:Record<string,unknown>};withSettings.tables.tmdb_settings=[];
+  assert.throws(()=>parseDataBackup(withSettings),BackupValidationError);
 });

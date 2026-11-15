@@ -208,7 +208,27 @@ void test('serialized and minified factories remain self-contained and use an un
   const detailed = JSON.parse(JSON.stringify(detailedSandbox.result));
   assert.deepEqual(detailed, parser.parseSubject(detailPayload, 'book', '1234567'));
   assert.deepEqual(detailed.details, { summary: '完整图书简介。\n第二段。', authors: ['作者甲'], pages: 320 });
+  const screenPayload = '<link rel="canonical" href="https://movie.douban.com/subject/1234567/"><h1>影视作品</h1>'
+    + '<div id="info"><span class="pl">IMDb:</span><a href="https://www.imdb.com/title/tt1234567/">IMDb</a><br></div>';
+  const screenSandbox = { document, URL, TextEncoder, payload: screenPayload, result: undefined as unknown };
+  runInNewContext('globalThis.result=(' + original.factory.toString() + ')().parseSubject(payload,"screen","1234567");', screenSandbox);
+  assert.deepEqual(JSON.parse(JSON.stringify(screenSandbox.result)), { kind: null, coverUrl: null, details: { imdbId: 'tt1234567' } });
   assert.equal(document.querySelectorAll('iframe,script,img,style').length, 0);
+});
+
+void test('browser and server share IMDb identity extraction and refuse recommendation or conflicting title links', () => {
+  const own = '<link rel="canonical" href="https://movie.douban.com/subject/1234567/"><h1>作品</h1>';
+  const variants = [
+    ['<div id="info"><span class="pl">IMDb:</span>tt1234567<br></div>', 'tt1234567'],
+    ['<div id="info"><a href="https://www.imdb.com/title/tt1234567890/">IMDb</a></div>', 'tt1234567890'],
+    ['<aside class="recommendations"><div id="info"><span class="pl">IMDb:</span>tt1234567<br></div></aside>', undefined],
+    ['<div id="info"><span class="pl">IMDb:</span>tt1234567<br><a href="https://www.imdb.com/title/tt9999999/">IMDb</a></div>', undefined],
+  ] as const;
+  for (const [body, expected] of variants) {
+    const result = parser.parseSubject(own + body, 'screen', '1234567');
+    assert.deepEqual(result, parseDoubanSubjectMetadata(own + body, 'screen', '1234567'));
+    assert.equal(result.details?.imdbId, expected);
+  }
 });
 
 void test('browser and server share subject detail extraction for all domains, including sparse structured fallbacks', () => {
