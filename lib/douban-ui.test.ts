@@ -635,6 +635,15 @@ test('cover, personal notes and classification drafts each require confirmation 
  for(let remaining=3;remaining>0;remaining--){assert.equal(f.el('detail-dialog').hasAttribute('open'),true);assert.equal(f.confirmations.length,1);f.confirmations.shift()!();}assert.equal(f.el('detail-dialog').hasAttribute('open'),false);assert.equal(f.requests.filter(request=>request.method!=='GET').length,0);
 });
 
+test('saving a cover preserves a pending classification without asking to discard it',async()=>{
+ const f=fixture();await settle(()=>f.el('list').children.length===1);openCoverDetail(f);prepareCoverPreview(f);f.change('classification-kind','series');f.submit('cover-form');
+ await settle(()=>f.confirmations.length>0||f.requests.some(request=>request.path==='/api/life/douban/cover-selection'));
+ assert.equal(f.confirmations.length,0,'saving the independent cover must not discard the classification draft');
+ await settle(()=>f.el('detail-body').querySelector('[data-douban-detail-cover]')?.getAttribute('src')===selectedCoverURL);
+ assert.equal(f.el('classification-kind').value,'series');f.submit('classification-form');await settle(()=>f.el('classification-status').textContent==='分类已保存为电视剧。');
+ assert.equal(f.requests.find(request=>request.path==='/api/life/douban/classification')?.body?.kind,'series');assert.equal((f.items()[0].cover as {url:string}).url,selectedCoverURL);
+});
+
 test('cover conflicts preserve the selected draft and delayed account or reset results cannot repaint the library',async()=>{
  const conflict=fixture();await settle(()=>conflict.el('list').children.length===1);openCoverDetail(conflict);prepareCoverPreview(conflict);conflict.setItems([{...record,local:{note:'另一页新备注',tags:[],hidden:false,revision:1}}]);conflict.submit('cover-form');await settle(()=>coverElement(conflict,'[data-douban-cover-status]').textContent?.includes('填写已保留')===true);assert.equal(coverElement(conflict,'[data-douban-cover-url]').value,selectedCoverURL);assert.equal((conflict.items()[0].local as {note:string}).note,'另一页新备注');assert.equal((conflict.items()[0].cover as {mode:string}|undefined)?.mode,undefined);
  for(const kind of ['account','reset']){const f=fixture();await settle(()=>f.el('list').children.length===1);openCoverDetail(f);prepareCoverPreview(f);let finish!:(value:Response)=>void;f.setCoverHandler(()=>new Promise(resolve=>{finish=resolve;}));f.submit('cover-form');await settle(()=>Boolean(finish));if(kind==='account'){f.session.changed=true;f.document.dispatchEvent(new f.window.Event('jiashu-account-changed'));}else{f.setDataEpoch(1);f.setItems([]);f.submit('search-form');await settle(()=>f.el('list').children.length===0);}finish(Response.json({item:{...record,local:{note:'',tags:[],hidden:false,revision:1},cover:{mode:'url',url:selectedCoverURL,revision:1}},dataEpoch:0}));await new Promise<void>(resolve=>setTimeout(resolve,10));assert.notEqual(f.el('list').querySelector('img')?.getAttribute('src'),selectedCoverURL);assert.equal(f.requests.filter(request=>request.path==='/api/life/douban/cover-selection').length,1);}
