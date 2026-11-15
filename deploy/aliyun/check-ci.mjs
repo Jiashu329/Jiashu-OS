@@ -1,6 +1,13 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 export const REQUIRED_WORKFLOWS = ['Application checks', 'Browser acceptance', 'Douban extension acceptance', 'Self-hosted checks'];
+export function automaticDeploymentEnabled(override, repository, activation) {
+  if (override === 'true') return true;
+  if (override !== undefined && override !== '') return false;
+  return activation !== null && typeof activation === 'object' && !Array.isArray(activation)
+    && activation.version === 1 && activation.enabled === true
+    && typeof repository === 'string' && repository.length > 0 && activation.repository === repository;
+}
 export function selectSuccessfulRuns(runs, sha, repository) {
   const latest = new Map();
   for (const run of runs) {
@@ -23,7 +30,13 @@ async function main() {
   };
   if (operation === 'inspect') return output(true, 'Read-only server inspection requested.');
   if (operation === 'bootstrap' && process.env.BOOTSTRAP_CONFIRM !== 'BOOTSTRAP-JIASHU-TEST') throw new Error('Bootstrap requires the exact confirmation BOOTSTRAP-JIASHU-TEST.');
-  if (operation === 'deploy' && process.env.DEPLOY_ENABLED !== 'true') return output(false, 'Automatic deployment is disabled. Set ALIYUN_DEPLOY_ENABLED=true only after bootstrap and verification.');
+  if (operation === 'deploy') {
+    let activation;
+    try { activation = JSON.parse(readFileSync(new URL('./activation.json', import.meta.url), 'utf8')); } catch { /* Missing or malformed activation stays disabled. */ }
+    if (!automaticDeploymentEnabled(process.env.DEPLOY_ENABLED, repository, activation)) {
+      return output(false, 'Automatic deployment is disabled. Activate this repository or set ALIYUN_DEPLOY_ENABLED=true only after bootstrap and verification.');
+    }
+  }
   const request = async path => {
     const response = await fetch('https://api.github.com/repos/' + repository + path, {
       headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + process.env.GITHUB_TOKEN, 'X-GitHub-Api-Version': '2022-11-28' },

@@ -4,10 +4,28 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { REQUIRED_WORKFLOWS, selectSuccessfulRuns } from './check-ci.mjs';
+import { automaticDeploymentEnabled, REQUIRED_WORKFLOWS, selectSuccessfulRuns } from './check-ci.mjs';
 
 const sha='a'.repeat(40), repository='owner/repository';
 const successful=()=>REQUIRED_WORKFLOWS.map((name,index)=>({id:index+1,name,event:'push',head_branch:'main',head_sha:sha,head_repository:{full_name:repository},status:'completed',conclusion:'success'}));
+void test('automatic deployment defaults off without an exact valid repository activation',()=>{
+  const trusted='Jiashu329/Jiashu-OS', activation={version:1,repository:trusted,enabled:true};
+  for(const value of [undefined,null,{},[],true,'malformed JSON',{...activation,version:2},{...activation,enabled:false},{...activation,enabled:'true'}]){
+    assert.equal(automaticDeploymentEnabled(undefined,trusted,value),false);
+  }
+  assert.equal(automaticDeploymentEnabled(undefined,trusted,activation),true);
+  assert.equal(automaticDeploymentEnabled('',trusted,activation),true);
+  assert.equal(automaticDeploymentEnabled('', 'fork/Jiashu-OS',activation),false);
+  assert.equal(automaticDeploymentEnabled('', '',{...activation,repository:''}),false);
+});
+void test('explicit deployment overrides pause activation or allow manual activation while invalid values fail closed',()=>{
+  const trusted='Jiashu329/Jiashu-OS', activation={version:1,repository:trusted,enabled:true};
+  assert.equal(automaticDeploymentEnabled('false',trusted,activation),false);
+  assert.equal(automaticDeploymentEnabled('true',trusted,undefined),true);
+  for(const override of ['TRUE','False','1','yes',' ',null,true,false]){
+    assert.equal(automaticDeploymentEnabled(override,trusted,activation),false);
+  }
+});
 void test('deployment requires all four successful checks for the exact trusted main commit',()=>{
   assert.equal(selectSuccessfulRuns(successful(),sha,repository),true);
   assert.equal(selectSuccessfulRuns(successful().slice(0,3),sha,repository),false);

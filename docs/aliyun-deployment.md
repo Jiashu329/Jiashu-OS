@@ -19,7 +19,7 @@
 
    | Variable | 默认值 |
    | --- | --- |
-   | `ALIYUN_DEPLOY_ENABLED` | `false`，验证完测试站后才改 `true` |
+   | `ALIYUN_DEPLOY_ENABLED` | 不填时使用仓库激活配置；显式 `false` 暂停自动更新 |
    | `ALIYUN_SSH_PORT` | `22` |
    | `ALIYUN_DEPLOY_PATH` | `/opt/jiashu-test` |
    | `ALIYUN_PUBLIC_ORIGIN` | `https://www.treefund.asia` |
@@ -63,11 +63,11 @@ docker build -f selfhost/Dockerfile \
 
 ## 自动更新顺序
 
-测试站验证后，在仓库 **Settings → Secrets and variables → Actions → Variables** 添加 Repository variable：Name 为 `ALIYUN_DEPLOY_ENABLED`，Value 为 `true`。首次可手动运行 **Aliyun deployment → deploy** 验证，后续由 `main` 更新触发。
+本仓库在测试站验证后通过 `deploy/aliyun/activation.json` 激活自动更新，配置仅匹配 `Jiashu329/Jiashu-OS`，无需手动填写 GitHub 变量。复制仓库时不会自动激活其他仓库。若要暂停，可在 **Settings → Secrets and variables → Actions → Variables** 设置 `ALIYUN_DEPLOY_ENABLED=false`；删除该覆盖项或设为 `true` 可恢复。
 
 `main` 更新后，现有 Application checks、Browser acceptance、Douban extension acceptance 和新增 Self-hosted checks 各自执行。部署工作流核对**同一个提交**的四项最新执行全部成功，并核对它仍是 `main` 当前头。PR、fork 或尚未完成／失败的提交不触发部署。
 
-启用 `ALIYUN_DEPLOY_ENABLED=true` 后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单。小型控制脚本通过严格 host-key 验证的 SSH/SCP 传送；镜像上传至保留一天的私有 GitHub Artifact，服务器凭短时签名 URL 通过 HTTPS 下载。签名仅通过 SSH stdin 下发，GitHub token 留在 CI。服务器校验外层 ZIP 摘要、唯一文件白名单及内层镜像归档摘要，再 `docker load`，无需配置 GHCR 凭据。
+激活后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单。小型控制脚本通过严格 host-key 验证的 SSH/SCP 传送；镜像上传至保留一天的私有 GitHub Artifact，服务器凭短时签名 URL 通过 HTTPS 下载。签名仅通过 SSH stdin 下发，GitHub token 留在 CI。服务器校验外层 ZIP 摘要、唯一文件白名单及内层镜像归档摘要，再 `docker load`，无需配置 GHCR 凭据。
 
 服务器核对镜像内容、提交标签、平台与全部 RootFS 层，再固定使用目标 Docker 存储的本地不可变 ID，兼容 classic 与 Docker 29 containerd 存储差异。使用全局部署锁防止并发；同一镜像版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
 

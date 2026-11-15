@@ -45,7 +45,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DEPLOY_OPERATION: ${{ inputs.operation || 'deploy' }}
-          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED }}
           BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
         run: node deploy/aliyun/check-ci.mjs
   inspect:
@@ -95,7 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
           DEPLOY_OPERATION: ${{ needs.gate.outputs.operation }}
-          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED }}
           BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
         run: node deploy/aliyun/check-ci.mjs
       - name: Upload the immutable image for HTTPS transfer
@@ -125,7 +125,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
           DEPLOY_OPERATION: ${{ needs.gate.outputs.operation }}
-          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
+          DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED }}
           BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
         run: bash deploy/aliyun/upload-and-run.sh "$OPERATION" "$RUNNER_TEMP/jiashu-bundle"
       - if: always()
