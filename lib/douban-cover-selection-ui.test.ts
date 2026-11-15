@@ -69,7 +69,7 @@ void test('preview URLs reject credentials, local addresses, uploads and oversiz
 
 void test('the optional link is explained as a fallback after Douban and TMDB, and original mode removes that fallback', () => {
   const f = fixture();
-  assert.match(f.detail.textContent, /封面依次尝试豆瓣、TMDB、自定义图片链接/);
+  assert.deepEqual(Array.from(f.detail.querySelectorAll('.db-cover-order > span:not([aria-hidden])'), node => node.textContent), ['豆瓣', 'TMDB', '备用链接']);
   assert.match(f.detail.textContent, /备用链接可选填，仅在豆瓣和 TMDB 封面都不可用时使用/);
   assert.equal(f.detail.querySelector('option[value="original"]')?.textContent, '自动封面（无备用链接）');
   assert.equal(f.detail.querySelector('option[value="url"]')?.textContent, '填写备用图片链接');

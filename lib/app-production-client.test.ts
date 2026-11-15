@@ -116,7 +116,7 @@ function storage(seed: Record<string,string> = {}) {
 }
 type SyntheticTMDBCover = { imdbId: string; mediaType: 'movie' | 'tv'; tmdbId: number; posterPath: string; language: 'zh' | 'en' | null; matchedAt: string };
 type SyntheticTMDBResult = { status: 'matched' | 'not_configured' | 'missing_imdb' | 'no_match' | 'ambiguous' | 'episode_only' | 'no_poster' | 'rate_limited' | 'unavailable'; cover?: SyntheticTMDBCover; message?: string; retryAfter?: number };
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; allowTMDB?: boolean; allowIMDbRatings?: boolean; loseIMDbRatingReply?: boolean; imdbRatingResults?: Record<string, IMDbRating | null>; imdbRatingFailure?: { status: 429 | 503; message: string; retryAfter?: number }; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; coverSelectionFailure?: { attempt: number; message: string; delayMs: number }; allowTMDB?: boolean; allowIMDbRatings?: boolean; loseIMDbRatingReply?: boolean; imdbRatingResults?: Record<string, IMDbRating | null>; imdbRatingFailure?: { status: 429 | 503; message: string; retryAfter?: number }; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   for (const input of document.querySelectorAll('input[type=checkbox]')) (input as unknown as HTMLInputElement).checked = input.hasAttribute('checked');
@@ -134,13 +134,17 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const history = { state: null,
     replaceState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); },
     pushState(_data: unknown, _unused: string, path: string) { current = new URL(path, current); } };
-  document.querySelectorAll('dialog').forEach((dialog) => {
+  const modelDialog = (dialog: ReturnType<typeof document.createElement>) => {
     Object.defineProperty(dialog,'open',{configurable:true,get(){return dialog.hasAttribute('open');}});
     Object.assign(dialog, {
       showModal() { dialog.setAttribute('open', ''); },
       close() { dialog.removeAttribute('open'); dialog.dispatchEvent(new window.Event('close')); },
     });
-  });
+  };
+  document.querySelectorAll('dialog').forEach(modelDialog);
+  // The shared draft guard creates its confirmation dialog only when a draft is left.
+  const nativeCreateElement = document.createElement.bind(document);
+  document.createElement = ((name: string) => { const element = nativeCreateElement(name); if (name.toLowerCase() === 'dialog') modelDialog(element); return element; }) as typeof document.createElement;
   // Dynamic dialogs create selects after initialization; model the native prototype setter.
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
@@ -335,6 +339,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       assert.equal(body.expectedDataEpoch,catalog.douban.dataEpoch??0,'selected covers pin the active epoch');
       const index=catalog.douban.items.findIndex(item=>item.profileId===body.profileId&&item.domain===body.domain&&item.subjectId===body.subjectId),previous=catalog.douban.items[index] as DoubanRecord & {local?:DoubanLocalRecord;cover?:UserCoverDescriptor};
       assert.ok(previous);assert.equal(body.expectedLocalRevision,previous.local?.revision??0,'selected covers pin the personal edit version');
+      const failure=catalog.douban.coverSelectionFailure;
+      if(failure&&failure.attempt===doubanCoverSelectionBodies.length){await new Promise(resolve=>setTimeout(resolve,failure.delayMs));return Response.json({error:failure.message,code:'SYNTHETIC_COVER_UNAVAILABLE'},{status:503});}
       const selected=body.mode==='url'?normalizeUserCoverUrl(body.url):null,revision=(previous.local?.revision??0)+1;
       const item={...previous,local:{note:'',tags:[],hidden:false,...previous.local,revision},cover:userCoverDescriptor(selected,revision)};catalog.douban.items[index]=item;
       return Response.json({item,dataEpoch:catalog.douban.dataEpoch??0});
@@ -445,6 +451,19 @@ function openMediaTools(f: Awaited<ReturnType<typeof fixture>>, section: 'browse
   assert.equal(f.document.getElementById('douban-tools-dialog')?.hasAttribute('open'), true);
   assert.equal(f.document.querySelector('[data-douban-tools-tab="' + section + '"]')?.getAttribute('aria-selected'), 'true');
   assert.equal(f.document.getElementById('douban-tools-panel-' + section)?.hidden, false);
+}
+
+function openMediaDetailTab(f: Awaited<ReturnType<typeof fixture>>, tab: 'work' | 'personal' | 'manage') {
+  const button = f.document.querySelector('[data-douban-detail-tab="' + tab + '"]'); assert.ok(button);
+  button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  assert.equal(button.getAttribute('aria-selected'), 'true');
+  for (const name of ['work', 'personal', 'manage']) assert.equal(f.document.getElementById('douban-detail-panel-' + name)?.hidden, name !== tab);
+}
+function openMediaDetailManagement(f: Awaited<ReturnType<typeof fixture>>, section?: 'advanced' | 'cover' | 'classification' | 'source') {
+  openMediaDetailTab(f, 'manage');
+  if (!section) return;
+  const selector = { advanced: '[data-douban-advanced-refresh]', cover: '[data-douban-cover-editor]', classification: '#douban-classification-panel', source: '[data-douban-record-source]' }[section];
+  const details = f.document.querySelector(selector); assert.ok(details, selector); details.setAttribute('open', '');
 }
 
 function mediaWorkspaceRecord(kind: DoubanRecord['kind'], subjectId: string, title: string): DoubanRecord {
@@ -1008,15 +1027,28 @@ test('minified media enrichment and manual classification only write after their
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^\/api\/life\/douban\/cover\?/);
   assert.match(f.document.querySelector('#douban-list .db-meta')?.textContent ?? '', /电视剧/);
   f.document.querySelector('#douban-list [data-douban-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  openMediaDetailManagement(f, 'classification');
   const kind = get('classification-kind') as unknown as HTMLSelectElement;
   kind.value = 'movie'; kind.dispatchEvent(new f.window.Event('change', { bubbles: true }));
   assert.equal(f.doubanClassificationBodies.length, 0, 'changing a classification is still an unsaved draft');
+  openMediaDetailTab(f, 'work'); get('detail-close').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  const draftDialog=f.document.getElementById('draft-guard-dialog')!;
+  assert.equal(draftDialog.hasAttribute('open'),true,'closing the public tab still protects a classification draft hidden in management');
+  assert.equal((draftDialog.querySelector('[data-draft-choice="save"]') as HTMLButtonElement).disabled,true,'the classification guard cannot submit a hidden choice through generic save');
+  assert.equal(get('detail-dialog').hasAttribute('open'),true);
+  draftDialog.querySelector('[data-draft-choice="continue"]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(draftDialog.hasAttribute('open'),false);assert.equal(kind.value,'movie');assert.equal(f.doubanClassificationBodies.length,0);
+  openMediaDetailManagement(f, 'classification');
   get('classification-form').dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
   await settle(() => get('classification-status').textContent?.includes('分类已保存为电影') === true);
   assert.equal(f.doubanClassificationBodies.length, 1);
   assert.deepEqual(f.doubanClassificationBodies[0], { profileId: item.profileId, domain: 'screen', subjectId: item.subjectId, kind: 'movie', expectedUpdatedAt: '2026-11-14T00:00:00.001Z' });
   assert.match(get('detail-body').textContent ?? '', /合成私密短评/);
   assert.doesNotMatch(JSON.stringify([...f.doubanMetadataBodies, ...f.doubanClassificationBodies]), /合成私密短评|rating|comment|userId|cookie/i);
+  kind.value='series';kind.dispatchEvent(new f.window.Event('change',{bubbles:true}));openMediaDetailTab(f,'work');get('detail-close').dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(draftDialog.hasAttribute('open'),true);assert.equal((draftDialog.querySelector('[data-draft-choice="save"]') as HTMLButtonElement).disabled,true);
+  draftDialog.querySelector('[data-draft-choice="discard"]')!.dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  assert.equal(get('detail-dialog').hasAttribute('open'),false);assert.equal(kind.value,'movie');assert.equal(f.doubanClassificationBodies.length,1,'discard never saves another classification');
 });
 
 test('minified media recovery distinguishes upstream failures and prepares an import without replacing a private draft', { skip: !hasBuild }, async () => {
@@ -1330,19 +1362,34 @@ test('minified notifications initialize category switches without marking messag
 });
 
 test('minified custom fallback previews explicitly and remains saved while official covers take priority', { skip: !hasBuild }, async () => {
-  const item=mediaWorkspaceRecord('movie','8123456','生产自选封面作品'),chosen='https://images.example.org/production-cover.jpg';
+  const item={...mediaWorkspaceRecord('movie','8123456','生产自选封面作品'),local:{note:'保存封面后仍保留的个人备注',tags:[],hidden:false,revision:0}},chosen='https://images.example.org/production-cover.jpg';
   item.coverUrl='https://img1.doubanio.com/view/photo/public/p123456.jpg';
-  const library={connection:{profileId:'synthetic-profile',revision:1,updatedAt:'2026-11-14T00:00:00.000Z'},items:[item],allowCoverSelection:true,allowMetadata:true};
+  const failureMessage='合成封面保存暂不可用，请保留原填写。';
+  const library={connection:{profileId:'synthetic-profile',revision:1,updatedAt:'2026-11-14T00:00:00.000Z'},items:[item],allowCoverSelection:true,allowMetadata:true,coverSelectionFailure:{attempt:2,message:failureMessage,delayMs:200}};
   const f=await fixture('id="douban-page"','/life/douban',390,{}, {foods:[],douban:library});
   const query=<T=HTMLElement>(selector:string)=>{const element=f.document.querySelector(selector);assert.ok(element,selector);return element as unknown as T;};
   await settle(()=>query('#douban-page').getAttribute('aria-busy')==='false');query('[data-douban-open="0"]').dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  openMediaDetailTab(f, 'personal');
+  const savedPersonalNote=query<HTMLTextAreaElement>('[data-douban-note]');assert.equal(savedPersonalNote.value,item.local.note);
+  openMediaDetailManagement(f, 'cover');
   const mode=query<HTMLSelectElement>('[data-douban-cover-mode]');mode.value='url';mode.dispatchEvent(new f.window.Event('change',{bubbles:true}));const input=query<HTMLInputElement>('[data-douban-cover-url]');input.value=chosen;input.dispatchEvent(new f.window.Event('input',{bubbles:true}));
   assert.equal(f.doubanCoverSelectionBodies.length,0);const before=f.requests.length;query('[data-douban-cover-preview]').dispatchEvent(new f.window.Event('click',{bubbles:true}));const preview=query<HTMLImageElement>('[data-douban-cover-preview-image]');assert.equal(preview.getAttribute('src'),chosen);assert.equal(preview.getAttribute('referrerpolicy'),'no-referrer');preview.dispatchEvent(new f.window.Event('load'));assert.equal(f.requests.length,before,'preview reads through img, never the API transport');
   query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settleWork(()=>f.doubanCoverSelectionBodies.length===1&&!query<HTMLSelectElement>('[data-douban-cover-mode]').disabled,()=>query('[data-douban-cover-status]').textContent??'cover save');assert.match(query('#douban-list img').getAttribute('src')??'',/^\/api\/life\/douban\/cover\?/);assert.match(query('[data-douban-detail-cover]').getAttribute('src')??'',/^\/api\/life\/douban\/cover\?/);
   assert.deepEqual(f.doubanCoverSelectionBodies,[{profileId:item.profileId,domain:'screen',subjectId:item.subjectId,expectedDataEpoch:0,expectedLocalRevision:0,mode:'url',url:chosen}]);
+  openMediaDetailTab(f,'personal');assert.equal(query<HTMLTextAreaElement>('[data-douban-note]'),savedPersonalNote);assert.equal(savedPersonalNote.value,item.local.note);
+  openMediaDetailManagement(f,'cover');
+  const failedDraft=chosen+'?second-attempt';input.value=failedDraft;input.dispatchEvent(new f.window.Event('input',{bubbles:true}));query('[data-douban-cover-preview]').dispatchEvent(new f.window.Event('click',{bubbles:true}));query('[data-douban-cover-preview-image]').dispatchEvent(new f.window.Event('load'));
+  query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settle(()=>f.doubanCoverSelectionBodies.length===2);
+  openMediaDetailTab(f,'work');assert.match(query('#douban-detail-feedback').textContent??'',/正在保存/);assert.equal(query('#douban-detail-feedback').classList.contains('error'),false);
+  await settleWork(()=>query('#douban-detail-feedback').classList.contains('error')&&query('#douban-detail-feedback').textContent?.includes(failureMessage)===true,()=>query('#douban-detail-feedback').textContent??'second cover failure');
+  assert.doesNotMatch(query('#douban-detail-feedback').textContent??'',/已保存/);assert.equal(query<HTMLInputElement>('[data-douban-cover-url]').value,failedDraft);assert.equal(query<HTMLTextAreaElement>('[data-douban-note]'),savedPersonalNote);assert.equal(savedPersonalNote.value,item.local.note);
+  assert.equal((library.items[0] as DoubanRecord&{cover?:UserCoverDescriptor}).cover?.url,chosen,'a failed save preserves the previously committed cover');
+  openMediaDetailManagement(f,'cover');query('[data-douban-cover-reset]').dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  openMediaDetailManagement(f);
   query('[data-douban-metadata-item]').dispatchEvent(new f.window.Event('click',{bubbles:true}));await settleWork(()=>query('#douban-metadata-status').textContent?.startsWith('本次补全完成')===true,()=>query('#douban-metadata-status').textContent??'metadata');assert.match(query('#douban-list img').getAttribute('src')??'',/^\/api\/life\/douban\/cover\?/);assert.match(query('[data-douban-detail-cover]').getAttribute('src')??'',/^\/api\/life\/douban\/cover\?/);
-  query('[data-douban-cover-original]').dispatchEvent(new f.window.Event('click',{bubbles:true}));assert.equal(f.doubanCoverSelectionBodies.length,1);query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settleWork(()=>f.doubanCoverSelectionBodies.length===2&&!query<HTMLSelectElement>('[data-douban-cover-mode]').disabled,()=>query('[data-douban-cover-status]').textContent??'original');
-  assert.equal(f.doubanCoverSelectionBodies.length,2);assert.equal(f.doubanCoverSelectionBodies[1].mode,'original');assert.equal(Object.hasOwn(f.doubanCoverSelectionBodies[1],'url'),false);assert.equal(f.requests.some(request=>request.path===chosen),false);assert.ok(f.requests.filter(request=>request.method!=='GET').every(request=>['/api/life/douban/cover-selection','/api/life/douban/metadata'].includes(request.path)));
+  openMediaDetailManagement(f, 'cover');
+  query('[data-douban-cover-original]').dispatchEvent(new f.window.Event('click',{bubbles:true}));assert.equal(f.doubanCoverSelectionBodies.length,2);query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settleWork(()=>f.doubanCoverSelectionBodies.length===3&&!query<HTMLSelectElement>('[data-douban-cover-mode]').disabled,()=>query('[data-douban-cover-status]').textContent??'original');
+  assert.equal(f.doubanCoverSelectionBodies.length,3);assert.equal(f.doubanCoverSelectionBodies[2].mode,'original');assert.equal(Object.hasOwn(f.doubanCoverSelectionBodies[2],'url'),false);assert.equal(f.requests.some(request=>request.path===chosen),false);assert.ok(f.requests.filter(request=>request.method!=='GET').every(request=>['/api/life/douban/cover-selection','/api/life/douban/metadata'].includes(request.path)));
 });
 
 function productionIMDbScore(imdbId: string, rating = 7.3): IMDbRating {
@@ -1425,6 +1472,7 @@ for (const [status, message] of [
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
   f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   assert.equal(f.doubanTMDBBodies.length, 0);
+  openMediaDetailManagement(f, 'advanced');
   f.document.querySelector('[data-douban-tmdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settleWork(() => {
     const text = f.document.querySelector('[data-douban-tmdb-status]')?.textContent ?? '';
@@ -1527,6 +1575,7 @@ for (const status of ['missing', 'rate_limited'] as const) test('minified explic
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
   f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  openMediaDetailManagement(f, 'advanced');
   f.document.querySelector('[data-douban-imdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settleWork(() => { const text = f.document.querySelector('[data-douban-imdb-status]')?.textContent ?? ''; return status === 'rate_limited' ? text.includes('限流') && text.includes('25 秒') : text.includes('暂无评分'); }, () => f.document.querySelector('[data-douban-imdb-status]')?.textContent ?? 'explicit IMDb status');
   assert.equal(f.doubanIMDbRatingsBodies.length, 1);
@@ -1542,6 +1591,7 @@ test('minified explicit cover refresh backfills the stored complete TMDB URL whi
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false'); assert.equal(f.doubanTMDBBodies.length, 0);
   f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  openMediaDetailManagement(f, 'advanced');
   f.document.querySelector('[data-douban-tmdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settleWork(() => f.document.querySelector('[data-douban-source-link="tmdb-cover"]')?.getAttribute('href') === PRODUCTION_TMDB_POSTER, () => f.document.querySelector('[data-douban-tmdb-status]')?.textContent ?? 'TMDB URL backfill');
   assert.equal(f.doubanTMDBBodies.length, 1); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
@@ -1567,4 +1617,46 @@ test('minified unknown IMDb receipt retains its exact batch while resuming witho
   assert.deepEqual(f.doubanIMDbRatingsBodies, [original, original]);
   assert.equal(f.doubanMetadataBodies.length, 2); assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2); assert.equal(f.doubanTMDBBodies.length, 0);
   assert.ok(items.every(item => (item as DoubanRecord & { imdb?: IMDbRating }).imdb?.rating === 7.8));
+});
+
+test('minified media detail opens its public overview and preserves personal drafts through tab keyboard navigation and cover fallback', { skip: !hasBuild }, async () => {
+  const imdbId = 'tt0018600', item = { ...mediaWorkspaceRecord('movie', '8186000', '分区详情作品'), coverUrl: 'https://img1.doubanio.com/view/photo/public/p1860.jpg',
+    details: { imdbId, doubanRating: 8.6, summary: '应在人物和详细资料之前显示的作品简介。', directors: ['合成导演'], cast: ['合成演员'], year: 2024 },
+    imdb: productionIMDbScore(imdbId, 7.4), tmdb: productionTMDBPoster(imdbId), tmdbCoverUrl: PRODUCTION_TMDB_POSTER,
+    local: { note: '已保存的个人备注', tags: ['已存'], hidden: false, revision: 0 } };
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: { connection: { profileId: item.profileId, revision: 1, updatedAt: item.updatedAt }, items: [item] } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  const tab = (name: string) => f.document.querySelector('[data-douban-detail-tab="' + name + '"]')!;
+  const panel = (name: string) => f.document.getElementById('douban-detail-panel-' + name)!;
+  assert.deepEqual([...f.document.querySelectorAll('[data-douban-detail-tab]')].map(button => button.getAttribute('data-douban-detail-tab')), ['work', 'personal', 'manage']);
+  for (const name of ['work', 'personal', 'manage']) {
+    assert.equal(tab(name).getAttribute('role'), 'tab'); assert.equal(panel(name).getAttribute('role'), 'tabpanel');
+    assert.equal(tab(name).getAttribute('aria-selected'), String(name === 'work')); assert.equal(panel(name).hidden, name !== 'work');
+    assert.equal(tab(name).getAttribute('aria-controls'), panel(name).id);
+  }
+  const work = panel('work'), summary = work.querySelector('[data-douban-details="summary"]')!, facts = work.querySelector('[data-douban-details="screen"]')!;
+  assert.ok(work.querySelector('.db-detail-cover img')); assert.ok(summary); assert.ok(facts);
+  assert.ok([...work.querySelectorAll('[data-douban-details]')].indexOf(summary) < [...work.querySelectorAll('[data-douban-details]')].indexOf(facts), 'the overview leads with its summary before people and detailed facts');
+  assert.equal(work.querySelector('input,textarea,select,[data-douban-metadata-item],[data-douban-tmdb-item],[data-douban-imdb-item]'), null, 'the public overview does not stack editing and maintenance controls');
+  for (const selector of ['[data-douban-advanced-refresh]', '[data-douban-cover-editor]', '[data-douban-record-source]', '#douban-classification-panel']) {
+    const disclosure = panel('manage').querySelector(selector); assert.ok(disclosure, selector); assert.equal(disclosure.hasAttribute('open'), false);
+  }
+  const feedback = f.document.getElementById('douban-detail-feedback'); assert.ok(feedback); assert.equal(feedback.closest('[role="tabpanel"]'), null, 'shared progress remains outside the hidden tab panels');
+  assert.ok(!work.textContent?.includes(item.comment ?? 'PRIVATE_COMMENT'));
+  const before = f.requests.length;
+  openMediaDetailTab(f, 'personal');
+  const personalForm = f.document.getElementById('douban-personal-form')!, note = personalForm.querySelector('[data-douban-note]') as HTMLTextAreaElement;
+  note.value = '跨标签仍应保留的未保存备注'; note.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  const key = (name: string, value: string) => { const event = new f.window.Event('keydown', { bubbles: true, cancelable: true }); Object.defineProperty(event, 'key', { value }); tab(name).dispatchEvent(event); };
+  key('personal', 'ArrowRight'); assert.equal(tab('manage').getAttribute('aria-selected'), 'true');
+  key('manage', 'Home'); assert.equal(tab('work').getAttribute('aria-selected'), 'true');
+  const image = work.querySelector('.db-detail-cover img')!; image.dispatchEvent(new f.window.Event('error')); assert.equal(image.getAttribute('src'), PRODUCTION_TMDB_POSTER);
+  key('work', 'End'); assert.equal(tab('manage').getAttribute('aria-selected'), 'true');
+  openMediaDetailTab(f, 'personal');
+  assert.equal(f.document.getElementById('douban-personal-form'), personalForm, 'tab changes hide panels without recreating a draft form');
+  assert.equal(personalForm.querySelector('[data-douban-note]'), note); assert.equal(note.value, '跨标签仍应保留的未保存备注');
+  const leave = new f.window.Event('beforeunload', { cancelable: true }); f.window.dispatchEvent(leave); assert.equal(leave.defaultPrevented, true);
+  assert.equal(f.requests.length, before, 'switching detail tabs and image fallback never saves a draft or calls an external service');
+  assert.ok(f.requests.every(request => request.method === 'GET'));
 });

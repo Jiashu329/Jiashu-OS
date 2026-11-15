@@ -126,6 +126,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanAllowIMDbRatings = false; state.doubanIMDbRatingResults = new Map(); state.doubanIMDbRatingReceipts = new Map();
   state.doubanLoseIMDbRatingReply = false; state.doubanIMDbRatingFailure = null;
   state.doubanCoverBytes = new Map(); state.doubanLoseCoverReply = false; state.doubanCoverHold = false; state.doubanCoverPending = false;
+  state.doubanHoldPersonalSave = false; state.doubanPersonalSavePending = false; state.doubanRejectPersonalSave = false;
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
   await page.route('**/api/life/douban**', async route => {
@@ -178,6 +179,12 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         const item = find(body);
         if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
         if (body.expectedLocalRevision !== localRecord(item).revision) return fail('我的整理已在其他页面更新。', 'DOUBAN_LOCAL_CONFLICT');
+        if (state.doubanHoldPersonalSave) {
+          state.doubanHoldPersonalSave = false; state.doubanPersonalSavePending = true;
+          await new Promise(resolve => { state.doubanReleasePersonalSave = resolve; });
+          state.doubanPersonalSavePending = false;
+        }
+        if (state.doubanRejectPersonalSave) { state.doubanRejectPersonalSave = false; return fail('合成保存服务暂时不可用。', 'SYNTHETIC_PERSONAL_SAVE_UNAVAILABLE', 503); }
         let personal;
         try { personal = parseDoubanLocalRecord(body); } catch { return fail('备注或标签格式不正确。', 'INVALID_DOUBAN_INPUT', 400); }
         item.local = { ...personal, revision: localRecord(item).revision + 1 };
@@ -357,7 +364,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   });
 });
 test.afterEach(async ({ page }, testInfo) => {
-  testInfo.synthetic.doubanReleaseStep?.(); testInfo.synthetic.doubanReleaseCover?.();
+  testInfo.synthetic.doubanReleaseStep?.(); testInfo.synthetic.doubanReleaseCover?.(); testInfo.synthetic.doubanReleasePersonalSave?.();
   expect(testInfo.synthetic.externalRequests, 'Synthetic library records must not contact Douban or another external service').toEqual([]);
   if (!page.isClosed()) await page.screenshot({ path: testInfo.outputPath('douban-acceptance.png'), fullPage: true });
 });
@@ -375,6 +382,22 @@ async function openTools(page, section) {
 async function closeTools(page) {
   if (await page.locator('#douban-tools-dialog').isVisible()) await page.locator('#douban-tools-close').click();
   await expect(page.locator('#douban-tools-dialog')).toBeHidden();
+}
+async function openDetailTab(page, tab) {
+  const button = page.locator('[data-douban-detail-tab="' + tab + '"]');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#douban-detail-panel-' + tab)).toBeVisible();
+}
+async function openDetailAdvancedRefresh(page) {
+  await openDetailTab(page, 'manage');
+  const advanced = page.locator('[data-douban-advanced-refresh]');
+  if (await advanced.getAttribute('open') === null) await advanced.locator('summary').click();
+}
+async function openDetailClassification(page) {
+  await openDetailTab(page, 'manage');
+  const panel = page.locator('#douban-classification-panel');
+  if (await panel.getAttribute('open') === null) await panel.locator('summary').click();
 }
 async function selectKind(page, kind) {
   const chip = page.locator('#douban-kind-chips [data-douban-kind="' + (kind || 'all') + '"]');
@@ -792,9 +815,17 @@ test('manual movie or series classification is an explicit saved choice and an a
   await expect(page.locator('[data-douban-select]')).toHaveCount(0);
   await expect(page.locator('[data-douban-select-all]')).toHaveCount(0);
   await page.locator('#douban-list [data-douban-open="0"]').click();
+  await openDetailClassification(page);
   await expect(page.locator('#douban-classification-form')).toBeVisible();
   await expect(page.locator('#douban-classification-kind')).toHaveValue('');
   await page.locator('#douban-classification-kind').selectOption('series');
+  await openDetailTab(page, 'work'); await page.keyboard.press('Escape');
+  await expect(page.locator('#draft-guard-dialog')).toBeVisible();
+  await expect(page.locator('#draft-guard-description')).toContainText('手动分类');
+  await expect(page.locator('#draft-guard-dialog [data-draft-choice="save"]')).toBeDisabled();
+  await page.locator('#draft-guard-dialog [data-draft-choice="continue"]').click();
+  await expect(page.locator('#douban-detail-dialog')).toBeVisible();
+  await openDetailClassification(page); await expect(page.locator('#douban-classification-kind')).toHaveValue('series');
   expect(mutations(testInfo)).toEqual([]);
   await page.locator('#douban-classification-save').click();
   await expect.poll(() => state.doubanItems[0].kind).toBe('series');
@@ -805,6 +836,7 @@ test('manual movie or series classification is an explicit saved choice and an a
   expect(classificationRequests()[0].body).toEqual({ profileId: PROFILE, domain: 'screen', subjectId: '9000700', kind: 'series', expectedUpdatedAt: STAMP });
   if (await page.locator('#douban-detail-dialog').isVisible()) await page.locator('#douban-detail-close').click();
   await page.locator('#douban-list [data-douban-open="1"]').click();
+  await openDetailClassification(page);
   await page.locator('#douban-classification-kind').selectOption('movie');
   state.owner = 'another-synthetic-account';
   await page.locator('#douban-classification-save').click();
@@ -1042,7 +1074,9 @@ test('explicit local work enrichment displays movie, book and music facts separa
   await openLibrary(page);
   await page.locator('#douban-list [data-douban-open="0"]').click();
   await expect(page.locator('[data-douban-details="summary"]')).toContainText('应保留的原作品简介');
+  await openDetailTab(page, 'personal');
   await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
+  await openDetailTab(page, 'work');
   expect(await extensionCalls(page)).toEqual([]);
   expect(mutations(testInfo)).toEqual([]);
   await page.locator('#douban-detail-close').click();
@@ -1061,7 +1095,9 @@ test('explicit local work enrichment displays movie, book and music facts separa
   await page.locator('#douban-list [data-douban-open="0"]').click();
   await expect(page.locator('[data-douban-details="work"]')).toContainText('8.6');
   await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成导演');
+  await openDetailTab(page, 'personal');
   await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
+  await openDetailTab(page, 'work');
   await expect(page.locator('[data-douban-details="summary"]')).toContainText('应保留的原作品简介');
   await expandDetail(page, 'cast');
   await expect(page.locator('[data-douban-details="screen"]')).toContainText('合成演员12');
@@ -1463,6 +1499,7 @@ test('local notes and tags save separately from Douban fields and a hidden work 
   await openLibrary(page);
   await page.locator('#douban-list [data-douban-open]').click();
   const note = '我的备注 <img src=x onerror=alert(1)>，同步不应覆盖';
+  await openDetailTab(page, 'personal');
   await page.locator('[data-douban-note]').fill(note);
   await page.locator('[data-douban-tags]').fill('想重读，合成标签');
   await page.locator('[data-douban-hidden]').check();
@@ -1479,6 +1516,7 @@ test('local notes and tags save separately from Douban fields and a hidden work 
   await page.locator('#douban-tag').selectOption('想重读');
   await expect(page.locator('#douban-list h3')).toHaveText(['合成图书1320']);
   await page.locator('#douban-list [data-douban-open]').click();
+  await openDetailTab(page, 'personal');
   await expect(page.locator('[data-douban-note]')).toHaveValue(note);
   await expect(page.locator('[data-douban-hidden]')).toBeChecked();
   await page.locator('[data-douban-hidden]').uncheck();
@@ -1530,7 +1568,9 @@ test('single-work enrichment refreshes its open detail and a paused missing-deta
   await installExtensionMock(context, [], { subjects: { 'book:9001380': metadata(1380), 'book:9001381': metadata(1381), 'book:9001382': metadata(1382) } });
   await openLibrary(page);
   await page.locator('#douban-list [data-douban-open="0"]').click();
-  await page.locator('[data-douban-metadata-item]').click();
+  await openDetailTab(page, 'manage'); await page.locator('[data-douban-metadata-item]').click();
+  await expect(page.locator('#douban-detail-feedback')).toContainText('本次补全完成');
+  await openDetailTab(page, 'work');
   await expect(page.locator('[data-douban-details="book"]')).toContainText('即时刷新的合成作者1380');
   await expect(page.locator('#douban-metadata-status')).toContainText('本次补全完成');
   expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
@@ -1584,6 +1624,7 @@ async function mockUserCoverImages(page, { failing = false } = {}) {
   return { requests, succeed() { fail = false; } };
 }
 async function openCoverEditor(page) {
+  await openDetailTab(page, 'manage');
   const editor = page.locator('[data-douban-cover-editor]');
   if (await editor.getAttribute('open') === null) await editor.locator('summary').click();
   await expect(page.locator('#douban-cover-form')).toBeVisible();
@@ -1610,7 +1651,9 @@ test('a custom fallback is explicitly previewed, stays saved when an official co
   expect(state.doubanItems[0].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 1 });
   expect(state.doubanItems[0].coverUrl).toBeNull();
   expect(images.requests.every(request => request.type === 'image' && !request.headers.referer && !request.headers.authorization)).toBe(true);
-  await page.locator('[data-douban-metadata-item]').click();
+  await openDetailTab(page, 'manage'); await page.locator('[data-douban-metadata-item]').click();
+  await expect(page.locator('#douban-detail-feedback')).toContainText('本次补全完成');
+  await openDetailTab(page, 'work');
   await expect(page.locator('[data-douban-details="book"]')).toContainText('合成作者');
   await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
   await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
@@ -1639,6 +1682,7 @@ test('a failed user image offers replacement and retries directly as an image wi
   await expect(card.locator('[data-douban-cover-change]')).toBeVisible();
   await card.locator('[data-douban-cover-change]').click();
   await expect(page.locator('#douban-detail-dialog')).toBeVisible();
+  await expect(page.locator('[data-douban-detail-tab="manage"]')).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('#douban-cover-form')).toBeVisible();
   await expect(page.locator('[data-douban-cover-url]')).toHaveValue(USER_COVER_URL);
   await page.locator('#douban-detail-close').click();
@@ -1817,11 +1861,14 @@ for (const [status, message] of [
   state.doubanTMDBResults.set(item.subjectId, { status, message, ...(status === 'rate_limited' ? { retryAfter: 30 } : {}) });
   await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click();
   expect(mutations(testInfo)).toEqual([]);
-  await page.locator('[data-douban-tmdb-item]').click();
+  await openDetailAdvancedRefresh(page); await page.locator('[data-douban-tmdb-item]').click();
   if (status === 'rate_limited') {
     await expect(page.locator('[data-douban-tmdb-status]')).toContainText(/限流|频率受限/);
     await expect(page.locator('[data-douban-tmdb-status]')).toContainText('30 秒');
   } else await expect(page.locator('[data-douban-tmdb-status]')).toContainText(message);
+  await openDetailTab(page, 'work');
+  await expect(page.locator('#douban-detail-feedback')).toBeVisible();
+  await expect(page.locator('#douban-detail-feedback')).toContainText(status === 'rate_limited' ? /限流|频率受限/ : message);
   expect(item.tmdb).toBeUndefined(); expect(item.coverUrl).toBeNull();
   expect(mutations(testInfo).map(request => request.path)).toEqual(['/api/life/douban/tmdb']);
   await expect(page.locator('.db-detail-cover img')).toHaveAttribute('data-douban-cover', 'missing'); await fits(page);
@@ -1864,7 +1911,9 @@ test('saved card tags distinguish rating sources while overlaying the cover bott
   await expect(page.locator('body')).toContainText('Information courtesy of IMDb (https://www.imdb.com). Used with permission.');
   await expectSourceRatingsCorner(page);
   await page.locator('#douban-list [data-douban-open="0"]').click();
+  await openDetailTab(page, 'personal');
   await expect(page.locator('[data-douban-details="personal"]')).toContainText('4 / 5');
+  await openDetailTab(page, 'work');
   expect(mutations(testInfo)).toEqual([]);
 });
 
@@ -1931,16 +1980,22 @@ test('manual IMDb refresh shows an absent score as a dash and keeps an earlier g
   state.doubanIMDbRatingResults.set(item.subjectId, null);
   await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click();
   expect(mutations(testInfo)).toEqual([]);
-  await page.locator('[data-douban-imdb-item]').click();
+  await openDetailAdvancedRefresh(page); await page.locator('[data-douban-imdb-item]').click();
   await expect(page.locator('[data-douban-imdb-status]')).toContainText('暂无评分');
+  await openDetailTab(page, 'work');
+  await expect(page.locator('#douban-detail-feedback')).toBeVisible();
+  await expect(page.locator('#douban-detail-feedback')).toContainText('暂无评分');
   await expect(page.locator('#douban-list [data-douban-score="imdb"]')).toContainText('—');
   expect(item.imdb ?? null).toBeNull();
   await page.locator('#douban-detail-close').click();
   item.imdb = imdbScore('tt0018300', 7.9); state.doubanIMDbRatingFailure = { status: 429, message: 'IMDb 官方评分暂时限流。', retryAfter: 25 };
   await page.reload(); await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
-  await page.locator('#douban-list [data-douban-open]').click(); await page.locator('[data-douban-imdb-item]').click();
+  await page.locator('#douban-list [data-douban-open]').click(); await openDetailAdvancedRefresh(page); await page.locator('[data-douban-imdb-item]').click();
   await expect(page.locator('[data-douban-imdb-status]')).toContainText('限流');
   await expect(page.locator('[data-douban-imdb-status]')).toContainText('25 秒');
+  await openDetailTab(page, 'personal');
+  await expect(page.locator('#douban-detail-feedback')).toBeVisible();
+  await expect(page.locator('#douban-detail-feedback')).toContainText('25 秒');
   await expect(page.locator('#douban-list [data-douban-score="imdb"]')).toContainText('7.9');
   expect(item.imdb).toEqual(imdbScore('tt0018300', 7.9));
   expect(mutations(testInfo).every(request => request.path === '/api/life/douban/imdb-ratings')).toBe(true); await fits(page);
@@ -1976,7 +2031,7 @@ test('a saved legacy TMDB match acquires its complete stored image URL only afte
   const cover = tmdbPoster('tt0018400'), item = { ...record('movie', 1840), details: { imdbId: cover.imdbId }, tmdb: cover, tmdbCoverUrl: null };
   state.doubanItems = [item]; state.doubanTMDBResults.set(item.subjectId, { status: 'matched', cover }); await mockTMDBImages(page);
   await openLibrary(page); expect(mutations(testInfo)).toEqual([]);
-  await page.locator('#douban-list [data-douban-open]').click(); await page.locator('[data-douban-tmdb-item]').click();
+  await page.locator('#douban-list [data-douban-open]').click(); await openDetailAdvancedRefresh(page); await page.locator('[data-douban-tmdb-item]').click();
   await expect(page.locator('[data-douban-tmdb-status]')).toContainText('已匹配');
   expect(item.tmdbCoverUrl).toBe(TMDB_POSTER_URL); expect(Date.parse(item.updatedAt)).toBeGreaterThan(Date.parse(STAMP));
   await expect(page.locator('[data-douban-source-link="tmdb-cover"]')).toHaveAttribute('href', TMDB_POSTER_URL);
@@ -2008,4 +2063,102 @@ for (const errorCode of ['DOUBAN_ACCESS_DENIED', 'DOUBAN_SOURCE_RATE_LIMITED']) 
     expect(state.doubanItems.every(item => item.details.doubanRating === 5.1 && !item.imdb)).toBe(true);
   }
   await fits(page);
+});
+
+test('detail tabs retain note and cover drafts and closing saves each guarded form in sequence', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state);
+  state.doubanItems = [{ ...record('book', 2100), details: { authors: ['合成作者'], summary: '用于详情页草稿回归的作品简介' } }];
+  await mockUserCoverImages(page);
+  await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click();
+  await openDetailTab(page, 'personal');
+  const note = '跨标签切换仍保留的个人笔记';
+  await page.locator('[data-douban-note]').fill(note); await page.locator('[data-douban-tags]').fill('想重读，保留草稿');
+  await page.locator('[data-douban-note]').evaluate(node => { window.__syntheticDetailNote = node; });
+  await openCoverEditor(page); await page.locator('[data-douban-cover-mode]').selectOption('url');
+  await page.locator('[data-douban-cover-url]').fill(USER_COVER_URL); await page.locator('[data-douban-cover-preview]').click();
+  await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
+  await openDetailTab(page, 'work'); await openDetailTab(page, 'personal');
+  await expect(page.locator('[data-douban-note]')).toHaveValue(note);
+  expect(await page.locator('[data-douban-note]').evaluate(node => node === window.__syntheticDetailNote), 'Switching tabs preserves the form node instead of redrawing its draft').toBe(true);
+  await expect(page.locator('#draft-guard-dialog')).toBeHidden(); expect(mutations(testInfo)).toEqual([]);
+  await page.locator('#douban-detail-close').click();
+  await expect(page.locator('#draft-guard-description')).toContainText('个人整理');
+  await page.locator('#draft-guard-dialog [data-draft-choice="continue"]').click();
+  await expect(page.locator('#douban-detail-dialog')).toBeVisible(); await expect(page.locator('[data-douban-note]')).toHaveValue(note);
+  await openCoverEditor(page); await expect(page.locator('[data-douban-cover-url]')).toHaveValue(USER_COVER_URL);
+  await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
+  await page.locator('#douban-detail-close').click();
+  await expect(page.locator('#draft-guard-description')).toContainText('个人整理');
+  await page.locator('#draft-guard-dialog [data-draft-choice="save"]').click();
+  await expect(page.locator('#draft-guard-description')).toContainText('封面选择');
+  await page.locator('#draft-guard-dialog [data-draft-choice="save"]').click();
+  await expect(page.locator('#douban-detail-dialog')).toBeHidden();
+  const writes = mutations(testInfo);
+  expect(writes.map(request => request.path)).toEqual(['/api/life/douban/library', '/api/life/douban/cover-selection']);
+  expect(writes.map(request => request.body.expectedLocalRevision)).toEqual([0, 1]);
+  expect(state.doubanItems[0].local).toEqual({ note, tags: ['想重读', '保留草稿'], hidden: false, revision: 2 });
+  expect(state.doubanItems[0].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 2 });
+  await page.locator('#douban-list [data-douban-open]').click(); await openDetailTab(page, 'personal');
+  await expect(page.locator('[data-douban-note]')).toHaveValue(note); await expect(page.locator('[data-douban-tags]')).toHaveValue('想重读，保留草稿');
+  await fits(page);
+});
+
+test('the detail overview leads with the work, supports keyboard tabs and keeps close available while long content scrolls', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state);
+  const fullTitle = '超长作品名称'.repeat(83) + '终章'; expect(fullTitle.length).toBe(500);
+  state.doubanItems = [{ ...record('movie', 2110), title: fullTitle, details: { imdbId: 'tt0021100', doubanRating: 8.6,
+    summary: '先看作品简介，再查看人物与详细资料。'.repeat(100), directors: ['合成导演'], cast: Array.from({ length: 24 }, (_, index) => '合成演员' + index) }, imdb: imdbScore('tt0021100', 7.8) }];
+  await openLibrary(page); const opener = page.locator('#douban-list [data-douban-open]'); await opener.click();
+  const dialog = page.locator('#douban-detail-dialog'), workTab = page.locator('[data-douban-detail-tab="work"]'), personalTab = page.locator('[data-douban-detail-tab="personal"]'), manageTab = page.locator('[data-douban-detail-tab="manage"]');
+  await expect(dialog.locator('[role="tab"]')).toHaveText(['作品资料', '我的记录', '资料管理']);
+  await expect(workTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#douban-detail-close')).toBeInViewport(); await expect(dialog.locator('[role="tablist"]')).toBeInViewport();
+  const fullTitleDetails = page.locator('#douban-detail-full-title');
+  await expect(fullTitleDetails).toBeVisible(); expect(await fullTitleDetails.getAttribute('open')).toBeNull();
+  await fullTitleDetails.locator('summary').click(); await expect(fullTitleDetails.locator('p')).toBeVisible(); await expect(fullTitleDetails.locator('p')).toHaveText(fullTitle);
+  expect(await page.locator('#douban-detail-title').evaluate(title => title.clientHeight <= parseFloat(getComputedStyle(title).lineHeight) * 2 + 1), 'The sticky heading stays within two lines for a valid 500-character title').toBe(true);
+  await expect(page.locator('#douban-detail-close')).toBeInViewport(); await expect(dialog.locator('[role="tablist"]')).toBeInViewport();
+  await expect(page.locator('#douban-detail-panel-work')).toBeVisible();
+  await expect(page.locator('#douban-detail-panel-personal')).toBeHidden(); await expect(page.locator('#douban-detail-panel-manage')).toBeHidden();
+  await expect(page.locator('#douban-detail-panel-work [data-douban-note],#douban-detail-panel-work [data-douban-metadata-item],#douban-detail-panel-work [data-douban-tmdb-item],#douban-detail-panel-work [data-douban-imdb-item],#douban-detail-panel-work #douban-classification-form')).toHaveCount(0);
+  expect(await page.locator('#douban-detail-panel-work').evaluate(panel => {
+    const summary = panel.querySelector('[data-douban-details="summary"]'), people = panel.querySelector('[data-douban-details="screen"]');
+    return Boolean(summary && people && (summary.compareDocumentPosition(people) & Node.DOCUMENT_POSITION_FOLLOWING));
+  }), 'The overview presents the synopsis before the people and technical tables').toBe(true);
+  await workTab.focus(); await workTab.press('ArrowRight'); await expect(personalTab).toBeFocused(); await expect(personalTab).toHaveAttribute('aria-selected', 'true');
+  await personalTab.press('End'); await expect(manageTab).toBeFocused(); await expect(manageTab).toHaveAttribute('aria-selected', 'true');
+  for (const selector of ['[data-douban-advanced-refresh]', '[data-douban-cover-editor]', '[data-douban-record-source]', '#douban-classification-panel']) expect(await dialog.locator(selector).getAttribute('open')).toBeNull();
+  await manageTab.press('Home'); await expect(workTab).toBeFocused(); await expect(workTab).toHaveAttribute('aria-selected', 'true');
+  await workTab.press('ArrowLeft'); await expect(manageTab).toBeFocused(); await manageTab.press('ArrowRight'); await expect(workTab).toBeFocused();
+  await expandDetail(page, 'summary'); await page.locator('[data-douban-details="screen"]').scrollIntoViewIfNeeded();
+  expect(await dialog.evaluate(element => element.scrollTop > 0 || [...element.querySelectorAll('*')].some(child => child.scrollTop > 0)), 'The sticky controls are checked after actual detail scrolling').toBe(true);
+  await expect(page.locator('#douban-detail-close')).toBeInViewport(); await expect(dialog.locator('[role="tablist"]')).toBeInViewport();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.locator('#douban-detail-close').click(); await expect(dialog).toBeHidden(); await expect(opener).toBeFocused();
+  expect(mutations(testInfo)).toEqual([]); await fits(page);
+});
+
+
+test('a failed second personal save replaces an earlier success in the global feedback and keeps the draft across tabs', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic; bind(state); state.doubanItems = [record('book', 2120)];
+  await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click(); await openDetailTab(page, 'personal');
+  await page.locator('[data-douban-note]').fill('第一次已保存的笔记'); await page.locator('[data-douban-personal-save]').click();
+  await expect(page.locator('#douban-detail-feedback')).toContainText('已保存');
+  expect(state.doubanItems[0].local).toMatchObject({ note: '第一次已保存的笔记', revision: 1 });
+  state.doubanHoldPersonalSave = true; state.doubanRejectPersonalSave = true;
+  await page.locator('[data-douban-note]').fill('第二次失败后仍需保留的草稿'); await page.locator('[data-douban-personal-save]').click();
+  await expect.poll(() => state.doubanPersonalSavePending).toBe(true);
+  await expect(page.locator('#douban-detail-feedback')).toContainText('正在保存');
+  await expect(page.locator('#douban-detail-feedback')).not.toContainText('已保存');
+  await openDetailTab(page, 'work'); state.doubanReleasePersonalSave();
+  await expect(page.locator('#douban-detail-feedback')).toBeVisible();
+  await expect(page.locator('#douban-detail-feedback')).toHaveClass(/error/);
+  await expect(page.locator('#douban-detail-feedback')).toContainText('填写已保留');
+  await expect(page.locator('#douban-detail-feedback')).toHaveText(await page.locator('[data-douban-personal-status]').textContent());
+  await expect(page.locator('#douban-detail-feedback')).not.toContainText('已保存');
+  expect(state.doubanItems[0].local).toMatchObject({ note: '第一次已保存的笔记', revision: 1 });
+  await openDetailTab(page, 'personal'); await expect(page.locator('[data-douban-note]')).toHaveValue('第二次失败后仍需保留的草稿');
+  await expect(page.locator('[data-douban-personal-save]')).toBeEnabled();
+  expect(mutations(testInfo).map(request => request.path)).toEqual(['/api/life/douban/library', '/api/life/douban/library']);
+  expect(mutations(testInfo).map(request => request.body.expectedLocalRevision)).toEqual([0, 1]); await fits(page);
 });
