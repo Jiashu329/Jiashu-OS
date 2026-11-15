@@ -1,5 +1,6 @@
 import { DOUBAN_LIBRARY_FILTERS, DOUBAN_LIBRARY_UI_CSS } from './lib/douban-library-ui.ts';
 import { DOUBAN_PERSONAL_CSS, DOUBAN_PERSONAL_BULK_CONTENT, renderDoubanPersonalScript } from './lib/douban-personal-ui.ts';
+import { DOUBAN_COVER_SELECTION_CSS, renderDoubanCoverSelectionScript } from './lib/douban-cover-selection-ui.ts';
 import { APP_THEME_CSS } from './lib/app-theme.ts';
 import { APP_BRAND_HEAD } from './lib/branding.ts';
 import { APP_SIDEBAR_CSS, renderAppSidebar } from './lib/app-sidebar.ts';
@@ -27,7 +28,7 @@ export function renderDoubanPage(): string {
     import: DOUBAN_IMPORT_CONTENT,
     manage: manageConnection + DOUBAN_RESET_CONTENT,
   });
-  return String.raw`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><meta name="description" content="将自己的豆瓣看过、读过和听过记录，整理在个人书影音库。"><title>Jiashu OS · 书影音</title><style>${APP_THEME_CSS}${APP_SIDEBAR_CSS}${DOUBAN_CSS}${DOUBAN_WORKSPACE_CSS}${DOUBAN_LIBRARY_UI_CSS}${DOUBAN_PERSONAL_CSS}</style></head><body><div class="app">${renderAppSidebar('douban')}<main class="db-main" id="douban-page" aria-busy="true">
+  return String.raw`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">${APP_BRAND_HEAD}<meta name="theme-color" content="#f3f5f8"><meta name="description" content="将自己的豆瓣看过、读过和听过记录，整理在个人书影音库。"><title>Jiashu OS · 书影音</title><style>${APP_THEME_CSS}${APP_SIDEBAR_CSS}${DOUBAN_CSS}${DOUBAN_WORKSPACE_CSS}${DOUBAN_LIBRARY_UI_CSS}${DOUBAN_PERSONAL_CSS}${DOUBAN_COVER_SELECTION_CSS}</style></head><body><div class="app">${renderAppSidebar('douban')}<main class="db-main" id="douban-page" aria-busy="true">
 <header class="db-heading">${renderPageHeadingCopy({ section: '生活', title: '书影音', description: '看过的电影、追过的剧，读过的书和听过的音乐。' })}${DOUBAN_WORKSPACE_ACTIONS}</header>
 <section class="db-library" aria-labelledby="douban-library-title"><div class="db-section-heading"><div><h2 id="douban-library-title">我的收藏</h2><p class="db-note" id="douban-total">正在读取收藏…</p></div><div class="db-sync-actions"><button class="db-btn" id="douban-metadata" type="button" disabled>补全本页缺失资料</button><button class="db-btn" id="douban-metadata-resume" type="button" hidden>继续补全</button><button class="db-btn" id="douban-metadata-stop" type="button" hidden>暂停补全</button></div></div>
 <details class="db-library-help"><summary>关于作品资料</summary><p>按需补全封面、简介、豆瓣评分等作品资料，默认仅处理缺少封面、简介或主要创作者等资料的作品。可暂停、翻页后继续，也可在详情中补全单部作品。个人评分和短评保留在自己的收藏中。</p></details><p class="db-form-status" id="douban-metadata-status" role="status" aria-live="polite"></p>
@@ -38,5 +39,5 @@ ${DOUBAN_LIBRARY_FILTERS}${DOUBAN_PERSONAL_BULK_CONTENT}
 <nav class="db-pagination" id="douban-pagination" aria-label="书影音记录分页" hidden><button class="db-btn" id="douban-previous" type="button">上一页</button><span id="douban-page-number"></span><button class="db-btn" id="douban-next" type="button">下一页</button></nav><p class="db-note">个人评分与豆瓣站点评分不同。标记日期不等于实际完成日期；音乐记录指豆瓣音乐条目，不是播放历史。</p></section></main></div>
 ${tools}
 <dialog class="db-dialog" id="douban-detail-dialog" aria-labelledby="douban-detail-title"><div class="db-dialog-head"><h2 id="douban-detail-title"></h2><button class="db-btn" id="douban-detail-close" type="button" aria-label="关闭记录详情">关闭</button></div><div id="douban-detail-body"></div><form id="douban-classification-form" class="db-classification" hidden><label class="db-field" for="douban-classification-kind"><span>影视分类</span><select class="db-control" id="douban-classification-kind"><option value="">请选择电影或电视剧</option><option value="movie">电影</option><option value="series">电视剧</option></select></label><button class="db-btn" id="douban-classification-save" type="submit">保存分类</button><p class="db-note">可手动确认或更正电影、电视剧分类，后续公开同步会保留你的选择。</p><p class="db-form-status" id="douban-classification-status" role="status" aria-live="polite"></p></form></dialog>
-${renderDoubanImportParserScript()}${renderDoubanBrowserHelperScript()}${renderDoubanExtensionScript()}${renderDoubanWorkspaceScript()}${renderDoubanPersonalScript()}${renderDoubanScript()}</body></html>`;
+${renderDoubanImportParserScript()}${renderDoubanBrowserHelperScript()}${renderDoubanExtensionScript()}${renderDoubanWorkspaceScript()}${renderDoubanPersonalScript()}${renderDoubanCoverSelectionScript()}${renderDoubanScript()}</body></html>`;
 }

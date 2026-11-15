@@ -6,6 +6,7 @@ import { parseDoubanProfile } from '../../lib/douban.ts';
 import { mergeDoubanDetails } from '../../lib/douban-details.ts';
 import { doubanMissingFields, parseDoubanLocalRecord } from '../../lib/douban-library.ts';
 import { syntheticPhotoPNG } from './photo-fixture.mjs';
+import { normalizeUserCoverUrl, userCoverDescriptor } from '../../lib/douban-cover-selection.ts';
 
 const PROFILE = 'synthetic-douban-user';
 const STAMP = '2026-11-14T08:00:00.000Z';
@@ -44,6 +45,10 @@ function newRun(connection) {
 function localRecord(item) {
   return item.local ?? { note: '', tags: [], hidden: false, revision: 0 };
 }
+function presentRecord(item) {
+  const local = localRecord(item), selected = item.cover?.mode === 'url' ? item.cover.url : null;
+  return { ...item, local, cover: userCoverDescriptor(selected, local.revision) };
+}
 function listResult(state, params) {
   const scope = params.get('profile') ?? 'all', kind = params.get('kind') ?? '', query = (params.get('q') ?? '').trim().toLowerCase();
   const hidden = params.get('hidden') ?? 'visible', sort = params.get('sort') ?? 'date-desc', rating = params.get('rating'), year = params.get('year'), tag = params.get('tag');
@@ -69,7 +74,7 @@ function listResult(state, params) {
   });
   const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
   return { connection: state.doubanConnection, dataEpoch: state.doubanDataEpoch,
-    items: filtered.slice(offset, offset + limit).map(item => ({ ...item, local: localRecord(item) })), total: filtered.length,
+    items: filtered.slice(offset, offset + limit).map(presentRecord), total: filtered.length,
     counts: Object.fromEntries(['all', ...KINDS].map(key => [key, key === 'all' ? matched.length : matched.filter(item => item.kind === key).length])),
     years: [...new Set(owned.filter(item => item.markedDate).map(item => Number(item.markedDate.slice(0, 4))))].sort((a, b) => b - a),
     tags: [...new Set(owned.flatMap(item => localRecord(item).tags))].sort(),
@@ -114,7 +119,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   state.doubanResetReceipt = null; state.doubanLoseResetReply = false; state.doubanOtherOwnerItems = [];
   state.doubanFailedCovers = new Set(); state.doubanMetadataResults = new Map(); state.doubanMetadataVersion = 0;
   state.doubanLoseMetadataReply = false;
-  state.doubanCoverBytes = new Map();
+  state.doubanCoverBytes = new Map(); state.doubanLoseCoverReply = false; state.doubanCoverHold = false; state.doubanCoverPending = false;
   testInfo.synthetic = state;
   await interceptSyntheticAPI(context, state);
   await page.route('**/api/life/douban**', async route => {
@@ -139,6 +144,27 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (state.doubanLoseResetReply) { state.doubanLoseResetReply = false; return route.abort('connectionreset'); }
       return send({ receipt });
     }
+    if (url.pathname === '/api/life/douban/cover-selection' && method === 'PUT') {
+      if (state.doubanCoverHold) {
+        state.doubanCoverHold = false; state.doubanCoverPending = true;
+        await new Promise(resolve => { state.doubanReleaseCover = resolve; });
+        state.doubanCoverPending = false;
+      }
+      if (body.expectedDataEpoch !== state.doubanDataEpoch) return fail('收藏已重置，请重新读取后填写封面。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+      const item = state.doubanItems.find(item => item.profileId === body.profileId && item.domain === body.domain && item.subjectId === body.subjectId);
+      if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
+      let selected;
+      try { selected = body.mode === 'url' ? normalizeUserCoverUrl(body.url) : body.mode === 'original' ? null : (() => { throw new Error(); })(); }
+      catch { return fail('请填写公开HTTPS图片链接。', 'INVALID_USER_COVER', 400); }
+      const current = item.cover?.mode === 'url' ? item.cover.url : null;
+      if (selected !== current) {
+        if (body.expectedLocalRevision !== localRecord(item).revision) return fail('这部作品的个人整理已变化，请重新打开详情核对。', 'DOUBAN_RECORD_CONFLICT');
+        item.local = { ...localRecord(item), revision: localRecord(item).revision + 1 };
+        item.cover = userCoverDescriptor(selected, item.local.revision);
+      }
+      if (state.doubanLoseCoverReply) { state.doubanLoseCoverReply = false; return route.abort('connectionreset'); }
+      return send({ item: presentRecord(item), dataEpoch: state.doubanDataEpoch });
+    }
     if (url.pathname === '/api/life/douban/library' && ['PUT', 'POST'].includes(method)) {
       if (body.expectedDataEpoch !== state.doubanDataEpoch) return fail('收藏已重置，请重新读取。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const find = entry => state.doubanItems.find(item => item.profileId === entry.profileId && item.domain === entry.domain && item.subjectId === entry.subjectId);
@@ -149,13 +175,13 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         let personal;
         try { personal = parseDoubanLocalRecord(body); } catch { return fail('备注或标签格式不正确。', 'INVALID_DOUBAN_INPUT', 400); }
         item.local = { ...personal, revision: localRecord(item).revision + 1 };
-        return send({ item, dataEpoch: state.doubanDataEpoch });
+        return send({ item: presentRecord(item), dataEpoch: state.doubanDataEpoch });
       }
       if (body.action !== 'classify' || !['movie', 'series'].includes(body.kind) || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 24) return fail('请选择影视分类。', 'INVALID_DOUBAN_INPUT', 400);
       const items = body.items.map(find), keys = body.items.map(item => JSON.stringify([item.profileId, item.domain, item.subjectId]));
       if (new Set(keys).size !== keys.length || items.some((item, index) => !item || item.domain !== 'screen' || body.items[index].expectedUpdatedAt !== item.updatedAt)) return fail('部分作品已更新，本次分类未覆盖。', 'DOUBAN_RECORD_CONFLICT');
       for (const item of items) { item.kind = body.kind; item.metadataCheckedRunId = 'manual-kind'; item.updatedAt = nextVersion(state, item.updatedAt); }
-      return send({ items: items.map(item => ({ ...item, local: localRecord(item) })), dataEpoch: state.doubanDataEpoch });
+      return send({ items: items.map(presentRecord), dataEpoch: state.doubanDataEpoch });
     }
     if ((url.pathname === '/api/life/douban/metadata' && ['POST', 'PUT'].includes(method)) || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
       if (url.pathname.endsWith('/metadata') && (body.expectedDataEpoch ?? 0) !== state.doubanDataEpoch) return fail('书影音资料已清空或重置，旧作品补全已停止。', 'DOUBAN_DATA_EPOCH_CONFLICT');
@@ -166,25 +192,25 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         const alreadySaved = url.pathname.endsWith('/metadata') && method === 'PUT' && body.confirmed === true && metadata
           && (!metadata.kind || metadata.kind === item.kind) && (!metadata.coverUrl || metadata.coverUrl === item.coverUrl)
           && JSON.stringify(mergeDoubanDetails(item.details, metadata.details)) === JSON.stringify(item.details ?? {});
-        if (alreadySaved) return send({ item, changed: false, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
+        if (alreadySaved) return send({ item: presentRecord(item), changed: false, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
         return fail('条目已更新，请重新核对。', 'DOUBAN_RECORD_CONFLICT');
       }
       if (url.pathname.endsWith('/classification')) {
         if (body.domain !== 'screen' || !['movie', 'series'].includes(body.kind)) return fail('请选择电影或电视剧。', 'DOUBAN_INVALID_CLASSIFICATION', 400);
         item.kind = body.kind;
         item.updatedAt = nextVersion(state, item.updatedAt);
-        return send({ item });
+        return send({ item: presentRecord(item) });
       }
       if (body.confirmed !== true) return fail('请明确确认补全此条目。', 'DOUBAN_METADATA_CONFIRMATION_REQUIRED', 400);
       const metadata = method === 'PUT' ? body.metadata : state.doubanMetadataResults.get(item.subjectId);
-      if (!metadata || metadata.unavailable) return send({ item, changed: false, metadata: { status: 'unavailable', message: '合成来源暂不可用，原记录仍保留。' } });
+      if (!metadata || metadata.unavailable) return send({ item: presentRecord(item), changed: false, metadata: { status: 'unavailable', message: '合成来源暂不可用，原记录仍保留。' } });
       if (metadata.kind) item.kind = metadata.kind;
       if (metadata.coverUrl) item.coverUrl = metadata.coverUrl;
       const details = mergeDoubanDetails(item.details, metadata.details);
       if (Object.keys(details).length) item.details = details;
       item.updatedAt = nextVersion(state, item.updatedAt);
       if (method === 'PUT' && state.doubanLoseMetadataReply) { state.doubanLoseMetadataReply = false; return route.abort('connectionreset'); }
-      return send({ item, changed: true, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
+      return send({ item: presentRecord(item), changed: true, dataEpoch: state.doubanDataEpoch, metadata: { status: 'complete' } });
     }
     if (url.pathname === '/api/life/douban/cover' && method === 'GET') {
       const item = state.doubanItems.find(value => value.profileId === url.searchParams.get('profileId')
@@ -201,7 +227,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (expectedDataEpoch !== state.doubanDataEpoch) return fail('豆瓣资料已清空或更新，请重新预览后再保存。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const snapshotHash = ['a', 'b', 'c', 'd', 'e', 'f'][state.doubanDataEpoch % 6].repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items, dataEpoch: state.doubanDataEpoch });
       const plans = importPlan(state, profile.profileId, items), added = plans.filter(plan => !plan.old).length, updated = plans.filter(plan => plan.changed).length;
-      const currentRecords = () => items.map(input => state.doubanItems.find(item => item.profileId === profile.profileId && item.domain === input.domain && item.subjectId === input.subjectId));
+      const currentRecords = () => items.map(input => presentRecord(state.doubanItems.find(item => item.profileId === profile.profileId && item.domain === input.domain && item.subjectId === input.subjectId)));
       const result = receipt => ({ receipt, ...(body.returnRecords === true ? { records: currentRecords() } : {}) });
       if (body.action === 'preview') {
         state.doubanImportPreview = { snapshotHash, payload };
@@ -261,7 +287,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
   });
 });
 test.afterEach(async ({ page }, testInfo) => {
-  testInfo.synthetic.doubanReleaseStep?.();
+  testInfo.synthetic.doubanReleaseStep?.(); testInfo.synthetic.doubanReleaseCover?.();
   expect(testInfo.synthetic.externalRequests, 'Synthetic library records must not contact Douban or another external service').toEqual([]);
   if (!page.isClosed()) await page.screenshot({ path: testInfo.outputPath('douban-acceptance.png'), fullPage: true });
 });
@@ -1466,5 +1492,110 @@ test('a current browser snapshot can clear revoked ratings and comments while re
   expect(state.doubanItems[0]).toMatchObject({ rating: null, comment: null, source: 'browser', local });
   expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(0);
   expect(mutations(testInfo).filter(request => request.body.action === 'commit')[0].body.items[0].source).toBe('browser');
+  await fits(page);
+});
+
+const USER_COVER_URL = 'https://images.example.org/my-selected-cover.jpg';
+async function mockUserCoverImages(page, { failing = false } = {}) {
+  const requests = [], bytes = await readFile(new URL('../../public/brand/favicon-32.png', import.meta.url));
+  let fail = failing;
+  await page.route('https://images.example.org/**', async route => {
+    const request = route.request();
+    requests.push({ url: request.url(), type: request.resourceType(), headers: request.headers() });
+    if (fail) return route.abort('failed');
+    return route.fulfill({ status: 200, contentType: 'image/png', body: bytes });
+  });
+  return { requests, succeed() { fail = false; } };
+}
+async function openCoverEditor(page) {
+  const editor = page.locator('[data-douban-cover-editor]');
+  if (await editor.getAttribute('open') === null) await editor.locator('summary').click();
+  await expect(page.locator('#douban-cover-form')).toBeVisible();
+}
+test('a user cover link is explicitly previewed, survives metadata enrichment and can be restored to the original cover', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic, images = await mockUserCoverImages(page);
+  bind(state); state.doubanItems = [record('book', 1400)];
+  state.doubanMetadataResults.set('9001400', { kind: 'book', coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s1400.jpg', details: { authors: ['合成作者'], summary: '保留用户封面的作品资料' } });
+  await openLibrary(page);
+  await page.locator('#douban-list [data-douban-open]').click();
+  await openCoverEditor(page);
+  await page.locator('[data-douban-cover-mode]').selectOption('url');
+  await page.locator('[data-douban-cover-url]').fill(USER_COVER_URL);
+  expect(images.requests).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('[data-douban-cover-preview]').click();
+  await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
+  await expect(page.locator('[data-douban-cover-preview-image]')).toHaveAttribute('src', USER_COVER_URL);
+  expect(mutations(testInfo)).toEqual([]);
+  await page.locator('[data-douban-cover-save]').click();
+  await expect(page.locator('[data-douban-cover-status]')).toContainText('已保存');
+  await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', USER_COVER_URL);
+  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', USER_COVER_URL);
+  expect(state.doubanItems[0].cover).toMatchObject({ mode: 'url', url: USER_COVER_URL, revision: 1 });
+  expect(state.doubanItems[0].coverUrl).toBeNull();
+  expect(images.requests.every(request => request.type === 'image' && !request.headers.referer && !request.headers.authorization)).toBe(true);
+  await page.locator('[data-douban-metadata-item]').click();
+  await expect(page.locator('[data-douban-details="book"]')).toContainText('合成作者');
+  await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', USER_COVER_URL);
+  await expect(page.locator('.db-detail-cover img')).toHaveAttribute('src', USER_COVER_URL);
+  expect(state.doubanItems[0].coverUrl).toContain('/s1400.jpg');
+  await openCoverEditor(page);
+  await page.locator('[data-douban-cover-original]').click();
+  await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
+  await page.locator('[data-douban-cover-save]').click();
+  await expect(page.locator('[data-douban-cover-status]')).toContainText('已恢复使用豆瓣原封面');
+  await expect(page.locator('#douban-list .db-cover img')).toHaveAttribute('src', /^\/api\/life\/douban\/cover\?/);
+  expect(state.doubanItems[0].cover).toMatchObject({ mode: 'original', revision: 2 });
+  const saves = mutations(testInfo).filter(request => request.path === '/api/life/douban/cover-selection');
+  expect(saves.map(request => request.body.mode)).toEqual(['url', 'original']);
+  expect(saves.map(request => request.body.expectedLocalRevision)).toEqual([0, 1]);
+  expect(saves[1].body).not.toHaveProperty('url');
+  await fits(page);
+});
+
+test('a failed user image offers replacement and retries directly as an image without using the authenticated cover proxy', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic, images = await mockUserCoverImages(page, { failing: true });
+  bind(state); state.doubanItems = [{ ...record('book', 1410), local: { note: '本地备注', tags: [], hidden: false, revision: 2 }, cover: { mode: 'url', url: USER_COVER_URL, revision: 2 } }];
+  await openLibrary(page);
+  const card = page.locator('#douban-list .db-card'), image = card.locator('.db-cover img');
+  await expect(image).toHaveAttribute('data-douban-cover', 'failed');
+  await expect(card.locator('[data-douban-cover-change]')).toBeVisible();
+  await card.locator('[data-douban-cover-change]').click();
+  await expect(page.locator('#douban-detail-dialog')).toBeVisible();
+  await expect(page.locator('#douban-cover-form')).toBeVisible();
+  await expect(page.locator('[data-douban-cover-url]')).toHaveValue(USER_COVER_URL);
+  await page.locator('#douban-detail-close').click();
+  images.succeed();
+  await card.locator('[data-douban-cover-retry]').click();
+  await expect(image).toHaveAttribute('data-douban-cover', 'available');
+  await expect.poll(() => image.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+  expect(images.requests.length).toBeGreaterThanOrEqual(2);
+  expect(images.requests.every(request => request.type === 'image')).toBe(true);
+  expect(state.requests.filter(request => request.path === '/api/life/douban/cover')).toEqual([]);
+  expect(mutations(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('invalid links stay local and a concurrent personal revision prevents an old cover draft overwriting saved data', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic, images = await mockUserCoverImages(page);
+  bind(state); state.doubanItems = [record('book', 1420)];
+  await openLibrary(page); await page.locator('#douban-list [data-douban-open]').click();
+  await openCoverEditor(page);
+  await page.locator('[data-douban-cover-mode]').selectOption('url');
+  await page.locator('[data-douban-cover-url]').fill('https://127.0.0.1/cover.png');
+  await page.locator('[data-douban-cover-preview]').click();
+  await expect(page.locator('[data-douban-cover-status]')).toContainText('HTTPS');
+  await expect(page.locator('[data-douban-cover-save]')).toBeDisabled();
+  expect(images.requests).toEqual([]); expect(mutations(testInfo)).toEqual([]);
+  await page.locator('[data-douban-cover-url]').fill(USER_COVER_URL);
+  await page.locator('[data-douban-cover-preview]').click();
+  await expect(page.locator('[data-douban-cover-save]')).toBeEnabled();
+  state.doubanItems[0].local = { note: '其他页面已保存的备注', tags: ['保留'], hidden: false, revision: 1 };
+  await page.locator('[data-douban-cover-save]').click();
+  await expect(page.locator('[data-douban-cover-status]')).toContainText(/变化|更新|核对/);
+  await expect(page.locator('[data-douban-cover-url]')).toHaveValue(USER_COVER_URL);
+  expect(state.doubanItems[0].local).toMatchObject({ note: '其他页面已保存的备注', tags: ['保留'], revision: 1 });
+  expect(state.doubanItems[0].cover?.mode ?? 'original').toBe('original');
+  expect(mutations(testInfo).filter(request => request.path === '/api/life/douban/cover-selection')).toHaveLength(1);
   await fits(page);
 });

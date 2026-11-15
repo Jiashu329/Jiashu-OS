@@ -16,7 +16,7 @@ function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
 }
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
-  for (const file of ['0024_douban.sql','0025_douban_data_resets.sql','0027_douban_subject_details.sql','0028_douban_browser_source.sql','0029_douban_library.sql']) {
+  for (const file of ['0024_douban.sql','0025_douban_data_resets.sql','0027_douban_subject_details.sql','0028_douban_browser_source.sql','0029_douban_library.sql','0030_douban_manual_cover.sql']) {
     sqlite.exec(readFileSync(new URL('../../../../../drizzle/' + file, import.meta.url), 'utf8'));
   }
   t.after(() => sqlite.close());

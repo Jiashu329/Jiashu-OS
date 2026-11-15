@@ -803,3 +803,65 @@ void test('an older import-source snapshot conflicts with a current browser-sour
   await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
   assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,before.tables.douban_items);
 });
+
+void test('manual cover URLs roundtrip with the existing 31-table backup and signed volumes without other owners links',async(t)=>{
+  const source=fixture(t),cover='https://covers.example.org/library/custom-poster.jpg?edition=2';
+  seedDouban(source.sqlite,'alice',doubanRow({local_cover_url:cover,local_revision:2,local_note:'保留自己的封面'}));
+  seedDouban(source.sqlite,'bob',doubanRow({local_cover_url:'https://private.example.org/BOB-PRIVATE-COVER.jpg'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(BACKUP_TABLE_NAMES.length,31);assert.equal(backup.tables.douban_items[0].local_cover_url,cover);
+  assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE-COVER/);
+  for(const input of [backup,await splitBackupVolumes(backup)]){
+    const target=fixture(t),preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    assert.equal(target.sqlite.prepare('SELECT local_cover_url FROM douban_items').get()?.local_cover_url,cover);
+    assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+  }
+});
+
+void test('published rows without manual cover columns preserve a later choice, including signed 31-table files',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice',doubanRow({local_note:'相同备注',local_revision:4}));
+  const legacy=await exportDataBackup(source.db,'alice',NOW);delete legacy.tables.douban_items[0].local_cover_url;
+  assert.equal(parseDataBackup(legacy).tables.douban_items[0].local_cover_url,null);
+  const setId=await backupDigest(legacy),volume={kind:'jiashu-os-backup-volume',version:1,setId,exportedAt:NOW,partIndex:1,totalParts:1,tables:legacy.tables};
+  const descriptor={partIndex:1,rowCount:1,byteLength:new TextEncoder().encode(JSON.stringify(volume)).byteLength,sha256:await backupDigest(volume)};
+  const signed={kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:NOW,totalRows:1,volumes:[descriptor]},volumes:[volume]};
+  for(const input of [legacy,signed]){
+    const target=fixture(t),cover='https://covers.example.org/chosen.jpg';
+    seedDouban(target.sqlite,'restored',doubanRow({local_note:'相同备注',local_revision:9,local_cover_url:cover}));
+    const preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);assert.equal(preview.total.skipped,1);assert.equal(preview.total.added,0);
+    await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    assert.equal(target.sqlite.prepare('SELECT local_cover_url FROM douban_items').get()?.local_cover_url,cover);
+  }
+});
+
+void test('different manual cover links conflict and any concurrent manual cover edit invalidates restore atomically',async(t)=>{
+  const source=fixture(t),firstCover='https://covers.example.org/first.jpg',nextCover='https://covers.example.org/next.jpg';
+  seedDouban(source.sqlite,'alice',doubanRow({local_cover_url:firstCover,local_revision:1}));
+  seedDouban(source.sqlite,'alice',doubanRow({subject_id:'1234567',url:'https://movie.douban.com/subject/1234567/'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);
+  seedDouban(target.sqlite,'restored',doubanRow({local_cover_url:nextCover,local_revision:2}));
+  const conflict=await previewDataRestore(target.db,'restored',backup);
+  assert.equal(conflict.canRestore,false);
+  assert.ok(conflict.tables.find(table=>table.table==='douban_items')?.conflictExamples[0]?.differences?.some(field=>field.field==='local_cover_url'));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,conflict.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,1);
+  target.sqlite.prepare('UPDATE douban_items SET local_cover_url=?,local_revision=3').run(firstCover);
+  const preview=await previewDataRestore(target.db,'restored',backup);assert.equal(preview.canRestore,true);
+  target.mutateNextBatch(()=>target.sqlite.prepare('UPDATE douban_items SET local_cover_url=?,local_revision=local_revision+1').run(nextCover));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT local_cover_url FROM douban_items').get()?.local_cover_url,nextCover);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,1);
+  assert.notEqual((await previewDataRestore(target.db,'restored',backup)).previewHash,preview.previewHash);
+});
+
+void test('backup manual cover fields allow only canonical public HTTPS URLs, never uploaded image data or private endpoints',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  for(const value of ['', 'http://covers.example.org/image.jpg','https://localhost/image.jpg','https://127.0.0.1/image.jpg','https://[::1]/image.jpg','https://user:password@covers.example.org/image.jpg','https://covers.example.org:8443/image.jpg','https://covers.example.org/image.jpg#fragment','data:image/png;base64,AAAA','/image.jpg',0]){
+    const invalid=structuredClone(backup);invalid.tables.douban_items[0].local_cover_url=value;
+    assert.throws(()=>parseDataBackup(invalid),BackupValidationError);
+  }
+  const valid=structuredClone(backup);valid.tables.douban_items[0].local_cover_url='https://covers.example.org/image.jpg';
+  assert.doesNotThrow(()=>parseDataBackup(valid));
+});

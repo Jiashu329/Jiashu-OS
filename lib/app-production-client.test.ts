@@ -7,6 +7,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { normalizeUserCoverUrl, userCoverDescriptor, type UserCoverDescriptor } from './douban-cover-selection.ts';
 import ts from 'typescript';
 import { buildHomeOverview } from './home-overview.ts';
 import { buildHealthSummary, type HealthMeasurement } from './health.ts';
@@ -112,7 +113,7 @@ function storage(seed: Record<string,string> = {}) {
   const values = new Map<string, string>(Object.entries(seed));
   return { getItem(key: string) { return values.get(key) ?? null; }, setItem(key: string, value: string) { values.set(key, String(value)); }, removeItem(key: string) { values.delete(key); }, clear() { values.clear(); }, snapshot() { return Object.fromEntries(values); } };
 }
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   for (const input of document.querySelectorAll('input[type=checkbox]')) (input as unknown as HTMLInputElement).checked = input.hasAttribute('checked');
@@ -162,6 +163,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const doubanClassificationBodies: Array<Record<string, unknown>> = [];
   const doubanExtensionMessages: Array<Record<string, unknown>> = [];
   const doubanResetBodies: Array<Record<string, unknown>> = [];
+  const doubanCoverSelectionBodies: Array<Record<string, unknown>> = [];
   const browserReceipts = new Map<string, Record<string, unknown>>();
   const resetReceipts = new Map<string, Record<string, unknown>>();
   if (catalog.douban?.browserExtensionItems || catalog.douban?.browserSubjectMetadata) {
@@ -269,6 +271,15 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       catalog.douban.items[index] = item;
       return Response.json(path === '/api/life/douban/metadata' ? { item, changed: true, dataEpoch: catalog.douban.dataEpoch ?? 0, metadata: { status: 'complete' } } : { item });
     }
+    if (method === 'PUT' && path === '/api/life/douban/cover-selection' && catalog.douban?.allowCoverSelection) {
+      requests.push({ path, method });const body=JSON.parse(String(options?.body));doubanCoverSelectionBodies.push(body);
+      assert.equal(body.expectedDataEpoch,catalog.douban.dataEpoch??0,'selected covers pin the active epoch');
+      const index=catalog.douban.items.findIndex(item=>item.profileId===body.profileId&&item.domain===body.domain&&item.subjectId===body.subjectId),previous=catalog.douban.items[index] as DoubanRecord & {local?:DoubanLocalRecord;cover?:UserCoverDescriptor};
+      assert.ok(previous);assert.equal(body.expectedLocalRevision,previous.local?.revision??0,'selected covers pin the personal edit version');
+      const selected=body.mode==='url'?normalizeUserCoverUrl(body.url):null,revision=(previous.local?.revision??0)+1;
+      const item={...previous,local:{note:'',tags:[],hidden:false,...previous.local,revision},cover:userCoverDescriptor(selected,revision)};catalog.douban.items[index]=item;
+      return Response.json({item,dataEpoch:catalog.douban.dataEpoch??0});
+    }
     if (method !== 'GET') { requests.push({ path, method }); throw new Error('Unexpected automatic production write: ' + method + ' ' + path); }
     // The account chrome now performs an independent identity read. Preserve
     // the business-call assertions below while also enforcing its read-only,
@@ -312,7 +323,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       else if (sort === 'date-asc') filtered.sort((left, right) => (left.markedDate ?? '').localeCompare(right.markedDate ?? ''));
       const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
       return Response.json({ dataEpoch: catalog.douban?.dataEpoch ?? 0, connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
-        items: filtered.slice(offset, offset + limit).map(item => ({ ...item, local: local(item) })), years, tags, total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
+        items: filtered.slice(offset, offset + limit).map(item => {const selected=(item as DoubanRecord & {cover?:UserCoverDescriptor}).cover;return { ...item, local: local(item),cover:userCoverDescriptor(selected?.mode==='url'?selected.url:null,local(item).revision) };}), years, tags, total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
     }
     if (parsed.pathname === '/api/health/review') {
       const review = catalog.weeklyReview ?? buildHealthWeeklyReview([], emptyGoalSettings(), parseHealthWeekQuery(parsed.searchParams));
@@ -364,7 +375,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, location };
+  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, doubanCoverSelectionBodies, location };
 }
 
 function openMediaTools(f: Awaited<ReturnType<typeof fixture>>, section: 'browser' | 'public' | 'import' | 'manage') {
@@ -1252,4 +1263,20 @@ test('minified notifications initialize category switches without marking messag
   assert.equal((f.document.getElementById('notifications-setting-invitations') as HTMLInputElement).disabled,false);
   assert.equal(f.document.querySelector('[data-context-path="/notifications"]')?.getAttribute('aria-current'),'page');
   assert.ok(f.requests.every(request=>request.method==='GET'&&request.path.startsWith('/api/notifications?')));
+});
+
+test('minified cover selection previews directly, saves only an explicit URL, preserves it through metadata and restores the original', { skip: !hasBuild }, async () => {
+  const item=mediaWorkspaceRecord('movie','8123456','生产自选封面作品'),chosen='https://images.example.org/production-cover.jpg';
+  item.coverUrl='https://img1.doubanio.com/view/photo/public/p123456.jpg';
+  const library={connection:{profileId:'synthetic-profile',revision:1,updatedAt:'2026-11-14T00:00:00.000Z'},items:[item],allowCoverSelection:true,allowMetadata:true};
+  const f=await fixture('id="douban-page"','/life/douban',390,{}, {foods:[],douban:library});
+  const query=<T=HTMLElement>(selector:string)=>{const element=f.document.querySelector(selector);assert.ok(element,selector);return element as unknown as T;};
+  await settle(()=>query('#douban-page').getAttribute('aria-busy')==='false');query('[data-douban-open="0"]').dispatchEvent(new f.window.Event('click',{bubbles:true}));
+  const mode=query<HTMLSelectElement>('[data-douban-cover-mode]');mode.value='url';mode.dispatchEvent(new f.window.Event('change',{bubbles:true}));const input=query<HTMLInputElement>('[data-douban-cover-url]');input.value=chosen;input.dispatchEvent(new f.window.Event('input',{bubbles:true}));
+  assert.equal(f.doubanCoverSelectionBodies.length,0);const before=f.requests.length;query('[data-douban-cover-preview]').dispatchEvent(new f.window.Event('click',{bubbles:true}));const preview=query<HTMLImageElement>('[data-douban-cover-preview-image]');assert.equal(preview.getAttribute('src'),chosen);assert.equal(preview.getAttribute('referrerpolicy'),'no-referrer');preview.dispatchEvent(new f.window.Event('load'));assert.equal(f.requests.length,before,'preview reads through img, never the API transport');
+  query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settleWork(()=>query('#douban-list img').getAttribute('src')===chosen&&!query<HTMLSelectElement>('[data-douban-cover-mode]').disabled,()=>query('[data-douban-cover-status]').textContent??'cover save');assert.equal(query('[data-douban-detail-cover]').getAttribute('src'),chosen);
+  assert.deepEqual(f.doubanCoverSelectionBodies,[{profileId:item.profileId,domain:'screen',subjectId:item.subjectId,expectedDataEpoch:0,expectedLocalRevision:0,mode:'url',url:chosen}]);
+  query('[data-douban-metadata-item]').dispatchEvent(new f.window.Event('click',{bubbles:true}));await settleWork(()=>query('#douban-metadata-status').textContent?.startsWith('本次补全完成')===true,()=>query('#douban-metadata-status').textContent??'metadata');assert.equal(query('#douban-list img').getAttribute('src'),chosen);assert.equal(query('[data-douban-detail-cover]').getAttribute('src'),chosen);
+  query('[data-douban-cover-original]').dispatchEvent(new f.window.Event('click',{bubbles:true}));assert.equal(f.doubanCoverSelectionBodies.length,1);query('#douban-cover-form').dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await settleWork(()=>query('#douban-list img').getAttribute('src')?.startsWith('/api/life/douban/cover?')===true,()=>query('[data-douban-cover-status]').textContent??'original');
+  assert.equal(f.doubanCoverSelectionBodies.length,2);assert.equal(f.doubanCoverSelectionBodies[1].mode,'original');assert.equal(Object.hasOwn(f.doubanCoverSelectionBodies[1],'url'),false);assert.equal(f.requests.some(request=>request.path===chosen),false);assert.ok(f.requests.filter(request=>request.method!=='GET').every(request=>['/api/life/douban/cover-selection','/api/life/douban/metadata'].includes(request.path)));
 });

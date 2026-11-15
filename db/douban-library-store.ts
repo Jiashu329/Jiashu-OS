@@ -1,9 +1,10 @@
+import { userCoverDescriptor, type UserCoverDescriptor } from '../lib/douban-cover-selection.ts';
 import { DOUBAN_LIBRARY_SORTS, parseDoubanLocalRecord, type DoubanLibrarySort, type DoubanLocalRecord } from '../lib/douban-library.ts';
 import { doubanSubjectUrl, parseDoubanProfile, type DoubanKind } from '../lib/douban.ts';
 import { DoubanStoreError, presentDoubanStoredRecord, readDoubanDataEpoch, type DoubanDatabase, type DoubanRecord, type DoubanRecordKey, type DoubanStoredRecord } from './douban-store.ts';
 
-export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord }
-interface StoredLibraryRecord extends DoubanStoredRecord { localNote: string; localTagsJson: string; localHidden: number; localRevision: number }
+export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord; cover: UserCoverDescriptor }
+interface StoredLibraryRecord extends DoubanStoredRecord { localNote: string; localTagsJson: string; localHidden: number; localRevision: number; localCoverUrl: string | null }
 export interface DoubanLibraryOptions {
   profileId?: string; kind?: DoubanKind | 'all'; query?: string; offset?: number; limit?: number;
   rating?: number | 'unrated'; year?: number; sort?: DoubanLibrarySort; hidden?: 'visible' | 'hidden' | 'all'; tag?: string; missing?: boolean;
@@ -11,19 +12,19 @@ export interface DoubanLibraryOptions {
 const columns = `profile_id AS profileId,domain,subject_id AS subjectId,kind,title,url,cover_url AS coverUrl,rating,
   marked_date AS markedDate,comment,published_at AS publishedAt,source,observed_at AS observedAt,
   created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson,
-  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision`;
+  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision,local_cover_url AS localCoverUrl`;
 const kinds = ['screen', 'movie', 'series', 'book', 'music'];
 const dateOrder = 'marked_date IS NULL,marked_date';
-const missingCondition = `(kind='screen' OR cover_url IS NULL OR trim(cover_url)='' OR trim(COALESCE(json_extract(details_json,'$.summary'),''))=''
+const missingCondition = `(kind='screen' OR (local_cover_url IS NULL AND (cover_url IS NULL OR trim(cover_url)='')) OR trim(COALESCE(json_extract(details_json,'$.summary'),''))=''
   OR CASE domain WHEN 'screen' THEN COALESCE(json_array_length(details_json,'$.directors'),0) WHEN 'book' THEN COALESCE(json_array_length(details_json,'$.authors'),0) ELSE COALESCE(json_array_length(details_json,'$.artists'),0) END=0)`;
 function invalid(message = '请核对书影音筛选或整理参数。'): never { throw new DoubanStoreError(message, 'INVALID_DOUBAN_INPUT', 400); }
 function conflict(): never { throw new DoubanStoreError('记录已变化，请重新读取收藏，核对后再保存。', 'DOUBAN_RECORD_CONFLICT'); }
 function present(row: StoredLibraryRecord): DoubanLibraryRecord {
-  const { localNote, localTagsJson, localHidden, localRevision, ...stored } = row;
+  const { localNote, localTagsJson, localHidden, localRevision, localCoverUrl, ...stored } = row;
   let tags: unknown; try { tags = JSON.parse(localTagsJson); } catch { throw new DoubanStoreError('个人整理资料暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
   const local = parseDoubanLocalRecord({ note: localNote, tags, hidden: localHidden === 1 });
   if (![0, 1].includes(localHidden) || !Number.isSafeInteger(localRevision) || localRevision < 0) throw new DoubanStoreError('个人整理版本暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503);
-  return { ...presentDoubanStoredRecord(stored), local: { ...local, revision: localRevision } };
+  return { ...presentDoubanStoredRecord(stored), local: { ...local, revision: localRevision }, cover: userCoverDescriptor(localCoverUrl, localRevision) };
 }
 function recordKey(command: DoubanRecordKey): DoubanRecordKey {
   if (typeof command.profileId !== 'string' || parseDoubanProfile(command.profileId).profileId !== command.profileId) invalid();
@@ -73,6 +74,13 @@ export async function listDoubanLibrary(db: DoubanDatabase, userId: string, opti
   return { items: (results[1].results as unknown as StoredLibraryRecord[]).map(present), total, counts, offset, limit, hasMore: offset + results[1].results.length < total,
     years: (results[2].results as unknown as { year: string }[]).map(row => Number(row.year)).filter(year => Number.isInteger(year) && year >= 1000 && year <= 9999),
     tags: (results[3].results as unknown as { tag: string }[]).map(row => row.tag) };
+}
+
+export async function readDoubanLibraryRecord(db: DoubanDatabase, userId: string, key: DoubanRecordKey): Promise<DoubanLibraryRecord | null> {
+  recordKey(key);
+  const row = await db.prepare(`SELECT ${columns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain=? AND subject_id=?`)
+    .bind(userId, key.profileId, key.domain, key.subjectId).first<StoredLibraryRecord>();
+  return row ? present(row) : null;
 }
 
 export async function writeDoubanLocalRecord(db: DoubanDatabase, userId: string,

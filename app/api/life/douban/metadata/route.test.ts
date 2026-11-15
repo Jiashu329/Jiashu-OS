@@ -28,6 +28,7 @@ function fixture(t: TestContext) {
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0027_douban_subject_details.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0028_douban_browser_source.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0029_douban_library.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../../../../drizzle/0030_douban_manual_cover.sql', import.meta.url), 'utf8'));
   const queries: string[] = [], outgoing: Array<{ domain: string; subjectId: string }> = [];
   const db = { prepare(sql: string) {
     queries.push(sql); const statement = sqlite.prepare(sql); let values: SQLInputValue[] = [];

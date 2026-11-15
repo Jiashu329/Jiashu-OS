@@ -499,6 +499,7 @@ export const doubanItems = sqliteTable('douban_items', {
   publishedAt: text('published_at'), source: text('source').notNull(), observedAt: text('observed_at').notNull(),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), metadataCheckedRunId: text('metadata_checked_run_id'),
   detailsJson: text('details_json').notNull().default('{}'),
+  localCoverUrl: text('local_cover_url'),
   localNote: text('local_note').notNull().default(''), localTagsJson: text('local_tags_json').notNull().default('[]'),
   localHidden: integer('local_hidden').notNull().default(0), localRevision: integer('local_revision').notNull().default(0),
 }, table => [primaryKey({ columns: [table.userId, table.profileId, table.domain, table.subjectId] }),

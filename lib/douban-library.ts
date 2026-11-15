@@ -5,10 +5,10 @@ export type DoubanLibrarySort = 'date-desc' | 'date-asc' | 'rating-desc' | 'rati
 export const DOUBAN_LIBRARY_SORTS: DoubanLibrarySort[] = ['date-desc', 'date-asc', 'rating-desc', 'rating-asc'];
 
 /** Core fields that can usefully be completed for every supported kind of work. */
-export function doubanMissingFields(item: { domain: DoubanDomain; kind?: string; coverUrl?: string | null; details?: DoubanSubjectDetails }): string[] {
+export function doubanMissingFields(item: { domain: DoubanDomain; kind?: string; coverUrl?: string | null; cover?: { mode: string; url?: string }; details?: DoubanSubjectDetails }): string[] {
   const missing: string[] = [], details = item.details ?? {};
   if (item.kind === 'screen') missing.push('影视分类');
-  if (!item.coverUrl?.trim()) missing.push('封面');
+  if (!item.coverUrl?.trim() && !(item.cover?.mode === 'url' && item.cover.url?.trim())) missing.push('封面');
   if (!details.summary?.trim()) missing.push('简介');
   const field = item.domain === 'screen' ? 'directors' : item.domain === 'book' ? 'authors' : 'artists';
   if (!details[field]?.length) missing.push(item.domain === 'screen' ? '导演' : item.domain === 'book' ? '作者' : '表演者');

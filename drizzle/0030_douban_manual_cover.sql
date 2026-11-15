@@ -1,0 +1,1 @@
+ALTER TABLE `douban_items` ADD `local_cover_url` text;

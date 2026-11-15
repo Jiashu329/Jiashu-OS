@@ -16,7 +16,7 @@ function retainsRicherDoubanData(prior: BackupRow, incoming: BackupRow): boolean
   // Restoring them must not erase, or conflict with, later personal organization.
   const untouchedLocal = incoming.local_revision === 0 && incoming.local_note === '' && incoming.local_hidden === 0
     && JSON.parse(String(incoming.local_tags_json)).length === 0;
-  const preserved = { ...incoming, details_json: prior.details_json,
+  const preserved = { ...incoming, details_json: prior.details_json, local_cover_url: incoming.local_cover_url ?? prior.local_cover_url,
     ...(untouchedLocal ? {local_note:prior.local_note,local_tags_json:prior.local_tags_json,local_hidden:prior.local_hidden} : {}) };
   return Object.entries(nextDetails).every(([key, value]) => JSON.stringify(value) === JSON.stringify(oldDetails[key as keyof typeof oldDetails]))
     && comparableBackupRow('douban_items', prior) === comparableBackupRow('douban_items', preserved);
