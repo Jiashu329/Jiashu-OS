@@ -22,6 +22,7 @@ import type { DoubanRecord, DoubanConnection } from '../db/douban-store.ts';
 import type { DoubanRecordInput } from './douban.ts';
 import type { DoubanSubjectMetadata } from './douban-metadata.ts';
 import { mergeDoubanDetails } from './douban-details.ts';
+import { doubanMissingFields, type DoubanLocalRecord } from './douban-library.ts';
 import { FOOD_CATALOG_SOURCES, getFood } from './food-catalog.ts';
 import { FOOD_LIBRARY_BRANDS, foodLibraryCategories, browseFoodLibrary, getLibraryFood } from './food-library-catalog.ts';
 import { foodCatalogImages } from './food-catalog-images.ts';
@@ -114,6 +115,7 @@ function storage(seed: Record<string,string> = {}) {
 async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
+  for (const input of document.querySelectorAll('input[type=checkbox]')) (input as unknown as HTMLInputElement).checked = input.hasAttribute('checked');
   // Linkedom delegates host globals between windows. Browser capabilities are
   // opt-in per fixture, so an earlier extension mock cannot affect fallback.
   Object.defineProperty(window, 'chrome', { configurable: true, value: undefined });
@@ -291,15 +293,26 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
     }
     if (parsed.pathname === '/api/life/douban') {
       const connection = catalog.douban?.connection ?? { profileId: null, revision: 0, updatedAt: null };
-      const query = parsed.searchParams.get('q') ?? '', kind = parsed.searchParams.get('kind') ?? '';
-      const rows = (catalog.douban?.items ?? []).filter(item => (parsed.searchParams.get('profile') !== 'current' || item.profileId === connection.profileId)
-        && (item.title.includes(query) || (item.comment ?? '').includes(query)));
+      const params = parsed.searchParams, query = params.get('q') ?? '', kind = params.get('kind') ?? '';
+      const local = (item: DoubanRecord) => (item as DoubanRecord & { local?: DoubanLocalRecord }).local ?? { note: '', tags: [], hidden: false, revision: 0 };
+      const scoped = (catalog.douban?.items ?? []).filter(item => (params.get('profile') !== 'current' || item.profileId === connection.profileId)
+        && (params.get('hidden') === 'all' || local(item).hidden === (params.get('hidden') === 'hidden')));
+      const years = [...new Set(scoped.filter(item => item.markedDate).map(item => Number(item.markedDate!.slice(0, 4))))].sort((left, right) => right - left);
+      const tags = [...new Set(scoped.flatMap(item => local(item).tags))].sort();
+      const rows = scoped.filter(item => [item.title, item.comment ?? '', local(item).note, ...local(item).tags, ...(item.details?.authors ?? []), ...(item.details?.directors ?? []), ...(item.details?.artists ?? [])].some(value => value.includes(query))
+        && (!params.get('rating') || (params.get('rating') === 'unrated' ? item.rating === null : item.rating === Number(params.get('rating'))))
+        && (!params.get('year') || item.markedDate?.startsWith(params.get('year')! + '-'))
+        && (!params.get('tag') || local(item).tags.includes(params.get('tag')!))
+        && (params.get('missing') !== '1' || doubanMissingFields(item).length > 0));
       const counts = { all: rows.length, movie: 0, series: 0, screen: 0, book: 0, music: 0 };
       for (const item of rows) counts[item.kind]++;
       const filtered = rows.filter(item => !kind || kind === 'all' || item.kind === kind);
-      const offset = Number(parsed.searchParams.get('offset') ?? 0), limit = Number(parsed.searchParams.get('limit') ?? 24);
+      const sort = params.get('sort');
+      if (sort === 'rating-asc' || sort === 'rating-desc') filtered.sort((left, right) => left.rating === null ? right.rating === null ? 0 : 1 : right.rating === null ? -1 : (left.rating - right.rating) * (sort === 'rating-asc' ? 1 : -1));
+      else if (sort === 'date-asc') filtered.sort((left, right) => (left.markedDate ?? '').localeCompare(right.markedDate ?? ''));
+      const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
       return Response.json({ dataEpoch: catalog.douban?.dataEpoch ?? 0, connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
-        items: filtered.slice(offset, offset + limit), total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
+        items: filtered.slice(offset, offset + limit).map(item => ({ ...item, local: local(item) })), years, tags, total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
     }
     if (parsed.pathname === '/api/health/review') {
       const review = catalog.weeklyReview ?? buildHealthWeeklyReview([], emptyGoalSettings(), parseHealthWeekQuery(parsed.searchParams));
@@ -783,13 +796,13 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   const existing = { ...mediaWorkspaceRecord('screen', '1234890', '原待分类影视'),
     coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-old.jpg', details: { summary: '原有简介必须保留' } };
   const input: DoubanRecordInput = { domain: existing.domain, subjectId: existing.subjectId, kind: 'screen', title: '重新同步的影视作品', url: existing.url,
-    coverUrl: null, rating: existing.rating, markedDate: existing.markedDate, comment: existing.comment, publishedAt: null, source: 'import' };
+    coverUrl: null, rating: existing.rating, markedDate: existing.markedDate, comment: existing.comment, publishedAt: null, source: 'browser' };
   const metadata: DoubanSubjectMetadata = { kind: expectedKind, coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-new.jpg',
     details: { directors: ['合成导演'], ...(expectedKind === 'movie' ? { duration: '118分钟' } : { episodes: 12 }) } };
   const items = [existing];
   const f = await fixture('id="douban-page"', '/life/douban', width, {}, { foods: [], douban: {
     connection: { profileId: existing.profileId, revision: 1, updatedAt: existing.updatedAt }, items, allowMetadata: true,
-    browserExtensionItems: [input], browserSubjectMetadata: { ['screen:' + existing.subjectId]: metadata },
+    browserExtensionItems: [input], browserExtensionVersion: '1.0.5', browserSubjectMetadata: { ['screen:' + existing.subjectId]: metadata },
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
   assert.equal(f.doubanExtensionMessages.length, 0);
@@ -800,6 +813,8 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settleWork(() => status.textContent?.includes('浏览器同步完成') === true, () => 'automatic sync must complete: ' + status.textContent);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'START', 'STEP', 'CONNECT', 'SUBJECT']);
+  assert.deepEqual(f.doubanExtensionMessages.find(body => body.action === 'START')?.domains, ['screen', 'book', 'music']);
+  assert.ok(f.doubanImportBodies.every(body => (body.items as DoubanRecordInput[]).every(item => item.source === 'browser')));
   const subject = f.doubanExtensionMessages.find(body => body.action === 'SUBJECT')!;
   assert.equal(subject.runId, '11111111-1111-4111-8111-111111111111');
   assert.equal(f.doubanImportBodies[0].returnRecords, undefined, 'preview only verifies the collection page');
@@ -843,8 +858,8 @@ for (const width of [390, 1280]) void test('minified work enrichment explicitly 
   await settle(() => get('page').getAttribute('aria-busy') === 'false');
   assert.equal(f.doubanExtensionMessages.length, 0); assert.equal(f.doubanMetadataBodies.length, 0);
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => /本页补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
-  assert.match(get('metadata-status').textContent ?? '', /本页补全完成/, 'local enrichment must complete: ' + get('metadata-status').textContent);
+  await settle(() => /本次补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
+  assert.match(get('metadata-status').textContent ?? '', /本次补全完成/, 'local enrichment must complete: ' + get('metadata-status').textContent);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'SUBJECT']);
   assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: item.domain, subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 2, confirmed: true, metadata }]);
   assert.deepEqual(f.requests.filter(request => request.path === '/api/life/douban/metadata'), [{ path: '/api/life/douban/metadata', method: 'PUT' }]);
@@ -912,8 +927,8 @@ test('minified media enrichment and manual classification only write after their
   assert.equal(f.doubanMetadataBodies.length, 0);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^data:image\/svg\+xml/);
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => /本页补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
-  assert.match(get('metadata-status').textContent ?? '', /本页补全完成/, 'fallback enrichment must complete: ' + get('metadata-status').textContent);
+  await settle(() => /本次补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
+  assert.match(get('metadata-status').textContent ?? '', /本次补全完成/, 'fallback enrichment must complete: ' + get('metadata-status').textContent);
   assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: 'screen', subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 0, confirmed: true }]);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^\/api\/life\/douban\/cover\?/);
   assert.match(f.document.querySelector('#douban-list .db-meta')?.textContent ?? '', /电视剧/);

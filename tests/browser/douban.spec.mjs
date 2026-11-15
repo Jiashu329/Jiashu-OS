@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
 import { parseDoubanProfile } from '../../lib/douban.ts';
 import { mergeDoubanDetails } from '../../lib/douban-details.ts';
+import { doubanMissingFields, parseDoubanLocalRecord } from '../../lib/douban-library.ts';
 import { syntheticPhotoPNG } from './photo-fixture.mjs';
 
 const PROFILE = 'synthetic-douban-user';
@@ -40,13 +41,38 @@ function newRun(connection) {
     added: 0, updated: 0, unchanged: 0, message: '公开记录同步已准备好，等待读取第一页。',
     createdAt: STAMP, startedAt: STAMP, updatedAt: STAMP, finishedAt: null };
 }
+function localRecord(item) {
+  return item.local ?? { note: '', tags: [], hidden: false, revision: 0 };
+}
 function listResult(state, params) {
   const scope = params.get('profile') ?? 'all', kind = params.get('kind') ?? '', query = (params.get('q') ?? '').trim().toLowerCase();
-  const owned = state.doubanItems.filter(item => scope !== 'current' || item.profileId === state.doubanConnection.profileId);
-  const filtered = owned.filter(item => (!kind || kind === 'all' || item.kind === kind) && (!query || item.title.toLowerCase().includes(query)));
+  const hidden = params.get('hidden') ?? 'visible', sort = params.get('sort') ?? 'date-desc', rating = params.get('rating'), year = params.get('year'), tag = params.get('tag');
+  const owned = state.doubanItems.filter(item => (scope !== 'current' || item.profileId === state.doubanConnection.profileId)
+    && (hidden === 'all' || localRecord(item).hidden === (hidden === 'hidden')));
+  const matched = owned.filter(item => {
+    const personal = localRecord(item), details = item.details ?? {};
+    const searchable = [item.title, item.comment, personal.note, ...personal.tags, ...(details.authors ?? []), ...(details.directors ?? []), ...(details.artists ?? []), ...(details.cast ?? [])];
+    return (!query || searchable.some(value => typeof value === 'string' && value.toLowerCase().includes(query)))
+      && (!rating || (rating === 'unrated' ? item.rating === null : item.rating === Number(rating)))
+      && (!year || item.markedDate?.slice(0, 4) === year) && (!tag || personal.tags.includes(tag))
+      && (params.get('missing') !== '1' || doubanMissingFields(item).length > 0);
+  });
+  const date = item => item.markedDate ?? item.publishedAt?.slice(0, 10) ?? item.observedAt?.slice(0, 10) ?? '';
+  const filtered = matched.filter(item => !kind || kind === 'all' || item.kind === kind).sort((a, b) => {
+    if (sort.startsWith('rating-')) {
+      if (a.rating === null || b.rating === null) return Number(a.rating === null) - Number(b.rating === null);
+      const order = (a.rating - b.rating) * (sort === 'rating-asc' ? 1 : -1);
+      if (order) return order;
+    }
+    // Stable ties keep individual fixture identities readable; database tests cover the final SQL tie-breakers.
+    return date(a).localeCompare(date(b)) * (sort === 'date-asc' ? 1 : -1);
+  });
   const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
-  return { connection: state.doubanConnection, dataEpoch: state.doubanDataEpoch, items: filtered.slice(offset, offset + limit), total: filtered.length,
-    counts: Object.fromEntries(['all', ...KINDS].map(key => [key, key === 'all' ? owned.length : owned.filter(item => item.kind === key).length])),
+  return { connection: state.doubanConnection, dataEpoch: state.doubanDataEpoch,
+    items: filtered.slice(offset, offset + limit).map(item => ({ ...item, local: localRecord(item) })), total: filtered.length,
+    counts: Object.fromEntries(['all', ...KINDS].map(key => [key, key === 'all' ? matched.length : matched.filter(item => item.kind === key).length])),
+    years: [...new Set(owned.filter(item => item.markedDate).map(item => Number(item.markedDate.slice(0, 4))))].sort((a, b) => b - a),
+    tags: [...new Set(owned.flatMap(item => localRecord(item).tags))].sort(),
     offset, limit, hasMore: offset + limit < filtered.length, lastRun: state.doubanRun };
 }
 const mutations = info => info.synthetic.requests.filter(request => request.path.startsWith('/api/life/douban') && request.method !== 'GET');
@@ -64,7 +90,8 @@ function importPlan(state, profileId, items) {
     const old = state.doubanItems[index], next = { ...old, ...input, profileId };
     if (old) {
       if (input.kind === 'screen' && ['movie', 'series'].includes(old.kind)) next.kind = old.kind;
-      for (const key of ['coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt']) if (input[key] == null && old[key] != null) next[key] = old[key];
+      for (const key of ['coverUrl', 'publishedAt']) if (input[key] == null && old[key] != null) next[key] = old[key];
+      for (const key of ['rating', 'markedDate', 'comment']) if (input.source !== 'browser' && input[key] == null && old[key] != null) next[key] = old[key];
     }
     const details = mergeDoubanDetails(old?.details, input.details);
     if (Object.keys(details).length) next.details = details;
@@ -112,6 +139,24 @@ test.beforeEach(async ({ context, page }, testInfo) => {
       if (state.doubanLoseResetReply) { state.doubanLoseResetReply = false; return route.abort('connectionreset'); }
       return send({ receipt });
     }
+    if (url.pathname === '/api/life/douban/library' && ['PUT', 'POST'].includes(method)) {
+      if (body.expectedDataEpoch !== state.doubanDataEpoch) return fail('收藏已重置，请重新读取。', 'DOUBAN_DATA_EPOCH_CONFLICT');
+      const find = entry => state.doubanItems.find(item => item.profileId === entry.profileId && item.domain === entry.domain && item.subjectId === entry.subjectId);
+      if (method === 'PUT') {
+        const item = find(body);
+        if (!item) return fail('条目不存在。', 'DOUBAN_ITEM_NOT_FOUND', 404);
+        if (body.expectedLocalRevision !== localRecord(item).revision) return fail('我的整理已在其他页面更新。', 'DOUBAN_LOCAL_CONFLICT');
+        let personal;
+        try { personal = parseDoubanLocalRecord(body); } catch { return fail('备注或标签格式不正确。', 'INVALID_DOUBAN_INPUT', 400); }
+        item.local = { ...personal, revision: localRecord(item).revision + 1 };
+        return send({ item, dataEpoch: state.doubanDataEpoch });
+      }
+      if (body.action !== 'classify' || !['movie', 'series'].includes(body.kind) || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 24) return fail('请选择影视分类。', 'INVALID_DOUBAN_INPUT', 400);
+      const items = body.items.map(find), keys = body.items.map(item => JSON.stringify([item.profileId, item.domain, item.subjectId]));
+      if (new Set(keys).size !== keys.length || items.some((item, index) => !item || item.domain !== 'screen' || body.items[index].expectedUpdatedAt !== item.updatedAt)) return fail('部分作品已更新，本次分类未覆盖。', 'DOUBAN_RECORD_CONFLICT');
+      for (const item of items) { item.kind = body.kind; item.metadataCheckedRunId = 'manual-kind'; item.updatedAt = nextVersion(state, item.updatedAt); }
+      return send({ items: items.map(item => ({ ...item, local: localRecord(item) })), dataEpoch: state.doubanDataEpoch });
+    }
     if ((url.pathname === '/api/life/douban/metadata' && ['POST', 'PUT'].includes(method)) || (url.pathname === '/api/life/douban/classification' && method === 'PUT')) {
       if (url.pathname.endsWith('/metadata') && (body.expectedDataEpoch ?? 0) !== state.doubanDataEpoch) return fail('书影音资料已清空或重置，旧作品补全已停止。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const item = state.doubanItems.find(value => value.profileId === body.profileId && value.domain === body.domain && value.subjectId === body.subjectId);
@@ -151,7 +196,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
     }
     if (url.pathname === '/api/life/douban/import' && method === 'POST') {
       const profile = parseDoubanProfile(body.profile), items = body.items;
-      if (!Array.isArray(items) || !items.length || items.some(item => item.source !== 'import')) return fail('请提交本地解析后的本人资料。', 'SYNTHETIC_IMPORT_INVALID', 400);
+      if (!Array.isArray(items) || !items.length || items.some(item => !['import', 'browser'].includes(item.source))) return fail('请提交本地解析后的本人资料。', 'SYNTHETIC_IMPORT_INVALID', 400);
       const expectedDataEpoch = body.expectedDataEpoch ?? 0;
       if (expectedDataEpoch !== state.doubanDataEpoch) return fail('豆瓣资料已清空或更新，请重新预览后再保存。', 'DOUBAN_DATA_EPOCH_CONFLICT');
       const snapshotHash = ['a', 'b', 'c', 'd', 'e', 'f'][state.doubanDataEpoch % 6].repeat(64), payload = JSON.stringify({ profileId: profile.profileId, items, dataEpoch: state.doubanDataEpoch });
@@ -276,7 +321,7 @@ async function installExtensionMock(context, pages, options = {}) {
     const runtime = { sendMessage(id, body, callback) {
       state.calls.push({ id, body: structuredClone(body) });
       const reply = value => queueMicrotask(() => callback(value));
-      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.4', protocolVersion: 1 } });
+      if (['CONNECT', 'STATUS'].includes(body.action)) return reply({ ok: true, data: { extensionVersion: options.version ?? '1.0.5', protocolVersion: 1 } });
       if (body.action === 'SUBJECT_CANCEL') return reply({ ok: true, data: { cancelled: true } });
       if (body.action === 'SUBJECT') {
         const key = body.domain + ':' + body.subjectId, metadata = options.subjects?.[key];
@@ -294,7 +339,7 @@ async function installExtensionMock(context, pages, options = {}) {
       const key = body.step + ':' + body.requestId;
       if (!results.has(key)) {
         state.reads++;
-        results.set(key, { ok: true, data: { runId, step: body.step + 1, progress: progress(body.step + 1), done: body.step + 1 === pages.length, items: pages[body.step] } });
+        results.set(key, { ok: true, data: { runId, step: body.step + 1, progress: progress(body.step + 1), done: body.step + 1 === pages.length, items: pages[body.step].map(item => ({ ...item, source: (options.version ?? '1.0.5').split('.').map(Number)[2] >= 5 ? 'browser' : 'import' })) } });
       }
       const complete = () => {
         state.pending = false; state.release = null;
@@ -903,7 +948,7 @@ test('explicit local work enrichment displays movie, book and music facts separa
   expect(mutations(testInfo)).toEqual([]);
   await page.locator('#douban-detail-close').click();
   await page.locator('#douban-metadata').click();
-  await expect(page.locator('#douban-metadata-status')).toContainText('本页补全完成');
+  await expect(page.locator('#douban-metadata-status')).toContainText('本次补全完成');
   expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(3);
   const writes = mutations(testInfo);
   expect(writes).toHaveLength(3);
@@ -1142,7 +1187,7 @@ test('long work summaries, casts and track lists expand accessibly and Escape re
 });
 
 
-test('explicit browser resync classifies existing screen records and refreshes covers before another collection page', async ({ context, page }, testInfo) => {
+test('explicit browser resync saves every collection page before classifying existing records and refreshing covers', async ({ context, page }, testInfo) => {
   const state = testInfo.synthetic;
   bind(state);
   const inputs = [extensionItem('screen', 1200), extensionItem('screen', 1201)];
@@ -1168,7 +1213,7 @@ test('explicit browser resync classifies existing screen records and refreshes c
     expect(item.comment).toBe('合成个人短评');
   }
   const calls = await extensionCalls(page), reads = calls.filter(call => ['STEP', 'SUBJECT'].includes(call.body.action));
-  expect(reads.map(call => call.body.action)).toEqual(['STEP', 'SUBJECT', 'SUBJECT', 'STEP']);
+  expect(reads.map(call => call.body.action)).toEqual(['STEP', 'STEP', 'SUBJECT', 'SUBJECT']);
   const runId = reads[0].body.runId;
   expect(reads.filter(call => call.body.action === 'SUBJECT').every(call => call.body.runId === runId)).toBe(true);
   const writes = mutations(testInfo), commits = writes.filter(request => request.body.action === 'commit'), puts = writes.filter(request => request.method === 'PUT');
@@ -1277,5 +1322,149 @@ test('clearing an account during queued subject enrichment prevents the late met
   expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
   expect(await extensionCalls(page, 'CANCEL')).toHaveLength(1);
   expect(state.doubanDataEpoch).toBe(1);
+  await fits(page);
+});
+
+test('personal rating, marking year, author search and missing details filter the saved library with explicit sorting', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [
+    { ...record('book', 1300), title: '低评分合成书', rating: 3, markedDate: '2025-06-10', details: { authors: ['共同合成作者'] } },
+    { ...record('book', 1301), title: '五星合成书', rating: 5, markedDate: '2026-03-11', coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s1301.jpg', details: { authors: ['共同合成作者'], summary: '已完整保存的合成简介' } },
+    { ...record('movie', 1302), title: '尚未评分合成电影', rating: null, markedDate: null },
+  ];
+  await openLibrary(page);
+  await page.locator('#douban-filters > summary').click();
+  await page.locator('#douban-rating').selectOption('5');
+  await expect(page.locator('#douban-list h3')).toHaveText(['五星合成书']);
+  await page.locator('#douban-year').selectOption('2025');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  await page.locator('#douban-rating').selectOption('');
+  await expect(page.locator('#douban-list h3')).toHaveText(['低评分合成书']);
+  await page.locator('#douban-year').selectOption('');
+  await page.locator('#douban-sort').selectOption('rating-asc');
+  await expect(page.locator('#douban-list h3')).toHaveText(['低评分合成书', '五星合成书', '尚未评分合成电影']);
+  await page.locator('#douban-query').fill('共同合成作者');
+  await page.locator('#douban-search').click();
+  await expect(page.locator('#douban-list h3')).toHaveText(['低评分合成书', '五星合成书']);
+  await page.locator('#douban-missing').check();
+  await expect(page.locator('#douban-list h3')).toHaveText(['低评分合成书']);
+  expect(new URL(page.url()).searchParams.get('missing')).toBe('1');
+  await expect(page.locator('#douban-kind-chips [data-douban-kind="book"]')).toContainText('1');
+  expect(mutations(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('local notes and tags save separately from Douban fields and a hidden work can be restored', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state); state.doubanItems = [record('book', 1320)];
+  await openLibrary(page);
+  await page.locator('#douban-list [data-douban-open]').click();
+  const note = '我的备注 <img src=x onerror=alert(1)>，同步不应覆盖';
+  await page.locator('[data-douban-note]').fill(note);
+  await page.locator('[data-douban-tags]').fill('想重读，合成标签');
+  await page.locator('[data-douban-hidden]').check();
+  await page.locator('[data-douban-personal-save]').click();
+  await expect(page.locator('[data-douban-personal-status]')).toContainText('已保存');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  expect(state.doubanItems[0].local).toEqual({ note, tags: ['想重读', '合成标签'], hidden: true, revision: 1 });
+  expect(state.doubanItems[0]).toMatchObject({ rating: 4, comment: '合成个人短评', updatedAt: STAMP });
+  await expect(page.locator('#douban-personal-form img')).toHaveCount(0);
+  await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-filters > summary').click();
+  await page.locator('#douban-hidden').selectOption('hidden');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  await page.locator('#douban-tag').selectOption('想重读');
+  await expect(page.locator('#douban-list h3')).toHaveText(['合成图书1320']);
+  await page.locator('#douban-list [data-douban-open]').click();
+  await expect(page.locator('[data-douban-note]')).toHaveValue(note);
+  await expect(page.locator('[data-douban-hidden]')).toBeChecked();
+  await page.locator('[data-douban-hidden]').uncheck();
+  await page.locator('[data-douban-personal-save]').click();
+  await expect(page.locator('[data-douban-personal-status]')).toContainText('已保存');
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(0);
+  await page.locator('#douban-detail-close').click();
+  await page.locator('#douban-hidden').selectOption('visible');
+  await expect(page.locator('#douban-list h3')).toHaveText(['合成图书1320']);
+  const writes = mutations(testInfo);
+  expect(writes).toHaveLength(2);
+  expect(writes.map(request => request.body.expectedLocalRevision)).toEqual([0, 1]);
+  expect(writes.every(request => request.path === '/api/life/douban/library' && request.method === 'PUT' && request.body.expectedDataEpoch === 0)).toBe(true);
+  expect(state.doubanItems[0].local.hidden).toBe(false);
+  expect(syncRequests(testInfo)).toEqual([]);
+  await fits(page);
+});
+
+test('a public sync can remain busy while saved records are searched, classified for browsing and paginated', async ({ page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state); state.doubanHoldStep = true;
+  state.doubanItems = Array.from({ length: 28 }, (_, index) => ({ ...record('book', 1340 + index), title: '同步中仍可浏览的图书' + index }));
+  await openLibrary(page); await openTools(page, 'public');
+  await page.locator('#douban-sync').click();
+  await expect.poll(() => state.doubanStepPending).toBe(true);
+  await closeTools(page);
+  await expect(page.locator('#douban-workspace-progress')).toBeVisible();
+  await page.locator('#douban-query').fill('同步中仍可浏览');
+  await page.locator('#douban-search').click();
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(24);
+  await selectKind(page, 'book');
+  await page.locator('#douban-next').click();
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(4);
+  expect(new URL(page.url()).searchParams.get('offset')).toBe('24');
+  expect(state.doubanStepPending).toBe(true);
+  await page.locator('#douban-workspace-progress').click();
+  await expect(page.locator('#douban-stop')).toBeEnabled();
+  await page.locator('#douban-stop').click(); state.doubanReleaseStep();
+  await expect(page.locator('#douban-stop')).toBeHidden();
+  await expect(page.locator('#douban-sync-status')).toContainText('已暂停');
+  await closeTools(page); await fits(page);
+});
+
+test('single-work enrichment refreshes its open detail and a paused missing-details queue resumes without reading the first work again', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  state.doubanItems = [record('book', 1380), record('book', 1381), record('book', 1382)];
+  const metadata = index => ({ kind: 'book', coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s' + index + '.jpg', details: { authors: ['即时刷新的合成作者' + index], summary: '此书已补全的合成简介' } });
+  await installExtensionMock(context, [], { subjects: { 'book:9001380': metadata(1380), 'book:9001381': metadata(1381), 'book:9001382': metadata(1382) } });
+  await openLibrary(page);
+  await page.locator('#douban-list [data-douban-open="0"]').click();
+  await page.locator('[data-douban-metadata-item]').click();
+  await expect(page.locator('[data-douban-details="book"]')).toContainText('即时刷新的合成作者1380');
+  await expect(page.locator('#douban-metadata-status')).toContainText('本次补全完成');
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(1);
+  await page.locator('#douban-detail-close').click();
+  await page.evaluate(() => { window.__doubanExtensionMock.holdSubject = 'book:9001381'; });
+  await page.locator('#douban-metadata').click();
+  await expect.poll(() => page.evaluate(() => window.__doubanExtensionMock.subjectPending)).toBe(true);
+  await page.locator('#douban-metadata-stop').click();
+  await page.evaluate(() => window.__doubanExtensionMock.releaseSubject());
+  await expect(page.locator('#douban-metadata-resume')).toHaveText('继续补全（1）');
+  await expect(page.locator('#douban-metadata-status')).toContainText('已暂停补全');
+  await page.locator('#douban-query').fill('合成图书1382');
+  await page.locator('#douban-search').click();
+  await expect(page.locator('#douban-list [data-douban-open]')).toHaveCount(1);
+  await page.locator('#douban-metadata-resume').click();
+  await expect(page.locator('#douban-metadata-status')).toContainText('本次补全完成');
+  await expect(page.locator('#douban-metadata-resume')).toBeHidden();
+  const subjects = await extensionCalls(page, 'SUBJECT');
+  expect(subjects.map(call => call.body.subjectId)).toEqual(['9001380', '9001381', '9001382']);
+  expect(state.doubanItems.every(item => doubanMissingFields(item).length === 0)).toBe(true);
+  await fits(page);
+});
+
+test('a current browser snapshot can clear revoked ratings and comments while retaining local organization', async ({ context, page }, testInfo) => {
+  const state = testInfo.synthetic;
+  bind(state);
+  const item = record('book', 1390), local = { note: '应保留的本站备注', tags: ['本站标签'], hidden: false, revision: 2 };
+  state.doubanItems = [{ ...item, source: 'import', local }];
+  await installExtensionMock(context, [[{ ...extensionItem('book', 1390), rating: null, comment: null }]], { version: '1.0.5' });
+  await openLibrary(page); await openTools(page, 'browser');
+  await page.locator('#douban-browser-auto-complete').uncheck();
+  await page.locator('#douban-browser-sync').click();
+  await expect(page.locator('#douban-browser-status')).toContainText('基础收藏已同步');
+  expect(state.doubanItems).toHaveLength(1);
+  expect(state.doubanItems[0]).toMatchObject({ rating: null, comment: null, source: 'browser', local });
+  expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(0);
+  expect(mutations(testInfo).filter(request => request.body.action === 'commit')[0].body.items[0].source).toBe('browser');
   await fits(page);
 });

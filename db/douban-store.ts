@@ -84,17 +84,21 @@ function merge(old: DoubanRecord | undefined, input: DoubanRecordInput): DoubanR
     coverUrl: old.coverUrl ?? input.coverUrl, rating: old.rating, markedDate: old.markedDate, comment: old.comment,
     publishedAt: old.publishedAt ?? input.publishedAt, source: old.source, ...detailFields,
   };
-  const privateImport = old.source === 'import' && input.source !== 'import';
+  // An explicit browser refresh is an authoritative snapshot, including empty
+  // ratings/comments. Old browser versions used `import`, so it must also be
+  // able to replace those rows; anonymous collection/RSS reads stay conservative.
+  const privateImport = old.source === 'import' && input.source !== 'import' && input.source !== 'browser';
+  const browserSnapshot = old.source === 'browser' && input.source === 'collection';
   const unknownPersonalFields = input.source === 'rss' || input.source === 'import';
   return {
     ...input, ...detailFields,
     kind: chosenKind(old) || (input.kind === 'screen' || privateImport) && (old.kind === 'movie' || old.kind === 'series') ? old.kind : input.kind,
     coverUrl: input.coverUrl ?? old.coverUrl,
-    rating: privateImport && old.rating !== null || unknownPersonalFields && input.rating === null ? old.rating : input.rating,
-    markedDate: privateImport && old.markedDate !== null || unknownPersonalFields && input.markedDate === null ? old.markedDate : input.markedDate,
-    comment: privateImport && old.comment !== null || unknownPersonalFields && input.comment === null ? old.comment : input.comment,
+    rating: browserSnapshot || privateImport && old.rating !== null || unknownPersonalFields && input.rating === null ? old.rating : input.rating,
+    markedDate: browserSnapshot || privateImport && old.markedDate !== null || unknownPersonalFields && input.markedDate === null ? old.markedDate : input.markedDate,
+    comment: browserSnapshot || privateImport && old.comment !== null || unknownPersonalFields && input.comment === null ? old.comment : input.comment,
     publishedAt: input.publishedAt ?? old.publishedAt,
-    source: privateImport || input.source === 'rss' && old.source !== 'rss' ? old.source : input.source,
+    source: browserSnapshot || privateImport || input.source === 'rss' && old.source !== 'rss' ? old.source : input.source,
   };
 }
 
@@ -226,16 +230,16 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${activeGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET
         kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') OR ${frozenRssRow}
-          OR (excluded.kind='screen' OR douban_items.source='import' AND excluded.source<>'import') AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
+          OR (excluded.kind='screen' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser')) AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
         title=CASE WHEN ${frozenRssRow} THEN douban_items.title ELSE excluded.title END,
         url=CASE WHEN ${frozenRssRow} THEN douban_items.url ELSE excluded.url END,
         cover_url=CASE WHEN ${frozenRssRow} THEN COALESCE(douban_items.cover_url,excluded.cover_url) ELSE COALESCE(excluded.cover_url,douban_items.cover_url) END,
         details_json=excluded.details_json,
-        rating=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.rating IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.rating IS NULL THEN douban_items.rating ELSE excluded.rating END,
-        marked_date=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.marked_date IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.marked_date IS NULL THEN douban_items.marked_date ELSE excluded.marked_date END,
-        comment=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' AND douban_items.comment IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.comment IS NULL THEN douban_items.comment ELSE excluded.comment END,
+        rating=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.rating IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.rating IS NULL THEN douban_items.rating ELSE excluded.rating END,
+        marked_date=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.marked_date IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.marked_date IS NULL THEN douban_items.marked_date ELSE excluded.marked_date END,
+        comment=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.comment IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.comment IS NULL THEN douban_items.comment ELSE excluded.comment END,
         published_at=CASE WHEN ${frozenRssRow} THEN COALESCE(douban_items.published_at,excluded.published_at) ELSE COALESCE(excluded.published_at,douban_items.published_at) END,
-        source=CASE WHEN ${frozenRssRow} OR douban_items.source='import' AND excluded.source<>'import' OR excluded.source='rss' AND douban_items.source<>'rss' THEN douban_items.source ELSE excluded.source END,
+        source=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') OR excluded.source='rss' AND douban_items.source<>'rss' THEN douban_items.source ELSE excluded.source END,
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),
         updated_at=CASE WHEN ${frozenRssRow} THEN CASE WHEN douban_items.cover_url IS NULL AND excluded.cover_url IS NOT NULL
           OR douban_items.published_at IS NULL AND excluded.published_at IS NOT NULL OR douban_items.details_json<>excluded.details_json THEN MAX(douban_items.observed_at,excluded.observed_at) ELSE douban_items.updated_at END
@@ -327,7 +331,7 @@ function importItems(input: DoubanImportInput) {
   const keys = new Set<string>();
   const items = input.items.map(raw => {
     const item = parseDoubanRecord(raw);
-    if (item.source !== 'import') invalid('文件导入记录必须标注为导入来源。');
+    if (item.source !== 'import' && item.source !== 'browser') invalid('资料保存只接收文件导入或浏览器同步来源。');
     const key = keyOf(item);
     if (keys.has(key)) invalid('同一文件含重复豆瓣条目，请核对后去重再导入。');
     keys.add(key); return item;
@@ -439,11 +443,11 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
       (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,details_json)
       SELECT ?,?,json_extract(value,'$.domain'),json_extract(value,'$.subjectId'),json_extract(value,'$.kind'),json_extract(value,'$.title'),
         json_extract(value,'$.url'),json_extract(value,'$.coverUrl'),json_extract(value,'$.rating'),json_extract(value,'$.markedDate'),
-        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),'import',json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt'),json_extract(value,'$.detailsJson')
+        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),json_extract(value,'$.source'),json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt'),json_extract(value,'$.detailsJson')
       FROM json_each(?) WHERE ${importEpochGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
         title=excluded.title,url=excluded.url,cover_url=excluded.cover_url,details_json=excluded.details_json,
-        rating=excluded.rating,marked_date=excluded.marked_date,comment=excluded.comment,published_at=excluded.published_at,source='import',
+        rating=excluded.rating,marked_date=excluded.marked_date,comment=excluded.comment,published_at=excluded.published_at,source=excluded.source,
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),updated_at=MAX(douban_items.updated_at,excluded.updated_at)`)
       .bind(userId, plan.preview.profileId, '[' + rows.join(',') + ']', userId, dataEpoch));
   }

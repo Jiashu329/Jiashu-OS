@@ -77,13 +77,17 @@ JSON 每条记录可增加 `details` 对象；CSV 可将同一对象作为经过
 }
 ```
 
-通用详情支持 `summary`、`alternateTitles`、`year`、`genres`、`countries`、`languages`、`doubanRating`、`ratingCount`。影视支持 `directors`、`writers`、`cast`、`releaseDates`、`duration`、`episodes`、`seasons`、`episodeDuration`；书籍支持 `authors`、`translators`、`publisher`、`publicationDate`、`isbn`、`binding`、`price`、`seriesTitle`、`pages`；音乐支持 `artists`、`albumType`、`medium`、`label`、`releaseDate`、`tracks`。人名、类型和曲目等复数字段使用文字数组；单项文字不超过相应字段限制。单条详情 JSON 最多 16 KiB，简介最多 12,000 字符。个人标签 `tags`、`myTags` 本版不导入。
+通用详情支持 `summary`、`alternateTitles`、`year`、`genres`、`countries`、`languages`、`doubanRating`、`ratingCount`。影视支持 `directors`、`writers`、`cast`、`releaseDates`、`duration`、`episodes`、`seasons`、`episodeDuration`；书籍支持 `authors`、`translators`、`publisher`、`publicationDate`、`isbn`、`binding`、`price`、`seriesTitle`、`pages`；音乐支持 `artists`、`albumType`、`medium`、`label`、`releaseDate`、`tracks`。人名、类型和曲目等复数字段使用文字数组；单项文字不超过相应字段限制。单条详情 JSON 最多 16 KiB，简介最多 12,000 字符。文件中的个人标签 `tags`、`myTags` 本版不自动导入；导入完成后，可在本站记录详情中填写独立的备注和标签。
 
 普通 Obsidian／CSV／JSON 旧字段也按来源明确映射：`score` 为豆瓣平均分（0–10），与 `myRating` 的个人星级独立；`desc` 为作品简介，与个人短评独立。影视 `director`、`actor`、`author` 分别表示导演、演员、编剧；书籍 `author`、`translator`、`publisher`、`isbn`、`totalPage` 表示作者、译者、出版社、ISBN、页数；音乐 `actor`、`publisher` 表示表演者、唱片公司。`datePublished` 按来源进入上映日期、出版日期或发行日期，不替代收藏日期。人名列表兼容数组、简单扁平 YAML 列表及插件常见的“甲 / 乙”分隔格式，保留 `AC/DC` 这类姓名／组合名内部的斜线。
 
 保存的 HTML 仍须为已完成收藏列表。只有每条记录内明确标记的结构化作者、出版社、ISBN、导演、演员、简介或站点评分才会成为详情；合并在一行的作者／出版信息不猜测拆分。单个作品详情页不能代替已完成状态证明。
 
-完整备份仍为 31 张业务表，作品详情随 `douban_items.details_json` 导出。旧备份缺少该列时按空详情兼容。恢复不会用旧文件缺失的详情擦去已有丰富资料；存在不同的已填写内容时会要求处理冲突，预览后作品详情变化也会使原恢复确认失效。
+完整备份仍为 31 张业务表，作品详情随 `douban_items.details_json` 导出，本地备注、标签、隐藏状态和整理版本随同一条记录的 `local_note`、`local_tags_json`、`local_hidden`、`local_revision` 导出。旧备份缺少这些列时按空详情、空备注、空标签、未隐藏和版本零兼容；恢复到已有收藏时，旧文件的空白基线不会擦去当前丰富详情或后来保存的本地整理。备注最多 4000 字，标签最多 12 个、每个最多 30 字且不能重复。个人整理不会上传豆瓣，浏览器同步、公开同步和普通文件导入也不会覆盖这些本地字段。
+
+新版浏览器同步使用独立的 `browser` 来源，文件导入保留 `import` 来源。新版浏览器明确读取到的未评分、空短评会随同步清除本站旧值；普通文件或 RSS 的缺失值仍按未知处理，不据此清空已有个人字段。历史记录中的 `import` 可能来自文件或旧扩展，迁移不会猜测并改写历史来源。完整备份会保留真实来源；旧快照与当前记录的来源或其他已填写业务内容不同时，恢复预览会提示冲突，不会静默覆盖。
+
+恢复预览后，作品资料、个人整理内容或其版本发生变化，原确认会失效；恢复提交期间也会原子核对当前字段，避免并发保存的备注被旧备份覆盖。本地整理版本本身不同不算内容冲突，但仍用于检查预览后是否发生过修改。仅观察时间推进不算业务内容差异。
 
 标记日期读取 `markedDate`、`myCollectionDate`、`collectionDate` 或“标记日期”，不拿出版日期或文件创建时间代替。评分、标记日期和短评可以未知；不把未知填成0。所有条目链接需为豆瓣电影、书籍或音乐条目的规范链接。
 

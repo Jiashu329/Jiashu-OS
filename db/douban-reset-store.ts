@@ -11,13 +11,21 @@ export class DoubanResetStoreError extends Error {
 interface ResetControl { epoch: number; requestId: string; requestHash: string; receiptJson: string }
 interface ResetSnapshot {
   total: number; screen: number; movie: number; series: number; book: number; music: number;
-  latestUpdatedAt: string | null; latestObservedAt: string | null;
+  latestUpdatedAt: string | null; latestObservedAt: string | null; localRevisionSnapshot: string;
 }
 const kinds = ['screen', 'movie', 'series', 'book', 'music'] as const;
+// Local edits have their own monotonic revisions, independent of sync times.
+// Sum six 10-bit parts instead of whole MAX_SAFE_INTEGER revisions: each row
+// contributes at most 1023 to a part, avoiding SQLite integer overflow. Keep
+// these totals as decimal text so neither D1 nor JSON rounds them in JavaScript.
+// If any local revision advances, at least one part total must change, including
+// across carries; this remains a fixed-size snapshot for large collections.
+const localRevisionSnapshotSql = `json_array(${Array.from({ length: 6 }, (_, index) =>
+  `CAST(COALESCE(SUM((local_revision >> ${index * 10}) & 1023),0) AS TEXT)`).join(',')})`;
 const snapshotSql = `SELECT COUNT(*) AS total,${kinds.map(kind => `COALESCE(SUM(CASE WHEN kind='${kind}' THEN 1 ELSE 0 END),0) AS ${kind}`).join(',')},
-  MAX(updated_at) AS latestUpdatedAt,MAX(observed_at) AS latestObservedAt FROM douban_items WHERE user_id=?`;
+  MAX(updated_at) AS latestUpdatedAt,MAX(observed_at) AS latestObservedAt,${localRevisionSnapshotSql} AS localRevisionSnapshot FROM douban_items WHERE user_id=?`;
 const snapshotGuard = `EXISTS(SELECT 1 FROM (${snapshotSql}) s WHERE s.total=? AND ${kinds.map(kind => `s.${kind}=?`).join(' AND ')}
-  AND s.latestUpdatedAt IS ? AND s.latestObservedAt IS ?)`;
+  AND s.latestUpdatedAt IS ? AND s.latestObservedAt IS ? AND s.localRevisionSnapshot=?)`;
 function invalid(): never { throw new DoubanResetStoreError('请先预览并确认清空本人书影音记录。', 'INVALID_DOUBAN_RESET', 400); }
 function epochConflict(): never { throw new DoubanResetStoreError('书影音资料已清空或重新开始，请刷新后重新核对。', 'DOUBAN_DATA_EPOCH_CONFLICT'); }
 function snapshotConflict(): never { throw new DoubanResetStoreError('书影音记录已发生变化，未清空任何资料。请重新预览后核对。'); }
@@ -43,7 +51,7 @@ export async function readDoubanDataEpoch(db: DoubanResetDatabase, userId: strin
   return value;
 }
 function counts(snapshot: ResetSnapshot): DoubanResetCounts { return { all: snapshot.total, ...Object.fromEntries(kinds.map(kind => [kind, snapshot[kind]])) } as DoubanResetCounts; }
-function guardValues(userId: string, snapshot: ResetSnapshot) { return [userId, snapshot.total, ...kinds.map(kind => snapshot[kind]), snapshot.latestUpdatedAt, snapshot.latestObservedAt]; }
+function guardValues(userId: string, snapshot: ResetSnapshot) { return [userId, snapshot.total, ...kinds.map(kind => snapshot[kind]), snapshot.latestUpdatedAt, snapshot.latestObservedAt, snapshot.localRevisionSnapshot]; }
 async function plan(db: DoubanResetDatabase, userId: string) {
   const dataEpoch = await readDoubanDataEpoch(db, userId);
   const snapshot = await db.prepare(snapshotSql).bind(userId).first<ResetSnapshot>();

@@ -52,13 +52,46 @@ function fixture(readPage, readSubject) {
 test('local Douban extension grants only collection hosts and never asks for Cookie or request interception permissions', () => {
   const manifest = JSON.parse(readFileSync(new URL('manifest.json', extensionRoot), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '1.0.4');
+  assert.equal(manifest.version, '1.0.5');
   assert.deepEqual(manifest.permissions.toSorted(), ['scripting', 'tabs']);
   assert.deepEqual(manifest.host_permissions.toSorted(), ['https://book.douban.com/*', 'https://movie.douban.com/*', 'https://music.douban.com/*']);
   assert.deepEqual(manifest.externally_connectable.matches, [productionOrigin + '/*']);
   assert.equal(manifest.background.service_worker, 'background.js');
   assert.equal(manifest.background.type, 'module');
   assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'");
+});
+
+test('a selected source run reads only those collections, reports skipped sources and preserves immutable replay', async () => {
+  const f = fixture();
+  const started = await f.send(message('START', { domains: ['book'] }));
+  assert.equal(started.ok, true);
+  assert.equal(started.data.progress.sources.screen.status, 'skipped');
+  assert.equal(started.data.progress.sources.music.status, 'skipped');
+  assert.equal(f.calls.reads.length, 0);
+  const result = await f.send(step());
+  assert.equal(result.data.done, true);
+  assert.equal(result.data.progress.status, 'completed');
+  assert.equal(result.data.progress.sources.book.status, 'complete');
+  assert.equal(result.data.items[0].source, 'browser');
+  assert.deepEqual(f.calls.reads.map(read => read.domain), ['book']);
+  assert.deepEqual(clone(await f.send(step())), clone(result));
+  assert.equal(f.calls.reads.length, 1);
+});
+
+test('invalid source selections fail before starting or reading and cannot be injected into a running step', async () => {
+  const f = fixture();
+  for (const domains of [[], ['book', 'book'], ['unknown'], ['book', 'music', 'screen', 'book'], 'book', null, { book: true }]) {
+    assert.equal((await f.send(message('START', { domains }))).error.code, 'INVALID_REQUEST');
+  }
+  assert.equal(f.calls.reads.length, 0);
+  await f.send(message('START', { domains: ['music', 'book'] }));
+  assert.equal((await f.send(step(0, requestId, { domains: ['screen'] }))).error.code, 'INVALID_REQUEST');
+  const first = await f.send(step());
+  assert.equal(first.data.done, false);
+  f.advance();
+  const second = await f.send(step(1, nextRequest));
+  assert.equal(second.data.done, true);
+  assert.deepEqual(f.calls.reads.map(read => read.domain), ['book', 'music']);
 });
 
 test('subject reads accept only fixed subject keys and reject URLs, credentials, frames and invalid identities before any read', async () => {
@@ -244,7 +277,7 @@ test('worker accepts only the production top-level media page before any collect
   }
   assert.equal(f.calls.reads.length + f.calls.created.length + f.calls.scripts.length, 0);
   const response = await f.send(message('CONNECT'), { ...sender, url: productionOrigin + '/life/douban?kind=book' });
-  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.4', protocolVersion: 1 } });
+  assert.deepEqual(clone(response), { ok: true, data: { extensionVersion: '1.0.5', protocolVersion: 1 } });
 });
 
 test('message schemas reject injected URLs, credentials, non-string identities and malformed step fields', async () => {
@@ -295,7 +328,7 @@ test('concurrent retries perform one read, then replay the immutable last result
   assert.equal((await f.send(step())).error.code, 'RUN_BUSY');
   assert.equal((await f.send(step(0, nextRequest))).error.code, 'RUN_BUSY');
   resolveRead(page()); const result = await pending; assert.equal(result.ok, true); assert.equal(result.data.step, 1);
-  assert.equal(result.data.items[0].source, 'import');
+  assert.equal(result.data.items[0].source, 'browser');
   const replay = await f.send(step()); assert.deepEqual(clone(replay), clone(result)); assert.equal(f.calls.reads.length, 1);
   replay.data.items[0].title = 'mutated by page';
   assert.equal((await f.send(step())).data.items[0].title, '合成个人收藏');

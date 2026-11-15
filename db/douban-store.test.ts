@@ -13,6 +13,8 @@ function fixture(t: TestContext) {
   sqlite.exec(readFileSync(new URL('../drizzle/0024_douban.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0025_douban_data_resets.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0027_douban_subject_details.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0028_douban_browser_source.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0029_douban_library.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   let nextBatch: (() => void) | undefined, failStatement = -1;
   const batchSizes: number[] = [], bindingSizes: number[] = [];
@@ -226,6 +228,57 @@ test('private file imports need no binding or network, persist normalized record
   assert.deepEqual(await commitDoubanImport(db, 'alice', command), receipt);
   assert.equal((await listDoubanRecords(db, 'alice')).total, 2);
   assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM douban_import_receipts').get()?.n, 1);
+});
+
+void test('browser snapshots clear an explicitly removed rating and comment, including legacy browser records saved as imports', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'movie', { rating: 5, comment: 'old browser comment' })]);
+  const items = [privateRecord('1', 'screen', { source: 'browser', rating: null, comment: null, markedDate: null })];
+  const refreshed = await importRecords(db, items, { now: T2 });
+  assert.equal(refreshed.preview.updated, 1); assert.equal(refreshed.receipt.updated, 1);
+  let saved = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.deepEqual([saved.source, saved.rating, saved.comment, saved.markedDate, saved.kind], ['browser', null, null, null, 'movie']);
+  assert.equal(saved.createdAt, T1);
+  assert.deepEqual(await commitDoubanImport(db, 'alice', refreshed.command), refreshed.receipt, 'replaying the same browser page keeps the same receipt');
+  const repeated = await importRecords(db, items, { now: T3 });
+  assert.equal(repeated.receipt.unchanged, 1);
+  saved = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.equal(saved.updatedAt, T2); assert.equal(saved.observedAt, T3);
+});
+
+void test('file and old extension imports keep unknown empty personal fields conservative after browser provenance is introduced', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'book', { source: 'browser', rating: 5, comment: 'known private comment' })]);
+  const partialFile = [privateRecord('1', 'book', { rating: null, comment: null, markedDate: null })];
+  await importRecords(db, partialFile, { now: T2 });
+  const saved = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.deepEqual([saved.source, saved.rating, saved.comment, saved.markedDate], ['import', 5, 'known private comment', '2026-11-10']);
+});
+
+void test('anonymous collection and RSS refreshes cannot erase browser-only personal fields or restore explicitly cleared values', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'book', { source: 'browser', rating: null, comment: null, markedDate: null }),
+    privateRecord('2', 'book', { source: 'browser', rating: 5, comment: 'private browser note' })]);
+  let run = await connected(db);
+  run = await commitDoubanStep(db, 'alice', step(run, [record('1', 'book', { rating: 4, comment: 'stale public note', details: { authors: ['Public author'] } }),
+    record('2', 'book', { rating: null, comment: null, markedDate: null })]));
+  await commitDoubanStep(db, 'alice', step(run, [record('1', 'book', { source: 'rss', rating: 3, comment: 'RSS note', markedDate: null, publishedAt: T3 })], { now: T3 }));
+  const saved = await listDoubanRecords(db, 'alice');
+  const empty = saved.items.find(item => item.subjectId === '1')!;
+  const rich = saved.items.find(item => item.subjectId === '2')!;
+  assert.deepEqual([empty.source, empty.rating, empty.comment, empty.markedDate], ['browser', null, null, null]);
+  assert.deepEqual(empty.details?.authors, ['Public author'], 'public work metadata can still fill missing details');
+  assert.deepEqual([rich.source, rich.rating, rich.comment], ['browser', 5, 'private browser note']);
+});
+
+void test('transactional sync merge matches browser snapshot semantics and retains an explicit manual classification', async t => {
+  const { db, sqlite } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'movie', { rating: 5, comment: 'old comment' })]);
+  sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='manual-kind' WHERE user_id='alice'").run();
+  const run = await connected(db);
+  await commitDoubanStep(db, 'alice', step(run, [record('1', 'series', { source: 'browser', rating: null, comment: null, markedDate: null })]));
+  const saved = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.deepEqual([saved.source, saved.rating, saved.comment, saved.markedDate, saved.kind], ['browser', null, null, null, 'movie']);
 });
 
 test('a lost import reply replays its original summary after later edits and an operation ID cannot be reused for changed private contents', async t => {

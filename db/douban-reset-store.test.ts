@@ -4,6 +4,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { exportDataBackup } from './data-backup-store.ts';
 import { BACKUP_TABLE_NAMES } from '../lib/data-backup.ts';
+import { writeDoubanLocalRecord } from './douban-library-store.ts';
 import { commitDoubanReset, DoubanResetStoreError, previewDoubanReset, readDoubanDataEpoch,
   type DoubanResetCommand, type DoubanResetDatabase, type DoubanResetReceipt } from './douban-reset-store.ts';
 
@@ -141,6 +142,55 @@ void test('new data between the final preparation read and the batch aborts the 
     assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_sync_runs WHERE user_id='alice'").get()?.n, 1);
     assert.equal(f.sqlite.prepare("SELECT revision FROM douban_connections WHERE user_id='alice'").get()?.revision, 1);
   }
+});
+
+void test('new local notes, tags and visibility invalidate a clear preview without changing the synchronization timestamps', async t => {
+  for (const changes of [{ note: 'Important new note', tags: [], hidden: false }, { note: '', tags: ['new tag'], hidden: false }, { note: '', tags: [], hidden: true }]) {
+    const f = fixture(t); item(f.sqlite); diagnostics(f.sqlite);
+    const clear = await command(f.db);
+    await writeDoubanLocalRecord(f.db, 'alice', { profileId: 'first_profile', domain: 'screen', subjectId: '1', expectedDataEpoch: 0, expectedLocalRevision: 0, ...changes });
+    assert.deepEqual({ ...f.sqlite.prepare("SELECT updated_at,observed_at FROM douban_items WHERE user_id='alice'").get() }, { updated_at: T1, observed_at: T1 });
+    await assert.rejects(commitDoubanReset(f.db, 'alice', clear), conflict);
+    assert.equal(await readDoubanDataEpoch(f.db, 'alice'), 0);
+    const saved = f.sqlite.prepare("SELECT local_note,local_tags_json,local_hidden,local_revision FROM douban_items WHERE user_id='alice'").get();
+    assert.deepEqual({ ...saved }, { local_note: changes.note, local_tags_json: JSON.stringify(changes.tags), local_hidden: changes.hidden ? 1 : 0, local_revision: 1 });
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM douban_sync_runs WHERE user_id='alice'").get()?.n, 1);
+  }
+});
+
+void test('a local edit after the last clear preparation read also fails the atomic deletion guard', async t => {
+  for (const alreadyReset of [false, true]) {
+    const f = fixture(t);
+    if (alreadyReset) await commitDoubanReset(f.db, 'alice', await command(f.db));
+    item(f.sqlite); diagnostics(f.sqlite);
+    const clear = await command(f.db, 'alice', alreadyReset ? B : A);
+    f.beforeBatch(async () => {
+      await writeDoubanLocalRecord(f.db, 'alice', { profileId: 'first_profile', domain: 'screen', subjectId: '1', expectedDataEpoch: alreadyReset ? 1 : 0, expectedLocalRevision: 0,
+        note: 'Saved while another tab was confirming clear', tags: ['keep'], hidden: false });
+    });
+    await assert.rejects(commitDoubanReset(f.db, 'alice', clear), conflict);
+    assert.equal(await readDoubanDataEpoch(f.db, 'alice'), alreadyReset ? 1 : 0);
+    assert.equal(f.sqlite.prepare("SELECT local_note FROM douban_items WHERE user_id='alice'").get()?.local_note, 'Saved while another tab was confirming clear');
+    assert.equal(f.sqlite.prepare("SELECT revision FROM douban_connections WHERE user_id='alice'").get()?.revision, 1);
+  }
+});
+
+void test('the fixed-size local revision snapshot stays exact across carries and whole-revision sum overflow', async t => {
+  const f = fixture(t);
+  for (let index = 0; index < 1025; index++) item(f.sqlite, 'alice', String(index + 1));
+  f.sqlite.prepare("UPDATE douban_items SET local_revision=? WHERE user_id='alice'").run(Number.MAX_SAFE_INTEGER - 1);
+  assert.throws(() => f.sqlite.prepare("SELECT SUM(local_revision) FROM douban_items WHERE user_id='alice'").get(), /integer overflow/);
+  const clear = await command(f.db);
+  await writeDoubanLocalRecord(f.db, 'alice', { profileId: 'first_profile', domain: 'screen', subjectId: '1', expectedDataEpoch: 0, expectedLocalRevision: Number.MAX_SAFE_INTEGER - 1,
+    note: 'Exact last revision', tags: [], hidden: false });
+  await assert.rejects(commitDoubanReset(f.db, 'alice', clear), conflict);
+  f.sqlite.prepare("UPDATE douban_items SET local_revision=1023 WHERE user_id='alice' AND subject_id='2'").run();
+  const beforeCarry = await command(f.db);
+  await writeDoubanLocalRecord(f.db, 'alice', { profileId: 'first_profile', domain: 'screen', subjectId: '2', expectedDataEpoch: 0, expectedLocalRevision: 1023,
+    note: 'Carry into the next revision segment', tags: [], hidden: false });
+  await assert.rejects(commitDoubanReset(f.db, 'alice', beforeCarry), conflict);
+  const refreshed = await command(f.db);
+  assert.equal((await commitDoubanReset(f.db, 'alice', refreshed)).deleted, 1025);
 });
 
 void test('a failed later statement rolls the new epoch, prior deletions, diagnostics and connection revision back together', async t => {

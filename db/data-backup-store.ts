@@ -9,11 +9,17 @@ export interface BackupFieldDifference { field: string; current: string; incomin
 export interface BackupTablePreview { table: BackupTable; label: string; incoming: number; added: number; skipped: number; conflicts: number; conflictExamples: Array<{ record:string;reason:string; differences?: BackupFieldDifference[] }> }
 export interface BackupPreview { previewHash: string; backupHash: string; canRestore: boolean; generatedGoalHistoryRows: number; total: { incoming: number; added: number; skipped: number; conflicts: number }; tables: BackupTablePreview[] }
 interface Plan { preview: BackupPreview; current: Record<BackupTable, BackupRow[]>; additions: Record<BackupTable, BackupRow[]> }
-function retainsRicherDoubanDetails(prior: BackupRow, incoming: BackupRow): boolean {
+function retainsRicherDoubanData(prior: BackupRow, incoming: BackupRow): boolean {
   const oldDetails = parseDoubanDetails(JSON.parse(String(prior.details_json)));
   const nextDetails = parseDoubanDetails(JSON.parse(String(incoming.details_json)));
+  // Published files without local fields normalize to this untouched baseline.
+  // Restoring them must not erase, or conflict with, later personal organization.
+  const untouchedLocal = incoming.local_revision === 0 && incoming.local_note === '' && incoming.local_hidden === 0
+    && JSON.parse(String(incoming.local_tags_json)).length === 0;
+  const preserved = { ...incoming, details_json: prior.details_json,
+    ...(untouchedLocal ? {local_note:prior.local_note,local_tags_json:prior.local_tags_json,local_hidden:prior.local_hidden} : {}) };
   return Object.entries(nextDetails).every(([key, value]) => JSON.stringify(value) === JSON.stringify(oldDetails[key as keyof typeof oldDetails]))
-    && comparableBackupRow('douban_items', prior) === comparableBackupRow('douban_items', { ...incoming, details_json: prior.details_json });
+    && comparableBackupRow('douban_items', prior) === comparableBackupRow('douban_items', preserved);
 }
 const MAX_RESTORE_QUERIES = 48;
 // D1 bounds an individual string binding/result cell to 2 MiB. JSON escaping
@@ -112,7 +118,7 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     for (const row of incoming) {
       const prior = existing.get(backupRowKey(table,row));
       if (!prior) candidates.push(row);
-      else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row) || table === 'douban_items' && retainsRicherDoubanDetails(prior,row)) skipped++;
+      else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row) || table === 'douban_items' && retainsRicherDoubanData(prior,row)) skipped++;
       else {
         conflicts++;const example=describe(row,'已有记录内容不同，需要先核对当前记录。');
         if(example) {

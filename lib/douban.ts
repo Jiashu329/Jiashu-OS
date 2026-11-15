@@ -16,7 +16,8 @@ export interface DoubanRecordInput {
   comment: string | null;
   /** RSS publication timestamp, never substituted for a collection marking date. */
   publishedAt: string | null;
-  source: 'collection' | 'rss' | 'import';
+  /** Browser and collection snapshots include explicit empty personal fields; files and RSS may omit them. */
+  source: 'collection' | 'rss' | 'import' | 'browser';
   /** Public work information, separate from this person's rating and comment. */
   details?: DoubanSubjectDetails;
 }
@@ -92,7 +93,7 @@ export function parseDoubanRecord(raw: unknown): DoubanRecordInput {
     publishedAt = new Date(raw.publishedAt).toISOString();
     if (publishedAt < '1970-01-01' || publishedAt > '2100-12-31T23:59:59.999Z') throw new DoubanValidationError('豆瓣发布时间不正确。');
   }
-  if (!['collection', 'rss', 'import'].includes(String(raw.source))) throw new DoubanValidationError('豆瓣条目来源不正确。');
+  if (!['collection', 'rss', 'import', 'browser'].includes(String(raw.source))) throw new DoubanValidationError('豆瓣条目来源不正确。');
   if (raw.source === 'rss' && raw.markedDate !== null) throw new DoubanValidationError('RSS 发布时间不能代替标记日期。');
   let details: DoubanSubjectDetails;
   try { details = parseDoubanDetails(raw.details); } catch { throw new DoubanValidationError('豆瓣作品详情含有不支持或超出限制的字段。'); }

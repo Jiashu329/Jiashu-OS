@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     }
     if (Object.hasOwn(raw, 'returnRecords') && (raw.returnRecords !== true || raw.items.length > 30)) throw new DoubanSyncError('只有每次不超过30条的导入提交可以请求当前已保存记录。');
     const { profileId, profileUrl } = parseDoubanProfile(raw.profile), items = raw.items.map(parseDoubanRecord);
-    if (items.some(item => item.source !== 'import')) throw new DoubanSyncError('文件导入只接收明确标为本人导入的规范化条目。');
+    if (items.some(item => item.source !== 'import' && item.source !== 'browser')) throw new DoubanSyncError('资料保存只接收文件导入或本人浏览器同步的规范化条目。');
     if (raw.action === 'preview') {
       const preview = await previewDoubanImport(doubanDatabase(), user.userId, { profileId, items, expectedDataEpoch: raw.expectedDataEpoch as number | undefined });
       return json({ preview: { ...preview, profileUrl } });

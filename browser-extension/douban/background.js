@@ -1,7 +1,7 @@
 /** MV3 worker. Credentials remain in the browser's native Douban cookie jar. */
 import { parseDoubanDetails } from './details-parser.js';
 export const WEBSITE_ORIGIN = 'https://jiashu-life-os-health.jiashuh329.chatgpt.site';
-export const EXTENSION_VERSION = '1.0.4';
+export const EXTENSION_VERSION = '1.0.5';
 const DOMAINS = ['screen', 'book', 'music'];
 const HOSTS = { screen: 'movie.douban.com', book: 'book.douban.com', music: 'music.douban.com' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -47,11 +47,15 @@ function validRequest(message) {
     || typeof message.ownerKey !== 'string' || !UUID.test(message.ownerKey)
     || typeof message.profileId !== 'string' || !PROFILE.test(message.profileId)) return false;
   const keys = ['type', 'version', 'action', 'ownerKey', 'profileId'];
+  if (message.action === 'START') keys.push('domains');
   if (['STEP', 'POLL', 'CANCEL'].includes(message.action)) keys.push('runId');
   if (message.action === 'STEP') keys.push('step', 'requestId');
   if (message.action === 'SUBJECT') keys.push('requestId', 'domain', 'subjectId', 'runId');
   if (message.action === 'SUBJECT_CANCEL') keys.push('requestId');
   if (Object.keys(message).some(key => !keys.includes(key))) return false;
+  if (message.action === 'START' && Object.hasOwn(message, 'domains') && (!Array.isArray(message.domains)
+    || !message.domains.length || message.domains.length > DOMAINS.length
+    || new Set(message.domains).size !== message.domains.length || message.domains.some(domain => !DOMAINS.includes(domain)))) return false;
   if (['SUBJECT', 'SUBJECT_CANCEL'].includes(message.action)
     && (typeof message.requestId !== 'string' || !UUID.test(message.requestId))) return false;
   if (message.action === 'SUBJECT' && (!DOMAINS.includes(message.domain) || typeof message.subjectId !== 'string'
@@ -102,8 +106,8 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
   function view(run) { return { runId: run.id, step: run.step, progress: progress(run), done: run.status !== 'running' }; }
   function finalize(run) {
     if (run.status === 'cancelled' || DOMAINS.some(domain => run.sources[domain].status === 'pending')) return;
-    run.status = DOMAINS.every(domain => run.sources[domain].status === 'complete') ? 'completed'
-      : DOMAINS.some(domain => run.sources[domain].received > 0 || run.sources[domain].status === 'complete') ? 'partial' : 'failed';
+    run.status = run.domains.every(domain => run.sources[domain].status === 'complete') ? 'completed'
+      : run.domains.some(domain => run.sources[domain].received > 0 || run.sources[domain].status === 'complete') ? 'partial' : 'failed';
   }
   async function stopRead(run) {
     for (const tabId of Object.values(run.tabs)) {
@@ -179,8 +183,9 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
         if (active.websiteTabId !== sender.tab.id || active.ownerKey === message.ownerKey) return failure('RUN_BUSY');
         interrupted = active; interrupted.status = 'cancelled'; interrupted.lastResult = null;
       }
-      const created = { id: randomUUID(), ownerKey: message.ownerKey, profileId: message.profileId, websiteTabId: sender.tab.id, step: 0, status: 'running',
-        sources: Object.fromEntries(DOMAINS.map(domain => [domain, sourceProgress()])), tabs: {}, seen: new Set(), lastReadAt: null,
+      const domains = DOMAINS.filter(domain => (message.domains ?? DOMAINS).includes(domain));
+      const created = { id: randomUUID(), ownerKey: message.ownerKey, profileId: message.profileId, websiteTabId: sender.tab.id, step: 0, status: 'running', domains,
+        sources: Object.fromEntries(DOMAINS.map(domain => [domain, { ...sourceProgress(), status: domains.includes(domain) ? 'pending' : 'skipped' }])), tabs: {}, seen: new Set(), lastReadAt: null,
         lastResult: null, busy: false, accountProfileId: null, attentionTabId: null };
       active = created;
       if (interrupted) { const child = cancelRunSubject(interrupted); await stopRead(interrupted); if (child) await stopRead(child); }
@@ -219,7 +224,7 @@ export function createDoubanExtensionController(chromeApi, options = {}) {
       if (page.accountProfileId !== null) run.accountProfileId = page.accountProfileId;
       const keys = page.items.map(item => domain + ':' + item.subjectId);
       if (new Set(keys).size !== keys.length || keys.some(key => run.seen.has(key)) || page.items.some(item => item.domain !== domain)) throw { code: 'DOUBAN_BROWSER_INVALID', reason: 'duplicate_page' };
-      items = page.items.map(item => ({ ...item, source: 'import' }));
+      items = page.items.map(item => ({ ...item, source: 'browser' }));
       for (const key of keys) run.seen.add(key);
       source.pages++; source.segmentPages++; source.received += items.length; source.total = page.total; source.lastPageIds = keys.join(',');
       if (page.nextStart === null) source.status = 'complete';

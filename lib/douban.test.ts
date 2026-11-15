@@ -30,6 +30,13 @@ test('normalised records retain personal unknowns, independent publication time 
   assert.equal(doubanSubjectUrl('book', '1234567'), 'https://book.douban.com/subject/1234567/');
 });
 
+void test('browser provenance retains explicit empty personal fields while requiring the complete snapshot shape', () => {
+  const browser = parseDoubanRecord({ ...sample, source: 'browser', rating: null, comment: null, markedDate: null });
+  assert.deepEqual([browser.source, browser.rating, browser.comment, browser.markedDate], ['browser', null, null, null]);
+  const missing = { ...browser } as Record<string, unknown>; delete missing.comment;
+  assert.throws(() => parseDoubanRecord(missing), DoubanValidationError, 'unknown and explicitly empty fields must not be conflated');
+});
+
 test('strict record validation rejects cross-source IDs, unknown fields, rating coercion and impossible dates', () => {
   for (const change of [{ userId: 'another-user' }, { profileId: 'another-profile' }, { domain: 'movie' }, { kind: 'book' }, { title: '' },
     { title: 'a'.repeat(501) }, { subjectId: '0123' }, { subjectId: 123 }, { rating: '5' }, { rating: 0 }, { rating: 6 },

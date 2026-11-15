@@ -27,6 +27,7 @@ import { goalTargetsForDay } from '../lib/health-goals.ts';
 import { buildFinanceReview, parseFinanceReviewQuery } from '../lib/finance-review.ts';
 import type { DataBackup } from '../lib/data-backup.ts';
 import { parseDoubanDetails } from '../lib/douban-details.ts';
+import { classifyDoubanLibrary } from './douban-library-store.ts';
 
 const NOW='2026-11-10T04:00:00.000Z'; const OLD='2024-01-01T04:00:00.000Z';
 const A='11111111-1111-4111-8111-111111111111'; const B='22222222-2222-4222-8222-222222222222'; const C='33333333-3333-4333-8333-333333333333'; const D='44444444-4444-4444-8444-444444444444'; const E='55555555-5555-4555-8555-555555555555'; const HASH='a'.repeat(64);
@@ -691,4 +692,101 @@ void test('backup details strictly reject unknown fields, wrong types, markup, c
   const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
   const bad:unknown[]=[null,'[]','broken JSON',JSON.stringify({cookie:'PRIVATE'}),JSON.stringify({tags:['不支持']}),JSON.stringify({authors:'应为数组'}),JSON.stringify({doubanRating:11}),JSON.stringify({summary:'<script>PRIVATE</script>'}),JSON.stringify({summary:'字'.repeat(6000)})];
   for(const value of bad){const invalid=structuredClone(backup);invalid.tables.douban_items[0].details_json=value as string|null;assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+});
+
+void test('personal Douban notes, tags, visibility and local versions roundtrip in the same 31 backup tables',async(t)=>{
+  const source=fixture(t);
+  seedDouban(source.sqlite,'alice',doubanRow({local_note:'重看后的感受\n下次推荐给家人',local_tags_json:JSON.stringify(['值得重看','家庭']),local_hidden:1,local_revision:3}));
+  seedDouban(source.sqlite,'bob',doubanRow({local_note:'BOB-PRIVATE-NOTE',local_tags_json:'["BOB-PRIVATE-TAG"]',local_hidden:1,local_revision:1}));
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(BACKUP_TABLE_NAMES.length,31);assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE/);
+  assert.equal(backup.tables.douban_items[0].local_hidden,1);
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+  const volumes=await splitBackupVolumes(backup),volumeTarget=fixture(t),volumePreview=await previewDataRestore(volumeTarget.db,'restored',volumes);
+  await restoreDataBackup(volumeTarget.db,'restored',volumes,volumePreview.previewHash);
+  assert.deepEqual((await exportDataBackup(volumeTarget.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+});
+
+void test('published Douban files without local fields keep later personal organization and richer details',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');
+  const legacy=await exportDataBackup(source.db,'alice',NOW);
+  for(const key of ['local_note','local_tags_json','local_hidden','local_revision'])delete legacy.tables.douban_items[0][key];
+  const empty=fixture(t),emptyPreview=await previewDataRestore(empty.db,'restored',legacy);
+  await restoreDataBackup(empty.db,'restored',legacy,emptyPreview.previewHash);
+  assert.deepEqual(empty.sqlite.prepare('SELECT local_note,local_tags_json,local_hidden,local_revision FROM douban_items').get(),Object.assign(Object.create(null),{local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0}));
+  const target=fixture(t),details=JSON.stringify(parseDoubanDetails({summary:'后续补全的简介'}));
+  seedDouban(target.sqlite,'restored',doubanRow({details_json:details,local_note:'新的本地备注',local_tags_json:'["收藏"]',local_hidden:1,local_revision:4}));
+  const preview=await previewDataRestore(target.db,'restored',legacy);
+  assert.equal(preview.canRestore,true);assert.equal(preview.total.skipped,1);
+  await restoreDataBackup(target.db,'restored',legacy,preview.previewHash);
+  assert.equal(target.sqlite.prepare('SELECT local_note FROM douban_items').get()?.local_note,'新的本地备注');
+  assert.equal(target.sqlite.prepare('SELECT details_json FROM douban_items').get()?.details_json,details);
+});
+
+void test('local versions alone do not conflict but different personal organization must be reviewed',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice',doubanRow({local_note:'相同备注',local_tags_json:'["重看"]',local_revision:1}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);
+  seedDouban(target.sqlite,'restored',doubanRow({local_note:'相同备注',local_tags_json:'["重看"]',local_revision:9}));
+  const same=await previewDataRestore(target.db,'restored',backup);assert.equal(same.canRestore,true);assert.equal(same.total.skipped,1);
+  await restoreDataBackup(target.db,'restored',backup,same.previewHash);
+  assert.equal(target.sqlite.prepare('SELECT local_revision FROM douban_items').get()?.local_revision,9);
+  target.sqlite.prepare('UPDATE douban_items SET local_note=?').run('当前更新的备注');
+  const conflict=await previewDataRestore(target.db,'restored',backup);assert.equal(conflict.canRestore,false);
+  assert.ok(conflict.tables.find(row=>row.table==='douban_items')?.conflictExamples[0]?.differences?.some(field=>field.field==='local_note'));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,conflict.previewHash),BackupConflictError);
+});
+
+void test('a concurrent local edit invalidates the preview and aborts restoration atomically',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');seedDouban(source.sqlite,'alice',doubanRow({subject_id:'1234567',url:'https://movie.douban.com/subject/1234567/'}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);seedDouban(target.sqlite,'restored');
+  const preview=await previewDataRestore(target.db,'restored',backup);
+  target.mutateNextBatch(()=>target.sqlite.prepare('UPDATE douban_items SET local_note=?,local_revision=local_revision+1').run('并发保存的备注'));
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,1);
+  assert.equal(target.sqlite.prepare('SELECT local_note FROM douban_items').get()?.local_note,'并发保存的备注');
+  const changed=await previewDataRestore(target.db,'restored',backup);assert.notEqual(changed.previewHash,preview.previewHash);
+});
+
+void test('backup local fields reject invalid tags, notes, visibility and revisions',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  const changes:Array<(row:Record<string,string|number|null>)=>void>=[
+    row=>{row.local_note='字'.repeat(4001);},row=>{row.local_note='坏\u0085备注';},
+    row=>{row.local_tags_json='null';},row=>{row.local_tags_json='["重复","重复"]';},row=>{row.local_tags_json='[" 标签"]';},
+    row=>{row.local_tags_json=JSON.stringify(['坏\n标签']);},row=>{row.local_tags_json=JSON.stringify(['字'.repeat(31)]);},
+    row=>{row.local_tags_json=JSON.stringify(Array.from({length:13},(_,index)=>String(index)));},row=>{row.local_hidden=2;},row=>{row.local_revision=-1;},row=>{row.local_revision=1.5;},
+  ];
+  for(const change of changes){const invalid=structuredClone(backup);change(invalid.tables.douban_items[0]);assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+});
+
+void test('browser collections remain fully restorable after batch classification advances their observation time',async(t)=>{
+  const source=fixture(t),classifiedAt='2026-11-10T05:00:00.000Z';
+  seedDouban(source.sqlite,'alice',doubanRow({source:'browser',kind:'screen',local_note:'独立备注',local_tags_json:'["待重看","家人推荐"]',local_hidden:1,local_revision:2}));
+  seedDouban(source.sqlite,'alice',doubanRow({source:'browser',subject_id:'1234567',url:'https://movie.douban.com/subject/1234567/',kind:'movie',local_note:'另一条备注',local_tags_json:'["收藏"]',local_revision:1}));
+  const classified=await classifyDoubanLibrary(source.db,'alice',{kind:'series',expectedDataEpoch:0,items:[
+    {profileId:'synthetic-profile',domain:'screen',subjectId:'1292052',expectedUpdatedAt:NOW},
+    {profileId:'synthetic-profile',domain:'screen',subjectId:'1234567',expectedUpdatedAt:NOW},
+  ]},classifiedAt);
+  assert.equal(classified.length,2);
+  for(const item of classified){assert.equal(item.kind,'series');assert.equal(item.source,'browser');assert.equal(item.updatedAt,classifiedAt);assert.equal(item.observedAt,classifiedAt);}
+  const backup=await exportDataBackup(source.db,'alice',classifiedAt);
+  for(const row of backup.tables.douban_items){assert.equal(row.source,'browser');assert.equal(row.kind,'series');assert.ok(String(row.created_at)<=String(row.updated_at));assert.ok(String(row.updated_at)<=String(row.observed_at));}
+  const hidden=backup.tables.douban_items.find(row=>row.subject_id==='1292052');
+  assert.equal(hidden?.local_note,'独立备注');assert.equal(hidden?.local_tags_json,'["待重看","家人推荐"]');assert.equal(hidden?.local_hidden,1);assert.equal(hidden?.local_revision,2);
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);
+  assert.equal(preview.canRestore,true);assert.equal(preview.total.added,2);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  assert.deepEqual((await exportDataBackup(target.db,'restored',classifiedAt)).tables.douban_items,backup.tables.douban_items);
+});
+
+void test('an older import-source snapshot conflicts with a current browser-source collection without overwriting it',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice',doubanRow({source:'import',local_note:'自己的备注',local_tags_json:'["珍藏"]',local_hidden:1,local_revision:2}));
+  const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);
+  seedDouban(target.sqlite,'restored',doubanRow({source:'browser',local_note:'自己的备注',local_tags_json:'["珍藏"]',local_hidden:1,local_revision:2}));
+  const before=await exportDataBackup(target.db,'restored',NOW),preview=await previewDataRestore(target.db,'restored',backup);
+  assert.equal(preview.canRestore,false);assert.equal(preview.total.conflicts,1);
+  assert.deepEqual(preview.tables.find(row=>row.table==='douban_items')?.conflictExamples[0]?.differences,[{field:'source',current:'browser',incoming:'import'}]);
+  await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
+  assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,before.tables.douban_items);
 });

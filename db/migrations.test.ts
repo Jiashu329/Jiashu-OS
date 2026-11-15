@@ -3,6 +3,27 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
+void test('browser provenance migration preserves prior private records, details, classifications and indexes', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const directory = new URL('../drizzle/', import.meta.url);
+    const migrations = readdirSync(directory).filter(name => /^\d+.*\.sql$/.test(name)).sort();
+    for (const name of migrations.filter(name => name < '0028')) db.exec(readFileSync(new URL(name, directory), 'utf8'));
+    const now = '2026-11-14T08:00:00.000Z';
+    db.prepare(`INSERT INTO douban_items(user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,
+      observed_at,created_at,updated_at,metadata_checked_run_id,details_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run('migration-owner','private-profile','screen','1234','movie','Private title','https://movie.douban.com/subject/1234/',null,5,'2026-11-10','Private comment',null,'import',now,now,now,'manual-kind','{"summary":"Saved details"}');
+    const before = db.prepare('SELECT * FROM douban_items').get();
+    db.exec(readFileSync(new URL('0028_douban_browser_source.sql', directory), 'utf8'));
+    assert.deepEqual(db.prepare('SELECT * FROM douban_items').get(), before);
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='douban_items'").all().map(row => row.name);
+    assert.ok(indexes.includes('douban_items_owner_date_idx')); assert.ok(indexes.includes('douban_items_owner_profile_kind_idx'));
+    db.prepare("UPDATE douban_items SET source='browser',rating=NULL,comment=NULL").run();
+    assert.deepEqual({ ...db.prepare('SELECT source,rating,comment FROM douban_items').get() }, { source: 'browser', rating: null, comment: null });
+    assert.throws(() => db.prepare("UPDATE douban_items SET source='unknown'").run());
+  } finally { db.close(); }
+});
+
 test('financial schema additions preserve existing health, connection and exact balance records', () => {
   const db = new DatabaseSync(':memory:');
   const directory = new URL('../drizzle/', import.meta.url);

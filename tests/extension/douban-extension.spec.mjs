@@ -151,7 +151,7 @@ test('the actual MV3 package accepts only the production media page handshake wi
   await expect(page.locator('#douban-page')).toHaveAttribute('aria-busy', 'false');
   expect(collectionRequests(requests)).toEqual([]);
   expect(subjectRequests(requests)).toEqual([]);
-  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.4', protocolVersion: 1 } });
+  for (const action of ['CONNECT', 'STATUS']) expect(await bridge(page, message(action))).toEqual({ ok: true, data: { extensionVersion: '1.0.5', protocolVersion: 1 } });
   expect(collectionRequests(requests)).toEqual([]);
   await page.goto(ORIGIN + '/not-the-douban-page');
   expect(await bridge(page, message('CONNECT'))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
@@ -250,7 +250,7 @@ test('native collection interleaves subject classification in its owning run and
   expect(items.map(item => item.kind)).toEqual([...Array(16).fill('screen'), 'book', 'music']);
   expect(new Set(items.map(item => item.domain + ':' + item.subjectId)).size).toBe(18);
   expect(items[15].subjectId).toBe('9100015');
-  expect(items.every(item => item.source === 'import' && item.rating === 4 && item.markedDate === '2026-11-12' && item.comment === '扩展合成个人短评')).toBe(true);
+  expect(items.every(item => item.source === 'browser' && item.rating === 4 && item.markedDate === '2026-11-12' && item.comment === '扩展合成个人短评')).toBe(true);
   expect(items.map(item => Object.keys(item).sort())).toEqual(Array.from({ length: 18 }, () => ['domain', 'subjectId', 'url', 'title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'].sort()));
   expect(results.at(-1)).toMatchObject({ data: { done: true, progress: { status: 'completed', received: 18, pages: 4, accountProfileId: null,
     sources: { screen: { status: 'complete', received: 16 }, book: { status: 'complete', received: 1 }, music: { status: 'complete', received: 1 } } } } });

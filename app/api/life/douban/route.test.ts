@@ -4,6 +4,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import * as store from '../../../../db/douban-store.ts';
+import * as library from '../../../../db/douban-library-store.ts';
+import * as libraryModel from '../../../../lib/douban-library.ts';
 import * as resetStore from '../../../../db/douban-reset-store.ts';
 import * as model from '../../../../lib/douban.ts';
 import * as sync from '../../../../lib/douban-sync.ts';
@@ -48,7 +50,8 @@ function fixture(t: TestContext) {
   class ClockDate extends Date { constructor(value: number | string = clock) { super(value); } static now() { return clock; } }
   const shared = load(new URL('../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('./_shared.ts', import.meta.url), { env, ...shared, ...store, ...model, ...sync }, ['doubanDatabase', 'presentDoubanConnection', 'doubanGuard', 'doubanBody', 'doubanError']);
-  const get = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync }, ['GET']).GET;
+  const get = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync, ...library, ...libraryModel }, ['GET']).GET;
+  const libraryHandlers = load(new URL('./library/route.ts', import.meta.url), { ...shared, ...helpers, ...sync, ...library }, ['PUT', 'POST']);
   const put = load(new URL('./connection/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['PUT']).PUT;
   const importPost = load(new URL('./import/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['POST']).POST;
   const resetPost = load(new URL('./reset/route.ts', import.meta.url), { ...shared, ...helpers, ...resetStore, ...sync }, ['POST']).POST;
@@ -70,6 +73,8 @@ function fixture(t: TestContext) {
     setRSS(value: typeof rss) { rss = value; }, setClassification(value: typeof classification) { classification = value; },
     beforeCollection(value: () => Promise<void>) { beforeCollection = value; },
     get(query = '') { return request(get, '/api/life/douban' + (query ? '?' + query : ''), 'GET'); },
+    local(body: unknown, options?: Parameters<typeof request>[4]) { return request(libraryHandlers.PUT, '/api/life/douban/library', 'PUT', body, options); },
+    classify(body: unknown, options?: Parameters<typeof request>[4]) { return request(libraryHandlers.POST, '/api/life/douban/library', 'POST', body, options); },
     put(body: unknown = { profile: 'synthetic-owner', expectedRevision: 0 }, options?: Parameters<typeof request>[4]) { return request(put, '/api/life/douban/connection', 'PUT', body, options); },
     post(body: unknown, options?: Parameters<typeof request>[4]) { return request(post, '/api/life/douban/sync', 'POST', body, options); },
     import(body: unknown, options?: Parameters<typeof request>[4]) { return request(importPost, '/api/life/douban/import', 'POST', body, options); },
@@ -394,5 +399,37 @@ void test('small browser commits and receipt retries return current persisted re
   const { returnRecords: _returnRecords, ...ordinary } = command;
   const fileCompatible = await body(await f.import(ordinary)); assert.equal(Object.hasOwn(fileCompatible, 'records'), false); assert.deepEqual(fileCompatible.receipt, first.receipt);
   await resetViaAPI(f); const stale = await f.import(command); assert.equal(stale.status, 409); assert.equal((await body(stale)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
+  assert.deepEqual(f.outgoing, []);
+});
+
+void test('library endpoints require authentication, strict JSON origin and bounded known fields', async t => {
+  const f = fixture(t), command = { profileId: 'profile', domain: 'screen', subjectId: '1', expectedDataEpoch: 0, expectedLocalRevision: 0, note: '', tags: [], hidden: false };
+  f.signIn(null); assert.equal((await f.local(command)).status, 401); assert.equal((await f.classify({})).status, 401);
+  f.signIn('alice');
+  for (const options of [{ origin: null }, { origin: 'https://other.example' }, { type: 'text/plain' }]) assert.equal((await f.local(command, options)).status, options.type ? 415 : 403);
+  for (const invalid of [null, {}, { ...command, userId: 'bob' }, { ...command, tags: ['x', 'x'] }, { ...command, hidden: 1 }, { ...command, expectedLocalRevision: -1 }]) assert.equal((await f.local(invalid)).status, 400);
+  for (const query of ['rating=0', 'rating=6', 'rating=4&rating=5', 'year=20', 'year=0000', 'sort=arbitrary', 'hidden=no', 'missing=0', 'tag=', 'tag=' + 'x'.repeat(31)]) assert.equal((await f.get(query)).status, 400, query);
+  assert.equal((await f.classify({ action: 'classify', kind: 'movie', expectedDataEpoch: 0, items: Array(25).fill({ profileId: 'profile', domain: 'screen', subjectId: '1', expectedUpdatedAt: new Date().toISOString() }) })).status, 400);
+  assert.deepEqual(f.outgoing, []);
+});
+
+void test('library API saves independent local notes, restores hidden records and applies reviewed batch classification', async t => {
+  const f = fixture(t), profile = 'library-profile', items = [record('screen', '77777', 'import')];
+  const { preview } = await body(await f.import({ action: 'preview', profile, items, expectedDataEpoch: 0 }));
+  assert.equal((await f.import({ action: 'commit', profile, items, expectedDataEpoch: 0, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), confirmed: true })).status, 200);
+  const before = (await body(await f.get())).items[0];
+  const command = { profileId: profile, domain: 'screen', subjectId: '77777', expectedDataEpoch: 0, expectedLocalRevision: 0, note: '本地备注', tags: ['重看'], hidden: true };
+  const savedResponse = await f.local(command); assert.equal(savedResponse.status, 200);
+  const saved = await body(savedResponse); assert.equal(saved.item.local.revision, 1); assert.equal(saved.item.updatedAt, before.updatedAt);
+  assert.equal((await body(await f.get())).total, 0);
+  assert.equal((await body(await f.get('hidden=hidden&tag=' + encodeURIComponent('重看')))).total, 1);
+  assert.equal((await f.local({ ...command, note: 'stale' })).status, 409);
+  f.signIn('bob'); assert.equal((await f.local({ ...command, expectedLocalRevision: 1 })).status, 409); assert.equal((await body(await f.get('hidden=all'))).total, 0);
+  f.signIn('alice');
+  const classify = { action: 'classify', kind: 'movie', expectedDataEpoch: 0, items: [{ profileId: profile, domain: 'screen', subjectId: '77777', expectedUpdatedAt: before.updatedAt }] };
+  const classified = await f.classify(classify); assert.equal(classified.status, 200); assert.equal((await body(classified)).items[0].kind, 'movie');
+  assert.equal((await f.local({ ...command, expectedLocalRevision: 1, hidden: false })).status, 200);
+  const visible = await body(await f.get('rating=4&year=2026&sort=rating-desc'));
+  assert.equal(visible.total, 1); assert.equal(visible.items[0].local.note, '本地备注'); assert.deepEqual(visible.tags, ['重看']);
   assert.deepEqual(f.outgoing, []);
 });
