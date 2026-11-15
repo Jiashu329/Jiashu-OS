@@ -5,10 +5,10 @@ on:
       operation:
         description: One-time server setup; normal app updates use Aliyun deployment
         type: choice
-        options: [inspect, install-docker, configure-web, inspect-retired]
+        options: [inspect, install-docker, configure-web, inspect-retired, retire-old, transport-test]
         default: inspect
       expected_config_hash:
-        description: Reviewed Nginx snapshot SHA-256, required only for configure-web
+        description: Reviewed Nginx or retired-service plan SHA-256
         type: string
         required: false
 permissions:
@@ -29,8 +29,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Prepare a small transport probe
+        if: inputs.operation == 'transport-test'
+        run: |
+          mkdir -p "$RUNNER_TEMP/jiashu-network-probe"
+          python3 -c 'import os,sys;open(sys.argv[1],"wb").write(os.urandom(1024*1024))' "$RUNNER_TEMP/jiashu-network-probe/image.tar.gz"
+      - name: Store the small HTTPS probe
+        id: probe
+        if: inputs.operation == 'transport-test'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aliyun-network-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/jiashu-network-probe/image.tar.gz
+          compression-level: 0
+          retention-days: 1
       - name: Verify application checks before changing the web entry
-        if: inputs.operation == 'configure-web'
+        if: inputs.operation == 'configure-web' || inputs.operation == 'retire-old'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ github.sha }}
@@ -49,6 +63,9 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           EXPECTED_CONFIG_HASH: ${{ inputs.expected_config_hash }}
           EXPECTED_COMMIT: ${{ github.sha }}
+          ARTIFACT_ID: ${{ steps.probe.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.probe.outputs.artifact-digest }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           config=$(bash deploy/aliyun/ssh-config.sh)
@@ -60,8 +77,24 @@ jobs:
             install-docker)
               ssh -T -F "$config" jiashu-aliyun 'bash -s -- --install' < deploy/aliyun/install-docker.sh
               ;;
-            inspect-retired)
-              ssh -T -F "$config" jiashu-aliyun 'python3 - --inspect' < deploy/aliyun/retire-old-services.py
+            transport-test)
+              bash deploy/aliyun/measure-transfer.sh
+              node deploy/aliyun/https-transfer.mjs --probe
+              ;;
+            inspect-retired|retire-old)
+              remote_dir=$(ssh -T -F "$config" jiashu-aliyun 'umask 077; mktemp -d /tmp/jiashu-retire.XXXXXXXX')
+              [[ "$remote_dir" =~ ^/tmp/jiashu-retire\.[A-Za-z0-9]+$ ]]
+              cleanup_retire() { ssh -T -F "$config" jiashu-aliyun "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
+              trap cleanup_retire EXIT
+              scp -F "$config" deploy/aliyun/retire-old-services.py deploy/aliyun/nginx-test-site.py "jiashu-aliyun:$remote_dir/"
+              if [[ "$OPERATION" == inspect-retired ]]; then
+                ssh -T -F "$config" jiashu-aliyun "python3 '$remote_dir/retire-old-services.py' --inspect"
+              else
+                [[ "$EXPECTED_CONFIG_HASH" =~ ^[a-f0-9]{64}$ ]]
+                [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+                ssh -T -F "$config" jiashu-aliyun "python3 '$remote_dir/retire-old-services.py' --apply --expected-hash '$EXPECTED_CONFIG_HASH' --expected-commit '$EXPECTED_COMMIT' --port 3100"
+                ssh -T -F "$config" jiashu-aliyun "python3 - --expected-commit '$EXPECTED_COMMIT'" < deploy/aliyun/verify-live.py
+              fi
               ;;
             configure-web)
               [[ "$EXPECTED_CONFIG_HASH" =~ ^[a-f0-9]{64}$ ]]

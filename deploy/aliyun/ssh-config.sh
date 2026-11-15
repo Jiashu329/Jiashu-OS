@@ -25,6 +25,7 @@ Host jiashu-aliyun
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
     BatchMode yes
+    IPQoS none
     ConnectTimeout 15
     ServerAliveInterval 15
     ServerAliveCountMax 3

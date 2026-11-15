@@ -98,6 +98,16 @@ jobs:
           DEPLOY_ENABLED: ${{ vars.ALIYUN_DEPLOY_ENABLED || 'false' }}
           BOOTSTRAP_CONFIRM: ${{ inputs.bootstrap_confirm }}
         run: node deploy/aliyun/check-ci.mjs
+      - name: Upload the immutable image for HTTPS transfer
+        id: image-artifact
+        if: steps.final-gate.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aliyun-image-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/jiashu-bundle/image.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
       - name: Deploy only the verified bundle
         if: steps.final-gate.outputs.ready == 'true'
         env:
@@ -110,6 +120,8 @@ jobs:
           ALIYUN_PUBLIC_ORIGIN: ${{ vars.ALIYUN_PUBLIC_ORIGIN || 'https://www.treefund.asia' }}
           ALIYUN_BIND_PORT: ${{ vars.ALIYUN_BIND_PORT || '3100' }}
           OPERATION: ${{ needs.gate.outputs.operation }}
+          ARTIFACT_ID: ${{ steps.image-artifact.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.image-artifact.outputs.artifact-digest }}
           GITHUB_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
           DEPLOY_OPERATION: ${{ needs.gate.outputs.operation }}

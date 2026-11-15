@@ -28,6 +28,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 deploy/aliyun/nginx-test-site.test.py
           PYTHONDONTWRITEBYTECODE=1 python3 deploy/aliyun/image-identity.test.py
           PYTHONDONTWRITEBYTECODE=1 python3 deploy/aliyun/retire-old-services.test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/aliyun/fetch-artifact.test.py
       - name: Build and exercise the Docker deployment on the CI host only
         env:
           DEPLOY_SHA: ${{ github.sha }}

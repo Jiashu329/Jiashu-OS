@@ -1,6 +1,6 @@
 # 阿里云测试站与 GitHub 自动更新
 
-当前目标是独立空库测试站：Alibaba Cloud Linux 4、`root@8.159.158.122:22`、域名 `https://www.treefund.asia`。`treefund.asia` 保留个人主页，已有业务接口继续工作。后续自动更新仅管理 `/opt/jiashu-test` 以及 `127.0.0.1:3100` 的应用容器，不修改 Nginx、证书或既有数据。首次接入域名通过单独的服务器设置工作流完成。
+当前目标是独立空库测试站：Alibaba Cloud Linux 4、`root@8.159.158.122:22`、域名 `https://www.treefund.asia`。正式数据继续保存在原 Sites 站点。后续自动更新仅管理 `/opt/jiashu-test` 以及 `127.0.0.1:3100` 的应用容器，不修改 Nginx、证书或既有数据。首次域名接入与已授权的旧服务清理，通过单独的服务器设置工作流完成；清理后 `treefund.asia` 重定向到 www 测试站。
 
 ## 一次性配置
 
@@ -63,12 +63,24 @@ docker build -f selfhost/Dockerfile \
 
 ## 自动更新顺序
 
+测试站验证后，在仓库 **Settings → Secrets and variables → Actions → Variables** 添加 Repository variable：Name 为 `ALIYUN_DEPLOY_ENABLED`，Value 为 `true`。首次可手动运行 **Aliyun deployment → deploy** 验证，后续由 `main` 更新触发。
+
 `main` 更新后，现有 Application checks、Browser acceptance、Douban extension acceptance 和新增 Self-hosted checks 各自执行。部署工作流核对**同一个提交**的四项最新执行全部成功，并核对它仍是 `main` 当前头。PR、fork 或尚未完成／失败的提交不触发部署。
 
-启用 `ALIYUN_DEPLOY_ENABLED=true` 后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单，经严格 host-key 验证的 SSH/SCP 传输，服务器 `docker load`。不依赖服务器访问 GHCR，也不会从运行目录直接 `git pull`。
+启用 `ALIYUN_DEPLOY_ENABLED=true` 后，工作流构建 `selfhost/Dockerfile`，保存压缩镜像及 SHA-256 清单。小型控制脚本通过严格 host-key 验证的 SSH/SCP 传送；镜像上传至保留一天的私有 GitHub Artifact，服务器凭短时签名 URL 通过 HTTPS 下载。签名仅通过 SSH stdin 下发，GitHub token 留在 CI。服务器校验外层 ZIP 摘要、唯一文件白名单及内层镜像归档摘要，再 `docker load`，无需配置 GHCR 凭据。
 
-服务器校验镜像 ID、提交标签和压缩包摘要，使用全局部署锁防止并发；同一版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
+服务器核对镜像内容、提交标签、平台与全部 RootFS 层，再固定使用目标 Docker 存储的本地不可变 ID，兼容 classic 与 Docker 29 containerd 存储差异。使用全局部署锁防止并发；同一镜像版本已健康上线时直接结束。整个 `/data` 目录持久保存 SQLite、WAL 和 SHM。部署停止旧 app 后创建一致的单文件备份，再只运行未应用的迁移和新容器。迁移账本不可删除或盲跑，历史 `0026` 含一次性维护逻辑。
+
+传输异常时，可先运行 **Aliyun server setup → transport-test**。它只传送少量随机测试数据，对比 SSH QoS 与 HTTPS 吞吐，不执行测试载荷，也不修改应用或 Nginx。
 
 新版本必须通过带本次 SHA 的 readiness 检查才成为 current release。没有本次 schema 变化时，失败可恢复上一镜像；本次发生或无法确认迁移时不自动降级数据库或恢复旧备份，停止新 app 并要求前向修复，避免覆盖新数据。回滚不会触碰现有主页或 Nginx。备份和旧镜像不自动清理，可在确认容量与保留策略后单独安排归档。
 
 `/opt/jiashu-test/backups` 保存迁移前一致备份，`releases/<SHA>` 保存非秘密发布记录，`current.env` 只包含不可变镜像 ID、提交和 loopback 端口。服务器私密 `app.env`、登录口令及 SQLite 数据均不进入镜像或 GitHub 工件。
+
+## 一次性清理已退役服务
+
+本次已明确授权清理旧个人主页和 Pharmcube CRM 转发服务，固定范围为 `/var/www/my-homepage`、`/opt/pharmcube-customer-relay`、`pharmcube-sharecrm-relay.service` 及其精确启动链接。SSH、Nginx、证书、Docker 和新站数据保留。
+
+新站 HTTPS 和登录验证成功后，在 **Aliyun server setup** 执行 `inspect-retired`，审阅 version 2 的稳定计划并记录 `expectedHash`。随后选择 `retire-old`，填写该哈希。此步骤要求同提交全部检查成功及新站版本就绪，停止旧 CRM 后完整备份两个目录、单元与 Nginx 配置，核验备份，再移除旧路由、启动项和文件。旧 8788 端口须关闭，HTTP 和 apex HTTPS 须重定向到 www，新站须继续健康；失败自动恢复之前的文件、配置和服务状态。
+
+完整备份及校验回执只保存在服务器 `/opt/jiashu-test/retired-backups/`，目录 0700、归档与回执 0600，包含旧服务私密配置，不上传到 GitHub 或聊天。清理工具不会移除这份恢复副本。

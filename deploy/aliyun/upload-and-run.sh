@@ -13,7 +13,16 @@ remote_dir=$(ssh -T -F "$config" jiashu-aliyun 'umask 077; mktemp -d /tmp/jiashu
 [[ "$remote_dir" =~ ^/tmp/jiashu-release\.[A-Za-z0-9]+$ ]] || die 'Unexpected remote upload directory.'
 cleanup() { ssh -T -F "$config" jiashu-aliyun "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-scp -F "$config" -r "$bundle/." "jiashu-aliyun:$remote_dir/"
+small_files=()
+for file in "$bundle/"*; do
+  [[ -f "$file" ]] || die 'Release bundle must contain regular files only.'
+  [[ ${file##*/} == image.tar.gz ]] || small_files+=("$file")
+done
+((${#small_files[@]})) || die 'Release bundle metadata is missing.'
+scp -F "$config" "${small_files[@]}" "$script_dir/fetch-artifact.py" "jiashu-aliyun:$remote_dir/"
+# Only the large image uses HTTPS. Its signed URL is generated immediately before
+# SSH stdin delivery, and the server checks both ZIP and inner archive checksums.
+node "$script_dir/https-transfer.mjs" --remote-dir "$remote_dir" --ssh-config "$config"
 # Uploading a large image can take minutes. Revalidate after it, before executing.
 gate_output=$(mktemp "$RUNNER_TEMP/jiashu-final-gate.XXXXXXXX")
 GITHUB_OUTPUT="$gate_output" node "$script_dir/check-ci.mjs"
