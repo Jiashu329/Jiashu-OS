@@ -1,5 +1,5 @@
 import { DOUBAN_LIBRARY_FILTERS, DOUBAN_LIBRARY_UI_CSS } from './lib/douban-library-ui.ts';
-import { DOUBAN_PERSONAL_CSS, DOUBAN_PERSONAL_BULK_CONTENT, renderDoubanPersonalScript } from './lib/douban-personal-ui.ts';
+import { DOUBAN_PERSONAL_CSS, renderDoubanPersonalScript } from './lib/douban-personal-ui.ts';
 import { DOUBAN_COVER_SELECTION_CSS, renderDoubanCoverSelectionScript } from './lib/douban-cover-selection-ui.ts';
 import { APP_THEME_CSS } from './lib/app-theme.ts';
 import { APP_BRAND_HEAD } from './lib/branding.ts';
@@ -34,7 +34,7 @@ export function renderDoubanPage(): string {
 <details class="db-library-help"><summary>关于作品资料</summary><p>按需补全封面、简介、豆瓣评分等作品资料，默认仅处理缺少封面、简介或主要创作者等资料的作品。“更新本页资料与评分”会重新获取本页作品详情。可暂停、翻页后继续，也可在详情中补全单部作品。IMDb 评分取自官方每日数据，按批次获取并缓存；与个人评分、豆瓣评分分别保存。个人评分和短评保留在自己的收藏中。</p></details><p class="db-form-status" id="douban-metadata-status" role="status" aria-live="polite"></p>
 <nav class="db-kind-chips" id="douban-kind-chips" aria-label="书影音类别"></nav>
 <form class="db-toolbar" id="douban-search-form"><label class="db-field"><span>名称、短评或创作者</span><input class="db-control" id="douban-query" type="search" maxlength="100" placeholder="搜索我的书影音"></label><label class="db-field db-kind-field"><span>类别</span><select class="db-control" id="douban-kind" tabindex="-1"><option value="">全部类别</option><option value="movie">电影</option><option value="series">电视剧</option><option value="book">书籍</option><option value="music">音乐</option><option value="screen">待分类影视</option></select></label><label class="db-field"><span>来源主页</span><select class="db-control" id="douban-scope"><option value="all">全部已保存来源</option><option value="current">当前绑定主页</option></select></label><button class="db-btn" id="douban-search" type="submit">查找</button><button class="db-btn" id="douban-reset-filters" type="button" hidden>清除筛选</button></form>
-${DOUBAN_LIBRARY_FILTERS}${DOUBAN_PERSONAL_BULK_CONTENT}
+${DOUBAN_LIBRARY_FILTERS}
 <p class="db-status" id="douban-status" role="status" aria-live="polite"></p><button class="db-btn" id="douban-retry" type="button" hidden>重新读取记录</button><div class="db-empty" id="douban-empty" hidden><h3>从一部喜欢的作品开始</h3><p id="douban-empty-text">把自己的豆瓣收藏同步到这里，或导入已经整理好的书影音资料。</p>${DOUBAN_WORKSPACE_EMPTY_ACTIONS}</div><ul class="db-grid" id="douban-list"></ul>
 <nav class="db-pagination" id="douban-pagination" aria-label="书影音记录分页" hidden><button class="db-btn" id="douban-previous" type="button">上一页</button><span id="douban-page-number"></span><button class="db-btn" id="douban-next" type="button">下一页</button></nav><p class="db-note">个人评分与豆瓣站点评分不同。标记日期不等于实际完成日期；音乐记录指豆瓣音乐条目，不是播放历史。</p></section><footer class="db-tmdb-attribution"><a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer"><img src="/tmdb-logo.svg" alt="TMDB" width="90"></a><p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p><p>Information courtesy of IMDb (<a href="https://www.imdb.com" target="_blank" rel="noopener noreferrer">https://www.imdb.com</a>). Used with permission.</p></footer></main></div>
 ${tools}

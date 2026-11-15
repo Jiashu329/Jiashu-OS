@@ -997,6 +997,9 @@ test('minified media enrichment and manual classification only write after their
   const get = (id: string) => f.document.getElementById('douban-' + id)!;
   await settle(() => get('page').getAttribute('aria-busy') === 'false');
   assert.equal(f.doubanMetadataBodies.length, 0);
+  assert.equal(f.document.querySelector('#douban-bulk'), null);
+  assert.equal(f.document.querySelector('[data-douban-select]'), null);
+  assert.equal(f.document.querySelector('[data-douban-select-all]'), null);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^data:image\/svg\+xml/);
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => /本次补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
@@ -1466,7 +1469,7 @@ test('minified members see shared TMDB status and cannot trigger secret mutation
 test('minified cards keep official Douban and IMDb scores distinct from personal ratings and books or music omit IMDb tags', { skip: !hasBuild }, async () => {
   const items = [
     { ...mediaWorkspaceRecord('movie', '8180000', '短标题'), details: { imdbId: 'tt0018000', doubanRating: 8.6 }, imdb: productionIMDbScore('tt0018000', 7.1) },
-    { ...mediaWorkspaceRecord('movie', '8180001', '需要换行但来源评分标签仍应放在卡片末尾的合成长标题'), details: { imdbId: 'tt0018001', doubanRating: 6.4 }, imdb: productionIMDbScore('tt0018001', 9.2) },
+    { ...mediaWorkspaceRecord('movie', '8180001', '需要换行但来源评分标签仍应放在封面右下角的合成长标题'), details: { imdbId: 'tt0018001', doubanRating: 6.4 }, imdb: productionIMDbScore('tt0018001', 9.2) },
     { ...mediaWorkspaceRecord('movie', '8180002', '暂无评分'), details: { imdbId: 'tt0018002' }, imdb: productionIMDbScore('tt0099999', 5.5) },
     { ...mediaWorkspaceRecord('book', '8180003', '合成图书'), details: { doubanRating: 8.3 } },
     { ...mediaWorkspaceRecord('music', '8180004', '合成音乐'), details: { doubanRating: 7.6 } },
@@ -1479,7 +1482,12 @@ test('minified cards keep official Douban and IMDb scores distinct from personal
     assert.match(cards[index].querySelector('[data-douban-score="imdb"]')?.textContent ?? '', new RegExp(imdb));
   }
   for (const index of [3, 4]) { assert.equal(cards[index].querySelectorAll('[data-douban-score="douban"]').length, 1); assert.equal(cards[index].querySelectorAll('[data-douban-score="imdb"]').length, 0); }
-  for (const card of cards) { const copy = card.querySelector('.db-card-copy')!; assert.equal(copy.lastElementChild?.hasAttribute('data-douban-source-ratings'), true); assert.match(card.querySelector('.db-rating')?.textContent ?? '', /4 \/ 5/); }
+  for (const card of cards) {
+    const cover = card.querySelector('.db-cover')!, ratings = card.querySelector('[data-douban-source-ratings]');
+    assert.equal(ratings?.parentElement, cover, 'source tags overlay the cover image');
+    assert.ok(cover.querySelector('img')); assert.equal(card.querySelector('.db-card-copy [data-douban-source-ratings]'), null);
+    assert.match(card.querySelector('.db-rating')?.textContent ?? '', /4 \/ 5/);
+  }
   assert.ok(f.document.querySelector('.db-tmdb-attribution')?.textContent?.includes('Information courtesy of IMDb (https://www.imdb.com). Used with permission.'));
   assert.ok(f.requests.every(request => request.method === 'GET'));
 });

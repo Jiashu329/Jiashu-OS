@@ -788,6 +788,9 @@ test('manual movie or series classification is an explicit saved choice and an a
   bind(state);
   state.doubanItems = [record('screen', 700), record('screen', 701)];
   await openLibrary(page);
+  await expect(page.locator('#douban-bulk')).toHaveCount(0);
+  await expect(page.locator('[data-douban-select]')).toHaveCount(0);
+  await expect(page.locator('[data-douban-select-all]')).toHaveCount(0);
   await page.locator('#douban-list [data-douban-open="0"]').click();
   await expect(page.locator('#douban-classification-form')).toBeVisible();
   await expect(page.locator('#douban-classification-kind')).toHaveValue('');
@@ -1711,6 +1714,12 @@ test('saved covers automatically fall through official, TMDB and custom URLs wit
   await expect(page.locator('#douban-list .db-card').nth(1).locator('img')).toHaveAttribute('src', TMDB_POSTER_URL);
   await expect(page.locator('#douban-list .db-card').nth(2).locator('img')).toHaveAttribute('src', USER_COVER_URL);
   await expect(page.locator('#douban-list .db-card').nth(3).locator('img')).toHaveAttribute('data-douban-cover', 'missing');
+  await expectSourceRatingsCorner(page);
+  const sourcePlacement = await page.locator('#douban-list .db-card').nth(1).locator('.db-cover').evaluate(cover => {
+    const box = cover.getBoundingClientRect(), source = cover.querySelector('[data-douban-tmdb-source]').getBoundingClientRect(), ratings = cover.querySelector('[data-douban-source-ratings]').getBoundingClientRect();
+    return { left: Math.abs(source.left - (box.left + 8)), top: Math.abs(source.top - (box.top + 8)), separate: source.bottom <= ratings.top };
+  });
+  expect(sourcePlacement.left <= 2 && sourcePlacement.top <= 2 && sourcePlacement.separate, 'The TMDB source label stays in the upper left and clear of the rating tags').toBe(true);
   await page.locator('#douban-list [data-douban-open="1"]').click();
   await expect(page.locator('#douban-detail-body')).toContainText('tt0016001');
   await expect(page.locator('#douban-detail-body [data-douban-tmdb-source]')).toContainText('TMDB');
@@ -1819,20 +1828,23 @@ for (const [status, message] of [
 });
 
 async function expectSourceRatingsCorner(page) {
-  const placement = await page.locator('#douban-list .db-card-copy').evaluateAll(copies => copies.map(copy => {
-    const badges = copy.querySelector('[data-douban-source-ratings]'), style = getComputedStyle(copy), box = copy.getBoundingClientRect(), tagBox = badges?.lastElementChild?.getBoundingClientRect();
-    return { last: badges === copy.lastElementChild, bottom: tagBox ? Math.abs(tagBox.bottom - (box.bottom - parseFloat(style.paddingBottom))) : Infinity,
-      right: tagBox ? Math.abs(tagBox.right - (box.right - parseFloat(style.paddingRight))) : Infinity };
+  const placement = await page.locator('#douban-list .db-cover').evaluateAll(covers => covers.map(cover => {
+    const badges = cover.querySelector('[data-douban-source-ratings]'), box = cover.getBoundingClientRect(), tagBox = badges?.lastElementChild?.getBoundingClientRect();
+    return { inCover: badges?.parentElement === cover && Boolean(cover.querySelector('img')) && getComputedStyle(badges).position === 'absolute',
+      inside: Boolean(tagBox && tagBox.top >= box.top && tagBox.left >= box.left && tagBox.bottom <= box.bottom && tagBox.right <= box.right),
+      bottom: tagBox ? Math.abs(tagBox.bottom - (box.bottom - 8)) : Infinity,
+      right: tagBox ? Math.abs(tagBox.right - (box.right - 8)) : Infinity };
   }));
-  expect(placement.every(item => item.last && item.bottom <= 2 && item.right <= 2), 'Source ratings stay at the bottom right of each card copy, including short and long titles').toBe(true);
+  expect(placement.every(item => item.inCover && item.inside && item.bottom <= 2 && item.right <= 2), 'Source ratings overlay the cover at an 8px bottom-right inset for both short and long titles').toBe(true);
+  await expect(page.locator('#douban-list .db-card-copy [data-douban-source-ratings]')).toHaveCount(0);
   await fits(page);
 }
 
-test('saved card tags distinguish Douban, official IMDb and personal ratings at the bottom right for every title length', async ({ page }, testInfo) => {
+test('saved card tags distinguish rating sources while overlaying the cover bottom right for every title length', async ({ page }, testInfo) => {
   const state = testInfo.synthetic; bind(state);
   state.doubanItems = [
     { ...record('movie', 1800), title: '短标题', details: { imdbId: 'tt0018000', doubanRating: 8.6 }, imdb: imdbScore('tt0018000', 7.1) },
-    { ...record('movie', 1801), title: '这是一个需要分成多行并且仍应让两个来源评分标签对齐在卡片右下角的合成长标题', details: { imdbId: 'tt0018001', doubanRating: 6.4 }, imdb: imdbScore('tt0018001', 9.2) },
+    { ...record('movie', 1801), title: '这是一个需要分成多行并且仍应让两个来源评分标签对齐在封面图片右下角的合成长标题', details: { imdbId: 'tt0018001', doubanRating: 6.4 }, imdb: imdbScore('tt0018001', 9.2) },
     { ...record('movie', 1802), details: { imdbId: 'tt0018002' }, imdb: imdbScore('tt0099999', 5.5) },
     { ...record('book', 1803), details: { doubanRating: 8.3 } },
     { ...record('music', 1804), details: { doubanRating: 7.6 } },
