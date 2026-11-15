@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { syntheticState, interceptSyntheticAPI } from './synthetic-api.mjs';
-import { parseDoubanProfile } from '../../lib/douban.ts';
+import { parseDoubanProfile, parseDoubanRecord } from '../../lib/douban.ts';
 import { mergeDoubanDetails } from '../../lib/douban-details.ts';
 import { doubanMissingFields, parseDoubanLocalRecord } from '../../lib/douban-library.ts';
 import { syntheticPhotoPNG } from './photo-fixture.mjs';
@@ -111,6 +111,24 @@ async function importPlan(state, profileId, items) {
     const changed = Boolean(old && keys.some(key => JSON.stringify(old[key]) !== JSON.stringify(next[key])));
     return { index, old, next, changed };
   }));
+}
+// Public fixtures seed persisted library rows; the crawler submits only normalized source fields.
+function publicCollectionInput(item) {
+  const fields = ['domain', 'subjectId', 'title', 'url', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source'];
+  const payload = Object.fromEntries(fields.filter(key => Object.hasOwn(item, key)).map(key => [key, item[key]]));
+  if (Object.hasOwn(item, 'details')) payload.details = item.details;
+  return parseDoubanRecord(payload);
+}
+async function commitPublicCollection(state) {
+  const seeds = state.doubanPublicSyncItems, inputs = seeds.map(publicCollectionInput);
+  const plans = await importPlan(state, state.doubanConnection.profileId, inputs);
+  for (const [index, plan] of plans.entries()) {
+    const runtimeFields = ['local', 'cover', 'tmdb', 'tmdbCoverUrl', 'imdb'];
+    const seed = plan.old ? {} : structuredClone(Object.fromEntries(runtimeFields.filter(key => Object.hasOwn(seeds[index], key)).map(key => [key, seeds[index][key]])));
+    const persisted = { ...seed, ...plan.next, observedAt: STAMP, createdAt: plan.old?.createdAt ?? STAMP, updatedAt: plan.changed ? nextVersion(state, plan.old.updatedAt) : plan.old?.updatedAt ?? STAMP };
+    if (plan.old) state.doubanItems[plan.index] = persisted; else state.doubanItems.push(persisted);
+  }
+  return plans;
 }
 function nextVersion(state, previous = STAMP) {
   return new Date(Math.max(Date.parse(previous) + 1, Date.parse(STAMP) + ++state.doubanMetadataVersion)).toISOString();
@@ -336,11 +354,7 @@ test.beforeEach(async ({ context, page }, testInfo) => {
         if (!body.runId) state.doubanRun = newRun(state.doubanConnection);
         else {
           expect(body.runId).toBe(state.doubanRun.id); expect(body.expectedRunRevision).toBe(state.doubanRun.revision);
-          const plans = await importPlan(state, state.doubanConnection.profileId, state.doubanPublicSyncItems);
-          for (const plan of plans) {
-            const persisted = { ...plan.next, observedAt: STAMP, createdAt: plan.old?.createdAt ?? STAMP, updatedAt: plan.changed ? nextVersion(state, plan.old.updatedAt) : plan.old?.updatedAt ?? STAMP };
-            if (plan.old) state.doubanItems[plan.index] = persisted; else state.doubanItems.push(persisted);
-          }
+          const plans = await commitPublicCollection(state);
           Object.assign(state.doubanRun, { revision: state.doubanRun.revision + 1, status: state.doubanPublicRunStatus, phase: 'done', added: plans.filter(plan => !plan.old).length, updated: plans.filter(plan => plan.changed).length, unchanged: plans.filter(plan => plan.old && !plan.changed).length, finishedAt: STAMP,
             sources: Object.fromEntries(['screen', 'book', 'music'].map(domain => [domain, domain === 'book' && state.doubanPublicSourceError ? { ...source('blocked'), errorCode: state.doubanPublicSourceError } : source('complete', state.doubanItems.filter(item => item.domain === domain).length)])),
             rss: { status: 'complete', received: 0, errorCode: null }, classification: { checked: 0, unclassified: 0, blocked: false, errorCode: null }, message: state.doubanPublicRunStatus === 'partial' ? '部分完成：合成图书公开页面暂时无法读取，已保存其余公开记录。' : '合成公开收藏已完整读取。' });
