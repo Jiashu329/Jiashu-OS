@@ -517,6 +517,7 @@ export const doubanItems = sqliteTable('douban_items', {
   detailsJson: text('details_json').notNull().default('{}'),
   tmdbCoverJson: text('tmdb_cover_json').notNull().default('{}'),
   tmdbCoverUrl: text('tmdb_cover_url'), imdbRatingJson: text('imdb_rating_json').notNull().default('{}'),
+  collectionHash: text('collection_hash'), detailsCheckedAt: text('details_checked_at'),
   localCoverUrl: text('local_cover_url'),
   localNote: text('local_note').notNull().default(''), localTagsJson: text('local_tags_json').notNull().default('[]'),
   localHidden: integer('local_hidden').notNull().default(0), localRevision: integer('local_revision').notNull().default(0),

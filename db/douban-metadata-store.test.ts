@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
+import { readDoubanLibraryRecord } from './douban-library-store.ts';
 import { classifyDoubanRecord, readDoubanMetadataRecord, readSatisfiedDoubanSubjectMetadata, saveDoubanSubjectMetadata } from './douban-metadata-store.ts';
 import { DoubanStoreError, doubanDetailsJson, readDoubanRecord, type DoubanDatabase, type DoubanRecord } from './douban-store.ts';
 
@@ -16,6 +17,7 @@ function fixture(t: TestContext) {
   sqlite.exec(readFileSync(new URL('../drizzle/0028_douban_browser_source.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0029_douban_library.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0030_douban_manual_cover.sql', import.meta.url), 'utf8'));
+  for (const file of ['0031_tmdb_covers_and_settings.sql','0032_imdb_ratings.sql','0033_douban_sync_hints.sql']) sqlite.exec(readFileSync(new URL('../drizzle/' + file, import.meta.url), 'utf8'));
   const queries: string[] = [];
   const db = { prepare(sql: string) {
     queries.push(sql); const statement = sqlite.prepare(sql); let values: SQLInputValue[] = [];
@@ -31,7 +33,7 @@ function fixture(t: TestContext) {
     sqlite.prepare(`INSERT INTO douban_items (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(owner, item.profileId, item.domain, item.subjectId, item.kind, item.title, item.url,
       item.coverUrl, item.rating, item.markedDate, item.comment, item.publishedAt, item.source, item.observedAt, item.createdAt, item.updatedAt, item.metadataCheckedRunId, doubanDetailsJson(item.details));
-    return item;
+    return { ...item, sync: { collectionHash: null, detailsCheckedAt: null } };
   }
   return { db, sqlite, queries, seed };
 }
@@ -65,7 +67,7 @@ void test('subject metadata changes only its owner’s cover and classification 
 void test('unknown fields never erase a known cover or kind and unchanged metadata does not advance its version', async t => {
   const f = fixture(t), old = f.seed('alice', { kind: 'movie', coverUrl: COVER });
   const result = await saveDoubanSubjectMetadata(f.db, 'alice', old, { kind: null, coverUrl: null }, T2);
-  assert.deepEqual(result, { item: old, changed: false }); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+  assert.deepEqual(result, { item: await readDoubanLibraryRecord(f.db, 'alice', KEY), changed: false }); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
   await assert.rejects(saveDoubanSubjectMetadata(f.db, 'alice', old, { kind: 'book', coverUrl: null }, T2));
   await assert.rejects(saveDoubanSubjectMetadata(f.db, 'alice', old, { kind: null, coverUrl: 'https://evil.example/cover.jpg' }, T2));
   assert.deepEqual(await readDoubanRecord(f.db, 'alice', KEY), old);
@@ -97,7 +99,7 @@ void test('CAS catches concurrent personal edits and manual confirmation even if
   f.sqlite.prepare('UPDATE douban_items SET comment=? WHERE user_id=?').run('new-private-comment', 'alice');
   await assert.rejects(saveDoubanSubjectMetadata(f.db, 'alice', old, { kind: 'series', coverUrl: COVER }, T2), conflict);
   await assert.rejects(saveDoubanSubjectMetadata(f.db, 'alice', old, { kind: null, coverUrl: null }, T2), conflict);
-  const current = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  const current = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   await classifyDoubanRecord(f.db, 'alice', { ...KEY, kind: 'movie' }, T2);
   await assert.rejects(saveDoubanSubjectMetadata(f.db, 'alice', current, { kind: 'series', coverUrl: COVER }, T2), conflict);
   const saved = (await readDoubanRecord(f.db, 'alice', KEY))!;
@@ -146,7 +148,7 @@ void test('a reset winning immediately before metadata CAS cannot contaminate a 
     } };
   } } as unknown as DoubanDatabase;
   await assert.rejects(saveDoubanSubjectMetadata(racing, 'alice', old, { kind: 'series', coverUrl: COVER, details: { summary: '迟到的旧元数据' } }, T2, 0), error => error instanceof DoubanStoreError && error.code === 'DOUBAN_DATA_EPOCH_CONFLICT');
-  const current = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  const current = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   assert.equal(current.kind, 'screen'); assert.equal(current.coverUrl, null); assert.equal(current.details?.summary, '新世代简介'); assert.equal(current.comment, '清空后新私人短评'); assert.equal(current.updatedAt, T1);
 });
 
@@ -154,7 +156,7 @@ void test('a committed browser metadata reply can be recovered with its original
   const f = fixture(t), old = f.seed();
   const metadata = { kind: 'series' as const, coverUrl: COVER, details: { summary: '已保存作品简介', episodes: 12 } };
   await saveDoubanSubjectMetadata(f.db, 'alice', old, metadata, T2, 0); // The caller loses this reply.
-  const current = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  const current = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   assert.notEqual(current.updatedAt, KEY.expectedUpdatedAt); f.queries.length = 0;
   assert.deepEqual(await readSatisfiedDoubanSubjectMetadata(f.db, 'alice', { ...KEY, expectedDataEpoch: 0 }, metadata), { item: current, changed: false });
   assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
@@ -167,7 +169,7 @@ void test('satisfied recovery retains later personal edits and protected manual 
   await classifyDoubanRecord(f.db, 'alice', { ...KEY, expectedUpdatedAt: saved.item.updatedAt, kind: 'movie' }, T2);
   f.sqlite.prepare("UPDATE douban_items SET title=?,rating=?,marked_date=?,comment=?,details_json=? WHERE user_id='alice'")
     .run('后来更正的名称', 2, '2026-11-13', '后来更正的私人短评', doubanDetailsJson({ summary: '作品简介', directors: ['补充导演'] }));
-  const manual = (await readDoubanRecord(f.db, 'alice', KEY))!;
+  const manual = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   f.seed('imported', { kind: 'movie', source: 'import', coverUrl: COVER, updatedAt: T2, details: metadata.details });
   f.queries.length = 0;
   const recovered = await readSatisfiedDoubanSubjectMetadata(f.db, 'alice', { ...KEY, expectedDataEpoch: 0 }, metadata);

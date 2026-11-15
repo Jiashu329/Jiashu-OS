@@ -7,6 +7,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { doubanCollectionHash, type DoubanSyncHints } from './douban-sync-hints.ts';
 import { parseIMDbRating, type IMDbRating } from './imdb-rating.ts';
 import { normalizeUserCoverUrl, userCoverDescriptor, type UserCoverDescriptor } from './douban-cover-selection.ts';
 import ts from 'typescript';
@@ -210,9 +211,10 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       doubanImportBodies.push(body);
       assert.equal(body.expectedDataEpoch, catalog.douban.dataEpoch ?? 0, 'every minified import pins the current data epoch');
       assert.ok(Array.isArray(body.items));
-      const plans = (body.items as DoubanRecordInput[]).map(input => {
-        const index = catalog.douban!.items.findIndex(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId), old = catalog.douban!.items[index];
-        const next = { ...old, ...input, profileId: body.profile } as DoubanRecord;
+      const plans = await Promise.all((body.items as DoubanRecordInput[]).map(async input => {
+        const index = catalog.douban!.items.findIndex(item => item.profileId === body.profile && item.domain === input.domain && item.subjectId === input.subjectId), old = catalog.douban!.items[index] as (DoubanRecord & { sync?: DoubanSyncHints }) | undefined;
+        const hash = await doubanCollectionHash(input);
+        const next = { ...old, ...input, profileId: body.profile, sync: { collectionHash: hash, detailsCheckedAt: old?.sync?.collectionHash === hash ? old.sync.detailsCheckedAt : null } } as DoubanRecord;
         if (old) {
           if (input.kind === 'screen' && ['movie', 'series'].includes(old.kind)) next.kind = old.kind;
           next.coverUrl = input.coverUrl ?? old.coverUrl;
@@ -222,7 +224,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
         const fields = ['title', 'kind', 'coverUrl', 'rating', 'markedDate', 'comment', 'publishedAt', 'source', 'details'] as const;
         const changed = Boolean(old && fields.some(key => JSON.stringify(old[key]) !== JSON.stringify(next[key])));
         return { index, old, next, changed };
-      });
+      }));
       const added = plans.filter(plan => !plan.old).length, updated = plans.filter(plan => plan.changed).length;
       if (body.action === 'preview') return Response.json({ preview: { profileId: body.profile, dataEpoch: catalog.douban.dataEpoch ?? 0, profileUrl: 'https://www.douban.com/people/' + body.profile + '/',
         snapshotHash: 'a'.repeat(64), total: body.items.length, added, updated, unchanged: body.items.length - added - updated } });
@@ -231,7 +233,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       if (!browserReceipts.has(body.requestId)) {
         for (const plan of plans) {
           const stamp = '2026-11-14T12:00:00.000Z', persisted: DoubanRecord = { ...plan.next, observedAt: stamp, createdAt: plan.old?.createdAt ?? stamp,
-            updatedAt: plan.changed ? new Date(Date.parse(plan.old.updatedAt) + 1).toISOString() : plan.old?.updatedAt ?? stamp, metadataCheckedRunId: plan.old?.metadataCheckedRunId ?? null };
+            updatedAt: plan.changed ? new Date(Date.parse(plan.old!.updatedAt) + 1).toISOString() : plan.old?.updatedAt ?? stamp, metadataCheckedRunId: plan.old?.metadataCheckedRunId ?? null };
           if (plan.old) catalog.douban.items[plan.index] = persisted;
           else catalog.douban.items.push(persisted);
         }
@@ -258,12 +260,13 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       const body = JSON.parse(String(options?.body));
       const index = catalog.douban.items.findIndex(item => item.profileId === body.profileId && item.domain === body.domain && item.subjectId === body.subjectId);
       assert.ok(index >= 0, 'enrichment can only address an owned saved record');
-      const previous = catalog.douban.items[index];
+      const previous = catalog.douban.items[index] as DoubanRecord & { sync?: DoubanSyncHints };
       assert.equal(body.expectedUpdatedAt, previous.updatedAt);
       const updatedAt = new Date(Date.parse(previous.updatedAt) + 1).toISOString();
-      const item: DoubanRecord = { ...previous, updatedAt, observedAt: updatedAt };
+      const item: DoubanRecord & { sync?: DoubanSyncHints } = { ...previous };
       if (path === '/api/life/douban/metadata') {
         doubanMetadataBodies.push(body); assert.equal(body.confirmed, true);
+        if (Object.hasOwn(body, 'expectedDetailsCheckedAt')) assert.equal(body.expectedDetailsCheckedAt, previous.sync?.detailsCheckedAt ?? null);
         assert.equal(body.expectedDataEpoch ?? 0, catalog.douban.dataEpoch ?? 0);
         if (method === 'PUT') {
           if (body.metadata.coverUrl) item.coverUrl = body.metadata.coverUrl;
@@ -278,8 +281,11 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
         doubanClassificationBodies.push(body); assert.ok(['movie', 'series'].includes(body.kind));
         item.kind = body.kind; item.metadataCheckedRunId = 'manual-kind';
       }
+      const changed = JSON.stringify([item.kind, item.coverUrl, item.details]) !== JSON.stringify([previous.kind, previous.coverUrl, previous.details]);
+      if (changed) { item.updatedAt = updatedAt; item.observedAt = updatedAt; }
+      if (path === '/api/life/douban/metadata') item.sync = { collectionHash: previous.sync?.collectionHash ?? null, detailsCheckedAt: new Date().toISOString() };
       catalog.douban.items[index] = item;
-      return Response.json(path === '/api/life/douban/metadata' ? { item, changed: true, dataEpoch: catalog.douban.dataEpoch ?? 0, metadata: { status: 'complete' } } : { item });
+      return Response.json(path === '/api/life/douban/metadata' ? { item, changed, dataEpoch: catalog.douban.dataEpoch ?? 0, metadata: { status: 'complete' } } : { item });
     }
     if (method === 'POST' && path === '/api/life/douban/imdb-ratings' && catalog.douban?.allowIMDbRatings) {
       requests.push({ path, method });
@@ -389,7 +395,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       else if (sort === 'date-asc') filtered.sort((left, right) => (left.markedDate ?? '').localeCompare(right.markedDate ?? ''));
       const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 24);
       return Response.json({ dataEpoch: catalog.douban?.dataEpoch ?? 0, connection: { ...connection, profileUrl: connection.profileId ? 'https://www.douban.com/people/' + connection.profileId + '/' : null },
-        items: filtered.slice(offset, offset + limit).map(item => {const selected=(item as DoubanRecord & {cover?:UserCoverDescriptor}).cover;return { ...item, local: local(item),cover:userCoverDescriptor(selected?.mode==='url'?selected.url:null,local(item).revision) };}), years, tags, total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
+        items: filtered.slice(offset, offset + limit).map(item => {const selected=(item as DoubanRecord & {cover?:UserCoverDescriptor}).cover;return { ...item, sync: (item as DoubanRecord & { sync?: DoubanSyncHints }).sync ?? { collectionHash: null, detailsCheckedAt: null }, local: local(item),cover:userCoverDescriptor(selected?.mode==='url'?selected.url:null,local(item).revision) };}), years, tags, total: filtered.length, counts, offset, limit, hasMore: offset + limit < filtered.length, lastRun: catalog.douban?.lastRun ?? null });
     }
     if (parsed.pathname === '/api/health/review') {
       const review = catalog.weeklyReview ?? buildHealthWeeklyReview([], emptyGoalSettings(), parseHealthWeekQuery(parsed.searchParams));
@@ -466,6 +472,10 @@ function openMediaDetailManagement(f: Awaited<ReturnType<typeof fixture>>, secti
   const details = f.document.querySelector(selector); assert.ok(details, selector); details.setAttribute('open', '');
 }
 
+function productionSyncMetric(f: Awaited<ReturnType<typeof fixture>>, container: string, label: string) {
+  const metric = [...f.document.querySelectorAll(container + ' .db-sync-progress-metric')].find(node => node.querySelector('[data-sync-metric-label]')?.textContent === label);
+  assert.ok(metric, 'Progress metric: ' + label); return metric.querySelector('[data-sync-metric-value]')?.textContent;
+}
 function mediaWorkspaceRecord(kind: DoubanRecord['kind'], subjectId: string, title: string): DoubanRecord {
   const domain = kind === 'movie' || kind === 'series' ? 'screen' : kind;
   const host = domain === 'screen' ? 'movie' : domain;
@@ -866,7 +876,9 @@ test('minified browser-extension sync connects explicitly and saves normalized p
   get('sync').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => get('status').textContent?.includes('浏览器同步完成') === true);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'START', 'STEP']);
-  assert.match(get('status').textContent ?? '', /分类尚未补全.*1\.0\.4/);
+  assert.equal(f.document.getElementById('douban-browser-sync-progress')?.getAttribute('data-state'), 'partial');
+  assert.match(f.document.querySelector('#douban-browser-sync-progress [data-sync-message]')?.textContent ?? '', /旧扩展/);
+  assert.match(get('version').textContent ?? '', /1\.0\.3/);
   assert.deepEqual(f.doubanImportBodies.map(body => body.action), ['preview', 'commit']);
   assert.deepEqual(f.doubanImportBodies.map(body => body.expectedDataEpoch), [0, 0]);
   assert.deepEqual(f.doubanImportBodies[1].items, [item]);
@@ -898,6 +910,7 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   assert.equal(f.doubanExtensionMessages.length, 0);
   assert.equal(f.doubanImportBodies.length, 0);
   openMediaTools(f, 'browser');
+  (f.document.getElementById('douban-browser-mode') as unknown as HTMLSelectElement).value = 'full';
   const button = f.document.getElementById('douban-browser-sync')!;
   const status = f.document.getElementById('douban-browser-status')!;
   button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
@@ -918,7 +931,7 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   assert.equal(items[0].rating, existing.rating);
   assert.equal(items[0].comment, existing.comment);
   assert.doesNotMatch(JSON.stringify(subject) + JSON.stringify(f.doubanMetadataBodies), /独立的个人短评|markedDate|cookie|password|rawHTML/i);
-  assert.match(status.textContent ?? '', /识别影视 1 条/);
+  assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '刷新详情'), '1');
   button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   // START is recorded before its promise resolves; the previous completion
   // text can still be present there. Wait for this refresh's persisted page
@@ -952,7 +965,7 @@ for (const width of [390, 1280]) void test('minified work enrichment explicitly 
   await settle(() => /本次补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
   assert.match(get('metadata-status').textContent ?? '', /本次补全完成/, 'local enrichment must complete: ' + get('metadata-status').textContent);
   assert.deepEqual(f.doubanExtensionMessages.map(body => body.action), ['CONNECT', 'SUBJECT']);
-  assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: item.domain, subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 2, confirmed: true, metadata }]);
+  assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: item.domain, subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 2, expectedDetailsCheckedAt: null, confirmed: true, metadata }]);
   assert.deepEqual(f.requests.filter(request => request.path === '/api/life/douban/metadata'), [{ path: '/api/life/douban/metadata', method: 'PUT' }]);
   assert.doesNotMatch(JSON.stringify([...f.doubanExtensionMessages, ...f.doubanMetadataBodies]), /不能发送的私人短评|"rating":|"comment":|cookie|rawHTML/i);
   f.document.querySelector('#douban-list [data-douban-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
@@ -1023,7 +1036,7 @@ test('minified media enrichment and manual classification only write after their
   get('metadata').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => /本次补全完成|补全已停止/.test(get('metadata-status').textContent ?? ''));
   assert.match(get('metadata-status').textContent ?? '', /本次补全完成/, 'fallback enrichment must complete: ' + get('metadata-status').textContent);
-  assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: 'screen', subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 0, confirmed: true }]);
+  assert.deepEqual(f.doubanMetadataBodies, [{ profileId: item.profileId, domain: 'screen', subjectId: item.subjectId, expectedUpdatedAt: stamp, expectedDataEpoch: 0, expectedDetailsCheckedAt: null, confirmed: true }]);
   assert.match(f.document.querySelector('#douban-list img')?.getAttribute('src') ?? '', /^\/api\/life\/douban\/cover\?/);
   assert.match(f.document.querySelector('#douban-list .db-meta')?.textContent ?? '', /电视剧/);
   f.document.querySelector('#douban-list [data-douban-open]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
@@ -1554,8 +1567,8 @@ test('minified refresh updates complete selected records and sends one final IMD
   } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
   assert.equal(f.doubanMetadataBodies.length, 0); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
-  openMediaTools(f, 'browser'); f.document.getElementById('douban-browser-sync')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settleWork(() => f.document.getElementById('douban-browser-status')?.textContent?.includes('浏览器同步完成') === true, () => f.document.getElementById('douban-browser-status')?.textContent ?? 'complete work refresh');
+  openMediaTools(f, 'browser'); (f.document.getElementById('douban-browser-mode') as unknown as HTMLSelectElement).value = 'full'; f.document.getElementById('douban-browser-sync')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.document.getElementById('douban-browser-sync-progress')?.getAttribute('data-state') === 'partial' && f.document.getElementById('douban-browser-sync-progress')?.getAttribute('data-phase') === 'done', () => f.document.getElementById('douban-browser-status')?.textContent ?? 'complete work refresh');
   assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2); assert.equal(f.doubanMetadataBodies.length, 2);
   assert.equal(f.doubanIMDbRatingsBodies.length, 1); assert.equal((f.doubanIMDbRatingsBodies[0].items as unknown[]).length, 2);
   assert.ok(f.requests.findIndex(request => request.path.endsWith('/imdb-ratings')) > f.requests.map(request => request.path).lastIndexOf('/api/life/douban/metadata'));
@@ -1563,7 +1576,8 @@ test('minified refresh updates complete selected records and sends one final IMD
   assert.equal((items[0] as DoubanRecord & { imdb?: IMDbRating }).imdb?.rating, 7.1); assert.equal((items[1] as DoubanRecord & { imdb?: IMDbRating }).imdb ?? null, null);
   assert.ok(items.every(item => item.rating === 4 && item.comment === '独立的个人短评' && item.tmdbCoverUrl === PRODUCTION_TMDB_POSTER));
   assert.equal(f.doubanTMDBBodies.length, 0);
-  assert.match(f.document.getElementById('douban-browser-status')?.textContent ?? '', /IMDb 评分已处理 2 条，更新 1 条，暂无评分 1 条/);
+  assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '更新IMDb'), '1');
+  assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '暂无IMDb'), '1');
   assert.doesNotMatch(JSON.stringify(f.doubanIMDbRatingsBodies), /doubanRating|ratingCount|独立的个人短评|markedDate|cookie|password|token/i);
 });
 
@@ -1637,6 +1651,9 @@ test('minified media detail opens its public overview and preserves personal dra
   }
   const work = panel('work'), summary = work.querySelector('[data-douban-details="summary"]')!, facts = work.querySelector('[data-douban-details="screen"]')!;
   assert.ok(work.querySelector('.db-detail-cover img')); assert.ok(summary); assert.ok(facts);
+  const scoreTiles = [...work.querySelectorAll('[data-douban-detail-rating]')]; assert.equal(scoreTiles.length, 2);
+  for (const tile of scoreTiles) assert.doesNotMatch(tile.textContent ?? '', /数据日期/);
+  assert.equal(item.imdb.datasetDate, '2026-11-14');
   assert.ok([...work.querySelectorAll('[data-douban-details]')].indexOf(summary) < [...work.querySelectorAll('[data-douban-details]')].indexOf(facts), 'the overview leads with its summary before people and detailed facts');
   assert.equal(work.querySelector('input,textarea,select,[data-douban-metadata-item],[data-douban-tmdb-item],[data-douban-imdb-item]'), null, 'the public overview does not stack editing and maintenance controls');
   for (const selector of ['[data-douban-advanced-refresh]', '[data-douban-cover-editor]', '[data-douban-record-source]', '#douban-classification-panel']) {
@@ -1659,4 +1676,39 @@ test('minified media detail opens its public overview and preserves personal dra
   const leave = new f.window.Event('beforeunload', { cancelable: true }); f.window.dispatchEvent(leave); assert.equal(leave.defaultPrevented, true);
   assert.equal(f.requests.length, before, 'switching detail tabs and image fallback never saves a draft or calls an external service');
   assert.ok(f.requests.every(request => request.method === 'GET'));
+});
+
+
+test('minified incremental sync reuses fresh collection hints, refreshes one changed or expired work and preserves explicit full refresh', { skip: !hasBuild }, async () => {
+  const stamp = '2026-11-14T00:00:00.000Z';
+  const inputs: DoubanRecordInput[] = [0, 1].map(index => ({ domain: 'book', kind: 'book', subjectId: '822000' + index, title: '增量合成图书' + index,
+    url: 'https://book.douban.com/subject/822000' + index + '/', coverUrl: null, rating: 4, markedDate: '2026-11-12', comment: '原收藏短评', publishedAt: null, source: 'browser' }));
+  const items: Array<DoubanRecord & { sync?: DoubanSyncHints }> = [];
+  const subjects = Object.fromEntries(inputs.map(item => ['book:' + item.subjectId, { kind: 'book' as const, coverUrl: 'https://img1.doubanio.com/view/subject/s/public/s2200.jpg', details: { authors: ['合成作者'], summary: '已获取的图书简介' } }]));
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: stamp }, items, allowMetadata: true,
+    browserExtensionItems: inputs, browserExtensionVersion: '1.0.6', browserSubjectMetadata: subjects,
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false'); assert.ok(f.requests.every(request => request.method === 'GET'));
+  openMediaTools(f, 'browser'); const button = f.document.getElementById('douban-browser-sync')!, mode = f.document.getElementById('douban-browser-mode') as unknown as HTMLSelectElement;
+  assert.equal(mode.value, 'incremental');
+  const run = async (count: number) => { button.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+    await settleWork(() => f.doubanImportBodies.filter(body => body.action === 'commit').length === count && !(button as HTMLButtonElement).disabled
+      && f.document.getElementById('douban-browser-sync-progress')?.getAttribute('data-state') === 'done', () => f.document.getElementById('douban-browser-status')?.textContent ?? 'incremental sync'); };
+  await run(1); assert.equal(f.doubanMetadataBodies.length, 2); assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2);
+  assert.ok(items.every(item => /^[a-f0-9]{64}$/.test(item.sync?.collectionHash ?? '') && item.sync?.detailsCheckedAt));
+  await run(2); assert.equal(f.doubanMetadataBodies.length, 2); assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '复用详情'), '2');
+  inputs[0].comment = '本次在历史收藏中修改的短评';
+  await run(3); assert.equal(f.doubanMetadataBodies.length, 3); assert.equal(f.doubanMetadataBodies.at(-1)?.subjectId, inputs[0].subjectId);
+  assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '刷新详情'), '1'); assert.equal(productionSyncMetric(f, '#douban-browser-sync-progress', '复用详情'), '1');
+  items[1].sync!.detailsCheckedAt = new Date(Date.now() - 8 * 86400000).toISOString();
+  await run(4); assert.equal(f.doubanMetadataBodies.length, 4); assert.equal(f.doubanMetadataBodies.at(-1)?.subjectId, inputs[1].subjectId);
+  mode.value = 'full'; await run(5); assert.equal(f.doubanMetadataBodies.length, 6);
+  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'STEP').length, 5, 'every refresh still reconciles the full collection page');
+  f.document.getElementById('douban-tools-close')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  f.document.getElementById('douban-metadata-refresh')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.doubanMetadataBodies.length === 8 && f.document.getElementById('douban-metadata-progress')?.getAttribute('data-state') === 'done', () => f.document.getElementById('douban-metadata-status')?.textContent ?? 'explicit forced refresh');
+  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 8);
+  assert.ok((f.document.getElementById('douban-browser-status')?.textContent?.length ?? 0) < 180);
+  assert.equal(f.doubanTMDBBodies.length, 0); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
 });

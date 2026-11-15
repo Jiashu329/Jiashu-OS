@@ -1,3 +1,4 @@
+import { doubanCollectionHash, normalizeDoubanSyncHints, type DoubanSyncHints } from '../lib/douban-sync-hints.ts';
 import { doubanSubjectUrl, normalizeDoubanCover, parseDoubanProfile, parseDoubanRecord, type DoubanDomain, type DoubanRecordInput, type DoubanSubjectDetails } from '../lib/douban.ts';
 import { mergeDoubanDetails, parseDoubanDetails } from '../lib/douban-details.ts';
 import { readDoubanDataEpoch } from './douban-reset-store.ts';
@@ -8,7 +9,7 @@ export type DoubanRunStatus = 'running' | 'completed' | 'partial' | 'failed';
 export type DoubanKind = DoubanRecordInput['kind'];
 export interface DoubanConnection { profileId: string | null; revision: number; updatedAt: string | null }
 export interface DoubanRecord extends DoubanRecordInput {
-  profileId: string; observedAt: string; createdAt: string; updatedAt: string; metadataCheckedRunId: string | null;
+  profileId: string; observedAt: string; createdAt: string; updatedAt: string; metadataCheckedRunId: string | null; sync?: DoubanSyncHints;
 }
 export interface DoubanRun {
   id: string; profileId: string; connectionRevision: number; revision: number; status: DoubanRunStatus;
@@ -16,7 +17,7 @@ export interface DoubanRun {
   createdAt: string; updatedAt: string; finishedAt: string | null;
 }
 interface RunRow extends Omit<DoubanRun, 'state'> { stateJson: string }
-export interface DoubanStoredRecord extends Omit<DoubanRecord, 'details'> { detailsJson: string }
+export interface DoubanStoredRecord extends Omit<DoubanRecord, 'details' | 'sync'> { detailsJson: string; collectionHash?: string | null; detailsCheckedAt?: string | null }
 export interface DoubanListOptions { profileId?: string; kind?: DoubanKind | 'all'; query?: string; offset?: number; limit?: number }
 export class DoubanStoreError extends Error {
   readonly code: string;
@@ -25,7 +26,7 @@ export class DoubanStoreError extends Error {
 }
 const itemColumns = `profile_id AS profileId,domain,subject_id AS subjectId,kind,title,url,cover_url AS coverUrl,rating,
   marked_date AS markedDate,comment,published_at AS publishedAt,source,observed_at AS observedAt,
-  created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson`;
+  created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson,collection_hash AS collectionHash,details_checked_at AS detailsCheckedAt`;
 const runColumns = `id,profile_id AS profileId,connection_revision AS connectionRevision,revision,status,state_json AS stateJson,
   added,updated,unchanged,created_at AS createdAt,updated_at AS updatedAt,finished_at AS finishedAt`;
 const kinds = ['screen', 'movie', 'series', 'book', 'music'] as const;
@@ -68,8 +69,8 @@ function mergedDetails(old: unknown, incoming: unknown): DoubanSubjectDetails {
   try { return mergeDoubanDetails(old, incoming); } catch { return invalid('合并后的豆瓣作品详情超出限制，请精简后重试。'); }
 }
 export function presentDoubanStoredRecord(row: DoubanStoredRecord): DoubanRecord {
-  const { detailsJson, ...item } = row;
-  try { const details = parseDoubanDetails(JSON.parse(detailsJson)); return { ...item, ...(Object.keys(details).length ? { details } : {}) }; }
+  const { detailsJson, collectionHash, detailsCheckedAt, ...item } = row;
+  try { const details = parseDoubanDetails(JSON.parse(detailsJson)); return { ...item, sync: normalizeDoubanSyncHints({ collectionHash, detailsCheckedAt }), ...(Object.keys(details).length ? { details } : {}) }; }
   catch { throw new DoubanStoreError('豆瓣作品详情暂时无法读取，请稍后重试。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
 }
 function equal(a: DoubanRecordInput, b: DoubanRecordInput) { return portableFields.every(key => a[key] === b[key]) && doubanDetailsJson(a.details) === doubanDetailsJson(b.details); }
@@ -216,6 +217,8 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
     .bind(...guardValues, JSON.stringify(snapshots), userId, run.profileId, userId, run.id, run.revision)];
   for (const [key, input] of parsed) {
     const existing = old.get(key), desired = merge(existing, input);
+    const collectionHash = input.source === 'rss' && existing && existing.source !== 'rss' ? existing.sync?.collectionHash ?? null : await doubanCollectionHash(input);
+    const detailsCheckedAt = classification && key === 'screen:' + classification.subjectId && (classification.kind !== null || classification.coverUrl != null || Object.keys(classification.details ?? {}).length > 0) ? now : null;
     if (classification && key === 'screen:' + classification.subjectId) {
       if (classification.kind && !chosenKind(existing) && !importedKind(existing)) desired.kind = classification.kind;
       desired.coverUrl = normalizeDoubanCover(classification.coverUrl) ?? desired.coverUrl;
@@ -227,8 +230,8 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
     // Merge against the transactional row too, so a just-restored known field
     // cannot be erased by an RSS record that did not publish that field.
     commands.push(db.prepare(`INSERT INTO douban_items
-      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${activeGuard}
+      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json,collection_hash,details_checked_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${activeGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET
         kind=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' AND douban_items.kind IN ('movie','series') OR ${frozenRssRow}
           OR (excluded.kind='screen' OR (douban_items.source='import' OR douban_items.metadata_checked_run_id='import-kind') AND excluded.source<>'import') AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
@@ -236,6 +239,7 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
         url=CASE WHEN ${frozenRssRow} THEN douban_items.url ELSE excluded.url END,
         cover_url=CASE WHEN ${frozenRssRow} THEN COALESCE(douban_items.cover_url,excluded.cover_url) ELSE COALESCE(excluded.cover_url,douban_items.cover_url) END,
         details_json=excluded.details_json,
+        collection_hash=excluded.collection_hash,details_checked_at=CASE WHEN excluded.details_checked_at IS NOT NULL THEN excluded.details_checked_at WHEN douban_items.collection_hash IS excluded.collection_hash THEN douban_items.details_checked_at ELSE NULL END,
         rating=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.rating IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.rating IS NULL THEN douban_items.rating ELSE excluded.rating END,
         marked_date=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.marked_date IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.marked_date IS NULL THEN douban_items.marked_date ELSE excluded.marked_date END,
         comment=CASE WHEN ${frozenRssRow} OR douban_items.source='browser' AND excluded.source='collection' OR douban_items.source='import' AND excluded.source NOT IN ('import','browser') AND douban_items.comment IS NOT NULL OR excluded.source IN ('rss','import') AND excluded.comment IS NULL THEN douban_items.comment ELSE excluded.comment END,
@@ -250,7 +254,7 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
           ELSE COALESCE(excluded.metadata_checked_run_id,douban_items.metadata_checked_run_id) END`)
       .bind(userId, run.profileId, input.domain, input.subjectId, incomingKind, input.title, input.url, incomingCover, input.rating, input.markedDate, input.comment,
         input.publishedAt, input.source, now, now, now, classification && key === 'screen:' + classification.subjectId ? run.id : null,
-        doubanDetailsJson(desired.details),
+        doubanDetailsJson(desired.details), collectionHash, detailsCheckedAt,
         ...guardValues, existing && equal(existing, desired) ? existing.updatedAt : [existing?.observedAt ?? now, now].sort().at(-1)!));
   }
   if (classification && !parsed.has('screen:' + classification.subjectId)) {
@@ -260,10 +264,11 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
       const desired = { ...existing, kind, coverUrl: normalizeDoubanCover(classification.coverUrl) ?? existing.coverUrl, details: mergedDetails(existing.details, classification.details) };
       const changed = !equal(existing, desired); if (changed) updated++;
       const updatedAt = changed ? new Date(Math.max(Date.parse(now), Date.parse(existing.updatedAt) + 1)).toISOString() : existing.updatedAt;
-      commands.push(db.prepare(`UPDATE douban_items SET kind=?,cover_url=?,details_json=?,
+      const checkedAt = classification.kind !== null || classification.coverUrl != null || Object.keys(classification.details ?? {}).length > 0 ? now : existing.sync?.detailsCheckedAt ?? null;
+      commands.push(db.prepare(`UPDATE douban_items SET kind=?,cover_url=?,details_json=?,details_checked_at=?,
         metadata_checked_run_id=CASE WHEN metadata_checked_run_id IN ('manual-kind','import-kind') THEN metadata_checked_run_id ELSE ? END,
         updated_at=?,observed_at=MAX(observed_at,?) WHERE user_id=? AND profile_id=? AND domain='screen' AND subject_id=? AND ${activeGuard}`)
-        .bind(kind, desired.coverUrl, doubanDetailsJson(desired.details), run.id, updatedAt, now, userId, run.profileId, classification.subjectId, ...guardValues));
+        .bind(kind, desired.coverUrl, doubanDetailsJson(desired.details), checkedAt, run.id, updatedAt, now, userId, run.profileId, classification.subjectId, ...guardValues));
     }
   }
   commands.push(db.prepare(`UPDATE douban_sync_runs SET revision=revision+1,state_json=?,status=?,added=added+?,updated=updated+?,unchanged=unchanged+?,
@@ -291,11 +296,12 @@ export async function commitDoubanStep(db: DoubanDatabase, userId: string, comma
   return runView(row)!;
 }
 
-export async function nextUnclassifiedRecord(db: DoubanDatabase, userId: string, profileId: string, runId: string): Promise<DoubanRecord | null> {
-  const profile = parseDoubanProfile(profileId).profileId;
+export async function nextUnclassifiedRecord(db: DoubanDatabase, userId: string, profileId: string, runId: string, now = new Date().toISOString()): Promise<DoubanRecord | null> {
+  const profile = parseDoubanProfile(profileId).profileId, cutoff = new Date(Date.parse(timestamp(now)) - 7 * 86400000).toISOString();
   const row = await db.prepare(`SELECT ${itemColumns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain='screen' AND kind='screen'
     AND source IN ('collection','rss') AND (metadata_checked_run_id IS NULL OR metadata_checked_run_id<>?)
-    ORDER BY observed_at DESC,subject_id LIMIT 1`).bind(userId, profile, runId).first<DoubanStoredRecord>();
+    AND (collection_hash IS NULL OR details_checked_at IS NULL OR details_checked_at<=?)
+    ORDER BY observed_at DESC,subject_id LIMIT 1`).bind(userId, profile, runId, cutoff).first<DoubanStoredRecord>();
   return row ? presentDoubanStoredRecord(row) : null;
 }
 
@@ -392,7 +398,7 @@ async function importReceipt(db: DoubanDatabase, userId: string, requestId: stri
 }
 function importReceiptView(prior: { requestHash: string; receiptJson: string }, requestHash: string, dataEpoch: number): DoubanImportReceipt {
   if (prior.requestHash !== requestHash) importConflict();
-  const receipt = JSON.parse(prior.receiptJson) as DoubanImportReceipt;
+  const { _syncWriteToken: _token, ...receipt } = JSON.parse(prior.receiptJson) as DoubanImportReceipt & { _syncWriteToken?: string };
   if ((receipt.dataEpoch ?? 0) !== dataEpoch) importEpochConflict();
   return { ...receipt, dataEpoch };
 }
@@ -423,10 +429,10 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
   const plan = await planDoubanImport(db, userId, normalized);
   if (plan.preview.snapshotHash !== command.expectedSnapshotHash) importConflict();
   const { snapshotHash: _snapshotHash, ...counts } = plan.preview;
-  const receipt: DoubanImportReceipt = { ...counts, requestId };
+  const receipt: DoubanImportReceipt = { ...counts, requestId }, syncWriteToken = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [db.prepare(`INSERT INTO douban_import_receipts (user_id,request_id,request_hash,receipt_json,created_at)
     VALUES (?,?,?,CASE WHEN ${importEpochGuard} THEN ? ELSE NULL END,?) ON CONFLICT(user_id,request_id) DO NOTHING`)
-    .bind(userId, requestId, requestHash, userId, dataEpoch, JSON.stringify(receipt), now)];
+    .bind(userId, requestId, requestHash, userId, dataEpoch, JSON.stringify({ ...receipt, _syncWriteToken: syncWriteToken }), now)];
   for (let offset = 0; offset < plan.inputs.length;) {
     const rows: string[] = [], snapshots: string[] = []; let rowBytes = 2, snapshotBytes = 2;
     while (offset < plan.inputs.length && rows.length < 100) {
@@ -435,7 +441,8 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
       // classification stays protected. Keep its own marker, separate from a
       // manual choice, so a later explicit file import may still correct it.
       const classificationMarker = importedKind(before) && item.source === 'browser' || before?.metadataCheckedRunId === 'import-kind' ? 'import-kind' : null;
-      const row = JSON.stringify({ ...portable, classificationMarker, detailsJson: doubanDetailsJson(item.details), observedAt: now, createdAt: now,
+      const collectionHash = await doubanCollectionHash(plan.inputs[offset]);
+      const row = JSON.stringify({ ...portable, collectionHash, classificationMarker, detailsJson: doubanDetailsJson(item.details), observedAt: now, createdAt: now,
         updatedAt: before && equal(before, item) ? before.updatedAt : [before?.observedAt ?? now, now].sort().at(-1)! });
       const snapshot = JSON.stringify(plan.snapshots[offset]), rowSize = new TextEncoder().encode(row).byteLength + 1, snapshotSize = new TextEncoder().encode(snapshot).byteLength + 1;
       if (rowSize + 2 > 1024 * 1024 || snapshotSize + 2 > 1024 * 1024) invalid('单条豆瓣作品详情超出保存上限。');
@@ -448,17 +455,19 @@ export async function commitDoubanImport(db: DoubanDatabase, userId: string, com
       THEN receipt_json ELSE NULL END WHERE user_id=? AND request_id=?`)
       .bind(requestHash, userId, dataEpoch, '[' + snapshots.join(',') + ']', userId, plan.preview.profileId, userId, requestId));
     statements.push(db.prepare(`INSERT INTO douban_items
-      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,details_json,metadata_checked_run_id)
+      (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,details_json,metadata_checked_run_id,collection_hash)
       SELECT ?,?,json_extract(value,'$.domain'),json_extract(value,'$.subjectId'),json_extract(value,'$.kind'),json_extract(value,'$.title'),
         json_extract(value,'$.url'),json_extract(value,'$.coverUrl'),json_extract(value,'$.rating'),json_extract(value,'$.markedDate'),
-        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),json_extract(value,'$.source'),json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt'),json_extract(value,'$.detailsJson'),json_extract(value,'$.classificationMarker')
+        json_extract(value,'$.comment'),json_extract(value,'$.publishedAt'),json_extract(value,'$.source'),json_extract(value,'$.observedAt'),json_extract(value,'$.createdAt'),json_extract(value,'$.updatedAt'),json_extract(value,'$.detailsJson'),json_extract(value,'$.classificationMarker'),json_extract(value,'$.collectionHash')
       FROM json_each(?) WHERE ${importEpochGuard}
       ON CONFLICT(user_id,profile_id,domain,subject_id) DO UPDATE SET kind=CASE WHEN (douban_items.metadata_checked_run_id='manual-kind' OR douban_items.metadata_checked_run_id='import-kind' AND excluded.source<>'import') AND douban_items.kind IN ('movie','series') THEN douban_items.kind ELSE excluded.kind END,
         title=excluded.title,url=excluded.url,cover_url=excluded.cover_url,details_json=excluded.details_json,
+        collection_hash=CASE WHEN (SELECT json_extract(receipt_json,'$._syncWriteToken') FROM douban_import_receipts WHERE user_id=? AND request_id=?)=? THEN excluded.collection_hash ELSE douban_items.collection_hash END,
+        details_checked_at=CASE WHEN (SELECT json_extract(receipt_json,'$._syncWriteToken') FROM douban_import_receipts WHERE user_id=? AND request_id=?)=? AND douban_items.collection_hash IS NOT excluded.collection_hash THEN NULL ELSE douban_items.details_checked_at END,
         rating=excluded.rating,marked_date=excluded.marked_date,comment=excluded.comment,published_at=excluded.published_at,source=excluded.source,
         observed_at=MAX(douban_items.observed_at,excluded.observed_at),updated_at=MAX(douban_items.updated_at,excluded.updated_at),
         metadata_checked_run_id=CASE WHEN douban_items.metadata_checked_run_id='manual-kind' THEN douban_items.metadata_checked_run_id ELSE COALESCE(excluded.metadata_checked_run_id,douban_items.metadata_checked_run_id) END`)
-      .bind(userId, plan.preview.profileId, '[' + rows.join(',') + ']', userId, dataEpoch));
+      .bind(userId, plan.preview.profileId, '[' + rows.join(',') + ']', userId, dataEpoch, userId, requestId, syncWriteToken, userId, requestId, syncWriteToken));
   }
   try { await db.batch(statements); }
   catch {

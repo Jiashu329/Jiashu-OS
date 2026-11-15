@@ -232,6 +232,13 @@
       "when": 1794711568733,
       "tag": "0032_imdb_ratings",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1794719380677,
+      "tag": "0033_douban_sync_hints",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,7 @@ import { classifyDoubanLibrary, listDoubanLibrary, writeDoubanLocalRecord } from
 const NOW = '2026-11-15T08:00:00.000Z';
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
-  for (const migration of ['0024_douban', '0025_douban_data_resets', '0027_douban_subject_details', '0028_douban_browser_source', '0029_douban_library', '0030_douban_manual_cover', '0031_tmdb_covers_and_settings', '0032_imdb_ratings']) sqlite.exec(readFileSync(new URL('../drizzle/' + migration + '.sql', import.meta.url), 'utf8'));
+  for (const migration of ['0024_douban', '0025_douban_data_resets', '0027_douban_subject_details', '0028_douban_browser_source', '0029_douban_library', '0030_douban_manual_cover', '0031_tmdb_covers_and_settings', '0032_imdb_ratings', '0033_douban_sync_hints']) sqlite.exec(readFileSync(new URL('../drizzle/' + migration + '.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   const db = {
     prepare(sql: string) {

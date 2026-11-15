@@ -4,6 +4,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { compileFunction } from 'node:vm';
+import { readDoubanLibraryRecord } from '../../../../../db/douban-library-store.ts';
 import * as store from '../../../../../db/douban-store.ts';
 import * as metadataStore from '../../../../../db/douban-metadata-store.ts';
 import * as model from '../../../../../lib/douban.ts';
@@ -29,6 +30,7 @@ function fixture(t: TestContext) {
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0028_douban_browser_source.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0029_douban_library.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../../../../drizzle/0030_douban_manual_cover.sql', import.meta.url), 'utf8'));
+  for (const file of ['0031_tmdb_covers_and_settings.sql','0032_imdb_ratings.sql','0033_douban_sync_hints.sql']) sqlite.exec(readFileSync(new URL('../../../../../drizzle/' + file, import.meta.url), 'utf8'));
   const queries: string[] = [], outgoing: Array<{ domain: string; subjectId: string }> = [];
   const db = { prepare(sql: string) {
     queries.push(sql); const statement = sqlite.prepare(sql); let values: SQLInputValue[] = [];
@@ -52,7 +54,7 @@ function fixture(t: TestContext) {
     sqlite.prepare(`INSERT INTO douban_items (user_id,profile_id,domain,subject_id,kind,title,url,cover_url,rating,marked_date,comment,published_at,source,observed_at,created_at,updated_at,metadata_checked_run_id,details_json)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(owner, item.profileId, item.domain, item.subjectId, item.kind, item.title, item.url,
       item.coverUrl, item.rating, item.markedDate, item.comment, item.publishedAt, item.source, item.observedAt, item.createdAt, item.updatedAt, item.metadataCheckedRunId, store.doubanDetailsJson(item.details));
-    return item;
+    return { ...item, sync: { collectionHash: null, detailsCheckedAt: null } };
   }
   function request(handler: Handler, method: string, body: unknown, options: { origin?: string | null; type?: string; raw?: boolean; length?: string } = {}, target?: string) {
     const headers = new Headers({ 'Content-Type': options.type ?? 'application/json' });
@@ -128,7 +130,7 @@ void test('blocked, invalid and unavailable metadata leave saved fields untouche
     new DoubanSourceError('DOUBAN_SOURCE_NETWORK'), { kind: null, coverUrl: null } satisfies DoubanSubjectMetadata]) {
     f.metadata(failure); const response = await f.post(); assert.equal(response.status, 200);
     const result = await body(response); assert.equal(result.metadata.status, 'unavailable'); assert.equal(result.changed, false);
-    assert.deepEqual(result.item, old); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_UPSTREAM_BODY/);
+    assert.deepEqual(result.item, await readDoubanLibraryRecord(f.db, 'alice', KEY)); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_UPSTREAM_BODY/);
   }
   assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
   assert.deepEqual(await store.readDoubanRecord(f.db, 'alice', KEY), old);
@@ -200,7 +202,7 @@ void test('a browser PUT whose committed reply was lost replays the original bod
   const f = fixture(t); f.seed('alice', { source: 'collection' }); f.seed('bob');
   const original = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: { summary: '已保存作品简介', episodes: 12 } } };
   await f.browser(original); // The write commits, but the caller never receives its response.
-  const committed = (await store.readDoubanRecord(f.db, 'alice', KEY))!;
+  const committed = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   assert.equal(committed.kind, 'series'); assert.notEqual(committed.updatedAt, original.expectedUpdatedAt);
   f.queries.length = 0;
   const replay = await f.browser(original); assert.equal(replay.status, 200);
@@ -213,16 +215,16 @@ void test('browser lost-reply recovery preserves later personal edits and manual
   const f = fixture(t); f.seed('alice', { source: 'collection' });
   const original = { ...KEY, expectedDataEpoch: 0, confirmed: true, metadata: { kind: 'series', coverUrl: COVER, details: { summary: '已保存作品简介' } } };
   await f.browser(original);
-  const committed = (await store.readDoubanRecord(f.db, 'alice', KEY))!;
+  const committed = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!;
   assert.equal((await f.put({ ...KEY, expectedUpdatedAt: committed.updatedAt, kind: 'movie' })).status, 200);
   f.sqlite.prepare("UPDATE douban_items SET title=?,rating=?,marked_date=?,comment=? WHERE user_id='alice'").run('后来修改的名称', 2, '2026-11-13', '后来修改的私人短评');
-  const current = (await store.readDoubanRecord(f.db, 'alice', KEY))!; f.queries.length = 0;
+  const current = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!; f.queries.length = 0;
   const response = await f.browser(original); assert.equal(response.status, 200);
   const recovered = await body(response); assert.deepEqual(recovered.item, current); assert.equal(recovered.item.kind, 'movie'); assert.equal(recovered.item.metadataCheckedRunId, 'manual-kind'); assert.equal(recovered.changed, false);
   assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false); assert.deepEqual(f.outgoing, []);
   const conflicting = await f.browser({ ...original, metadata: { ...original.metadata, details: { summary: '还未保存的旧简介' } } });
   assert.equal(conflicting.status, 409); assert.equal((await body(conflicting)).code, 'DOUBAN_RECORD_CONFLICT');
-  assert.deepEqual(await store.readDoubanRecord(f.db, 'alice', KEY), current); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
+  assert.deepEqual(await readDoubanLibraryRecord(f.db, 'alice', KEY), current); assert.equal(f.queries.some(sql => sql.startsWith('UPDATE')), false);
 });
 
 void test('a browser replay cannot acknowledge matching metadata recreated after a reset', async t => {
@@ -257,5 +259,27 @@ void test('a reset during the external metadata read does not write to a newly i
     f.sqlite.prepare('INSERT INTO douban_data_resets(user_id,data_epoch,last_request_id,last_request_hash,last_receipt_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('alice', 1, crypto.randomUUID(), 'a'.repeat(64), '{}', T2, T2);
   });
   const response = await f.post({ ...KEY, confirmed: true, expectedDataEpoch: 0 }); assert.equal(response.status, 409); assert.equal((await body(response)).code, 'DOUBAN_DATA_EPOCH_CONFLICT');
-  const current = (await store.readDoubanRecord(f.db, 'alice', KEY))!; assert.equal(current.updatedAt, T1); assert.equal(current.details?.summary, '新世代已保存详情'); assert.equal(current.comment, '重建后的个人短评'); assert.equal(current.coverUrl, null); assert.equal(current.kind, 'screen');
+  const current = (await readDoubanLibraryRecord(f.db, 'alice', KEY))!; assert.equal(current.updatedAt, T1); assert.equal(current.details?.summary, '新世代已保存详情'); assert.equal(current.comment, '重建后的个人短评'); assert.equal(current.coverUrl, null); assert.equal(current.kind, 'screen');
+});
+
+void test('no-change POST inspections use a captured check fence and unknown replies never fetch or advance twice', async t => {
+  const f=fixture(t); f.seed('alice',{kind:'series',coverUrl:COVER,source:'collection'});
+  const command={...KEY,expectedDataEpoch:0,expectedDetailsCheckedAt:null,confirmed:true};
+  const first=await body(await f.post(command)); assert.equal(first.changed,false); assert.equal(first.item.updatedAt,T1); assert.ok(first.item.sync?.detailsCheckedAt); assert.equal(f.outgoing.length,1);
+  f.queries.length=0; const replay=await body(await f.post(command)); assert.equal(replay.item.sync?.detailsCheckedAt,first.item.sync?.detailsCheckedAt); assert.equal(f.outgoing.length,1); assert.equal(f.queries.some(sql=>sql.startsWith('UPDATE')),false);
+  const explicit=await body(await f.post({...command,expectedDetailsCheckedAt:first.item.sync?.detailsCheckedAt})); assert.equal(explicit.changed,false); assert.equal(explicit.item.updatedAt,T1); assert.ok(explicit.item.sync!.detailsCheckedAt!>first.item.sync!.detailsCheckedAt!); assert.equal(f.outgoing.length,2);
+});
+void test('no-change browser saves return full hints and replay the previous successful check without a new timestamp', async t => {
+  const f=fixture(t); f.seed('alice',{kind:'series',coverUrl:COVER,source:'collection'});
+  const command={...KEY,expectedDataEpoch:0,expectedDetailsCheckedAt:null,confirmed:true,metadata:{kind:'series',coverUrl:COVER,details:{}}};
+  const first=await body(await f.browser(command)); assert.equal(first.changed,false); assert.equal(first.item.updatedAt,T1); assert.ok(first.item.sync?.detailsCheckedAt); assert.ok(Object.hasOwn(first.item,'local'));
+  f.queries.length=0; const replay=await body(await f.browser(command)); assert.equal(replay.item.sync?.detailsCheckedAt,first.item.sync?.detailsCheckedAt); assert.equal(f.queries.some(sql=>sql.startsWith('UPDATE')),false);
+  const next=await body(await f.browser({...command,expectedDetailsCheckedAt:first.item.sync?.detailsCheckedAt})); assert.ok(next.item.sync!.detailsCheckedAt!>first.item.sync!.detailsCheckedAt!); assert.deepEqual(f.outgoing,[]);
+});
+void test('empty or unavailable source responses and stale collection hints cannot claim a fresh inspection', async t => {
+  const f=fixture(t); f.seed(); const empty=await body(await f.browser({...KEY,expectedDataEpoch:0,expectedDetailsCheckedAt:null,confirmed:true,metadata:{kind:null,coverUrl:null,details:{}}})); assert.equal(empty.metadata.status,'unavailable'); assert.equal(empty.item.sync?.detailsCheckedAt,null);
+  for(const patch of[{detailsCheckedAt:T2},{collectionHash:'a'.repeat(64)},{expectedDetailsCheckedAt:'not-a-time'}]) assert.equal((await f.post({...KEY,expectedDataEpoch:0,expectedDetailsCheckedAt:null,confirmed:true,...patch})).status,400);
+  f.sqlite.prepare('UPDATE douban_items SET collection_hash=?').run('a'.repeat(64));
+  f.beforeFetch(()=>f.sqlite.prepare('UPDATE douban_items SET collection_hash=?,details_checked_at=NULL').run('b'.repeat(64)));
+  const stale=await f.post({...KEY,expectedDataEpoch:0,expectedDetailsCheckedAt:null,confirmed:true}); assert.equal(stale.status,409); assert.equal((await body(stale)).code,'DOUBAN_RECORD_CONFLICT'); assert.equal((await readDoubanLibraryRecord(f.db,'alice',KEY))?.sync.detailsCheckedAt,null);
 });

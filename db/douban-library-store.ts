@@ -1,3 +1,4 @@
+import type { DoubanSyncHints } from '../lib/douban-sync-hints.ts';
 import { userCoverDescriptor, type UserCoverDescriptor } from '../lib/douban-cover-selection.ts';
 import { DOUBAN_LIBRARY_SORTS, parseDoubanLocalRecord, type DoubanLibrarySort, type DoubanLocalRecord } from '../lib/douban-library.ts';
 import { doubanSubjectUrl, parseDoubanProfile, type DoubanKind } from '../lib/douban.ts';
@@ -5,7 +6,7 @@ import { parseIMDbRating, type IMDbRating } from '../lib/imdb-rating.ts';
 import { parseTMDBCover, tmdbCoverUrl, type TMDBCover } from '../lib/tmdb-cover.ts';
 import { DoubanStoreError, presentDoubanStoredRecord, readDoubanDataEpoch, type DoubanDatabase, type DoubanRecord, type DoubanRecordKey, type DoubanStoredRecord } from './douban-store.ts';
 
-export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord; cover: UserCoverDescriptor; tmdb: TMDBCover | null; tmdbCoverUrl: string | null; imdb: IMDbRating | null }
+export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord; cover: UserCoverDescriptor; tmdb: TMDBCover | null; tmdbCoverUrl: string | null; imdb: IMDbRating | null; sync: DoubanSyncHints }
 interface StoredLibraryRecord extends DoubanStoredRecord { localNote: string; localTagsJson: string; localHidden: number; localRevision: number; localCoverUrl: string | null; tmdbCoverJson: string; tmdbCoverUrl: string | null; imdbRatingJson: string }
 export interface DoubanLibraryOptions {
   profileId?: string; kind?: DoubanKind | 'all'; query?: string; offset?: number; limit?: number;
@@ -14,7 +15,7 @@ export interface DoubanLibraryOptions {
 const columns = `profile_id AS profileId,domain,subject_id AS subjectId,kind,title,url,cover_url AS coverUrl,rating,
   marked_date AS markedDate,comment,published_at AS publishedAt,source,observed_at AS observedAt,
   created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson,
-  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision,local_cover_url AS localCoverUrl,tmdb_cover_json AS tmdbCoverJson,tmdb_cover_url AS tmdbCoverUrl,imdb_rating_json AS imdbRatingJson`;
+  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision,local_cover_url AS localCoverUrl,tmdb_cover_json AS tmdbCoverJson,tmdb_cover_url AS tmdbCoverUrl,imdb_rating_json AS imdbRatingJson,collection_hash AS collectionHash,details_checked_at AS detailsCheckedAt`;
 const kinds = ['screen', 'movie', 'series', 'book', 'music'];
 const dateOrder = 'marked_date IS NULL,marked_date';
 const missingCondition = `(kind='screen' OR (domain='screen' AND COALESCE(json_extract(details_json,'$.imdbId'),'')='') OR (local_cover_url IS NULL AND (cover_url IS NULL OR trim(cover_url)='') AND NOT COALESCE((
@@ -40,7 +41,7 @@ function present(row: StoredLibraryRecord): DoubanLibraryRecord {
   const activeTMDB = item.domain === 'screen' && tmdb && tmdb.imdbId === item.details?.imdbId
       && (item.kind === 'screen' || item.kind === 'movie' && tmdb.mediaType === 'movie' || item.kind === 'series' && tmdb.mediaType === 'tv') ? tmdb : null;
   if (storedTMDBUrl !== null && storedTMDBUrl !== tmdbCoverUrl(tmdb)) throw new DoubanStoreError('TMDB 封面链接暂时无法核对。', 'DOUBAN_STORAGE_UNAVAILABLE', 503);
-  return { ...item, local: { ...local, revision: localRevision }, cover: userCoverDescriptor(localCoverUrl, localRevision),
+  return { ...item, sync: item.sync ?? { collectionHash: null, detailsCheckedAt: null }, local: { ...local, revision: localRevision }, cover: userCoverDescriptor(localCoverUrl, localRevision),
     tmdb: activeTMDB, tmdbCoverUrl: activeTMDB ? storedTMDBUrl : null,
     imdb: item.domain === 'screen' && imdb && imdb.imdbId === item.details?.imdbId ? imdb : null };
 }

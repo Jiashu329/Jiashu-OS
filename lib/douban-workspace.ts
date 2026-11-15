@@ -46,12 +46,18 @@ function restoreFocus(){expanded(false);const target=usableTrigger(trigger)?trig
 function closeTools(){if(!isOpen())return;if(typeof dialog.close==='function')dialog.close();else{dialog.removeAttribute('open');restoreFocus();}}
 function updateState(snapshot={}){
  const button=document.getElementById('douban-workspace-progress'),label=document.getElementById('douban-workspace-progress-text');if(!button||!label)return;
- const busy=snapshot.busy===true,pending=snapshot.hasPending===true,text=typeof snapshot.progressText==='string'?snapshot.progressText.trim().slice(0,300):'';
- button.hidden=!busy&&!pending&&!text;button.dataset.doubanToolsOpen=sections.includes(snapshot.section)?snapshot.section:'browser';
+ const busy=snapshot.busy===true,pending=snapshot.hasPending===true,raw=typeof snapshot.progressText==='string'?snapshot.progressText.split(/[；\n]/)[0].replace(/\s+/g,' ').trim():'',letters=Array.from(raw),text=letters.slice(0,56).join('')+(letters.length>56?'…':'');
+ button.hidden=!busy&&!pending&&!text;
+ if(snapshot.target==='metadata'){button.removeAttribute('data-douban-tools-open');button.setAttribute('data-douban-metadata-progress-open','');button.setAttribute('aria-controls','douban-metadata-progress');button.removeAttribute('aria-expanded');}
+ else{button.removeAttribute('data-douban-metadata-progress-open');button.dataset.doubanToolsOpen=sections.includes(snapshot.section)?snapshot.section:'browser';button.setAttribute('aria-controls','douban-tools-dialog');button.setAttribute('aria-expanded',String(isOpen()));}
  const message=text||(pending?'有待确认的操作，继续核对':'同步正在进行，查看进度');if(label.textContent!==message)label.textContent=message;
- button.setAttribute('aria-label','查看同步与管理进度：'+message);
+ button.setAttribute('aria-label','查看同步进度：'+message);
 }
-document.addEventListener('click',event=>{const opener=event.target?.closest?.('[data-douban-tools-open]');if(!opener)return;event.preventDefault();openTools(opener.dataset.doubanToolsOpen);});
+document.addEventListener('click',event=>{
+ const metadata=event.target?.closest?.('[data-douban-metadata-progress-open]');
+ if(metadata){const target=document.getElementById('douban-metadata-progress');if(!target||target.hidden)return;event.preventDefault();trigger=target;closeTools();if(typeof target.scrollIntoView==='function')target.scrollIntoView({block:'nearest',behavior:'smooth'});if(typeof target.focus==='function')target.focus({preventScroll:true});return;}
+ const opener=event.target?.closest?.('[data-douban-tools-open]');if(!opener)return;event.preventDefault();openTools(opener.dataset.doubanToolsOpen);
+});
 for(const section of sections){tab(section).addEventListener('click',()=>select(section,true));tab(section).addEventListener('keydown',event=>{const index=sections.indexOf(section);let next=null;if(event.key==='ArrowRight')next=sections[(index+1)%sections.length];else if(event.key==='ArrowLeft')next=sections[(index+sections.length-1)%sections.length];else if(event.key==='Home')next=sections[0];else if(event.key==='End')next=sections.at(-1);if(next){event.preventDefault();select(next,true);}});}
 document.getElementById('douban-tools-close').addEventListener('click',closeTools);dialog.addEventListener('close',restoreFocus);
 window.JiashuDoubanWorkspace={openTools,closeTools,updateState};

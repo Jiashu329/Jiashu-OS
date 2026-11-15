@@ -17,6 +17,7 @@ function fixture(t: TestContext) {
   sqlite.exec(readFileSync(new URL('../drizzle/0028_douban_browser_source.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0029_douban_library.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../drizzle/0030_douban_manual_cover.sql', import.meta.url), 'utf8'));
+  for (const file of ['0031_tmdb_covers_and_settings.sql','0032_imdb_ratings.sql','0033_douban_sync_hints.sql']) sqlite.exec(readFileSync(new URL('../drizzle/' + file, import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   let nextBatch: (() => void) | undefined, failStatement = -1;
   const batchSizes: number[] = [], bindingSizes: number[] = [];
