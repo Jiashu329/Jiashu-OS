@@ -20,6 +20,9 @@ jobs:
       - run: npm ci
       - run: npm run build:selfhost
       - run: npm run test:selfhost:smoke
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise native self-hosted browser login and logout forms
+        run: node scripts/test-selfhost-browser.mjs
       - name: Check deployment scripts
         run: |
           for script in deploy/aliyun/*.sh; do bash -n "$script"; done

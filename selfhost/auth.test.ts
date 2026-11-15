@@ -95,8 +95,10 @@ void test('login requires same-origin CSRF, issues a host-only secure cookie and
   const f = fixture(), page = await f.call('/signin-with-chatgpt'); const form = csrfForm(page.res);
   assert.doesNotMatch(page.res.body, /synthetic-test-owner|scrypt-v1|synthetic-long-password/);
   assert.match(String(page.res.headers['Content-Security-Policy']), /frame-ancestors 'none'/);
+  assert.equal(page.res.headers['Referrer-Policy'], 'same-origin');
   const payload = new URLSearchParams({ username: 'admin', password: PASSWORD, csrf: form.csrf, return_to: '/health' });
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { cookie: form.cookie }, payload)).res.statusCode, 403);
+  assert.equal((await f.call('/signin-with-chatgpt', 'POST', { origin: 'null', cookie: form.cookie }, payload)).res.statusCode, 403);
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { origin: 'https://evil.example', cookie: form.cookie }, payload)).res.statusCode, 403);
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { origin: config.origin, cookie: form.cookie }, new URLSearchParams({ ...Object.fromEntries(payload), csrf: 'forged' }))).res.statusCode, 403);
   const result = await login(f); assert.equal(result.res.statusCode, 303); assert.equal(result.res.headers.Location, '/health?days=30');
