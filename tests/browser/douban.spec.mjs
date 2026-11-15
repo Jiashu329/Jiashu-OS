@@ -1285,7 +1285,8 @@ test('automatic classification retains a paused queue and an unknown metadata sa
   bind(state);
   const items = [extensionItem('screen', 1220), extensionItem('screen', 1221)];
   const subjects = Object.fromEntries(items.map(item => ['screen:' + item.subjectId, { kind: 'movie', coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p-auto.jpg', details: { duration: '120分钟' } }]));
-  await installExtensionMock(context, [items], { subjects, holdSubject: 'screen:' + items[0].subjectId });
+  // This regression targets the metadata receipt protocol used before IMDb/TMDB support.
+  await installExtensionMock(context, [items], { version: '1.0.5', subjects, holdSubject: 'screen:' + items[0].subjectId });
   await openLibrary(page);
   await openTools(page, 'browser');
   await page.locator('#douban-browser-sync').click();
@@ -1308,6 +1309,7 @@ test('automatic classification retains a paused queue and an unknown metadata sa
   await expect(page.locator('#douban-browser-status')).toContainText('浏览器同步完成');
   expect(metadataWrites()).toHaveLength(3);
   expect(metadataWrites()[2].body).toEqual(original);
+  expect(mutations(testInfo).filter(request => request.path === '/api/life/douban/tmdb')).toEqual([]);
   expect(state.doubanItems[1].updatedAt).toBe(savedVersion);
   expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(2);
   expect(await extensionCalls(page, 'STEP')).toHaveLength(1);
@@ -1706,11 +1708,14 @@ test('missing TMDB configuration stops further poster calls while every Douban d
   for (const item of inputs) state.doubanTMDBResults.set(item.subjectId, { status: 'not_configured', message: 'TMDB 尚未配置，豆瓣资料继续保存。' });
   await installExtensionMock(context, [inputs], { version: '1.0.6', subjects });
   await openLibrary(page); await openTools(page, 'browser'); await page.locator('#douban-browser-sync').click();
-  await expect(page.locator('#douban-browser-status')).toContainText('收藏记录已同步，TMDB 封面仍有未完成条目');
+  // Neither source supplied a cover, so the incomplete detail summary precedes the TMDB configuration explanation.
+  await expect(page.locator('#douban-browser-status')).toContainText('收藏记录已同步，自动补全仍有未完成条目');
+  await expect(page.locator('#douban-browser-status')).toContainText('未补全 2 条');
+  await expect(page.locator('#douban-browser-status')).toContainText('TMDB 已查找 1 条，已补全 0 条');
   await expect(page.locator('#douban-browser-status')).toContainText(/管理员尚未配置 TMDB/);
   expect(mutations(testInfo).filter(request => request.path.endsWith('/metadata'))).toHaveLength(2);
   expect(mutations(testInfo).filter(request => request.path.endsWith('/tmdb'))).toHaveLength(1);
-  expect(state.doubanItems.every(item => item.kind === 'movie' && item.details.imdbId && !item.tmdb)).toBe(true);
+  expect(state.doubanItems.every(item => item.kind === 'movie' && item.details.imdbId && item.coverUrl === null && !item.tmdb)).toBe(true);
   expect(await extensionCalls(page, 'SUBJECT')).toHaveLength(2); await fits(page);
 });
 

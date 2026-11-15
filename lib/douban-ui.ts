@@ -273,7 +273,7 @@ async function beginMetadata(mode='page',single=null){
  }
  if(!metadataState.queue.length||!integer(metadataState.epoch)){metadataStatus('本页作品的主要资料已齐全。');controls();return;}
  const dataEpoch=metadataState.epoch,connectionRevision=metadataState.connectionRevision,connectionProfile=metadataState.connectionProfile;
- metadataState.busy=true;metadataState.stop=false;controls();let processed=0,updated=0,unavailable=0,stoppedError=null,tmdbMessage='';
+ metadataState.busy=true;metadataState.stop=false;controls();let processed=0,updated=0,unavailable=0,stoppedError=null,tmdbMessage='';const updatedRecords=new Set();
  const summary=()=> '本次已处理 '+processed+' 条，更新 '+updated+' 条，暂无法获取 '+unavailable+' 条，剩余 '+metadataState.queue.length+' 条。';
  const verifyEpoch=()=>{if(state.dataEpoch!==dataEpoch){const error=new Error('书影音资料已清空或重置，旧作品补全已停止，不会写回旧资料。');error.code='DOUBAN_DATA_EPOCH_CONFLICT';error.status=409;throw error;}if(state.connection?.revision!==connectionRevision||state.connection?.profileId!==connectionProfile){const error=new Error('豆瓣连接已变化，作品补全已停止，请重新核对后操作。');error.code='DOUBAN_CONNECTION_CONFLICT';error.status=409;throw error;}};
  try{while(metadataState.queue.length){
@@ -287,7 +287,7 @@ async function beginMetadata(mode='page',single=null){
   if(!validRecordResult(result.item,item)||typeof result.changed!=='boolean'||(isTMDB?(!['matched','not_configured','missing_imdb','no_match','ambiguous','episode_only','no_poster'].includes(result.tmdb?.status)||result.dataEpoch!==dataEpoch||result.tmdb?.status==='matched'&&!tmdbCoverURL(result.item)):!['complete','unavailable'].includes(result.metadata?.status)))throw new Error('补全结果未能核对，请重试原保存。');
   const detailDirty=personalUI?.isDirty()||coverUI?.isDirty()||classificationDirty(),merged=replaceRecord(result.item);
   if(sameRecord(state.detailItem,merged)){state.detailItem={...merged};coverUI?.updateItem(merged);if(!detailDirty){renderDetailBody(merged);el('classification-kind').value=['movie','series'].includes(merged.kind)?merged.kind:'';detailGuard?.reset();}else refreshDetailCover(merged);}
-  if(result.changed)updated++;
+  if(result.changed){const key=JSON.stringify([merged.profileId,merged.domain,merged.subjectId]);if(!updatedRecords.has(key)){updatedRecords.add(key);updated++;}}
   if(!isTMDB&&merged.domain==='screen'&&imdbID(merged)&&!tmdbCoverURL(merged)&&!metadataState.tmdbUnavailable){metadataState.queue[0]={...merged};metadataState.pending={path:'/api/life/douban/tmdb',method:'POST',body:{...recordCommand(merged),expectedDataEpoch:dataEpoch,confirmed:true}};continue;}
   processed++;if(!isTMDB&&result.metadata.status==='unavailable')unavailable++;
   if(isTMDB){if(result.tmdb.status==='not_configured')metadataState.tmdbUnavailable=true;if(result.tmdb.status!=='matched')unavailable++;tmdbMessage=typeof result.tmdb.message==='string'?result.tmdb.message:tmdbMessages[result.tmdb.status];}
