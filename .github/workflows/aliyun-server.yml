@@ -1,0 +1,71 @@
+name: Aliyun server setup
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: One-time server setup; normal app updates use Aliyun deployment
+        type: choice
+        options: [inspect, install-docker]
+        default: inspect
+      expected_config_hash:
+        description: Reviewed Nginx snapshot SHA-256, required only for configure-web
+        type: string
+        required: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: aliyun-production-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  setup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify application checks before changing the web entry
+        if: inputs.operation == 'configure-web'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.sha }}
+          DEPLOY_OPERATION: bootstrap
+          BOOTSTRAP_CONFIRM: BOOTSTRAP-JIASHU-TEST
+        run: |
+          node deploy/aliyun/check-ci.mjs
+          grep -qx 'ready=true' "$GITHUB_OUTPUT"
+      - name: Run the selected setup step
+        env:
+          ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
+          ALIYUN_USER: ${{ secrets.ALIYUN_USER }}
+          ALIYUN_SSH_KEY: ${{ secrets.ALIYUN_SSH_KEY }}
+          ALIYUN_KNOWN_HOSTS: ${{ secrets.ALIYUN_KNOWN_HOSTS }}
+          ALIYUN_SSH_PORT: ${{ vars.ALIYUN_SSH_PORT || '22' }}
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_CONFIG_HASH: ${{ inputs.expected_config_hash }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          config=$(bash deploy/aliyun/ssh-config.sh)
+          case "$OPERATION" in
+            inspect)
+              ssh -T -F "$config" jiashu-aliyun 'bash -s' < deploy/aliyun/inspect.sh
+              ssh -T -F "$config" jiashu-aliyun 'python3 - --inspect' < deploy/aliyun/nginx-test-site.py
+              ;;
+            install-docker)
+              ssh -T -F "$config" jiashu-aliyun 'bash -s -- --install' < deploy/aliyun/install-docker.sh
+              ;;
+            configure-web)
+              [[ "$EXPECTED_CONFIG_HASH" =~ ^[a-f0-9]{64}$ ]]
+              [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              ssh -T -F "$config" jiashu-aliyun "python3 - --apply --expected-hash '$EXPECTED_CONFIG_HASH' --expected-commit '$EXPECTED_COMMIT' --port 3100" < deploy/aliyun/nginx-test-site.py
+              ;;
+            *) exit 1 ;;
+          esac
+      - if: always()
+        run: rm -f "$RUNNER_TEMP/jiashu-deploy-key" "$RUNNER_TEMP/jiashu-known-hosts" "$RUNNER_TEMP/jiashu-ssh-config"
