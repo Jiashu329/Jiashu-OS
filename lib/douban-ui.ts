@@ -20,7 +20,7 @@ export const DOUBAN_SCRIPT = String.raw`
 (()=>{
 const el=id=>document.getElementById('douban-'+id),pageSize=24;
 const missingFields=${doubanMissingFields.toString()};
-const kinds={movie:'电影',series:'电视剧',book:'书籍',music:'音乐',screen:'待分类影视'},sourceNames={collection:'公开收藏页',rss:'近期 RSS',import:'文件导入',browser:'浏览器同步'};
+const kinds={movie:'电影',series:'电视剧',book:'书籍',music:'音乐',screen:'待分类影视'},sourceNames={collection:'公开收藏页',rss:'近期 RSS',import:'资料导入',browser:'浏览器同步'};
 const importState={busy:false,sequence:0,items:null,profileId:null,dataEpoch:null,preview:null,fingerprint:null,pending:null,touched:false,baseline:''};
 const metadataState={busy:false,stop:false,queue:[],pending:null,epoch:null,connectionRevision:null,connectionProfile:null};
 const resetState={busy:false,preview:null,pending:null};
