@@ -37,6 +37,6 @@ export async function GET(request: Request) {
       readDoubanRun(db, user.userId),
     ]);
     if (await readDoubanDataEpoch(db, user.userId) !== dataEpoch) throw new DoubanStoreError('豆瓣资料已清空或重置，请重新读取当前记录。', 'DOUBAN_DATA_EPOCH_CONFLICT');
-    return json({ dataEpoch, connection: presentDoubanConnection(connection), ...records, lastRun: lastRun ? presentDoubanRun(lastRun) : null });
+    return json({ features: { ratings: true }, dataEpoch, connection: presentDoubanConnection(connection), ...records, lastRun: lastRun ? presentDoubanRun(lastRun) : null });
   } catch (error) { return doubanError(error); }
 }

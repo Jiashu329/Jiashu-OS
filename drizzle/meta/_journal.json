@@ -225,6 +225,13 @@
       "when": 1794708811780,
       "tag": "0031_tmdb_covers_and_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1794711568733,
+      "tag": "0032_imdb_ratings",
+      "breakpoints": true
     }
   ]
 }

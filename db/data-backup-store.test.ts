@@ -28,7 +28,8 @@ import { buildFinanceReview, parseFinanceReviewQuery } from '../lib/finance-revi
 import type { DataBackup } from '../lib/data-backup.ts';
 import { parseDoubanDetails } from '../lib/douban-details.ts';
 import { classifyDoubanLibrary } from './douban-library-store.ts';
-import { serializeTMDBCover } from '../lib/tmdb-cover.ts';
+import { serializeTMDBCover, tmdbCoverUrl, parseTMDBCover } from '../lib/tmdb-cover.ts';
+import { serializeIMDbRating } from '../lib/imdb-rating.ts';
 
 const NOW='2026-11-10T04:00:00.000Z'; const OLD='2024-01-01T04:00:00.000Z';
 const A='11111111-1111-4111-8111-111111111111'; const B='22222222-2222-4222-8222-222222222222'; const C='33333333-3333-4333-8333-333333333333'; const D='44444444-4444-4444-8444-444444444444'; const E='55555555-5555-4555-8555-555555555555'; const HASH='a'.repeat(64);
@@ -940,4 +941,91 @@ void test('backup TMDB fallback accepts only fixed provider metadata and rejects
   assert.throws(()=>parseDataBackup(nonScreen),BackupValidationError);
   const withSettings=structuredClone(backup) as unknown as {tables:Record<string,unknown>};withSettings.tables.tmdb_settings=[];
   assert.throws(()=>parseDataBackup(withSettings),BackupValidationError);
+});
+
+
+const persistedTMDBUrl = (cover = tmdbCover()) => tmdbCoverUrl(parseTMDBCover(cover));
+const imdbRating = (overrides: Record<string,unknown> = {}) => ({imdbId:'tt0111161',rating:9.3,ratingCount:3012345,source:'imdb-datasets',checkedAt:NOW,datasetDate:'2026-11-09',...overrides});
+
+void test('IMDb ratings and persisted TMDB URLs roundtrip while public caches and rating-control receipts remain excluded',async(t)=>{
+  const source=fixture(t),cover=tmdbCover(),url=persistedTMDBUrl(cover),rating=serializeIMDbRating(imdbRating({imdbId:'tt0068646'}));
+  // A later change in the subject IMDb ID deactivates an older score for display, not for portable storage.
+  const details=JSON.stringify(parseDoubanDetails({imdbId:'tt0111161',doubanRating:9.7,ratingCount:12345}));
+  seedDouban(source.sqlite,'alice',doubanRow({details_json:details,tmdb_cover_json:serializeTMDBCover(cover),tmdb_cover_url:url,imdb_rating_json:rating}));
+  seedDouban(source.sqlite,'bob',doubanRow({imdb_rating_json:serializeIMDbRating(imdbRating({imdbId:'tt9999999',rating:8.1}))}));
+  source.sqlite.prepare('INSERT INTO imdb_ratings_cache VALUES (?,?,?)').run('tt9999999','PUBLIC-CACHE-NOT-EXPORT',NOW);
+  source.sqlite.prepare('INSERT INTO imdb_ratings_refresh_leases VALUES (?,?,?)').run('ratings','LEASE-TOKEN-NOT-EXPORT',NOW);
+  source.sqlite.prepare('INSERT INTO douban_imdb_ratings_receipts VALUES (?,?,?,?,?,?)').run('alice',A,HASH,'WRITE-TOKEN-NOT-EXPORT','RECEIPT-NOT-EXPORT',NOW);
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(Object.keys(backup.tables).length,31);
+  assert.equal(backup.tables.douban_items[0].tmdb_cover_url,url);
+  assert.equal(backup.tables.douban_items[0].imdb_rating_json,rating);
+  assert.equal(JSON.parse(String(backup.tables.douban_items[0].details_json)).doubanRating,9.7);
+  assert.doesNotMatch(JSON.stringify(backup),/tt9999999|PUBLIC-CACHE|LEASE-TOKEN|WRITE-TOKEN|RECEIPT-NOT|imdb_ratings_cache|imdb_ratings_refresh_leases|douban_imdb_ratings_receipts/);
+  for(const input of [backup,await splitBackupVolumes(backup)]){
+    const target=fixture(t),preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+    for(const table of ['imdb_ratings_cache','imdb_ratings_refresh_leases','douban_imdb_ratings_receipts'])assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM '+table).get()?.n,0);
+  }
+});
+
+void test('old single files and signed volumes without rating or TMDB URL fields preserve newer source snapshots',async(t)=>{
+  const source=fixture(t),cover=serializeTMDBCover(tmdbCover());seedDouban(source.sqlite,'alice',doubanRow({tmdb_cover_json:cover}));
+  const legacy=await exportDataBackup(source.db,'alice',NOW);
+  delete legacy.tables.douban_items[0].imdb_rating_json;delete legacy.tables.douban_items[0].tmdb_cover_url;
+  const normalized=parseDataBackup(legacy).tables.douban_items[0];
+  assert.equal(normalized.imdb_rating_json,'{}');assert.equal(normalized.tmdb_cover_url,null);
+  const setId=await backupDigest(legacy),volume={kind:'jiashu-os-backup-volume',version:1,setId,exportedAt:NOW,partIndex:1,totalParts:1,tables:legacy.tables};
+  const descriptor={partIndex:1,rowCount:1,byteLength:new TextEncoder().encode(JSON.stringify(volume)).byteLength,sha256:await backupDigest(volume)};
+  const signed={kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:NOW,totalRows:1,volumes:[descriptor]},volumes:[volume]};
+  for(const input of [legacy,signed]){
+    const target=fixture(t),rating=serializeIMDbRating(imdbRating()),url=persistedTMDBUrl();
+    seedDouban(target.sqlite,'restored',doubanRow({details_json:JSON.stringify(parseDoubanDetails({imdbId:'tt0111161'})),tmdb_cover_json:cover,tmdb_cover_url:url,imdb_rating_json:rating}));
+    const preview=await previewDataRestore(target.db,'restored',input);
+    assert.equal(preview.canRestore,true);assert.equal(preview.total.skipped,1);assert.equal(preview.total.added,0);
+    await restoreDataBackup(target.db,'restored',input,preview.previewHash);
+    const row=target.sqlite.prepare('SELECT imdb_rating_json,tmdb_cover_url FROM douban_items').get();
+    assert.equal(row?.imdb_rating_json,rating);assert.equal(row?.tmdb_cover_url,url);
+  }
+});
+
+void test('IMDb source scores and persisted poster URLs participate in conflict previews and atomic restore guards',async(t)=>{
+  for(const field of ['imdb_rating_json','tmdb_cover_url']){
+    const source=fixture(t),rating=serializeIMDbRating(imdbRating()),url=persistedTMDBUrl(),cover=serializeTMDBCover(tmdbCover());
+    const original=field==='imdb_rating_json'?rating:url,next=field==='imdb_rating_json'?serializeIMDbRating(imdbRating({rating:9.2,ratingCount:3012346})):null;
+    seedDouban(source.sqlite,'alice',doubanRow({tmdb_cover_json:cover,tmdb_cover_url:url,imdb_rating_json:rating}));
+    seedDouban(source.sqlite,'alice',doubanRow({subject_id:'1234567',url:'https://movie.douban.com/subject/1234567/'}));
+    const backup=await exportDataBackup(source.db,'alice',NOW),target=fixture(t);
+    seedDouban(target.sqlite,'restored',doubanRow({tmdb_cover_json:cover,tmdb_cover_url:url,imdb_rating_json:rating,[field]:next}));
+    const conflict=await previewDataRestore(target.db,'restored',backup);assert.equal(conflict.canRestore,false);
+    assert.ok(conflict.tables.find(table=>table.table==='douban_items')?.conflictExamples[0]?.differences?.some(value=>value.field===field));
+    await assert.rejects(restoreDataBackup(target.db,'restored',backup,conflict.previewHash),BackupConflictError);
+    target.sqlite.prepare('UPDATE douban_items SET '+field+'=?').run(original);
+    const preview=await previewDataRestore(target.db,'restored',backup);assert.equal(preview.canRestore,true);
+    target.mutateNextBatch(()=>target.sqlite.prepare('UPDATE douban_items SET '+field+'=?').run(next));
+    await assert.rejects(restoreDataBackup(target.db,'restored',backup,preview.previewHash),BackupConflictError);
+    assert.equal(target.sqlite.prepare('SELECT '+field+' value FROM douban_items').get()?.value,next);
+    assert.equal(target.sqlite.prepare('SELECT COUNT(*) n FROM douban_items').get()?.n,1);
+    assert.notEqual((await previewDataRestore(target.db,'restored',backup)).previewHash,preview.previewHash);
+  }
+});
+
+void test('backup source ratings reject fabricated providers, invalid scores and noncanonical TMDB URLs',async(t)=>{
+  const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
+  const bad=[null,0,[],{rating:8},imdbRating({source:'tmdb'}),imdbRating({rating:0}),imdbRating({rating:10.1}),imdbRating({rating:'9.3'}),
+    imdbRating({ratingCount:0}),imdbRating({ratingCount:1.5}),imdbRating({imdbId:'tt123'}),imdbRating({checkedAt:'2099-01-01T00:00:00.000Z'}),
+    imdbRating({datasetDate:'2026-02-30'}),imdbRating({extra:'not-canonical'})];
+  for(const value of bad){const invalid=structuredClone(backup);invalid.tables.douban_items[0].imdb_rating_json=JSON.stringify(value);assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+  for(const value of [null,0]){const invalid=structuredClone(backup);invalid.tables.douban_items[0].imdb_rating_json=value;assert.throws(()=>parseDataBackup(invalid),BackupValidationError);}
+  const withCover=structuredClone(backup);withCover.tables.douban_items[0].tmdb_cover_json=serializeTMDBCover(tmdbCover());
+  for(const value of ['https://example.org/poster.jpg','http://image.tmdb.org/t/p/w500/synthetic-poster.jpg','https://image.tmdb.org/t/p/w500/other.jpg','https://image.tmdb.org/t/p/w500/synthetic-poster.jpg?key=secret']){
+    const invalid=structuredClone(withCover);invalid.tables.douban_items[0].tmdb_cover_url=value;assert.throws(()=>parseDataBackup(invalid),BackupValidationError);
+  }
+  const valid=structuredClone(withCover);valid.tables.douban_items[0].tmdb_cover_url=persistedTMDBUrl();valid.tables.douban_items[0].imdb_rating_json=serializeIMDbRating(imdbRating());assert.doesNotThrow(()=>parseDataBackup(valid));
+  const withoutDescriptor=structuredClone(backup);withoutDescriptor.tables.douban_items[0].tmdb_cover_url=persistedTMDBUrl();assert.throws(()=>parseDataBackup(withoutDescriptor),BackupValidationError);
+  const nonScreen=structuredClone(backup);Object.assign(nonScreen.tables.douban_items[0],{domain:'book',kind:'book',url:'https://book.douban.com/subject/1292052/',imdb_rating_json:serializeIMDbRating(imdbRating())});assert.throws(()=>parseDataBackup(nonScreen),BackupValidationError);
+  for(const table of ['imdb_ratings_cache','imdb_ratings_refresh_leases','douban_imdb_ratings_receipts']){
+    const invalid=structuredClone(backup) as unknown as {tables:Record<string,unknown>};invalid.tables[table]=[];assert.throws(()=>parseDataBackup(invalid),BackupValidationError);
+  }
 });

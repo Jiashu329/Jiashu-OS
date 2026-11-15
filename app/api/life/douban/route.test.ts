@@ -53,7 +53,7 @@ function fixture(t: TestContext) {
   const get = load(new URL('./route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync, ...library, ...libraryModel }, ['GET']).GET;
   const libraryHandlers = load(new URL('./library/route.ts', import.meta.url), { ...shared, ...helpers, ...sync, ...library }, ['PUT', 'POST']);
   const put = load(new URL('./connection/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['PUT']).PUT;
-  const importPost = load(new URL('./import/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...model, ...sync }, ['POST']).POST;
+  const importPost = load(new URL('./import/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...library, ...model, ...sync }, ['POST']).POST;
   const resetPost = load(new URL('./reset/route.ts', import.meta.url), { ...shared, ...helpers, ...resetStore, ...sync }, ['POST']).POST;
   const post = load(new URL('./sync/route.ts', import.meta.url), { ...shared, ...helpers, ...store, ...sync, Date: ClockDate,
     advanceDoubanSyncStep: async (run: sync.DoubanRunForSync, dependencies: sync.DoubanSyncDependencies) => sync.advanceDoubanSyncStep(run, { ...dependencies,
@@ -394,6 +394,7 @@ void test('small browser commits and receipt retries return current persisted re
   const command = { action: 'commit', profile, items, expectedDataEpoch: 0, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID(), confirmed: true, returnRecords: true };
   const firstResponse = await f.import(command); assert.equal(firstResponse.status, 200); const first = await body(firstResponse);
   assert.equal(first.records.length, 1); assert.equal(first.records[0].subjectId, '11111'); assert.equal(first.records[0].profileId, profile); assert.equal(typeof first.records[0].updatedAt, 'string'); assert.equal(first.receipt.records, undefined);
+  assert.equal(first.records[0].imdb, null); assert.equal(first.records[0].tmdbCoverUrl, null); assert.deepEqual(first.records[0].local, { note: '', tags: [], hidden: false, revision: 0 });
   f.sqlite.prepare("UPDATE douban_items SET kind='movie',updated_at=?,details_json=? WHERE user_id='alice'").run('2026-11-15T00:00:00.000Z', JSON.stringify({ summary: '随后已补全的作品资料' }));
   const replay = await body(await f.import(command)); assert.deepEqual(replay.receipt, first.receipt); assert.equal(replay.records[0].kind, 'movie'); assert.equal(replay.records[0].updatedAt, '2026-11-15T00:00:00.000Z'); assert.equal(replay.records[0].details.summary, '随后已补全的作品资料');
   const { returnRecords: _returnRecords, ...ordinary } = command;

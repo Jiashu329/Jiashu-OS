@@ -516,6 +516,7 @@ export const doubanItems = sqliteTable('douban_items', {
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), metadataCheckedRunId: text('metadata_checked_run_id'),
   detailsJson: text('details_json').notNull().default('{}'),
   tmdbCoverJson: text('tmdb_cover_json').notNull().default('{}'),
+  tmdbCoverUrl: text('tmdb_cover_url'), imdbRatingJson: text('imdb_rating_json').notNull().default('{}'),
   localCoverUrl: text('local_cover_url'),
   localNote: text('local_note').notNull().default(''), localTagsJson: text('local_tags_json').notNull().default('[]'),
   localHidden: integer('local_hidden').notNull().default(0), localRevision: integer('local_revision').notNull().default(0),
@@ -554,3 +555,15 @@ export const doubanDataResets = sqliteTable('douban_data_resets', {
   lastRequestId: text('last_request_id').notNull(), lastRequestHash: text('last_request_hash').notNull(),
   lastReceiptJson: text('last_receipt_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 }, table => [check('douban_data_resets_epoch', sql`typeof(${table.dataEpoch})='integer' AND ${table.dataEpoch} BETWEEN 1 AND 9007199254740991`)]);
+
+// Shared public source cache and synchronization controls are not portable personal records.
+export const imdbRatingsCache = sqliteTable('imdb_ratings_cache', {
+  imdbId: text('imdb_id').primaryKey().notNull(), ratingJson: text('rating_json').notNull(), checkedAt: text('checked_at').notNull(),
+});
+export const imdbRatingsRefreshLeases = sqliteTable('imdb_ratings_refresh_leases', {
+  id: text('id').primaryKey().notNull(), token: text('token').notNull(), expiresAt: text('expires_at').notNull(),
+});
+export const doubanIMDbRatingsReceipts = sqliteTable('douban_imdb_ratings_receipts', {
+  userId: text('user_id').notNull(), requestId: text('request_id').notNull(), requestHash: text('request_hash').notNull(),
+  writeToken: text('write_token').notNull(), receiptJson: text('receipt_json').notNull(), createdAt: text('created_at').notNull(),
+}, table => [primaryKey({ columns: [table.userId, table.requestId] })]);

@@ -1,5 +1,5 @@
 import { doubanSubjectUrl, parseDoubanProfile } from '../lib/douban.ts';
-import { parseTMDBCover, serializeTMDBCover, type TMDBCover } from '../lib/tmdb-cover.ts';
+import { parseTMDBCover, serializeTMDBCover, tmdbCoverUrl, type TMDBCover } from '../lib/tmdb-cover.ts';
 import { readDoubanLibraryRecord, type DoubanLibraryRecord } from './douban-library-store.ts';
 import { readDoubanMetadataEpoch } from './douban-metadata-store.ts';
 import { DoubanStoreError, type DoubanDatabase, type DoubanRecordKey } from './douban-store.ts';
@@ -42,18 +42,18 @@ export async function saveDoubanTMDBCover(db: DoubanDatabase, userId: string, ol
     || old.kind === 'movie' && cover.mediaType !== 'movie' || old.kind === 'series' && cover.mediaType !== 'tv'
     || !timestamp(now)) throw new DoubanStoreError('TMDB 匹配与当前作品不一致。', 'INVALID_DOUBAN_INPUT', 400);
   await readDoubanMetadataEpoch(db, userId, expectedDataEpoch);
-  if (old.tmdb) return { item: await confirmDoubanTMDBItem(db, userId, old, expectedDataEpoch), changed: false };
+  if (old.tmdb && old.tmdbCoverUrl === tmdbCoverUrl(old.tmdb)) return { item: await confirmDoubanTMDBItem(db, userId, old, expectedDataEpoch), changed: false };
   const updatedAt = new Date(Math.max(Date.parse(now), Date.parse(old.updatedAt) + 1)).toISOString();
-  const row = await db.prepare(`UPDATE douban_items SET tmdb_cover_json=?,updated_at=?,observed_at=MAX(observed_at,?)
+  const row = await db.prepare(`UPDATE douban_items SET tmdb_cover_json=?,tmdb_cover_url=?,updated_at=?,observed_at=MAX(observed_at,?)
     WHERE user_id=? AND profile_id=? AND domain='screen' AND subject_id=? AND updated_at=?
     AND json_extract(details_json,'$.imdbId')=?
     AND COALESCE((SELECT data_epoch FROM douban_data_resets WHERE user_id=?),0)=?
-    RETURNING subject_id AS subjectId`).bind(serializeTMDBCover(cover), updatedAt, updatedAt, userId, old.profileId, old.subjectId, old.updatedAt, cover.imdbId, userId, expectedDataEpoch)
+    RETURNING subject_id AS subjectId`).bind(serializeTMDBCover(cover), tmdbCoverUrl(cover), updatedAt, updatedAt, userId, old.profileId, old.subjectId, old.updatedAt, cover.imdbId, userId, expectedDataEpoch)
     .first<{ subjectId: string }>();
   await readDoubanMetadataEpoch(db, userId, expectedDataEpoch);
   const item = await readDoubanLibraryRecord(db, userId, old);
   await readDoubanMetadataEpoch(db, userId, expectedDataEpoch);
-  if (!item?.tmdb || item.details?.imdbId !== cover.imdbId) conflict();
+  if (!item?.tmdb || item.details?.imdbId !== cover.imdbId || item.tmdbCoverUrl !== tmdbCoverUrl(item.tmdb)) conflict();
   // A concurrent identical lookup may have completed first; only an active current match is idempotent.
   if (!row) return { item, changed: false };
   return { item, changed: true };

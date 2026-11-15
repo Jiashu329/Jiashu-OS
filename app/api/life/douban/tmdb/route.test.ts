@@ -19,7 +19,7 @@ const cover = { imdbId: 'tt1234567', mediaType: 'movie' as const, tmdbId: 42, po
 function fixture() {
   let user: string | null = 'alice', configured = true, status = 'matched', providerError: unknown, settingsError: unknown, readError: unknown;
   const calls: Array<{ operation: string; owner?: string; command?: unknown }> = [], db = {} as D1Database;
-  const item = { ...body, kind: 'movie', details: { imdbId: cover.imdbId }, local: { note: '保留备注', revision: 2 }, cover: { mode: 'url', url: 'https://images.example.com/manual.jpg', revision: 2 }, tmdb: null as typeof cover | null };
+  const item = { ...body, kind: 'movie', details: { imdbId: cover.imdbId }, local: { note: '保留备注', revision: 2 }, cover: { mode: 'url', url: 'https://images.example.com/manual.jpg', revision: 2 }, tmdb: null as typeof cover | null, tmdbCoverUrl: null as string | null };
   const shared = load(new URL('../../../_shared.ts', import.meta.url), { getChatGPTUser: async () => user ? { userId: user } : null }, ['apiUser', 'json', 'unauthenticated', 'invalidOrigin', 'isSameOrigin']);
   const helpers = load(new URL('../_shared.ts', import.meta.url), { env: { DB: db }, ...shared, ...sourceStore, ...model, ...sync }, ['doubanDatabase', 'doubanGuard', 'doubanBody', 'doubanError']);
   const handler = load(new URL('./route.ts', import.meta.url), { env: {}, ...shared, ...helpers, ...sourceStore, ...provider, ...coverModel,
@@ -27,7 +27,7 @@ function fixture() {
     confirmDoubanTMDBItem: async () => { calls.push({ operation: 'confirm' }); return item; },
     resolveTMDBConfiguration: async () => { calls.push({ operation: 'configuration' }); if (settingsError) throw settingsError; return configured ? { configured: true, token: 'SYNTHETIC_PRIVATE_TOKEN', revision: 1 } : { configured: false, revision: 0 }; },
     findTMDBCover: async (imdbId: string, kind: string, token: string) => { calls.push({ operation: 'lookup' }); assert.equal(imdbId, cover.imdbId); assert.equal(kind, 'movie'); assert.equal(token, 'SYNTHETIC_PRIVATE_TOKEN'); if (providerError) throw providerError; return status === 'matched' ? { status, cover } : { status }; },
-    saveDoubanTMDBCover: async (_db: unknown, owner: string) => { calls.push({ operation: 'save', owner }); return { item: { ...item, tmdb: cover }, changed: true }; },
+    saveDoubanTMDBCover: async (_db: unknown, owner: string) => { calls.push({ operation: 'save', owner }); return { item: { ...item, tmdb: cover, tmdbCoverUrl: coverModel.tmdbCoverUrl(cover) }, changed: true }; },
   }, ['POST']).POST;
   return { calls, item, signIn(value: string | null) { user = value; }, configure(value: boolean) { configured = value; }, status(value: string) { status = value; },
     providerError(value: unknown) { providerError = value; }, settingsError(value: unknown) { settingsError = value; }, readError(value: unknown) { readError = value; },
@@ -52,7 +52,7 @@ test('a matched response returns full local and manual cover fields without cred
   assert.deepEqual(f.calls[0].command, { profileId: 'profile', domain: 'screen', subjectId: '1', expectedUpdatedAt: NOW, expectedDataEpoch: 0 });
 });
 test('saved matches, missing IMDb and unconfigured lookup report distinct states without unnecessary remote reads', async () => {
-  const cached = fixture(); cached.item.tmdb = cover; assert.equal((await (await cached.post()).json() as { tmdb: { status: string } }).tmdb.status, 'matched'); assert.deepEqual(cached.calls.map(call => call.operation), ['read']);
+  const cached = fixture(); cached.item.tmdb = cover; cached.item.tmdbCoverUrl = coverModel.tmdbCoverUrl(cover); assert.equal((await (await cached.post()).json() as { tmdb: { status: string } }).tmdb.status, 'matched'); assert.deepEqual(cached.calls.map(call => call.operation), ['read']);
   const missing = fixture(); missing.item.details.imdbId = ''; assert.equal((await (await missing.post()).json() as { tmdb: { status: string } }).tmdb.status, 'missing_imdb'); assert.deepEqual(missing.calls.map(call => call.operation), ['read']);
   const absent = fixture(); absent.configure(false); const result = await (await absent.post()).json() as { tmdb: { status: string }; changed: boolean };
   assert.equal(result.tmdb.status, 'not_configured'); assert.equal(result.changed, false); assert.equal(absent.calls.some(call => call.operation === 'lookup' || call.operation === 'save'), false);
@@ -71,3 +71,5 @@ test('rate limits, credential failures and storage conflicts expose safe actiona
   const config = fixture(); config.settingsError(new Error('SYNTHETIC_PRIVATE_TOKEN')); const bad = await config.post(); assert.equal(bad.status, 503); assert.equal((await bad.text()).includes('SYNTHETIC_PRIVATE_TOKEN'), false);
   const conflict = fixture(); conflict.readError(new sourceStore.DoubanStoreError('记录已更新', 'DOUBAN_RECORD_CONFLICT')); const stale = await conflict.post(); assert.equal(stale.status, 409); assert.equal((await stale.json() as { code: string }).code, 'DOUBAN_RECORD_CONFLICT'); assert.equal(conflict.calls.some(call => call.operation === 'configuration'), false);
 });
+
+test('an existing legacy match fills its persisted canonical URL without another provider call', async () => { const f=fixture(); f.item.tmdb=cover; const response=await f.post(); const result=await response.json() as {item:{tmdbCoverUrl:string};changed:boolean}; assert.equal(response.status,200); assert.equal(result.item.tmdbCoverUrl,coverModel.tmdbCoverUrl(cover)); assert.equal(result.changed,true); assert.deepEqual(f.calls.map(call=>call.operation),['read','save']); });

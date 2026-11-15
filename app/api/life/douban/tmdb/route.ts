@@ -3,7 +3,7 @@ import { confirmDoubanTMDBItem, readDoubanTMDBItem, saveDoubanTMDBCover, type Do
 import { resolveTMDBConfiguration } from '../../../../../db/tmdb-settings-store';
 import { DoubanStoreError } from '../../../../../db/douban-store';
 import { findTMDBCover, TMDBProviderError } from '../../../../../lib/tmdb-provider';
-import { validIMDbId } from '../../../../../lib/tmdb-cover';
+import { validIMDbId, tmdbCoverUrl } from '../../../../../lib/tmdb-cover';
 import { apiUser, json, unauthenticated } from '../../../_shared';
 import { doubanBody, doubanDatabase, doubanError, doubanGuard } from '../_shared';
 
@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     const result = (current: typeof item, status: string, message?: string, statusCode = 200, retryAfter?: number) => json({ item: current, changed: false, dataEpoch,
       ...(statusCode >= 400 ? { error: message, code: status === 'rate_limited' ? 'TMDB_RATE_LIMITED' : 'TMDB_UNAVAILABLE' } : {}),
       tmdb: { status, ...(message ? { message } : {}), ...(retryAfter ? { retryAfter } : {}) } }, statusCode, retryAfter ? { 'Retry-After': String(retryAfter) } : undefined);
-    if (item.tmdb) return result(item, 'matched');
+    if (item.tmdb) { if (item.tmdbCoverUrl === tmdbCoverUrl(item.tmdb)) return result(item, 'matched'); const saved = await saveDoubanTMDBCover(db, user.userId, item, item.tmdb, dataEpoch); return json({ ...saved, dataEpoch, tmdb: { status: 'matched' } }); }
     if (!validIMDbId(item.details?.imdbId)) return result(item, 'missing_imdb', '豆瓣详情未提供 IMDb 编号，已有封面已保留。');
     let configuration;
     try { configuration = await resolveTMDBConfiguration(db, env); }

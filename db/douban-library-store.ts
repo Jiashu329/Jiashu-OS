@@ -1,11 +1,12 @@
 import { userCoverDescriptor, type UserCoverDescriptor } from '../lib/douban-cover-selection.ts';
 import { DOUBAN_LIBRARY_SORTS, parseDoubanLocalRecord, type DoubanLibrarySort, type DoubanLocalRecord } from '../lib/douban-library.ts';
 import { doubanSubjectUrl, parseDoubanProfile, type DoubanKind } from '../lib/douban.ts';
-import { parseTMDBCover, type TMDBCover } from '../lib/tmdb-cover.ts';
+import { parseIMDbRating, type IMDbRating } from '../lib/imdb-rating.ts';
+import { parseTMDBCover, tmdbCoverUrl, type TMDBCover } from '../lib/tmdb-cover.ts';
 import { DoubanStoreError, presentDoubanStoredRecord, readDoubanDataEpoch, type DoubanDatabase, type DoubanRecord, type DoubanRecordKey, type DoubanStoredRecord } from './douban-store.ts';
 
-export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord; cover: UserCoverDescriptor; tmdb: TMDBCover | null }
-interface StoredLibraryRecord extends DoubanStoredRecord { localNote: string; localTagsJson: string; localHidden: number; localRevision: number; localCoverUrl: string | null; tmdbCoverJson: string }
+export interface DoubanLibraryRecord extends DoubanRecord { local: DoubanLocalRecord; cover: UserCoverDescriptor; tmdb: TMDBCover | null; tmdbCoverUrl: string | null; imdb: IMDbRating | null }
+interface StoredLibraryRecord extends DoubanStoredRecord { localNote: string; localTagsJson: string; localHidden: number; localRevision: number; localCoverUrl: string | null; tmdbCoverJson: string; tmdbCoverUrl: string | null; imdbRatingJson: string }
 export interface DoubanLibraryOptions {
   profileId?: string; kind?: DoubanKind | 'all'; query?: string; offset?: number; limit?: number;
   rating?: number | 'unrated'; year?: number; sort?: DoubanLibrarySort; hidden?: 'visible' | 'hidden' | 'all'; tag?: string; missing?: boolean;
@@ -13,7 +14,7 @@ export interface DoubanLibraryOptions {
 const columns = `profile_id AS profileId,domain,subject_id AS subjectId,kind,title,url,cover_url AS coverUrl,rating,
   marked_date AS markedDate,comment,published_at AS publishedAt,source,observed_at AS observedAt,
   created_at AS createdAt,updated_at AS updatedAt,metadata_checked_run_id AS metadataCheckedRunId,details_json AS detailsJson,
-  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision,local_cover_url AS localCoverUrl,tmdb_cover_json AS tmdbCoverJson`;
+  local_note AS localNote,local_tags_json AS localTagsJson,local_hidden AS localHidden,local_revision AS localRevision,local_cover_url AS localCoverUrl,tmdb_cover_json AS tmdbCoverJson,tmdb_cover_url AS tmdbCoverUrl,imdb_rating_json AS imdbRatingJson`;
 const kinds = ['screen', 'movie', 'series', 'book', 'music'];
 const dateOrder = 'marked_date IS NULL,marked_date';
 const missingCondition = `(kind='screen' OR (domain='screen' AND COALESCE(json_extract(details_json,'$.imdbId'),'')='') OR (local_cover_url IS NULL AND (cover_url IS NULL OR trim(cover_url)='') AND NOT COALESCE((
@@ -26,7 +27,7 @@ const missingCondition = `(kind='screen' OR (domain='screen' AND COALESCE(json_e
 function invalid(message = '请核对书影音筛选或整理参数。'): never { throw new DoubanStoreError(message, 'INVALID_DOUBAN_INPUT', 400); }
 function conflict(): never { throw new DoubanStoreError('记录已变化，请重新读取收藏，核对后再保存。', 'DOUBAN_RECORD_CONFLICT'); }
 function present(row: StoredLibraryRecord): DoubanLibraryRecord {
-  const { localNote, localTagsJson, localHidden, localRevision, localCoverUrl, tmdbCoverJson, ...stored } = row;
+  const { localNote, localTagsJson, localHidden, localRevision, localCoverUrl, tmdbCoverJson, tmdbCoverUrl: storedTMDBUrl, imdbRatingJson, ...stored } = row;
   let tags: unknown; try { tags = JSON.parse(localTagsJson); } catch { throw new DoubanStoreError('个人整理资料暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
   const local = parseDoubanLocalRecord({ note: localNote, tags, hidden: localHidden === 1 });
   if (![0, 1].includes(localHidden) || !Number.isSafeInteger(localRevision) || localRevision < 0) throw new DoubanStoreError('个人整理版本暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503);
@@ -34,9 +35,14 @@ function present(row: StoredLibraryRecord): DoubanLibraryRecord {
   let tmdb: TMDBCover | null;
   try { tmdb = parseTMDBCover(JSON.parse(tmdbCoverJson)); }
   catch { throw new DoubanStoreError('TMDB 封面资料暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
+  let imdb: IMDbRating | null;
+  try { imdb = parseIMDbRating(JSON.parse(imdbRatingJson)); } catch { throw new DoubanStoreError('IMDb 评分资料暂时无法读取。', 'DOUBAN_STORAGE_UNAVAILABLE', 503); }
+  const activeTMDB = item.domain === 'screen' && tmdb && tmdb.imdbId === item.details?.imdbId
+      && (item.kind === 'screen' || item.kind === 'movie' && tmdb.mediaType === 'movie' || item.kind === 'series' && tmdb.mediaType === 'tv') ? tmdb : null;
+  if (storedTMDBUrl !== null && storedTMDBUrl !== tmdbCoverUrl(tmdb)) throw new DoubanStoreError('TMDB 封面链接暂时无法核对。', 'DOUBAN_STORAGE_UNAVAILABLE', 503);
   return { ...item, local: { ...local, revision: localRevision }, cover: userCoverDescriptor(localCoverUrl, localRevision),
-    tmdb: item.domain === 'screen' && tmdb && tmdb.imdbId === item.details?.imdbId
-      && (item.kind === 'screen' || item.kind === 'movie' && tmdb.mediaType === 'movie' || item.kind === 'series' && tmdb.mediaType === 'tv') ? tmdb : null };
+    tmdb: activeTMDB, tmdbCoverUrl: activeTMDB ? storedTMDBUrl : null,
+    imdb: item.domain === 'screen' && imdb && imdb.imdbId === item.details?.imdbId ? imdb : null };
 }
 function recordKey(command: DoubanRecordKey): DoubanRecordKey {
   if (typeof command.profileId !== 'string' || parseDoubanProfile(command.profileId).profileId !== command.profileId) invalid();
@@ -93,6 +99,19 @@ export async function readDoubanLibraryRecord(db: DoubanDatabase, userId: string
   const row = await db.prepare(`SELECT ${columns} FROM douban_items WHERE user_id=? AND profile_id=? AND domain=? AND subject_id=?`)
     .bind(userId, key.profileId, key.domain, key.subjectId).first<StoredLibraryRecord>();
   return row ? present(row) : null;
+}
+
+/** A bounded key set shares one query; rows retain the same strict presentation as the library. */
+export async function readDoubanLibraryRecords(db: DoubanDatabase, userId: string, keys: DoubanRecordKey[], expectedDataEpoch?: number): Promise<DoubanLibraryRecord[]> {
+  if (!Array.isArray(keys) || keys.length < 1 || keys.length > 50) invalid();
+  for (const key of keys) recordKey(key);
+  if (expectedDataEpoch !== undefined) await verifyEpoch(db, userId, expectedDataEpoch);
+  const rows = await db.prepare(`SELECT ${columns} FROM douban_items WHERE user_id=? AND EXISTS(
+    SELECT 1 FROM json_each(?) r WHERE json_extract(r.value,'$.profileId')=profile_id
+    AND json_extract(r.value,'$.domain')=domain AND json_extract(r.value,'$.subjectId')=subject_id)`)
+    .bind(userId, JSON.stringify(keys)).all<StoredLibraryRecord>();
+  if (expectedDataEpoch !== undefined) await verifyEpoch(db, userId, expectedDataEpoch);
+  return rows.results.map(present);
 }
 
 export async function writeDoubanLocalRecord(db: DoubanDatabase, userId: string,

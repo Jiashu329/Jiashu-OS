@@ -1,3 +1,4 @@
+import { readDoubanLibraryRecords } from '../../../../../db/douban-library-store';
 import { commitDoubanImport, previewDoubanImport, readDoubanImportRecords } from '../../../../../db/douban-store';
 import { parseDoubanProfile, parseDoubanRecord } from '../../../../../lib/douban';
 import { DoubanSyncError } from '../../../../../lib/douban-sync';
@@ -35,7 +36,9 @@ export async function POST(request: Request) {
     const db = doubanDatabase(), receipt = await commitDoubanImport(db, user.userId, { profileId, items,
       expectedSnapshotHash: raw.expectedSnapshotHash, requestId: raw.requestId.toLowerCase(), expectedDataEpoch: raw.expectedDataEpoch as number | undefined });
     if (raw.returnRecords === true) {
-      const records = await readDoubanImportRecords(db, user.userId, { profileId, items, expectedDataEpoch: receipt.dataEpoch });
+      const saved = await readDoubanImportRecords(db, user.userId, { profileId, items, expectedDataEpoch: receipt.dataEpoch });
+      const records = await readDoubanLibraryRecords(db, user.userId, saved, receipt.dataEpoch ?? 0);
+      if (records.length !== saved.length) throw new DoubanSyncError('导入后的作品已变化，请重新读取收藏。', 'DOUBAN_IMPORT_CONFLICT', 409);
       return json({ receipt, records });
     }
     return json({ receipt });

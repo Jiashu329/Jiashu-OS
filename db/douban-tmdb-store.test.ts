@@ -25,7 +25,7 @@ function fixture(t: TestContext) {
 }
 test('matches persist independently while preserving manual links, source metadata and local revisions', async t => {
   const f = fixture(t), old = await readDoubanTMDBItem(f.db, 'alice', command), saved = await saveDoubanTMDBCover(f.db, 'alice', old, cover, 0, NEXT);
-  assert.equal(saved.changed, true); assert.deepEqual(saved.item.tmdb, cover); assert.equal(saved.item.coverUrl, null); assert.equal(saved.item.rating, 4);
+  assert.equal(saved.changed, true); assert.deepEqual(saved.item.tmdb, cover); assert.equal(saved.item.tmdbCoverUrl,'https://image.tmdb.org/t/p/w500/synthetic.jpg'); assert.equal(saved.item.coverUrl, null); assert.equal(saved.item.rating, 4);
   assert.deepEqual(saved.item.cover, { mode: 'url', revision: 3, url: 'https://images.example.com/manual.jpg' });
   assert.deepEqual(saved.item.local, { revision: 3, note: '保留备注', tags: ['保留标签'], hidden: false });
   assert.equal(saved.item.updatedAt, NEXT); assert.equal(saved.item.observedAt, NEXT);
@@ -69,3 +69,5 @@ test('legacy records without IMDb remain discoverable even with an original cove
   const f = fixture(t); f.sqlite.prepare('UPDATE douban_items SET details_json=?,cover_url=?').run(JSON.stringify({ summary: '简介', directors: ['导演'] }), 'https://img1.doubanio.com/view/photo/public/p1.jpg');
   assert.equal((await listDoubanLibrary(f.db, 'alice', { missing: true })).total, 1);
 });
+
+test('legacy matches acquire their canonical URL on sync without fetching or replacing source images', async t=>{ const f=fixture(t);f.sqlite.prepare('UPDATE douban_items SET tmdb_cover_json=?').run(JSON.stringify(cover));const old=await readDoubanTMDBItem(f.db,'alice',command);assert.equal(old.tmdbCoverUrl,null);const result=await saveDoubanTMDBCover(f.db,'alice',old,cover,0,NEXT);assert.equal(result.changed,true);assert.equal(result.item.tmdbCoverUrl,'https://image.tmdb.org/t/p/w500/synthetic.jpg');assert.equal(result.item.coverUrl,null);assert.equal(result.item.local.revision,3); });

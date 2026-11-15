@@ -7,6 +7,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { parseIMDbRating, type IMDbRating } from './imdb-rating.ts';
 import { normalizeUserCoverUrl, userCoverDescriptor, type UserCoverDescriptor } from './douban-cover-selection.ts';
 import ts from 'typescript';
 import { buildHomeOverview } from './home-overview.ts';
@@ -115,7 +116,7 @@ function storage(seed: Record<string,string> = {}) {
 }
 type SyntheticTMDBCover = { imdbId: string; mediaType: 'movie' | 'tv'; tmdbId: number; posterPath: string; language: 'zh' | 'en' | null; matchedAt: string };
 type SyntheticTMDBResult = { status: 'matched' | 'not_configured' | 'missing_imdb' | 'no_match' | 'ambiguous' | 'episode_only' | 'no_poster' | 'rate_limited' | 'unavailable'; cover?: SyntheticTMDBCover; message?: string; retryAfter?: number };
-async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; allowTMDB?: boolean; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
+async function fixture(marker: string, path: string, width = 1280, seedStorage: Record<string,string> = {}, catalog: { foods: readonly unknown[]; sources?: readonly unknown[]; aiCanManage?: boolean; aiConfigured?: boolean; tmdbCanManage?: boolean; tmdbConfigured?: boolean; financeBooks?: Array<Record<string, unknown>>; personalTemplates?: NutritionTemplate[]; managedFoods?: ManagedLibraryFood[]; managedOverrides?: string[]; canManageLibrary?: boolean; nutritionNeeds?: 'ready' | 'unavailable'; weeklyReview?: HealthWeeklyReview; douban?: { connection: DoubanConnection; items: DoubanRecord[]; dataEpoch?: number; lastRun?: unknown; allowReset?: boolean; allowImportPreview?: boolean; allowMetadata?: boolean; allowClassification?: boolean; allowCoverSelection?: boolean; allowTMDB?: boolean; allowIMDbRatings?: boolean; loseIMDbRatingReply?: boolean; imdbRatingResults?: Record<string, IMDbRating | null>; imdbRatingFailure?: { status: 429 | 503; message: string; retryAfter?: number }; tmdbResults?: Record<string, SyntheticTMDBResult>; browserExtensionItems?: DoubanRecordInput[]; browserSubjectMetadata?: Record<string, DoubanSubjectMetadata>; browserExtensionVersion?: string } } = { foods: [] }) {
   const html = await productionHtml(marker);
   const { window, document } = parseHTML(html);
   for (const input of document.querySelectorAll('input[type=checkbox]')) (input as unknown as HTMLInputElement).checked = input.hasAttribute('checked');
@@ -167,6 +168,8 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   const doubanResetBodies: Array<Record<string, unknown>> = [];
   const doubanCoverSelectionBodies: Array<Record<string, unknown>> = [];
   const doubanTMDBBodies: Array<Record<string, unknown>> = [];
+  const doubanIMDbRatingsBodies: Array<Record<string, unknown>> = [];
+  const imdbRatingReceipts = new Map<string, { payload: string; result: Record<string, unknown> }>();
   const browserReceipts = new Map<string, Record<string, unknown>>();
   const resetReceipts = new Map<string, Record<string, unknown>>();
   if (catalog.douban?.browserExtensionItems || catalog.douban?.browserSubjectMetadata) {
@@ -274,6 +277,35 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       catalog.douban.items[index] = item;
       return Response.json(path === '/api/life/douban/metadata' ? { item, changed: true, dataEpoch: catalog.douban.dataEpoch ?? 0, metadata: { status: 'complete' } } : { item });
     }
+    if (method === 'POST' && path === '/api/life/douban/imdb-ratings' && catalog.douban?.allowIMDbRatings) {
+      requests.push({ path, method });
+      const body = JSON.parse(String(options?.body)); doubanIMDbRatingsBodies.push(body);
+      assert.deepEqual(Object.keys(body).sort(), ['confirmed', 'expectedDataEpoch', 'items', 'requestId']);
+      assert.equal(body.confirmed, true); assert.match(body.requestId, /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i);
+      assert.equal(body.expectedDataEpoch, catalog.douban.dataEpoch ?? 0); assert.ok(body.items.length > 0 && body.items.length <= 50);
+      const payload = JSON.stringify(body), replay = imdbRatingReceipts.get(body.requestId);
+      if (replay) { assert.equal(payload, replay.payload, 'unknown IMDb receipt reuses the identical immutable batch'); return Response.json(replay.result); }
+      if (catalog.douban.imdbRatingFailure) { const error = catalog.douban.imdbRatingFailure;
+        return Response.json({ error: error.message, code: error.status === 429 ? 'IMDB_RATE_LIMITED' : 'IMDB_DATASET_UNAVAILABLE' }, { status: error.status, ...(error.retryAfter ? { headers: { 'Retry-After': String(error.retryAfter) } } : {}) }); }
+      const targets: Array<DoubanRecord & { imdb?: IMDbRating | null }> = body.items.map((expected: Record<string, unknown>) => {
+        assert.deepEqual(Object.keys(expected).sort(), ['domain', 'expectedImdbId', 'expectedUpdatedAt', 'profileId', 'subjectId']);
+        assert.equal(expected.domain, 'screen');
+        const item = catalog.douban!.items.find(item => item.profileId === expected.profileId && item.domain === expected.domain && item.subjectId === expected.subjectId) as DoubanRecord & { imdb?: IMDbRating | null };
+        assert.ok(item); assert.equal(item.updatedAt, expected.expectedUpdatedAt); assert.equal(item.details?.imdbId, expected.expectedImdbId);
+        assert.ok(Object.hasOwn(catalog.douban!.imdbRatingResults ?? {}, item.subjectId), 'every synthetic IMDb outcome is explicitly configured');
+        return item;
+      });
+      assert.equal(new Set(targets.map((item: DoubanRecord) => item.profileId + ':' + item.subjectId)).size, targets.length);
+      let updated = 0, missing = 0;
+      for (const item of targets) { const raw: IMDbRating | null = catalog.douban.imdbRatingResults![item.subjectId]; const rating: IMDbRating | null = raw === null ? null : parseIMDbRating(raw);
+        if (!rating) { missing++; continue; } assert.equal(rating.imdbId, item.details?.imdbId);
+        if (JSON.stringify(item.imdb) !== JSON.stringify(rating)) { item.imdb = rating; item.updatedAt = new Date(Date.parse(item.updatedAt) + 1).toISOString(); updated++; }
+      }
+      const result = { items: targets, dataEpoch: catalog.douban.dataEpoch ?? 0, receipt: { requestId: body.requestId, requested: targets.length, updated, missing, checkedAt: '2026-11-14T00:00:00.000Z' }, ratings: { status: 'complete', source: 'imdb-datasets' } };
+      imdbRatingReceipts.set(body.requestId, { payload, result: structuredClone(result) });
+      if (catalog.douban.loseIMDbRatingReply) { catalog.douban.loseIMDbRatingReply = false; throw new Error('Synthetic IMDb receipt lost after commit'); }
+      return Response.json(result);
+    }
     if (method === 'POST' && path === '/api/life/douban/tmdb' && catalog.douban?.allowTMDB) {
       requests.push({ path, method });
       const body = JSON.parse(String(options?.body)); doubanTMDBBodies.push(body);
@@ -281,15 +313,16 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
       assert.equal(body.domain, 'screen'); assert.equal(body.confirmed, true);
       const index = catalog.douban.items.findIndex(item => item.profileId === body.profileId && item.domain === body.domain && item.subjectId === body.subjectId);
       assert.ok(index >= 0, 'TMDB lookup addresses only a saved owned work');
-      const previous = catalog.douban.items[index] as DoubanRecord & { tmdb?: SyntheticTMDBCover | null };
+      const previous = catalog.douban.items[index] as DoubanRecord & { tmdb?: SyntheticTMDBCover | null; tmdbCoverUrl?: string | null };
       const result = catalog.douban.tmdbResults?.[previous.subjectId];
       assert.ok(result, 'every synthetic TMDB outcome is explicitly configured');
-      const saved = result.status === 'matched' && previous.tmdb?.imdbId === previous.details?.imdbId && JSON.stringify(previous.tmdb) === JSON.stringify(result.cover);
+      const saved = result.status === 'matched' && previous.tmdb?.imdbId === previous.details?.imdbId && JSON.stringify(previous.tmdb) === JSON.stringify(result.cover)
+        && previous.tmdbCoverUrl === 'https://image.tmdb.org/t/p/w500' + result.cover?.posterPath;
       assert.ok(saved || body.expectedUpdatedAt === previous.updatedAt, 'TMDB pins the newly saved metadata version, or replays the same saved match');
       const item = { ...previous };
       if (result.status === 'matched' && !saved) {
         assert.ok(result.cover); assert.equal(result.cover.imdbId, item.details?.imdbId);
-        item.tmdb = structuredClone(result.cover); item.updatedAt = new Date(Date.parse(previous.updatedAt) + 1).toISOString();
+        item.tmdb = structuredClone(result.cover); item.tmdbCoverUrl = 'https://image.tmdb.org/t/p/w500' + result.cover.posterPath; item.updatedAt = new Date(Date.parse(previous.updatedAt) + 1).toISOString();
         catalog.douban.items[index] = item;
       }
       return Response.json({ item, changed: result.status === 'matched' && !saved, dataEpoch: catalog.douban.dataEpoch ?? 0,
@@ -402,7 +435,7 @@ async function fixture(marker: string, path: string, width = 1280, seedStorage: 
   }
   document.dispatchEvent(new window.Event('DOMContentLoaded'));
   assert.ok(identityRequests.every((request) => request.path === '/api/session' && request.method === 'GET'));
-  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, doubanCoverSelectionBodies, doubanTMDBBodies, location };
+  return { window, document, requests, identityRequests, html, sessionStorage, localStorage, needsBodies, doubanImportBodies, doubanMetadataBodies, doubanClassificationBodies, doubanExtensionMessages, doubanResetBodies, doubanCoverSelectionBodies, doubanTMDBBodies, doubanIMDbRatingsBodies, location };
 }
 
 function openMediaTools(f: Awaited<ReturnType<typeof fixture>>, section: 'browser' | 'public' | 'import' | 'manage') {
@@ -874,10 +907,11 @@ for (const [width, expectedKind] of [[390, 'movie'], [1280, 'series']] as const)
   await settleWork(() => f.doubanExtensionMessages.filter(body => body.action === 'START').length === 2
     && f.doubanExtensionMessages.filter(body => body.action === 'STEP').length === 2
     && f.doubanImportBodies.filter(body => body.action === 'commit').length === 2
+    && f.doubanMetadataBodies.length === 2
     && !(button as HTMLButtonElement).disabled && status.textContent?.includes('浏览器同步完成') === true,
     () => 'repeat sync must finish without downgrading known works: ' + status.textContent);
-  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 1);
-  assert.equal(f.doubanMetadataBodies.length, 1);
+  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2);
+  assert.equal(f.doubanMetadataBodies.length, 2);
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, expectedKind);
 });
@@ -1308,14 +1342,17 @@ test('minified custom fallback previews explicitly and remains saved while offic
   assert.equal(f.doubanCoverSelectionBodies.length,2);assert.equal(f.doubanCoverSelectionBodies[1].mode,'original');assert.equal(Object.hasOwn(f.doubanCoverSelectionBodies[1],'url'),false);assert.equal(f.requests.some(request=>request.path===chosen),false);assert.ok(f.requests.filter(request=>request.method!=='GET').every(request=>['/api/life/douban/cover-selection','/api/life/douban/metadata'].includes(request.path)));
 });
 
+function productionIMDbScore(imdbId: string, rating = 7.3): IMDbRating {
+  return { imdbId, rating, ratingCount: 45678, source: 'imdb-datasets', checkedAt: '2026-11-14T00:00:00.000Z', datasetDate: '2026-11-14' };
+}
 function productionTMDBPoster(imdbId: string): SyntheticTMDBCover {
   return { imdbId, mediaType: 'movie', tmdbId: 24680, posterPath: '/synthetic-production-poster.jpg', language: 'zh', matchedAt: '2026-11-14T00:00:00.000Z' };
 }
 const PRODUCTION_TMDB_POSTER = 'https://image.tmdb.org/t/p/w500/synthetic-production-poster.jpg';
 
 test('minified saved covers fall through official, TMDB and custom images without writes or authenticated third-party fetches', { skip: !hasBuild }, async () => {
-  const official = { ...mediaWorkspaceRecord('movie', '8160000', '生产豆瓣原图回退'), coverUrl: 'https://img1.doubanio.com/view/photo/public/p16000.jpg', details: { imdbId: 'tt0016000' }, tmdb: productionTMDBPoster('tt0016000') };
-  const manual = { ...mediaWorkspaceRecord('movie', '8160001', '生产自定义最终回退'), coverUrl: 'https://img1.doubanio.com/view/photo/public/p16001.jpg', details: { imdbId: 'tt0016001' }, tmdb: productionTMDBPoster('tt0016001'), cover: { mode: 'url' as const, url: 'https://images.example.org/production-selected.jpg', revision: 2 }, local: { note: '', tags: [], hidden: false, revision: 2 } };
+  const official = { ...mediaWorkspaceRecord('movie', '8160000', '生产豆瓣原图回退'), coverUrl: 'https://img1.doubanio.com/view/photo/public/p16000.jpg', details: { imdbId: 'tt0016000' }, tmdb: productionTMDBPoster('tt0016000'), tmdbCoverUrl: PRODUCTION_TMDB_POSTER };
+  const manual = { ...mediaWorkspaceRecord('movie', '8160001', '生产自定义最终回退'), coverUrl: 'https://img1.doubanio.com/view/photo/public/p16001.jpg', details: { imdbId: 'tt0016001' }, tmdb: productionTMDBPoster('tt0016001'), tmdbCoverUrl: PRODUCTION_TMDB_POSTER, cover: { mode: 'url' as const, url: 'https://images.example.org/production-selected.jpg', revision: 2 }, local: { note: '', tags: [], hidden: false, revision: 2 } };
   const stale = { ...mediaWorkspaceRecord('movie', '8160002', '生产陈旧匹配'), details: { imdbId: 'tt0016002' }, tmdb: productionTMDBPoster('tt0016999') };
   const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: { connection: { profileId: official.profileId, revision: 1, updatedAt: official.updatedAt }, items: [official, manual, stale] } });
   await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
@@ -1350,7 +1387,7 @@ test('minified extension 1.0.6 persists Douban IMDb before TMDB lookup and keeps
   const metadata: DoubanSubjectMetadata = { kind: 'movie', coverUrl: null, details: { imdbId: 'tt0016100', duration: '120分钟' } };
   const items = [existing];
   const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
-    connection: { profileId: existing.profileId, revision: 1, updatedAt: existing.updatedAt }, items, allowMetadata: true, allowTMDB: true,
+    connection: { profileId: existing.profileId, revision: 1, updatedAt: existing.updatedAt }, items, allowMetadata: true, allowTMDB: true, allowIMDbRatings: true, imdbRatingResults: { [existing.subjectId]: productionIMDbScore('tt0016100') },
     tmdbResults: { [existing.subjectId]: { status: 'matched', cover: productionTMDBPoster('tt0016100') } },
     browserExtensionItems: [{ ...input, source: 'browser' }], browserExtensionVersion: '1.0.6', browserSubjectMetadata: { ['screen:' + existing.subjectId]: metadata },
   } });
@@ -1388,7 +1425,7 @@ for (const [status, message] of [
   f.document.querySelector('[data-douban-tmdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settleWork(() => {
     const text = f.document.querySelector('[data-douban-tmdb-status]')?.textContent ?? '';
-    return status === 'rate_limited' ? /限流/.test(text) && /30 秒/.test(text) : text.includes(message);
+    return status === 'rate_limited' ? /限流|频率受限/.test(text) && /30 秒/.test(text) : text.includes(message);
   }, () => f.document.querySelector('[data-douban-tmdb-status]')?.textContent ?? 'explicit poster lookup');
   assert.equal(f.doubanTMDBBodies.length, 1);
   assert.equal(f.document.querySelector('.db-detail-cover img')?.getAttribute('data-douban-cover'), 'missing');
@@ -1423,4 +1460,103 @@ test('minified members see shared TMDB status and cannot trigger secret mutation
   f.document.getElementById('tmdb-form')!.dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
   for (const id of ['test', 'delete-open', 'delete-submit']) f.document.getElementById('tmdb-' + id)!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
   assert.ok(f.requests.every(request => request.method === 'GET'));
+});
+
+
+test('minified cards keep official Douban and IMDb scores distinct from personal ratings and books or music omit IMDb tags', { skip: !hasBuild }, async () => {
+  const items = [
+    { ...mediaWorkspaceRecord('movie', '8180000', '短标题'), details: { imdbId: 'tt0018000', doubanRating: 8.6 }, imdb: productionIMDbScore('tt0018000', 7.1) },
+    { ...mediaWorkspaceRecord('movie', '8180001', '需要换行但来源评分标签仍应放在卡片末尾的合成长标题'), details: { imdbId: 'tt0018001', doubanRating: 6.4 }, imdb: productionIMDbScore('tt0018001', 9.2) },
+    { ...mediaWorkspaceRecord('movie', '8180002', '暂无评分'), details: { imdbId: 'tt0018002' }, imdb: productionIMDbScore('tt0099999', 5.5) },
+    { ...mediaWorkspaceRecord('book', '8180003', '合成图书'), details: { doubanRating: 8.3 } },
+    { ...mediaWorkspaceRecord('music', '8180004', '合成音乐'), details: { doubanRating: 7.6 } },
+  ];
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: { connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: items[0].updatedAt }, items } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  const cards = [...f.document.querySelectorAll('#douban-list .db-card')];
+  for (const [index, douban, imdb] of [[0, '8.6', '7.1'], [1, '6.4', '9.2'], [2, '—', '—']] as const) {
+    assert.match(cards[index].querySelector('[data-douban-score="douban"]')?.textContent ?? '', new RegExp(douban));
+    assert.match(cards[index].querySelector('[data-douban-score="imdb"]')?.textContent ?? '', new RegExp(imdb));
+  }
+  for (const index of [3, 4]) { assert.equal(cards[index].querySelectorAll('[data-douban-score="douban"]').length, 1); assert.equal(cards[index].querySelectorAll('[data-douban-score="imdb"]').length, 0); }
+  for (const card of cards) { const copy = card.querySelector('.db-card-copy')!; assert.equal(copy.lastElementChild?.hasAttribute('data-douban-source-ratings'), true); assert.match(card.querySelector('.db-rating')?.textContent ?? '', /4 \/ 5/); }
+  assert.ok(f.document.querySelector('.db-tmdb-attribution')?.textContent?.includes('Information courtesy of IMDb (https://www.imdb.com). Used with permission.'));
+  assert.ok(f.requests.every(request => request.method === 'GET'));
+});
+
+test('minified refresh updates complete selected records and sends one final IMDb batch for the screen records only', { skip: !hasBuild }, async () => {
+  const ids = ['tt0018100', 'tt0018110'];
+  const items = [0, 1].map(index => ({ ...mediaWorkspaceRecord('movie', '818100' + index, '完整旧作品' + index),
+    coverUrl: 'https://img1.doubanio.com/view/photo/public/p1810' + index + '.jpg', details: { imdbId: ids[index], doubanRating: 5.1, directors: ['已知导演'], summary: '已有简介' },
+    tmdb: productionTMDBPoster(ids[index]), tmdbCoverUrl: PRODUCTION_TMDB_POSTER }));
+  const inputs = items.map(({ profileId: _profileId, createdAt: _createdAt, updatedAt: _updatedAt, observedAt: _observedAt, tmdb: _tmdb, tmdbCoverUrl: _tmdbCoverUrl, details: _details, ...input }) => ({ ...input, source: 'browser' as const }));
+  const subjects = Object.fromEntries(items.map((item, index) => ['screen:' + item.subjectId, { kind: 'movie' as const, coverUrl: null, details: { imdbId: ids[index], doubanRating: index ? 6.4 : 8.6 } }]));
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: items[0].updatedAt }, items, allowMetadata: true, allowIMDbRatings: true,
+    imdbRatingResults: { [items[0].subjectId]: productionIMDbScore(ids[0], 7.1), [items[1].subjectId]: null },
+    browserExtensionItems: inputs, browserExtensionVersion: '1.0.6', browserSubjectMetadata: subjects,
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  assert.equal(f.doubanMetadataBodies.length, 0); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
+  openMediaTools(f, 'browser'); f.document.getElementById('douban-browser-sync')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.document.getElementById('douban-browser-status')?.textContent?.includes('浏览器同步完成') === true, () => f.document.getElementById('douban-browser-status')?.textContent ?? 'complete work refresh');
+  assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2); assert.equal(f.doubanMetadataBodies.length, 2);
+  assert.equal(f.doubanIMDbRatingsBodies.length, 1); assert.equal((f.doubanIMDbRatingsBodies[0].items as unknown[]).length, 2);
+  assert.ok(f.requests.findIndex(request => request.path.endsWith('/imdb-ratings')) > f.requests.map(request => request.path).lastIndexOf('/api/life/douban/metadata'));
+  assert.deepEqual(items.map(item => item.details.doubanRating), [8.6, 6.4]);
+  assert.equal((items[0] as DoubanRecord & { imdb?: IMDbRating }).imdb?.rating, 7.1); assert.equal((items[1] as DoubanRecord & { imdb?: IMDbRating }).imdb ?? null, null);
+  assert.ok(items.every(item => item.rating === 4 && item.comment === '独立的个人短评' && item.tmdbCoverUrl === PRODUCTION_TMDB_POSTER));
+  assert.equal(f.doubanTMDBBodies.length, 0);
+  assert.match(f.document.getElementById('douban-browser-status')?.textContent ?? '', /IMDb 评分已处理 2 条，更新 1 条，暂无评分 1 条/);
+  assert.doesNotMatch(JSON.stringify(f.doubanIMDbRatingsBodies), /doubanRating|ratingCount|独立的个人短评|markedDate|cookie|password|token/i);
+});
+
+for (const status of ['missing', 'rate_limited'] as const) test('minified explicit IMDb refresh reports ' + status + ' without inventing zero or changing the other rating source', { skip: !hasBuild }, async () => {
+  const item = { ...mediaWorkspaceRecord('movie', '8183000', '生产 IMDb 状态'), details: { imdbId: 'tt0018300', doubanRating: 8.6 }, imdb: status === 'rate_limited' ? productionIMDbScore('tt0018300', 7.9) : null };
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: item.profileId, revision: 1, updatedAt: item.updatedAt }, items: [item], allowIMDbRatings: true, imdbRatingResults: { [item.subjectId]: null },
+    ...(status === 'rate_limited' ? { imdbRatingFailure: { status: 429, message: 'IMDb 官方评分暂时限流。', retryAfter: 25 } } : {}),
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  f.document.querySelector('[data-douban-imdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => { const text = f.document.querySelector('[data-douban-imdb-status]')?.textContent ?? ''; return status === 'rate_limited' ? text.includes('限流') && text.includes('25 秒') : text.includes('暂无评分'); }, () => f.document.querySelector('[data-douban-imdb-status]')?.textContent ?? 'explicit IMDb status');
+  assert.equal(f.doubanIMDbRatingsBodies.length, 1);
+  assert.match(f.document.querySelector('#douban-list [data-douban-score="imdb"]')?.textContent ?? '', status === 'rate_limited' ? /7\.9/ : /—/);
+  assert.equal(item.imdb?.rating ?? null, status === 'rate_limited' ? 7.9 : null); assert.equal(item.details.doubanRating, 8.6);
+  assert.deepEqual(f.requests.filter(request => request.method !== 'GET').map(request => request.path), ['/api/life/douban/imdb-ratings']);
+});
+
+test('minified explicit cover refresh backfills the stored complete TMDB URL while initialization stays read-only', { skip: !hasBuild }, async () => {
+  const cover = productionTMDBPoster('tt0018400'), item = { ...mediaWorkspaceRecord('movie', '8184000', '生产旧 TMDB 链接'), details: { imdbId: cover.imdbId }, tmdb: cover, tmdbCoverUrl: null as string | null };
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: item.profileId, revision: 1, updatedAt: item.updatedAt }, items: [item], allowTMDB: true, tmdbResults: { [item.subjectId]: { status: 'matched', cover } },
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false'); assert.equal(f.doubanTMDBBodies.length, 0);
+  f.document.querySelector('[data-douban-open="0"]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  f.document.querySelector('[data-douban-tmdb-item]')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.document.querySelector('[data-douban-source-link="tmdb-cover"]')?.getAttribute('href') === PRODUCTION_TMDB_POSTER, () => f.document.querySelector('[data-douban-tmdb-status]')?.textContent ?? 'TMDB URL backfill');
+  assert.equal(f.doubanTMDBBodies.length, 1); assert.equal(f.doubanIMDbRatingsBodies.length, 0);
+  assert.equal(f.requests.filter(request => request.method !== 'GET').length, 1);
+});
+
+test('minified unknown IMDb receipt retains its exact batch while resuming without another subject read or metadata write', { skip: !hasBuild }, async () => {
+  const ids = ['tt0018500', 'tt0018510'];
+  const items = ids.map((imdbId, index) => ({ ...mediaWorkspaceRecord('movie', '818500' + index, '待核对评分作品' + index), coverUrl: 'https://img1.doubanio.com/view/photo/public/p185' + index + '.jpg',
+    details: { imdbId, doubanRating: 8.6, directors: ['已知导演'], summary: '完整作品简介' }, tmdb: productionTMDBPoster(imdbId), tmdbCoverUrl: PRODUCTION_TMDB_POSTER }));
+  const subjects = Object.fromEntries(items.map(item => ['screen:' + item.subjectId, { kind: 'movie' as const, coverUrl: null, details: { imdbId: item.details.imdbId, doubanRating: 8.7 } }]));
+  const f = await fixture('id="douban-page"', '/life/douban', 390, {}, { foods: [], douban: {
+    connection: { profileId: 'synthetic-profile', revision: 1, updatedAt: items[0].updatedAt }, items, allowMetadata: true, allowIMDbRatings: true, loseIMDbRatingReply: true,
+    imdbRatingResults: Object.fromEntries(items.map(item => [item.subjectId, productionIMDbScore(item.details.imdbId, 7.8)])), browserSubjectMetadata: subjects, browserExtensionVersion: '1.0.6',
+  } });
+  await settle(() => f.document.getElementById('douban-page')?.getAttribute('aria-busy') === 'false');
+  f.document.getElementById('douban-metadata-refresh')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.document.getElementById('douban-metadata-status')?.textContent?.startsWith('补全已停止') === true, () => f.document.getElementById('douban-metadata-status')?.textContent ?? 'unknown IMDb receipt');
+  assert.equal(f.doubanIMDbRatingsBodies.length, 1); const original = structuredClone(f.doubanIMDbRatingsBodies[0]);
+  assert.equal(f.doubanMetadataBodies.length, 2); assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2);
+  f.document.getElementById('douban-metadata-resume')!.dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settleWork(() => f.document.getElementById('douban-metadata-status')?.textContent?.startsWith('本次补全完成') === true, () => f.document.getElementById('douban-metadata-status')?.textContent ?? 'IMDb receipt replay');
+  assert.deepEqual(f.doubanIMDbRatingsBodies, [original, original]);
+  assert.equal(f.doubanMetadataBodies.length, 2); assert.equal(f.doubanExtensionMessages.filter(body => body.action === 'SUBJECT').length, 2); assert.equal(f.doubanTMDBBodies.length, 0);
+  assert.ok(items.every(item => (item as DoubanRecord & { imdb?: IMDbRating }).imdb?.rating === 7.8));
 });
