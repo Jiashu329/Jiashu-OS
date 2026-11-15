@@ -18,6 +18,12 @@ require_managed_dir() {
   [[ -f "$1/.jiashu-selfhost" ]] && [[ "$(cat "$1/.jiashu-selfhost")" == 'jiashu-selfhost-v1' ]] || die 'Unrecognized directory; refusing to adopt or replace existing services.'
   [[ -f "$1/app.env" && ! -L "$1/app.env" ]] || die 'Server app.env is missing or unsafe. Run bootstrap first.'
 }
+require_empty_bootstrap_state() {
+  local directory=$1
+  [[ -f "$directory/.jiashu-selfhost" && ! -L "$directory/.jiashu-selfhost" && "$(cat "$directory/.jiashu-selfhost")" == 'jiashu-selfhost-v1' ]] || die 'Invalid bootstrap marker.'
+  [[ ! -e "$directory/.deploy.lock" || ( -f "$directory/.deploy.lock" && ! -L "$directory/.deploy.lock" ) ]] || die 'Invalid bootstrap lock.'
+  [[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 ! -name .jiashu-selfhost ! -name .deploy.lock -print -quit)" ]] || die 'Incomplete bootstrap has unexpected content; inspect it manually.'
+}
 compose() { docker compose --project-directory "$app_dir" --project-name jiashu-test --env-file "$1" -f "$app_dir/compose.yml" "${@:2}"; }
 write_release_env() {
   local output=$1 image=$2 commit=$3 port=$4
@@ -69,6 +75,10 @@ PY
   [[ ${release_fields[2]} =~ ^[a-f0-9]{64}$ ]] || die 'Invalid archive checksum.'
   actual_hash=$(sha256sum "$directory/image.tar.gz" | awk '{print $1}')
   [[ "$actual_hash" == "${release_fields[2]}" ]] || die 'Release archive checksum mismatch.'
-  docker image load --input "$directory/image.tar.gz" >/dev/null
+  # Image IDs are local to the Docker image store: classic uses config digest,
+  # containerd uses manifest digest. Verify portable archive content, then use
+  # the verified destination store's immutable ID for every subsequent command.
+  image_id=$(python3 "$directory/image-identity.py" --archive "$directory/image.tar.gz" --commit "$commit_sha" --source-id "$image_id")
+  validate_image_id "$image_id"
   verify_loaded_image "$image_id" "$commit_sha"
 }

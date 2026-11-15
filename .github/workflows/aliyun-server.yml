@@ -5,7 +5,7 @@ on:
       operation:
         description: One-time server setup; normal app updates use Aliyun deployment
         type: choice
-        options: [inspect, install-docker, configure-web]
+        options: [inspect, install-docker, configure-web, inspect-retired]
         default: inspect
       expected_config_hash:
         description: Reviewed Nginx snapshot SHA-256, required only for configure-web
@@ -59,6 +59,9 @@ jobs:
               ;;
             install-docker)
               ssh -T -F "$config" jiashu-aliyun 'bash -s -- --install' < deploy/aliyun/install-docker.sh
+              ;;
+            inspect-retired)
+              ssh -T -F "$config" jiashu-aliyun 'python3 - --inspect' < deploy/aliyun/retire-old-services.py
               ;;
             configure-web)
               [[ "$EXPECTED_CONFIG_HASH" =~ ^[a-f0-9]{64}$ ]]

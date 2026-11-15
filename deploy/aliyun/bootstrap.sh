@@ -32,10 +32,17 @@ if [[ ! -f "$app_dir/.jiashu-selfhost" ]] && ss -H -lnt | awk '{print $4}' | gre
 fi
 mkdir -p -- "$app_dir"
 chmod 700 "$app_dir"
+[[ ! -L "$app_dir/.deploy.lock" ]] || die 'Bootstrap lock cannot be a symlink.'
 (
   flock -x 9
   if [[ -f "$app_dir/.jiashu-selfhost" ]]; then
-    require_managed_dir "$app_dir"
+    if [[ -e "$app_dir/app.env" ]]; then
+      require_managed_dir "$app_dir"
+    else
+      # Resume only the marker/lock state left by failed image transport.
+      # Partial credentials, data and unrelated contents require inspection.
+      require_empty_bootstrap_state "$app_dir"
+    fi
   else
     (umask 077; printf 'jiashu-selfhost-v1\n' > "$app_dir/.jiashu-selfhost")
   fi

@@ -48,3 +48,22 @@ void test('real ERR recovery runs through compose helper failures and restores o
     }
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
+void test('bootstrap resumes only its marked empty lock state and refuses unrelated or partial data',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'jiashu-bootstrap-state-'));
+  try{
+    const common=new URL('./common.sh',import.meta.url).pathname;
+    const check=()=>spawnSync('bash',['-c','source "$1"; require_empty_bootstrap_state "$2"','test',common,directory],{encoding:'utf8'});
+    assert.notEqual(check().status,0);
+    writeFileSync(join(directory,'.jiashu-selfhost'),'jiashu-selfhost-v1\n');
+    writeFileSync(join(directory,'.deploy.lock'),'');
+    assert.equal(check().status,0);
+    for(const name of ['app.env','initial-login.txt','data','other-service']){
+      writeFileSync(join(directory,name),'must be preserved');
+      assert.notEqual(check().status,0);
+      assert.equal(readFileSync(join(directory,name),'utf8'),'must be preserved');
+      rmSync(join(directory,name));
+    }
+    writeFileSync(join(directory,'.jiashu-selfhost'),'other-owner\n');
+    assert.notEqual(check().status,0);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
