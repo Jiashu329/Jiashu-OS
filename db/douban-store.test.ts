@@ -6,6 +6,7 @@ import { DoubanValidationError, doubanSubjectUrl, parseDoubanRecord, type Douban
 import { commitDoubanImport, commitDoubanStep, countUnclassifiedDoubanRecords, DoubanStoreError, listDoubanRecords, nextUnclassifiedRecord, previewDoubanImport, readDoubanConnection, readDoubanRecord, readDoubanRun,
   readDoubanImportRecords, startDoubanRun, writeDoubanConnection, type DoubanDatabase, type DoubanRun, type DoubanStep } from './douban-store.ts';
 import { commitDoubanReset, previewDoubanReset, readDoubanDataEpoch } from './douban-reset-store.ts';
+import { saveDoubanSubjectMetadata } from './douban-metadata-store.ts';
 
 const T1 = '2026-11-14T08:00:00.000Z', T2 = '2026-11-14T08:01:00.000Z', T3 = '2026-11-14T08:02:00.000Z';
 function fixture(t: TestContext) {
@@ -244,6 +245,58 @@ void test('browser snapshots clear an explicitly removed rating and comment, inc
   assert.equal(repeated.receipt.unchanged, 1);
   saved = (await listDoubanRecords(db, 'alice')).items[0];
   assert.equal(saved.updatedAt, T2); assert.equal(saved.observedAt, T3);
+});
+
+void test('browser provenance preserves an imported explicit media classification through later automatic cover completion', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'movie', { coverUrl: null, rating: 5, comment: 'old private comment' })]);
+  await importRecords(db, [privateRecord('1', 'screen', { source: 'browser', coverUrl: null, rating: null, comment: null })], { now: T2 });
+  const before = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.deepEqual([before.source, before.kind, before.rating, before.comment], ['browser', 'movie', null, null]);
+  assert.equal(before.metadataCheckedRunId, 'import-kind');
+  const completed = await saveDoubanSubjectMetadata(db, 'alice', before, { kind: 'series', coverUrl: 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg' }, T3, 0);
+  assert.equal(completed.item.kind, 'movie', 'automatic metadata must not undo an explicit file classification during provenance migration');
+  assert.ok(completed.item.coverUrl); assert.equal(completed.item.source, 'browser');
+  await importRecords(db, [privateRecord('1', 'series', { source: 'browser', rating: null, comment: null })], { now: T3 });
+  assert.equal((await listDoubanRecords(db, 'alice')).items[0].kind, 'movie', 'a later browser page must also retain the imported choice');
+  await importRecords(db, [privateRecord('1', 'series')], { now: T3 });
+  assert.equal((await listDoubanRecords(db, 'alice')).items[0].kind, 'series', 'a new explicit file classification may still correct the previous import');
+});
+
+void test('ordinary browser metadata classifications remain correctable and are not mistaken for explicit import choices', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'screen', { source: 'browser' })]);
+  let item = (await listDoubanRecords(db, 'alice')).items[0];
+  item = (await saveDoubanSubjectMetadata(db, 'alice', item, { kind: 'movie', coverUrl: null }, T2, 0)).item;
+  await importRecords(db, [privateRecord('1', 'screen', { source: 'browser' })], { now: T3 });
+  item = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.equal(item.metadataCheckedRunId, null);
+  item = (await saveDoubanSubjectMetadata(db, 'alice', item, { kind: 'series', coverUrl: null }, T3, 0)).item;
+  assert.equal(item.kind, 'series'); assert.equal(item.source, 'browser');
+});
+
+void test('a transactional browser page also preserves the imported classification marker for later metadata reads', async t => {
+  const { db } = fixture(t);
+  await importRecords(db, [privateRecord('1', 'movie')]);
+  const run = await connected(db);
+  await commitDoubanStep(db, 'alice', step(run, [record('1', 'series', { source: 'browser', rating: null, comment: null })]));
+  const item = (await listDoubanRecords(db, 'alice')).items[0];
+  assert.deepEqual([item.kind, item.source, item.metadataCheckedRunId, item.rating, item.comment], ['movie', 'browser', 'import-kind', null, null]);
+  assert.equal((await saveDoubanSubjectMetadata(db, 'alice', item, { kind: 'series', coverUrl: null }, T3, 0)).item.kind, 'movie');
+});
+
+void test('an imported classification marker arriving after preview fences both its preparation hash and transactional guard', async t => {
+  for (const duringBatch of [false, true]) {
+    const f = fixture(t);
+    await importRecords(f.db, [privateRecord('1', 'movie', { source: 'browser' })]);
+    const items = [privateRecord('1', 'series', { source: 'browser' })];
+    const preview = await previewDoubanImport(f.db, 'alice', { profileId: 'alice_douban', items });
+    const protect = () => { f.sqlite.prepare("UPDATE douban_items SET metadata_checked_run_id='import-kind' WHERE user_id='alice'").run(); };
+    if (duringBatch) f.beforeBatch(protect); else protect();
+    await assert.rejects(commitDoubanImport(f.db, 'alice', { profileId: 'alice_douban', items, expectedSnapshotHash: preview.snapshotHash, requestId: crypto.randomUUID() }), conflict);
+    const item = (await listDoubanRecords(f.db, 'alice')).items[0];
+    assert.equal(item.kind, 'movie'); assert.equal(item.metadataCheckedRunId, 'import-kind');
+  }
 });
 
 void test('file and old extension imports keep unknown empty personal fields conservative after browser provenance is introduced', async t => {

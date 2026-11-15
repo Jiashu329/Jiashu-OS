@@ -71,7 +71,7 @@ function subjectMetadataValues(old: DoubanRecord, metadata: DoubanSubjectMetadat
   let kind = old.kind;
   if (metadata.kind !== null) {
     if (old.domain === 'screen' ? !['movie', 'series'].includes(metadata.kind) : metadata.kind !== old.domain) invalid('豆瓣详情分类与原条目不一致。');
-    const protectedKind = old.metadataCheckedRunId === MANUAL_KIND || old.source === 'import' && ['movie', 'series'].includes(old.kind);
+    const protectedKind = old.metadataCheckedRunId === MANUAL_KIND || old.metadataCheckedRunId === 'import-kind' || old.source === 'import' && ['movie', 'series'].includes(old.kind);
     if (!protectedKind) kind = metadata.kind;
   }
   let detailsJson: string;

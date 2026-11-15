@@ -579,6 +579,19 @@ void test('restoring confirmed movie and series classifications protects them wh
   assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
 });
 
+void test('browser provenance with a retained imported classification backs up without internal markers and restores the confirmed kind',async(t)=>{
+  const source=fixture(t);
+  seedDouban(source.sqlite,'alice',doubanRow({kind:'movie',source:'browser',rating:null,comment:null}),'import-kind');
+  const backup=await exportDataBackup(source.db,'alice',NOW);
+  assert.equal(backup.tables.douban_items[0].source,'browser');
+  assert.doesNotMatch(JSON.stringify(backup),/import-kind|metadata_checked_run_id/);
+  const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);
+  await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
+  assert.deepEqual({...target.sqlite.prepare('SELECT kind,source,rating,comment,metadata_checked_run_id FROM douban_items WHERE user_id=?').get('restored')},
+    {kind:'movie',source:'browser',rating:null,comment:null,metadata_checked_run_id:'manual-kind'});
+  assert.deepEqual((await exportDataBackup(target.db,'restored',NOW)).tables.douban_items,backup.tables.douban_items);
+});
+
 void test('Douban business changes are previewed as conflicts while a newer unchanged observation is retained',async(t)=>{
   const source=fixture(t);seedDouban(source.sqlite,'alice');const backup=await exportDataBackup(source.db,'alice',NOW);
   const target=fixture(t);seedDouban(target.sqlite,'alice',doubanRow({comment:'较新的本人短评',rating:4}));
