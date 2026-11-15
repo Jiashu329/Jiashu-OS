@@ -4,11 +4,13 @@ import { authorizationFixture } from '../tests/fixtures/account-access.ts';
 import { inviteAccessGrant, changeAccessGrant } from '../db/access-grants-store.ts';
 import { createAccessHandlers } from '../lib/access-control-api.ts';
 import { BACKUP_TABLE_NAMES } from '../lib/data-backup.ts';
+import { bootstrapLocalOwner, createLocalUser, updateLocalUser } from '../db/local-users-store.ts';
 
 const OWNER = 'actual-site-owner';
 const INVITE = '10000000-0000-4000-8000-000000000001';
 const REVOKE = '10000000-0000-4000-8000-000000000002';
 const owner = { actorUserId: OWNER, ownerUserId: OWNER, ownerEmail: 'owner@example.test' };
+const LOCAL_HASH = `scrypt-v1$32768$8$1$${Buffer.alloc(16, 1).toString('base64url')}$${Buffer.alloc(64, 2).toString('base64url')}`;
 
 void test('anonymous, uninvited and unconfigured identities fail closed without claiming the owner slot', async (t) => {
   const f = authorizationFixture(t, {});
@@ -102,4 +104,42 @@ void test('storage loss stays closed, safe diagnostics contain no identities and
     assert.equal(BACKUP_TABLE_NAMES.some((name: string) => name === excluded), false);
   }
   assert.equal(BACKUP_TABLE_NAMES.some((name: string) => name.startsWith('app_access_') || name === 'app_owner_identity'), false);
+  assert.equal(BACKUP_TABLE_NAMES.includes('local_users' as never), false);
+});
+
+void test('local members use active persisted accounts independently of Sites invitations and retain separate stable identities', async t => {
+  const f = authorizationFixture(t, { userId: OWNER, email: 'owner@example.test' });
+  f.env.SELFHOST_AUTH_PROVIDER = 'local';
+  await bootstrapLocalOwner(f.db, { id: OWNER, email: 'owner@example.test', passwordHash: LOCAL_HASH });
+  await createLocalUser(f.db, { id: INVITE, email: 'member@example.test', passwordHash: LOCAL_HASH });
+  const administrator = await f.accountAccess(f.identity(OWNER, 'OWNER@example.test'));
+  assert.equal(administrator.allowed, true); assert.equal(administrator.isOwner, true);
+  f.signIn(INVITE, 'member@example.test');
+  const member = await f.auth.getChatGPTUser();
+  assert.equal(member?.userId, INVITE); assert.equal(member?.isOwner, false);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM app_access_grants').get()!.n, 0);
+  assert.equal((await f.accountAccess(f.identity('unknown-account', 'member@example.test'))).allowed, false);
+  assert.equal((await f.accountAccess(f.identity(INVITE, 'different@example.test'))).reason, 'identity_conflict');
+  await updateLocalUser(f.db, OWNER, INVITE, { expectedRevision: 1, email: 'new-member@example.test' });
+  assert.equal((await f.accountAccess(f.headers())).allowed, false);
+  f.signIn(INVITE, 'new-member@example.test');
+  assert.equal((await f.auth.getChatGPTUser())?.userId, INVITE);
+  await updateLocalUser(f.db, OWNER, INVITE, { expectedRevision: 2, status: 'disabled' });
+  assert.equal((await f.accountAccess(f.headers())).reason, 'revoked');
+  assert.equal(await f.auth.getChatGPTUser(), null);
+  assert.equal((await f.middleware(new Request('https://site.example/api/health', { headers: f.headers() }))).status, 403);
+});
+
+void test('local owner privileges also require a matching active stored account and available database', async t => {
+  const f = authorizationFixture(t, { userId: OWNER, email: 'owner@example.test' });
+  f.env.SELFHOST_AUTH_PROVIDER = 'local';
+  assert.equal((await f.accountAccess(f.identity(OWNER, 'owner@example.test'))).allowed, false);
+  await bootstrapLocalOwner(f.db, { id: OWNER, email: 'new-owner@example.test', passwordHash: LOCAL_HASH });
+  assert.equal((await f.accountAccess(f.identity(OWNER, 'owner@example.test'))).allowed, false);
+  assert.equal((await f.accountAccess(f.identity(OWNER, 'new-owner@example.test'))).isOwner, true);
+  f.sqlite.prepare("UPDATE local_users SET status='disabled' WHERE id=?").run(OWNER);
+  assert.equal((await f.accountAccess(f.identity(OWNER, 'new-owner@example.test'))).allowed, false);
+  f.env.DB = undefined;
+  const unavailable = await f.accountAccess(f.identity(OWNER, 'new-owner@example.test'));
+  assert.equal(unavailable.reason, 'unavailable'); assert.equal(unavailable.isOwner, false);
 });

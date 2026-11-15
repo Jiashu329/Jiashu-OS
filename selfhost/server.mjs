@@ -1,10 +1,14 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { createSelfhostGateway, loadSelfhostAuthConfig } from './auth.ts';
-import { closeSelfhostDatabase, readSelfhostReadiness } from './env.ts';
+import { closeSelfhostDatabase, getSelfhostDatabase, readSelfhostReadiness } from './env.ts';
+import { bootstrapLocalOwner, getLocalUserByEmail, getLocalUserById, touchLocalUserLogin } from '../db/local-users-store.ts';
+import { createSelfhostUserManagement } from './user-management.ts';
 
 export async function startSelfhostServer() {
   const config = loadSelfhostAuthConfig();
+  const database = getSelfhostDatabase();
+  await bootstrapLocalOwner(database, { id: config.ownerId, email: config.ownerEmail, passwordHash: config.passwordHash });
   const rawPort = process.env.PORT ?? '3000';
   if (!/^\d{1,5}$/.test(rawPort) || Number(rawPort) > 65535) throw new Error('Invalid self-hosted port.');
   // Vinext captures these settings at import. Every forwarded value is replaced
@@ -16,7 +20,12 @@ export async function startSelfhostServer() {
   const listeners = instance.server.listeners('request');
   if (listeners.length !== 1 || typeof listeners[0] !== 'function') { instance.server.close(); throw new Error('Unsupported Vinext request listener layout.'); }
   const original = listeners[0];
-  const gateway = createSelfhostGateway(config, (req, res) => original.call(instance.server, req, res), { commitSha: process.env.APP_COMMIT_SHA ?? '', readiness: readSelfhostReadiness });
+  const gateway = createSelfhostGateway(config, (req, res) => original.call(instance.server, req, res), {
+    commitSha: process.env.APP_COMMIT_SHA ?? '', readiness: readSelfhostReadiness,
+    users: { getById: id => getLocalUserById(database, id), getByEmail: email => getLocalUserByEmail(database, email),
+      touchLogin: (id, now) => touchLocalUserLogin(database, id, new Date(now).toISOString()) },
+    manageUsers: createSelfhostUserManagement(config, database),
+  });
   instance.server.removeListener('request', original);
   instance.server.on('request', gateway);
   instance.server.requestTimeout = 15000; instance.server.headersTimeout = 10000;

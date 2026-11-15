@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: One-time server setup; normal app updates use Aliyun deployment
+        description: Server inspection, read-only live verification or one-time setup
         type: choice
-        options: [inspect, install-docker, configure-web, inspect-retired, retire-old, transport-test]
+        options: [inspect, verify, install-docker, configure-web, inspect-retired, retire-old, transport-test]
         default: inspect
       expected_config_hash:
         description: Reviewed Nginx or retired-service plan SHA-256
@@ -73,6 +73,10 @@ jobs:
             inspect)
               ssh -T -F "$config" jiashu-aliyun 'bash -s' < deploy/aliyun/inspect.sh
               ssh -T -F "$config" jiashu-aliyun 'python3 - --inspect' < deploy/aliyun/nginx-test-site.py
+              ;;
+            verify)
+              [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              ssh -T -F "$config" jiashu-aliyun "python3 - --expected-commit '$EXPECTED_COMMIT'" < deploy/aliyun/verify-live.py
               ;;
             install-docker)
               ssh -T -F "$config" jiashu-aliyun 'bash -s -- --install' < deploy/aliyun/install-docker.sh

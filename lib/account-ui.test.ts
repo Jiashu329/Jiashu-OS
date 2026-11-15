@@ -58,20 +58,23 @@ void test('a signed-out session clears identity and offers the existing ChatGPT 
   assert.deepEqual(f.bound, []); assert.equal(f.requests.length, 1);
 });
 
-void test('the self-hosted account page and expired session explain the independent administrator account', async () => {
+void test('the self-hosted account page provides email login and an owner-only user management link', async () => {
   const local = renderAccountPage({ signInHref: '/signin-with-chatgpt', signOutHref: '/signout-with-chatgpt', authMode: 'selfhost' });
   const { document } = parseHTML(local);
   assert.equal(document.querySelector('main')?.getAttribute('data-account-auth-provider'), 'local');
-  assert.equal(document.querySelector('#account-current-title')?.textContent, '当前测试账户');
-  assert.equal(document.querySelector('[data-account-sign-in]')?.textContent, '使用测试账号重新登录');
-  assert.match(document.querySelector('main')?.textContent ?? '', /测试数据与原网站分开保存/);
+  assert.equal(document.querySelector('#account-current-title')?.textContent, '当前账户');
+  assert.equal(document.querySelector('[data-account-sign-in]')?.textContent, '使用邮箱和密码登录');
+  assert.match(document.querySelector('main')?.textContent ?? '', /需要开通账户或重设密码时，请联系管理员/);
   assert.doesNotMatch(document.querySelector('main')?.textContent ?? '', /ChatGPT/);
+  assert.equal(document.querySelector('[data-account-owner-only]')?.getAttribute('href'), '/settings/users');
+  assert.equal(document.querySelector('[data-account-owner-only]')?.textContent, '用户管理');
+  assert.equal((document.querySelector('[data-account-owner-only]') as HTMLElement).hidden, true);
   const sites = renderAccountPage({ signInHref: '/signin-with-chatgpt', signOutHref: '/signout-with-chatgpt' });
   assert.match(sites, /当前 ChatGPT 账户/);
   assert.equal(parseHTML(sites).document.querySelector('main')?.hasAttribute('data-account-auth-provider'), false);
   const f = fixture([Response.json({}, { status: 401 })], 'alice', '', true);
   await settled(() => f.status().getAttribute('data-account-status') === 'signed-out');
-  assert.match(f.status().textContent, /服务器管理员提供的账号/);
+  assert.match(f.status().textContent, /自己的邮箱和密码/);
   assert.doesNotMatch(f.status().textContent, /ChatGPT/);
 });
 

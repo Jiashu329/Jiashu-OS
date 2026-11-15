@@ -26,7 +26,7 @@ const { hashPassword } = await import(pathToFileURL(join(app, 'selfhost/auth.ts'
 const temporary = mkdtempSync(join(tmpdir(), 'jiashu-selfhost-smoke-'));
 const database = join(temporary, 'smoke.sqlite3');
 const password = randomBytes(24).toString('base64url');
-const ownerId = 'selfhost-smoke-owner', username = 'smoke-admin';
+const ownerId = 'selfhost-smoke-owner', email = 'smoke@example.test';
 const commitSha = 'd'.repeat(40);
 const date = '2026-01-01';
 let child;
@@ -46,9 +46,9 @@ const childEnvironment = {
   ...process.env,
   CI: 'true', SELFHOST_ALLOW_HTTP: '1', SELFHOST_PUBLIC_ORIGIN: origin,
   HOST: '127.0.0.1', PORT: String(port), SELFHOST_DB_PATH: database,
-  SELFHOST_USERNAME: username, SELFHOST_PASSWORD_HASH: await hashPassword(password),
+  SELFHOST_USERNAME: 'legacy-smoke-admin', SELFHOST_PASSWORD_HASH: await hashPassword(password),
   SELFHOST_SESSION_SECRET: randomBytes(32).toString('base64url'),
-  APP_OWNER_USER_ID: ownerId, APP_OWNER_EMAIL: 'smoke@example.test',
+  APP_OWNER_USER_ID: ownerId, APP_OWNER_EMAIL: email,
   AI_SETTINGS_ENCRYPTION_KEY: randomBytes(32).toString('base64'), APP_COMMIT_SHA: commitSha,
 };
 
@@ -117,6 +117,10 @@ async function form(browser, path, returnTo = '/health') {
   assert.equal(response.status, 200, 'Authentication form is available');
   assert.match(response.headers.get('cache-control') ?? '', /no-store/, 'Authentication form is not cached');
   const html = await response.text();
+  if (path === '/signin-with-chatgpt') {
+    assert.match(html, /<input(?=[^>]*name="email")(?=[^>]*type="email")[^>]*>/, 'Login uses an email input');
+    assert.doesNotMatch(html, /name="username"/, 'Legacy username is not a login field');
+  }
   const csrf = /name="csrf" value="([A-Za-z0-9_.-]+)"/.exec(html)?.[1];
   assert.ok(csrf, 'Authentication form includes a CSRF token');
   const cookie = response.headers.getSetCookie().find(item => item.startsWith('jso-test-csrf='));
@@ -124,16 +128,119 @@ async function form(browser, path, returnTo = '/health') {
   return csrf;
 }
 
-async function login(browser) {
+async function login(browser, loginEmail = email, loginPassword = password, expectedStatus = 303) {
   const csrf = await form(browser, '/signin-with-chatgpt');
   const response = await browser.request('/signin-with-chatgpt', {
     method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf, return_to: '/health', username, password }),
+    body: new URLSearchParams({ csrf, return_to: '/health', email: loginEmail, password: loginPassword }),
   });
-  assert.equal(response.status, 303, 'Valid credentials authenticate');
+  assert.equal(response.status, expectedStatus, 'Email credentials return the expected authentication status');
+  if (expectedStatus !== 303) return;
   assert.equal(response.headers.get('location'), '/health', 'Login preserves an allowed return path');
   const cookie = response.headers.getSetCookie().find(item => item.startsWith('jso-test-session='));
   assert.ok(cookie && /; HttpOnly;/.test(cookie) && /; SameSite=Lax;/.test(cookie), 'Session cookie attributes');
+}
+
+async function adminMetadata(browser) {
+  const value = await json(await browser.request('/api/admin/users', { headers: { 'X-Page-Owner': ownerId } }), 200, 'Administrator account metadata');
+  assert.equal(value.currentUserId, ownerId); assert.ok(Array.isArray(value.users));
+  const fields = new Set(['id', 'email', 'status', 'revision', 'isAdmin', 'createdAt', 'updatedAt', 'lastLoginAt']);
+  assert.ok(value.users.every(user => user && typeof user === 'object' && Object.keys(user).every(field => fields.has(field))), 'Account lists never disclose password hashes or private storage fields');
+  assert.ok(typeof value.csrfToken === 'string' && value.csrfToken.length > 20);
+  return value;
+}
+
+async function accountMutation(browser, path, method, body, expectedStatus = 200) {
+  const metadata = await adminMetadata(browser); // Refresh the bound double-CSRF cookie before every mutation.
+  return json(await browser.request(path, {
+    method, headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId, 'X-CSRF-Token': metadata.csrfToken },
+    body: JSON.stringify(body),
+  }), expectedStatus, 'Administrator account mutation');
+}
+
+async function multiuserAcceptance() {
+  const administrator = new Browser(); await login(administrator);
+  const initial = await adminMetadata(administrator);
+  assert.equal(initial.users.length, 1, 'The first empty database is seeded with only its configured administrator');
+  assert.equal(initial.users[0].id, ownerId); assert.equal(initial.users[0].email, email); assert.equal(initial.users[0].isAdmin, true);
+
+  const unauthenticated = new Browser();
+  assert.equal((await unauthenticated.request('/api/admin/users', { headers: { 'X-Page-Owner': ownerId } })).status, 401);
+  const noCsrf = await administrator.request('/api/admin/users', {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId },
+    body: JSON.stringify({ email: 'unwanted@example.test', password: randomBytes(24).toString('base64url') }),
+  });
+  assert.equal(noCsrf.status, 403, 'Account creation requires the bound administrator CSRF token');
+
+  const memberPassword = randomBytes(24).toString('base64url');
+  const created = await accountMutation(administrator, '/api/admin/users', 'POST', { email: '  Member@Example.Test  ', password: memberPassword }, 201);
+  let member = created.user;
+  assert.ok(typeof member.id === 'string' && member.id !== ownerId);
+  assert.equal(member.email, 'member@example.test'); assert.equal(member.status, 'active'); assert.equal(member.isAdmin, false);
+  assert.ok(Number.isSafeInteger(member.revision));
+  const memberId = member.id, memberSession = new Browser();
+  await login(memberSession, 'MEMBER@EXAMPLE.TEST', memberPassword);
+  const identity = await json(await memberSession.request('/api/session'), 200, 'Normal email session');
+  assert.equal(identity.userId, memberId); assert.equal(identity.email, member.email); assert.equal(identity.isOwner, false);
+  assert.equal((await memberSession.request('/api/admin/users', { headers: { 'X-Page-Owner': memberId } })).status, 403, 'Normal users cannot manage accounts');
+  const wrongScope = await json(await memberSession.request('/api/health/goals', { headers: { 'X-Page-Owner': ownerId } }), 401, 'A normal user cannot select the administrator data scope');
+  assert.equal(wrongScope.code, 'ACCOUNT_CHANGED');
+  const memberHeaders = { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': memberId };
+  const freshGoals = await json(await memberSession.request('/api/health/goals', { headers: memberHeaders }), 200, 'Isolated normal-user goals');
+  assert.equal(freshGoals.revision, 0);
+  const memberTargets = { steps: 4321, sleep: 7, active_energy: 350 };
+  await json(await memberSession.request('/api/health/goals', {
+    method: 'PUT', headers: memberHeaders, body: JSON.stringify({ targets: memberTargets, expectedRevision: 0, effectiveFrom: date }),
+  }), 200, 'Normal-user independent goal persistence');
+  const rootGoals = await json(await administrator.request('/api/health/goals', { headers: { 'X-Page-Owner': ownerId } }), 200, 'Administrator goal isolation');
+  assert.equal(rootGoals.targets.steps, 8000, 'Normal-user writes preserve the administrator goals');
+  const memberNutrition = await json(await memberSession.request('/api/health/nutrition?date=' + date, { headers: { 'X-Page-Owner': memberId } }), 200, 'Normal-user nutrition isolation');
+  assert.equal(memberNutrition.entries.length, 0, 'Administrator nutrition is not visible in a normal account');
+
+  const renamed = await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(memberId), 'PATCH', { expectedRevision: member.revision, email: 'renamed@example.test' });
+  member = renamed.user; assert.equal(member.id, memberId); assert.equal(member.email, 'renamed@example.test');
+  assert.equal((await memberSession.request('/api/session')).status, 401, 'An email change immediately revokes previous sessions');
+  await login(new Browser(), 'member@example.test', memberPassword, 401);
+  const renamedSession = new Browser(); await login(renamedSession, member.email, memberPassword);
+  assert.equal((await json(await renamedSession.request('/api/session'), 200, 'Renamed account identity')).userId, memberId);
+  assert.equal((await json(await renamedSession.request('/api/health/goals', { headers: { 'X-Page-Owner': memberId } }), 200, 'Stable renamed account data')).targets.steps, memberTargets.steps);
+
+  member = (await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(memberId), 'PATCH', { expectedRevision: member.revision, status: 'disabled' })).user;
+  assert.equal(member.status, 'disabled');
+  assert.equal((await renamedSession.request('/api/session')).status, 401, 'Disabling an account revokes its existing session immediately');
+  await login(new Browser(), member.email, memberPassword, 401);
+  member = (await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(memberId), 'PATCH', { expectedRevision: member.revision, status: 'active' })).user;
+  const beforeReset = new Browser(), secondOldSession = new Browser();
+  await login(beforeReset, member.email, memberPassword); await login(secondOldSession, member.email, memberPassword);
+  const resetPassword = randomBytes(24).toString('base64url');
+  member = (await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(memberId), 'PATCH', { expectedRevision: member.revision, password: resetPassword })).user;
+  assert.equal((await beforeReset.request('/api/session')).status, 401, 'Password resets revoke the first old cookie');
+  assert.equal((await secondOldSession.request('/api/session')).status, 401, 'Password resets revoke every old cookie');
+  await login(new Browser(), member.email, memberPassword, 401);
+  const resetSession = new Browser(); await login(resetSession, member.email, resetPassword);
+
+  await stop(); migrate(); await start();
+  const stored = (await adminMetadata(administrator)).users.find(user => user.id === memberId);
+  assert.ok(stored); assert.equal(stored.email, member.email); assert.equal(stored.status, 'active'); assert.equal(stored.revision, member.revision);
+  assert.equal((await json(await resetSession.request('/api/session'), 200, 'Restarted account session')).userId, memberId);
+  assert.equal((await json(await resetSession.request('/api/health/goals', { headers: { 'X-Page-Owner': memberId } }), 200, 'Restarted normal-user data')).targets.steps, memberTargets.steps);
+  const stillRoot = await json(await administrator.request('/api/health/goals', { headers: { 'X-Page-Owner': ownerId } }), 200, 'Restarted administrator data');
+  assert.equal(stillRoot.targets.steps, 8000);
+  await login(new Browser(), member.email, resetPassword); // Database credentials survive restart and are not reseeded from env.
+
+  const rootAccount = (await adminMetadata(administrator)).users.find(user => user.id === ownerId);
+  const changedRootEmail = 'changed-administrator@example.test';
+  const rootChange = await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(ownerId), 'PATCH', { expectedRevision: rootAccount.revision, email: changedRootEmail });
+  assert.equal(rootChange.user.id, ownerId); assert.equal(rootChange.user.isAdmin, true); assert.equal(rootChange.reauthRequired, true);
+  assert.equal((await administrator.request('/api/session')).status, 401, 'Administrator email edits revoke its old session too');
+  await login(new Browser(), email, password, 401);
+  const changedRootSession = new Browser(); await login(changedRootSession, changedRootEmail, password);
+  await stop(); migrate(); await start(); // APP_OWNER_EMAIL deliberately still has the original bootstrap email.
+  const changedRootIdentity = await json(await changedRootSession.request('/api/session'), 200, 'Persisted administrator email');
+  assert.equal(changedRootIdentity.userId, ownerId); assert.equal(changedRootIdentity.email, changedRootEmail); assert.equal(changedRootIdentity.isOwner, true);
+  assert.equal((await json(await changedRootSession.request('/api/health/goals', { headers: { 'X-Page-Owner': ownerId } }), 200, 'Stable administrator data after email change')).targets.steps, 8000);
+  await login(new Browser(), email, password, 401);
+  await login(new Browser(), changedRootEmail, password);
 }
 
 async function main() {
@@ -152,19 +259,26 @@ async function main() {
   await json(await anonymous.request('/api/health/goals'), 401, 'Anonymous business data');
 
   let csrf = await form(anonymous, '/signin-with-chatgpt');
+  const legacyLogin = await anonymous.request('/signin-with-chatgpt', {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf, return_to: '/health', username: 'legacy-smoke-admin', password }),
+  });
+  assert.equal(legacyLogin.status, 403, 'Legacy username fields cannot authenticate the seeded email account');
+  await json(await anonymous.request('/api/session'), 401, 'Legacy username grants no session');
+  csrf = await form(anonymous, '/signin-with-chatgpt');
   let response = await anonymous.request('/signin-with-chatgpt', {
     method: 'POST', headers: { Origin: 'https://attacker.example', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf, return_to: '/health', username, password }),
+    body: new URLSearchParams({ csrf, return_to: '/health', email, password }),
   });
   assert.equal(response.status, 403, 'Cross-origin login is rejected');
   response = await anonymous.request('/signin-with-chatgpt', {
     method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf: 'invalid', return_to: '/health', username, password }),
+    body: new URLSearchParams({ csrf: 'invalid', return_to: '/health', email, password }),
   });
   assert.equal(response.status, 403, 'Invalid login CSRF is rejected');
   response = await anonymous.request('/signin-with-chatgpt', {
     method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf, return_to: '/health', username, password: randomBytes(24).toString('base64url') }),
+    body: new URLSearchParams({ csrf, return_to: '/health', email, password: randomBytes(24).toString('base64url') }),
   });
   assert.equal(response.status, 401, 'Incorrect password is rejected');
   await json(await anonymous.request('/api/session'), 401, 'Incorrect password grants no session');
@@ -221,7 +335,8 @@ async function main() {
   assert.equal(authenticated.cookies.has('jso-test-session'), false, 'Logout clears the session cookie');
   await json(await authenticated.request('/api/session'), 401, 'Logged out session');
   await json(await authenticated.request('/api/health/goals'), 401, 'Logged out business data');
-  process.stdout.write('Self-hosted production smoke passed: migrations, authentication, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart and logout.\n');
+  await multiuserAcceptance();
+  process.stdout.write('Self-hosted production smoke passed: migrations, authentication, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, isolation and immediate session revocation.\n');
 }
 
 try { await main(); }

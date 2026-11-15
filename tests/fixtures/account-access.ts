@@ -7,6 +7,8 @@ import { identityFromHeaders, pageAccountFailure } from '../../lib/account-ident
 import type { SiteIdentity } from '../../lib/account-identity.ts';
 import { resolveAccess } from '../../db/access-grants-store.ts';
 import { resolveOwnerIdentity } from '../../db/owner-identity-store.ts';
+import { getLocalUserById } from '../../db/local-users-store.ts';
+import { normalizeLocalEmail } from '../../lib/local-users.ts';
 import { safeAccountRetryPath } from '../../lib/account-retry.ts';
 
 export interface AccessResult { identity: SiteIdentity | null; allowed: boolean; isOwner: boolean; reason?: string }
@@ -39,10 +41,10 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
     try { const result = statements.map((statement) => statement.execute()); sqlite.exec('COMMIT'); return result; }
     catch (error) { sqlite.exec('ROLLBACK'); throw error; }
   } } as unknown as D1Database;
-  const env: { DB?: D1Database; APP_OWNER_USER_ID?: string; APP_OWNER_EMAIL?: string } = { DB: db, APP_OWNER_USER_ID: config.userId, APP_OWNER_EMAIL: config.email };
+  const env: { DB?: D1Database; APP_OWNER_USER_ID?: string; APP_OWNER_EMAIL?: string; SELFHOST_AUTH_PROVIDER?: 'local' } = { DB: db, APP_OWNER_USER_ID: config.userId, APP_OWNER_EMAIL: config.email };
   const diagnostics: string[] = [];
   const { accountAccess } = load<{ accountAccess: (headers: Pick<Headers, 'get'>) => Promise<AccessResult> }>(new URL('../../app/account-access.ts', import.meta.url),
-    { env, identityFromHeaders, resolveAccess, resolveOwnerIdentity, console: { error(value: string) { diagnostics.push(value); } } }, ['accountAccess']);
+    { env, identityFromHeaders, resolveAccess, resolveOwnerIdentity, getLocalUserById, normalizeLocalEmail, console: { error(value: string) { diagnostics.push(value); } } }, ['accountAccess']);
   let currentHeaders = new Headers();
   const auth = load<{
     getChatGPTAccess(): Promise<AccessResult>;
@@ -58,7 +60,7 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
     apiUser(): ReturnType<typeof auth.getChatGPTUser>;
     unauthenticated(message?: string): Promise<Response>;
     json(value: unknown, status?: number, headers?: Record<string, string>): Response;
-  }>(new URL('../../app/api/_shared.ts', import.meta.url), { getChatGPTUser: auth.getChatGPTUser, getChatGPTAccess: auth.getChatGPTAccess }, ['apiUser', 'unauthenticated', 'json']);
+  }>(new URL('../../app/api/_shared.ts', import.meta.url), { getChatGPTUser: () => auth.getChatGPTUser(), getChatGPTAccess: () => auth.getChatGPTAccess() }, ['apiUser', 'unauthenticated', 'json']);
   const { middleware } = load<{ middleware: (request: Request) => Promise<Response> }>(new URL('../../middleware.ts', import.meta.url), {
     accountAccess, pageAccountFailure, NextResponse: {
       json: (value: unknown, options: ResponseInit) => Response.json(value, options),

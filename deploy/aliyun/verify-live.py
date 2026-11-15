@@ -123,9 +123,11 @@ def read_credentials():
                     require(prefix not in fields, "credential_file_fields")
                     fields[prefix] = line[len(prefix):]
         require(fields.get("Public origin: ") == ORIGIN, "credential_origin")
+        # Existing bootstrap files retain their legacy administrator username.
+        # Validate that provenance, then use the fixed owner email for login.
         require(fields.get("Username: ") == "admin", "credential_username")
         require(12 <= len(fields.get("Initial password: ", "")) <= 256, "credential_password")
-        return fields["Username: "], fields["Initial password: "]
+        return OWNER_EMAIL, fields["Initial password: "]
     except VerificationFailure:
         raise
     except Exception:
@@ -155,7 +157,7 @@ def csrf_form(browser, path, label):
 
 
 def verify(expected_commit):
-    username, password = read_credentials()
+    email, password = read_credentials()
     anonymous = Browser()
     readiness = parsed_json(anonymous.request("/_selfhost/healthz", "readiness"), 200, "readiness")
     require(readiness.get("ok") is True and readiness.get("commitSha") == expected_commit, "readiness_commit")
@@ -168,11 +170,14 @@ def verify(expected_commit):
         "oai-authenticated-user-email": OWNER_EMAIL,
         "x-authenticated-user-id": OWNER_ID,
     }), 401, "spoofed_identity")
+    parsed_json(anonymous.request("/api/admin/users", "anonymous_admin_users", headers={
+        "X-Page-Owner": OWNER_ID,
+    }), 401, "anonymous_admin_users")
 
     browser = Browser()
     csrf = csrf_form(browser, "/signin-with-chatgpt", "login_form")
     status_code, headers, _ = browser.request("/signin-with-chatgpt", "login", method="POST", form={
-        "username": username, "password": password, "csrf": csrf, "return_to": "/health",
+        "email": email, "password": password, "csrf": csrf, "return_to": "/health",
     })
     password = None
     require(status_code == 303, "login_status", status_code)
@@ -186,6 +191,17 @@ def verify(expected_commit):
     identity = parsed_json(browser.request("/api/session", "authenticated_session"), 200, "authenticated_session")
     require(identity.get("userId") == OWNER_ID and identity.get("email") == OWNER_EMAIL
             and identity.get("isOwner") is True, "authenticated_owner")
+    status_code, headers, html = browser.request("/settings/users", "admin_users_page")
+    require(status_code == 200 and "text/html" in headers.get("Content-Type", "").lower()
+            and b"<!doctype html>" in html.lower(), "admin_users_page_html", status_code)
+    admin_users = parsed_json(browser.request("/api/admin/users", "admin_users", headers={
+        "X-Page-Owner": OWNER_ID,
+    }), 200, "admin_users")
+    require(admin_users.get("currentUserId") == OWNER_ID, "admin_users_current_user")
+    public_user_fields = {"id", "email", "status", "revision", "isAdmin", "createdAt", "updatedAt", "lastLoginAt"}
+    users = admin_users.get("users")
+    require(isinstance(users, list) and all(isinstance(user, dict) and set(user) <= public_user_fields for user in users), "admin_users_public_fields")
+    require(isinstance(admin_users.get("csrfToken"), str) and bool(admin_users["csrfToken"]), "admin_users_csrf")
     status_code, headers, html = browser.request("/health", "health_page")
     require(status_code == 200 and "text/html" in headers.get("Content-Type", "").lower()
             and b"<!doctype html>" in html.lower(), "health_page_html", status_code)
@@ -201,7 +217,10 @@ def verify(expected_commit):
     require(status_code == 303 and headers.get("Location") == "/health", "logout_status", status_code)
     require(not any(cookie.name == "__Host-jso-session" for cookie in browser.cookies), "logout_cookie")
     parsed_json(browser.request("/api/session", "logged_out_session"), 401, "logged_out_session")
-    return {"ok": True, "commitSha": expected_commit, "checks": ["https", "schema", "identity_isolation", "login", "owner", "health_page", "food_catalog", "logout"]}
+    parsed_json(browser.request("/api/admin/users", "logged_out_admin_users", headers={
+        "X-Page-Owner": OWNER_ID,
+    }), 401, "logged_out_admin_users")
+    return {"ok": True, "commitSha": expected_commit, "checks": ["https", "schema", "identity_isolation", "login", "owner", "admin_user_view", "health_page", "food_catalog", "logout"]}
 
 
 def main():

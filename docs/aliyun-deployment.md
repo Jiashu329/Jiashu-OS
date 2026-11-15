@@ -41,7 +41,15 @@ sudo bash /path/to/verified-bundle/bootstrap.sh \
   --port 3100 --confirm-empty-test-site
 ```
 
-初始用户名默认 `admin`；随机口令只保存在服务器 `/opt/jiashu-test/initial-login.txt`（0600）。仅在阿里云私密控制台读取该文件，不在 Actions 运行 `cat`，也不把内容发到聊天。会话密钥与 AI 配置主密钥存在独立的 `app.env`，后续部署不会重建。迁移真实数据和现有密钥不属于这次空库测试站初始化。
+初始管理员邮箱为 `APP_OWNER_EMAIL`，当前站点是 `admin@treefund.asia`；随机口令只保存在服务器 `/opt/jiashu-test/initial-login.txt`（0600）。旧版文件中的 `Username: admin` 仅是历史初始化记录，登录时填写邮箱，原密码保留。仅在阿里云私密控制台读取该文件，不在 Actions 运行 `cat`，也不把内容发到聊天。会话密钥与 AI 配置主密钥存在独立的 `app.env`，后续部署不会重建。迁移真实数据和现有密钥不属于这次空库测试站初始化。
+
+## 邮箱密码与用户管理
+
+登录后，管理员从「账户 → 用户管理」或 `/settings/users` 进入管理页。可以创建用户、修改邮箱、重置密码和启用或停用账号。仅配置的站点管理员可以访问页面和用户接口；管理员自身不能停用。没有公开注册入口，普通用户的数据使用各自稳定的用户 ID 隔离。
+
+账号保存在 SQLite 的 `local_users` 表中，密码使用带随机盐的 scrypt 哈希。首次升级将现有管理员 ID、邮箱和密码哈希写入账号表，保留管理员原有数据；此后管理页面中的修改是实际生效的配置，重启和自动部署不会从旧环境变量覆盖账号。`SELFHOST_USERNAME` 已不用于登录。修改邮箱、重置密码或停用账号会立即使该账号的旧会话失效，重新启用也不会恢复旧会话；管理员修改自己的邮箱或密码后须重新登录。
+
+登录和管理接口继续校验本站 Origin 与 CSRF，管理操作绑定当前账号和用户记录版本。账号、密码哈希和会话不包含在用户的业务数据导出中；服务器的一致性 SQLite 备份则包含账号表，应维持现有私密文件权限。初始登录文件仅记录最初凭证，在页面修改凭证后不会自动更新。
 
 ## 验证与域名切换
 
@@ -58,6 +66,8 @@ docker build -f selfhost/Dockerfile \
 ```
 
 先检查 `http://127.0.0.1:3100/_selfhost/healthz` 返回 `ok:true` 且 `commitSha` 与部署提交一致。登录检查须通过 HTTPS 域名进行；生产会话 Cookie 保持 Secure，不为外网 HTTP 关闭保护。
+
+管理员尚未修改初始凭证时，可在 **Aliyun server setup → verify** 进行只读线上验收，检查当前提交、邮箱登录、管理页与用户列表权限、公开食品数据和退出登录。凭证只在服务器内读取，日志不输出邮箱以外的认证内容；此操作不创建或修改用户及业务记录。修改初始凭证后，应使用浏览器按新凭证验收。
 
 首次接入时，在 **Aliyun server setup** 选择 `inspect`，审阅脱敏后的虚拟主机和 include 结构，并记录 `expectedHash`。应用就绪、同提交检查全部通过后，选择 `configure-web` 并填写该哈希。工具只接受已审阅的配置结构；配置变化时停止，先备份再检查和重载 Nginx。它保留 apex 主页及证书，仅为 www 复制原 HTTPS 虚拟主机并替换根路径，同时保留业务接口 include。后续自动更新不执行该切换步骤。[location 示例](../deploy/aliyun/nginx-location.example.conf)仅供参考，不能当作完整配置覆盖现站。
 

@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
+import { SQLiteD1Database } from './database.ts';
+import { bootstrapLocalOwner, getLocalUserByEmail, getLocalUserById, touchLocalUserLogin, updateLocalUser } from '../db/local-users-store.ts';
+import { createSelfhostUserManagement } from './user-management.ts';
+import type { SelfhostGatewayOptions } from './auth.ts';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSelfhostGateway, hashPassword, issueSelfhostSession, loadSelfhostAuthConfig, readCookie, safeSelfhostReturnTo,
@@ -11,6 +17,9 @@ const NOW = Date.parse('2026-11-15T12:00:00Z');
 const base = { SELFHOST_PUBLIC_ORIGIN: 'https://www.treefund.example', SELFHOST_USERNAME: 'admin', SELFHOST_PASSWORD_HASH: PASSWORD_HASH,
   SELFHOST_SESSION_SECRET: Buffer.alloc(32, 11).toString('base64url'), APP_OWNER_USER_ID: 'synthetic-test-owner', APP_OWNER_EMAIL: 'admin@example.test' };
 const config = loadSelfhostAuthConfig(base);
+const owner = { id: config.ownerId, revision: 1 };
+const databases = new Set<SQLiteD1Database>();
+afterEach(() => { for (const db of databases) db.close(); databases.clear(); });
 class FakeResponse {
   headersSent = false; statusCode = 0; headers: Record<string, string | string[]> = {}; body = '';
   writeHead(status: number, headers: Record<string, string | string[]>) { this.statusCode = status; this.headers = headers; this.headersSent = true; return this; }
@@ -21,12 +30,20 @@ function request(path: string, method = 'GET', headers: Record<string, string> =
   return Object.assign(req, { method, url: path, headers: { host: config.host, ...(encoded === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' }), ...headers },
     rawHeaders: Object.entries(headers).flat(), socket: { remoteAddress: '127.0.0.1' } }) as unknown as IncomingMessage;
 }
-function fixture(options: { readiness?: () => { schemaReady: boolean; applied: number; total: number; pending: number }; limiter?: SelfhostLoginLimiter } = {}) {
+function fixture(options: { readiness?: () => { schemaReady: boolean; applied: number; total: number; pending: number }; limiter?: SelfhostLoginLimiter; users?: SelfhostGatewayOptions['users'] } = {}) {
   let time = NOW; const downstream: IncomingMessage[] = [];
+  const db = new SQLiteD1Database(':memory:'); databases.add(db);
+  db.transaction(() => db.executeMigrationSQL(readFileSync(new URL('../drizzle/0034_local_users.sql', import.meta.url), 'utf8')));
+  const ready = bootstrapLocalOwner(db, { id: config.ownerId, email: config.ownerEmail, passwordHash: PASSWORD_HASH }, new Date(NOW).toISOString());
+  const users = options.users ?? {
+    async getById(id: string) { await ready; return getLocalUserById(db, id); },
+    async getByEmail(email: string) { await ready; return getLocalUserByEmail(db, email); },
+    async touchLogin(id: string, at: number) { await touchLocalUserLogin(db, id, new Date(at).toISOString()); },
+  };
   const gateway = createSelfhostGateway(config, (req, res) => { downstream.push(req); res.writeHead(200); res.end('application'); }, {
-    now: () => time, commitSha: 'a'.repeat(40), readiness: options.readiness ?? (() => ({ schemaReady: true, applied: 34, total: 34, pending: 0 })), limiter: options.limiter,
+    now: () => time, commitSha: 'a'.repeat(40), readiness: options.readiness ?? (() => ({ schemaReady: true, applied: 34, total: 34, pending: 0 })), limiter: options.limiter, users, manageUsers: createSelfhostUserManagement(config, db, { now: () => time }),
   });
-  return { downstream, time(value: number) { time = value; }, async call(path: string, method = 'GET', headers: Record<string, string> = {}, body?: URLSearchParams | string) {
+  return { downstream, db, ready, time(value: number) { time = value; }, async call(path: string, method = 'GET', headers: Record<string, string> = {}, body?: URLSearchParams | string) {
     const req = request(path, method, headers, body), res = new FakeResponse(); await gateway(req, res as unknown as ServerResponse); return { req, res };
   } };
 }
@@ -35,10 +52,10 @@ function csrfForm(response: FakeResponse) {
   const csrf = response.body.match(/name="csrf" value="([^"]+)"/)?.[1]; assert.ok(csrf);
   const value = setCookies(response)[0]?.split(';')[0]; assert.ok(value); return { csrf, cookie: value };
 }
-async function login(f: ReturnType<typeof fixture>, password = PASSWORD, username = 'admin', returnTo = '/health?days=30') {
+async function login(f: ReturnType<typeof fixture>, password = PASSWORD, email = config.ownerEmail, returnTo = '/health?days=30') {
   const page = await f.call('/signin-with-chatgpt?return_to=' + encodeURIComponent(returnTo));
   const csrf = csrfForm(page.res);
-  return f.call('/signin-with-chatgpt', 'POST', { origin: config.origin, cookie: csrf.cookie }, new URLSearchParams({ username, password, csrf: csrf.csrf, return_to: returnTo }));
+  return f.call('/signin-with-chatgpt', 'POST', { origin: config.origin, cookie: csrf.cookie }, new URLSearchParams({ email, password, csrf: csrf.csrf, return_to: returnTo }));
 }
 
 void test('password hashes use bounded scrypt parameters and never accept malformed or wrong credentials', async () => {
@@ -62,14 +79,15 @@ void test('production configuration requires HTTPS and full credentials; HTTP on
   assert.equal(dev.secure, false); assert.equal(selfhostCookieNames(dev).session, 'jso-test-session');
 });
 
-void test('sessions expire, reject tampering and are invalidated by password, secret, owner or origin rotation', () => {
-  const value = issueSelfhostSession(config, NOW); assert.equal(verifySelfhostSession(config, value, NOW), true);
-  assert.equal(verifySelfhostSession(config, value, NOW + config.sessionTtl * 1000), false);
-  assert.equal(verifySelfhostSession(config, value + 'x', NOW), false);
-  assert.equal(verifySelfhostSession(config, value, NOW - 31000), false);
-  for (const changed of [{ sessionSecret: Buffer.alloc(32, 12).toString('base64url') }, { passwordHash: PASSWORD_HASH + 'x' }, { ownerId: 'another-owner' }, { ownerEmail: 'another@example.test' }, { origin: 'https://elsewhere.example' }]) {
-    assert.equal(verifySelfhostSession({ ...config, ...changed }, value, NOW), false);
+void test('v2 sessions expire, reject tampering, rotate with origin/secret and do not depend on bootstrap credentials', () => {
+  const value = issueSelfhostSession(config, owner, NOW); assert.deepEqual(verifySelfhostSession(config, value, NOW), { sub: owner.id, revision: 1 });
+  assert.equal(verifySelfhostSession(config, value, NOW + config.sessionTtl * 1000), null);
+  assert.equal(verifySelfhostSession(config, value + 'x', NOW), null);
+  assert.equal(verifySelfhostSession(config, value, NOW - 31000), null);
+  for (const changed of [{ sessionSecret: Buffer.alloc(32, 12).toString('base64url') }, { origin: 'https://elsewhere.example' }]) {
+    assert.equal(verifySelfhostSession({ ...config, ...changed }, value, NOW), null);
   }
+  assert.deepEqual(verifySelfhostSession({ ...config, passwordHash: PASSWORD_HASH + 'x', ownerEmail: 'changed@example.test' }, value, NOW), { sub: owner.id, revision: 1 });
   const name = selfhostCookieNames(config).session;
   assert.equal(readCookie(`${name}=${value}; ${name}=forged`, name), null);
 });
@@ -87,16 +105,16 @@ void test('the gateway strips forged identity/proxy/middleware headers before an
   assert.equal(req.headers['x-middleware-subrequest'], undefined); assert.equal(req.headers['x-vinext-prerender-secret'], undefined);
   assert.equal(req.headers.host, config.host); assert.equal(req.headers['x-forwarded-proto'], 'https'); assert.equal(req.headers['x-forwarded-host'], config.host);
   assert.equal(req.headers['x-page-owner'], 'kept-for-app-validation'); assert.doesNotMatch(req.rawHeaders.join(' '), /attacker|evil|forged/);
-  const authenticated = sanitizedSelfhostHeaders({ 'oai-authenticated-user-id': 'attacker' }, config, true);
+  const authenticated = sanitizedSelfhostHeaders({ 'oai-authenticated-user-id': 'attacker' }, config, { id: config.ownerId, email: config.ownerEmail });
   assert.equal(authenticated['oai-authenticated-user-id'], config.ownerId);
 });
 
 void test('login requires same-origin CSRF, issues a host-only secure cookie and injects only the configured owner', async () => {
   const f = fixture(), page = await f.call('/signin-with-chatgpt'); const form = csrfForm(page.res);
-  assert.doesNotMatch(page.res.body, /synthetic-test-owner|scrypt-v1|synthetic-long-password/);
+  assert.doesNotMatch(page.res.body, /scrypt-v1|synthetic-long-password/);
   assert.match(String(page.res.headers['Content-Security-Policy']), /frame-ancestors 'none'/);
   assert.equal(page.res.headers['Referrer-Policy'], 'same-origin');
-  const payload = new URLSearchParams({ username: 'admin', password: PASSWORD, csrf: form.csrf, return_to: '/health' });
+  const payload = new URLSearchParams({ email: config.ownerEmail, password: PASSWORD, csrf: form.csrf, return_to: '/health' });
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { cookie: form.cookie }, payload)).res.statusCode, 403);
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { origin: 'null', cookie: form.cookie }, payload)).res.statusCode, 403);
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { origin: 'https://evil.example', cookie: form.cookie }, payload)).res.statusCode, 403);
@@ -112,10 +130,10 @@ void test('login requires same-origin CSRF, issues a host-only secure cookie and
 
 void test('wrong login stays generic, expired CSRF is rejected and unsafe business requests need the canonical Origin', async () => {
   const f = fixture(); const rejected = await login(f, 'invalid-password', 'not-admin');
-  assert.equal(rejected.res.statusCode, 401); assert.match(rejected.res.body, /账号或密码不正确/); assert.doesNotMatch(rejected.res.body, /not-admin|invalid-password/);
+  assert.equal(rejected.res.statusCode, 401); assert.match(rejected.res.body, /邮箱或密码不正确/); assert.doesNotMatch(rejected.res.body, /not-admin|invalid-password/);
   const page = await f.call('/signin-with-chatgpt'); const csrf = csrfForm(page.res); f.time(NOW + 600001);
-  assert.equal((await f.call('/signin-with-chatgpt', 'POST', { cookie: csrf.cookie, origin: config.origin }, new URLSearchParams({ username: 'admin', password: PASSWORD, csrf: csrf.csrf, return_to: '/' }))).res.statusCode, 403);
-  const cookie = '__Host-jso-session=' + issueSelfhostSession(config, NOW);
+  assert.equal((await f.call('/signin-with-chatgpt', 'POST', { cookie: csrf.cookie, origin: config.origin }, new URLSearchParams({ email: config.ownerEmail, password: PASSWORD, csrf: csrf.csrf, return_to: '/' }))).res.statusCode, 403);
+  const cookie = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
   assert.equal((await f.call('/api/health/records', 'POST', { cookie })).res.statusCode, 403);
   assert.equal((await f.call('/api/health/records', 'POST', { cookie, origin: 'https://evil.example' })).res.statusCode, 403);
   assert.equal(f.downstream.length, 0);
@@ -123,7 +141,7 @@ void test('wrong login stays generic, expired CSRF is rejected and unsafe busine
 });
 
 void test('logout GET only asks for confirmation; the same-origin CSRF POST expires the session cookie', async () => {
-  const f = fixture(), session = '__Host-jso-session=' + issueSelfhostSession(config, NOW);
+  const f = fixture(), session = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
   const page = await f.call('/signout-with-chatgpt?return_to=%2Faccount%3FsignedOut%3D1', 'GET', { cookie: session });
   assert.equal(page.res.statusCode, 200); assert.match(page.res.body, /确认退出/); assert.ok(setCookies(page.res).every(value => !value.startsWith('__Host-jso-session=')));
   const csrf = csrfForm(page.res), payload = new URLSearchParams({ csrf: csrf.csrf, return_to: '/account?signedOut=1' });
@@ -149,4 +167,127 @@ void test('health exposes only readiness and commit metadata and fails closed wi
   const response = await broken.call('/_selfhost/healthz'); assert.equal(response.res.statusCode, 503); assert.equal(response.res.body, '{"ok":false}');
   assert.equal((await f.call('/_selfhost/healthz', 'POST')).res.statusCode, 405);
   for (const path of ['https://evil.example/', '//evil.example/', '/health\\evil']) assert.equal((await f.call(path)).res.statusCode, 400);
+});
+
+async function adminContext(f: ReturnType<typeof fixture>, session = issueSelfhostSession(config, owner, NOW)) {
+  const cookie = '__Host-jso-session=' + session;
+  const response = await f.call('/api/admin/users', 'GET', { cookie, 'x-page-owner': owner.id });
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(response.res.headers['X-Account-Owner'], owner.id);
+  const csrf = JSON.parse(response.res.body).csrfToken as string;
+  const csrfCookie = setCookies(response.res).find(value => value.startsWith('__Host-jso-admin-csrf='))!.split(';')[0];
+  return { cookie: cookie + '; ' + csrfCookie, csrf };
+}
+async function adminWrite(f: ReturnType<typeof fixture>, context: Awaited<ReturnType<typeof adminContext>>, method: string, path: string, body: unknown, headers: Record<string, string> = {}) {
+  return f.call(path, method, { cookie: context.cookie, 'x-page-owner': owner.id, origin: config.origin,
+    'x-csrf-token': context.csrf, 'content-type': 'application/json', ...headers }, JSON.stringify(body));
+}
+function loginCookie(response: FakeResponse) { return setCookies(response).find(value => value.startsWith('__Host-jso-session='))!.split(';')[0]; }
+
+void test('only the protected administrator can use user APIs, with owner binding and same-origin revision-bound CSRF', async () => {
+  const f = fixture(); await f.ready;
+  assert.equal((await f.call('/api/admin/users')).res.statusCode, 401);
+  const session = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
+  assert.equal((await f.call('/api/admin/users', 'GET', { cookie: session, 'x-page-owner': 'other-account' })).res.statusCode, 409);
+  const context = await adminContext(f);
+  for (const headers of [{ origin: 'null' }, { origin: 'https://evil.example' }, { 'x-csrf-token': 'forged' }] as Array<Record<string, string>>) {
+    const response = await adminWrite(f, context, 'POST', '/api/admin/users', { email: 'member@example.test', password: PASSWORD }, headers);
+    assert.equal(response.res.statusCode, 403); assert.equal(JSON.parse(response.res.body).code, 'LOCAL_USER_CSRF_INVALID');
+  }
+  const reused = await f.call('/api/admin/users', 'GET', { cookie: context.cookie, 'x-page-owner': owner.id });
+  assert.equal(JSON.parse(reused.res.body).csrfToken, context.csrf);
+  const body = JSON.parse((await adminWrite(f, context, 'POST', '/api/admin/users', { email: ' Member@Example.Test ', password: PASSWORD })).res.body);
+  assert.match(body.user.id, /^[0-9a-f-]{36}$/); assert.equal(body.user.email, 'member@example.test'); assert.equal(body.user.isAdmin, false);
+  assert.doesNotMatch(JSON.stringify(body), /password|scrypt|session/i);
+  const normal = await login(f, PASSWORD, 'member@example.test');
+  assert.equal(normal.res.statusCode, 303);
+  const refused = await f.call('/api/admin/users', 'GET', { cookie: loginCookie(normal.res), 'x-page-owner': body.user.id });
+  assert.equal(refused.res.statusCode, 403);
+  assert.equal((await f.call('/settings/access')).res.headers.Location, '/settings/users');
+});
+
+void test('password reset, disable, re-enable and email changes revoke every old session through the persisted revision', async () => {
+  const f = fixture(); const context = await adminContext(f);
+  const created = await adminWrite(f, context, 'POST', '/api/admin/users', { email: 'member@example.test', password: PASSWORD });
+  assert.equal(created.res.statusCode, 201); assert.equal(created.res.headers['X-Account-Owner'], owner.id); const member = JSON.parse(created.res.body).user;
+  const first = await login(f, PASSWORD, member.email), firstCookie = loginCookie(first.res);
+  const second = await login(f, PASSWORD, member.email), secondCookie = loginCookie(second.res);
+  const newPassword = 'synthetic-reset-password-2026';
+  const reset = await adminWrite(f, context, 'PATCH', '/api/admin/users/' + member.id, { expectedRevision: 1, password: newPassword });
+  assert.equal(reset.res.statusCode, 200); assert.equal(JSON.parse(reset.res.body).user.revision, 2);
+  for (const cookie of [firstCookie, secondCookie]) {
+    const old = await f.call('/api/session', 'GET', { cookie, 'oai-authenticated-user-id': member.id });
+    assert.equal(old.req.headers['oai-authenticated-user-id'], undefined);
+  }
+  assert.equal((await login(f, PASSWORD, member.email)).res.statusCode, 401);
+  const fresh = await login(f, newPassword, member.email); assert.equal(fresh.res.statusCode, 303);
+  assert.equal((await f.call('/api/session', 'GET', { cookie: loginCookie(fresh.res) })).req.headers['oai-authenticated-user-id'], member.id);
+  const disabled = await adminWrite(f, context, 'PATCH', '/api/admin/users/' + member.id, { expectedRevision: 2, status: 'disabled' });
+  assert.equal(disabled.res.statusCode, 200);
+  assert.equal((await f.call('/api/session', 'GET', { cookie: loginCookie(fresh.res) })).req.headers['oai-authenticated-user-id'], undefined);
+  assert.equal((await login(f, newPassword, member.email)).res.statusCode, 401);
+  const enabled = await adminWrite(f, context, 'PATCH', '/api/admin/users/' + member.id, { expectedRevision: 3, status: 'active', email: 'renamed@example.test' });
+  assert.equal(enabled.res.statusCode, 200); assert.equal(JSON.parse(enabled.res.body).user.revision, 4);
+  assert.equal((await login(f, newPassword, member.email)).res.statusCode, 401);
+  const renamed = await login(f, newPassword, 'renamed@example.test'); assert.equal(renamed.res.statusCode, 303);
+  assert.equal((await f.call('/api/session', 'GET', { cookie: loginCookie(renamed.res) })).req.headers['oai-authenticated-user-email'], 'renamed@example.test');
+});
+
+void test('admin mutations reject stale or duplicate writes and cannot disable the administrator; self edit requires fresh login', async () => {
+  const f = fixture(); const context = await adminContext(f);
+  const duplicate = await adminWrite(f, context, 'POST', '/api/admin/users', { email: config.ownerEmail, password: PASSWORD });
+  assert.equal(duplicate.res.statusCode, 409); assert.equal(JSON.parse(duplicate.res.body).code, 'LOCAL_USER_DUPLICATE');
+  const forbidden = await adminWrite(f, context, 'PATCH', '/api/admin/users/' + owner.id, { expectedRevision: 1, status: 'disabled' });
+  assert.equal(forbidden.res.statusCode, 400); assert.equal(JSON.parse(forbidden.res.body).code, 'LOCAL_USER_OWNER_PROTECTED');
+  const edited = await adminWrite(f, context, 'PATCH', '/api/admin/users/' + owner.id, { expectedRevision: 1, email: 'new-admin@example.test' });
+  assert.equal(edited.res.statusCode, 200); assert.equal(JSON.parse(edited.res.body).reauthRequired, true);
+  assert.equal(edited.res.headers['X-Account-Owner'], owner.id);
+  assert.equal((await f.call('/api/admin/users', 'GET', { cookie: context.cookie, 'x-page-owner': owner.id })).res.statusCode, 401);
+  await bootstrapLocalOwner(f.db, { id: owner.id, email: config.ownerEmail, passwordHash: PASSWORD_HASH });
+  assert.equal((await getLocalUserById(f.db, owner.id))?.email, 'new-admin@example.test');
+  assert.equal((await login(f, PASSWORD, config.ownerEmail)).res.statusCode, 401);
+  const fresh = await login(f, PASSWORD, 'new-admin@example.test'); assert.equal(fresh.res.statusCode, 303);
+  const current = await adminContext(f, loginCookie(fresh.res).split('=')[1]);
+  const stale = await adminWrite(f, current, 'PATCH', '/api/admin/users/' + owner.id, { expectedRevision: 1, email: 'stale@example.test' });
+  assert.equal(stale.res.statusCode, 409); assert.equal(JSON.parse(stale.res.body).code, 'LOCAL_USER_STALE');
+  const priorCsrf = await adminWrite(f, { cookie: loginCookie(fresh.res) + '; ' + context.cookie.split('; ')[1], csrf: context.csrf }, 'PATCH', '/api/admin/users/' + owner.id, { expectedRevision: 2, email: 'forged@example.test' });
+  assert.equal(priorCsrf.res.statusCode, 403);
+});
+
+void test('database failures fail closed without leaking configuration and owner changes never restore bootstrap credentials', async () => {
+  const f = fixture({ users: { async getById() { throw new Error('PRIVATE database path and password'); }, async getByEmail() { throw new Error('PRIVATE'); }, async touchLogin() {} } });
+  const cookie = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
+  const failed = await f.call('/api/admin/users', 'GET', { cookie, 'x-page-owner': owner.id });
+  assert.equal(failed.res.statusCode, 503); assert.equal(JSON.parse(failed.res.body).code, 'LOCAL_USERS_UNAVAILABLE'); assert.doesNotMatch(failed.res.body, /PRIVATE|password/);
+  assert.equal((await login(f)).res.statusCode, 503);
+  const normal = fixture(); await normal.ready;
+  await updateLocalUser(normal.db, owner.id, owner.id, { expectedRevision: 1, passwordHash: await hashPassword('changed-bootstrap-password-2026') });
+  await bootstrapLocalOwner(normal.db, { id: owner.id, email: config.ownerEmail, passwordHash: PASSWORD_HASH });
+  assert.equal((await login(normal, PASSWORD)).res.statusCode, 401);
+  assert.equal((await login(normal, 'changed-bootstrap-password-2026')).res.statusCode, 303);
+});
+
+void test('legacy owner cookies require a clean login and supported Unicode passwords survive native form encoding', async () => {
+  const encoded = Buffer.from(JSON.stringify({ v: 1, sub: owner.id, iat: NOW / 1000, exp: NOW / 1000 + 3600, nonce: Buffer.alloc(24, 1).toString('base64url') })).toString('base64url');
+  const oldKey = createHmac('sha256', Buffer.from(config.sessionSecret, 'base64url')).update(JSON.stringify(['jiashu-selfhost-v1', 'session', config.origin, 'admin', config.passwordHash, config.ownerId, config.ownerEmail])).digest();
+  const legacy = encoded + '.' + createHmac('sha256', oldKey).update(encoded).digest('base64url');
+  assert.equal(verifySelfhostSession(config, legacy, NOW), null);
+  const f = fixture(); await f.ready;
+  assert.equal((await f.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + legacy })).req.headers['oai-authenticated-user-id'], undefined);
+  const unicodePassword = '😀'.repeat(256);
+  await updateLocalUser(f.db, owner.id, owner.id, { expectedRevision: 1, passwordHash: await hashPassword(unicodePassword) });
+  const path = '/health?notes=' + 'a'.repeat(1500);
+  const response = await login(f, unicodePassword, config.ownerEmail, path);
+  assert.equal(response.res.statusCode, 303); assert.equal(response.res.headers.Location, path);
+  const form = await f.call('/signin-with-chatgpt');
+  assert.match(form.res.body, /name="password"[^>]*maxlength="1024"/);
+  assert.doesNotMatch(form.res.body, /name="username"/);
+  assert.equal(safeSelfhostReturnTo('/health?notes=' + '😀'.repeat(900)), '/');
+});
+
+void test('successful logins do not exhaust the shared failure budget across legitimate users', async () => {
+  const f = fixture();
+  for (let attempt = 0; attempt < 35; attempt++) assert.equal((await login(f)).res.statusCode, 303);
+  for (let attempt = 0; attempt < 10; attempt++) assert.equal((await login(f, 'wrong-long-password')).res.statusCode, 401);
+  assert.equal((await login(f, 'wrong-long-password')).res.statusCode, 429);
 });

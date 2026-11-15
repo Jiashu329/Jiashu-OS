@@ -413,6 +413,23 @@ export const financeMonthCloses = sqliteTable('finance_month_closes', {
 ]);
 
 // Authorization records are intentionally excluded from portable business backups.
+export const localUsers = sqliteTable('local_users', {
+  id: text('id').primaryKey().notNull(),
+  email: text('email').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  status: text('status').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastLoginAt: text('last_login_at'),
+}, (table) => [
+  uniqueIndex('local_users_email_unique').on(sql`${table.email} COLLATE NOCASE`),
+  check('local_users_status_check', sql`${table.status} IN ('active','disabled')`),
+  check('local_users_revision_check', sql`typeof(${table.revision})='integer' AND ${table.revision} >= 1 AND ${table.revision} <= 9007199254740991`),
+  check('local_users_email_check', sql`length(${table.email}) BETWEEN 3 AND 254 AND ${table.email}=lower(trim(${table.email})) COLLATE BINARY`),
+  check('local_users_hash_check', sql`length(${table.passwordHash}) BETWEEN 1 AND 256`),
+]);
+
 export const appOwnerIdentity = sqliteTable('app_owner_identity', {
   id: text('id').primaryKey().notNull(),
   userId: text('user_id').notNull().unique(),

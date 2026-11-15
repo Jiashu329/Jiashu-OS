@@ -28,6 +28,6 @@ if (existsSync('/bootstrap/app.env')) {
   // Compose env_file requires literal dollars in the scrypt hash, not interpolation.
   const env = Object.entries(values).map(([key, value]) => `${key}='${value}'`).join('\n') + '\n';
   writeFileSync('/bootstrap/app.env', env, { mode: 0o600, flag: 'wx' });
-  writeFileSync('/bootstrap/initial-login.txt', `Public origin: ${origin}\nUsername: ${username}\nInitial password: ${password}\nRead only in a private server console; do not copy to Actions logs or chat.\n`, { mode: 0o600, flag: 'wx' });
+  writeFileSync('/bootstrap/initial-login.txt', `Public origin: ${origin}\nUsername: ${username}\nEmail: ${ownerEmail}\nInitial password: ${password}\nRead only in a private server console; do not copy to Actions logs or chat.\n`, { mode: 0o600, flag: 'wx' });
   process.stdout.write('Created server environment and private initial-login file. Values were not printed.\n');
 }

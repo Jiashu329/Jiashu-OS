@@ -2,6 +2,8 @@ import { env } from 'cloudflare:workers';
 import { identityFromHeaders } from '../lib/account-identity';
 import { resolveAccess } from '../db/access-grants-store';
 import { resolveOwnerIdentity } from '../db/owner-identity-store';
+import { getLocalUserById } from '../db/local-users-store';
+import { normalizeLocalEmail } from '../lib/local-users';
 
 export async function accountAccess(requestHeaders: Pick<Headers, 'get'>) {
   const identity = identityFromHeaders(requestHeaders);
@@ -9,6 +11,14 @@ export async function accountAccess(requestHeaders: Pick<Headers, 'get'>) {
   try {
     const ownerId = await resolveOwnerIdentity(env.DB, identity, { userId: env.APP_OWNER_USER_ID, email: env.APP_OWNER_EMAIL });
     if (!ownerId) return { identity, allowed: false, isOwner: false, reason: 'unconfigured' } as const;
+    if (env.SELFHOST_AUTH_PROVIDER === 'local') {
+      if (!env.DB) return { identity, allowed: false, isOwner: false, reason: 'unavailable' } as const;
+      const user = await getLocalUserById(env.DB, identity.userId);
+      if (!user) return { identity, allowed: false, isOwner: false, reason: 'not_invited' } as const;
+      if (user.status !== 'active') return { identity, allowed: false, isOwner: false, reason: 'revoked' } as const;
+      if (user.email !== normalizeLocalEmail(identity.email)) return { identity, allowed: false, isOwner: false, reason: 'identity_conflict' } as const;
+      return { identity, allowed: true, isOwner: user.id === ownerId } as const;
+    }
     if (identity.userId === ownerId) return { identity, allowed: true, isOwner: true } as const;
     if (!env.DB) return { identity, allowed: false, isOwner: false, reason: 'unavailable' } as const;
     return { identity, ...await resolveAccess(env.DB, identity, ownerId) };

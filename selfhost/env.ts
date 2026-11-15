@@ -18,6 +18,9 @@ function openedDatabase(): SQLiteD1Database {
   return state.database;
 }
 
+/** Shared by the native authentication gateway and the bundled application. */
+export function getSelfhostDatabase(): SQLiteD1Database { return openedDatabase(); }
+
 // Importing the Cloudflare compatibility module during the build is inert.
 // Every setting is resolved at request time, never embedded into the bundle.
 export const env = {

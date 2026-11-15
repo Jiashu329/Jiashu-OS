@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { hashPassword, verifyPassword } from './auth.ts';
+import { hashPassword, verifyPassword } from './password-hash.ts';
 export { hashPassword, verifyPassword };
 
 async function main() {

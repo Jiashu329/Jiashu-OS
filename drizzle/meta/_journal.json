@@ -239,6 +239,13 @@
       "when": 1794719380677,
       "tag": "0033_douban_sync_hints",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1794744000000,
+      "tag": "0034_local_users",
+      "breakpoints": true
     }
   ]
 }

@@ -28,8 +28,8 @@ void test('all current migrations initialize an empty database once, before owne
   try {
     const result = await migrateDatabase({ path: f.path, directory: resolve('drizzle') });
     assert.equal(result.schemaReady, true);
-    assert.equal(result.changed, 34);
-    assert.equal(result.applied, 34);
+    assert.equal(result.changed, 35);
+    assert.equal(result.applied, 35);
     assert.equal(result.backupPath, undefined);
     const db = new SQLiteD1Database(f.path);
     try {
