@@ -96,6 +96,7 @@ jobs:
               ;;
             migration-prepare|migration-fetch-plan|migration-apply|migration-verify|migration-cleanup)
               [[ "$EXPECTED_APP_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              [[ -z "$EXPECTED_PLAN_HASH" || "$EXPECTED_PLAN_HASH" =~ ^[a-f0-9]{64}$ ]]
               phase=${OPERATION#migration-}
               if [[ "$phase" == apply ]]; then [[ "$EXPECTED_PLAN_HASH" =~ ^[a-f0-9]{64}$ ]]; fi
               if [[ "$phase" == fetch-plan ]]; then [[ -n "$MIGRATION_REQUEST" && ${#MIGRATION_REQUEST} -le 16000 ]]; fi
@@ -105,10 +106,11 @@ jobs:
               trap cleanup_migration EXIT
               scp -F "$config" deploy/aliyun/common.sh deploy/aliyun/run-owner-migration.sh deploy/aliyun/owner-migration-worker.mjs "jiashu-aliyun:$remote_dir/"
               if [[ -f selfhost/owner-migration-import.ts ]]; then scp -F "$config" selfhost/owner-migration-import.ts "jiashu-aliyun:$remote_dir/"; fi
+              printf -v remote_command '%q ' bash "$remote_dir/run-owner-migration.sh" "$phase" "$EXPECTED_APP_COMMIT" "$EXPECTED_PLAN_HASH"
               if [[ "$phase" == fetch-plan ]]; then
-                printf '%s\n' "$MIGRATION_REQUEST" | ssh -T -F "$config" jiashu-aliyun "bash '$remote_dir/run-owner-migration.sh' '$phase' '$EXPECTED_APP_COMMIT' '$EXPECTED_PLAN_HASH'"
+                printf '%s\n' "$MIGRATION_REQUEST" | ssh -T -F "$config" jiashu-aliyun "$remote_command"
               else
-                ssh -T -F "$config" jiashu-aliyun "bash '$remote_dir/run-owner-migration.sh' '$phase' '$EXPECTED_APP_COMMIT' '$EXPECTED_PLAN_HASH'" < /dev/null
+                ssh -T -F "$config" jiashu-aliyun "$remote_command" < /dev/null
               fi
               ;;
             install-docker)

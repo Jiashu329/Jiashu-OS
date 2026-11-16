@@ -100,4 +100,7 @@ async function main() {
     output({ ok: true, phase, migrationId });
   }
 }
-main().catch(() => { process.stderr.write('Owner migration phase failed; inspect its private plan without printing source rows or credentials.\n'); process.exitCode = 1; });
+main().catch(error => {
+  const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{1,80}$/.test(error.code) ? error.code : 'MIGRATION_PHASE_FAILED';
+  output({ ok: false, phase, code }); process.exitCode = 1;
+});

@@ -78,6 +78,7 @@ all candidate triggers, validate integrity/FKs/counts/hashes and preserve the
 selfhost ledger. Close DBs and correctly checkpoint old WAL before cutover.
 
 Post-cutover verify readiness, login, owner business counts and other target user
-isolation. Retain private pre-import backup and a nonsecret receipt. Remove
-temporary private key/export credentials and disable source export after success.
-The source is retained as a recovery copy; avoid writes to both sites after cutover.
+isolation. Retain private pre-import backup, sealed source, its ECS-only recovery
+key and a nonsecret receipt. Remove plaintext staging/export credentials and
+disable source export after success. Restore source writes for its other members;
+the migrating owner should continue recording on the destination.
