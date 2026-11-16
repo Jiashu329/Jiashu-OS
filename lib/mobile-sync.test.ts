@@ -143,6 +143,20 @@ test("iPhone display labels preserve sleep stages and exclude awake time across 
   invalid(upload([segment("未知时间")]), ".state");
 });
 
+test("the iPhone sleep-time label counts as unclassified sleep without duplicating detailed stages", () => {
+  const parsed = parseMobileSyncPayload(upload([
+    segment("睡眠时间", "2026-11-08T23:00:00+08:00", "2026-11-09T02:00:00+08:00"),
+    segment("核心睡眠", "2026-11-09T00:00:00+08:00", "2026-11-09T01:00:00+08:00"),
+    segment("深度睡眠", "2026-11-09T01:00:00+08:00", "2026-11-09T02:00:00+08:00"),
+    segment("清醒时间", "2026-11-09T02:00:00+08:00", "2026-11-09T02:30:00+08:00"),
+    segment("卧床时间", "2026-11-08T22:00:00+08:00", "2026-11-09T03:00:00+08:00"),
+  ]));
+  assert.equal(parsed.measurements.length, 1);
+  assert.equal(parsed.measurements[0].value, 3);
+  assert.deepEqual(parsed.measurements[0].sleepStages, { unspecified: 1, core: 1, deep: 1, rem: 0, awake: 0.5, inBed: 5 });
+  invalid(upload([segment("睡眠时间未知")]), ".state");
+});
+
 test("sleep source, object shape, and segment fields are strict", () => {
   for (const source of ["", " ", "watch\n", 123, "x".repeat(121)]) invalid({ ...base(), sleepReport: { ...report([segment()]), source } }, "sleepReport.source");
   invalid({ ...base(), sleepReport: null }, "sleepReport");

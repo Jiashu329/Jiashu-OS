@@ -261,3 +261,24 @@ test('a 30-day iPhone upload accepts Chinese sleep labels and excludes awake tim
     ['2026-10-12', 2.5, 'iPhone'], ['2026-10-20', 1, 'iPhone'],
   ]);
 });
+
+test('generic iPhone sleep-time labels import only within the requested seven-day window', async () => {
+  const f = fixture();
+  const oldSegment = { state: '睡眠时间', startDate: '2026-10-01T01:00:00+08:00', endDate: '2026-10-01T03:00:00+08:00' };
+  const currentSegment = { state: '睡眠时间', startDate: '2026-11-09T01:00:00+08:00', endDate: '2026-11-09T03:00:00+08:00' };
+  const response = await f.post(upload([oldSegment, currentSegment], 7));
+  assert.equal(response.status, 200);
+  const result = await readImport(response);
+  assert.equal(result.sleepStatus, 'recorded');
+  assert.equal(result.sleepDays, 1);
+  assert.deepEqual(f.writes[0].measurements.map((record) => [measurementDay(record), record.value, record.sleepStages?.unspecified]), [['2026-11-09', 2, 2]]);
+
+  const outside = fixture();
+  const outsideResponse = await outside.post(upload([oldSegment], 7));
+  assert.equal(outsideResponse.status, 200);
+  const outsideResult = await readImport(outsideResponse);
+  assert.equal(outsideResult.sleepStatus, 'no-asleep-data');
+  assert.equal(outsideResult.imported, 0);
+  assert.equal(outsideResult.sleepDays, 0);
+  assert.deepEqual(outside.writes[0].measurements, []);
+});

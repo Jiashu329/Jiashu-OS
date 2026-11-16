@@ -36,12 +36,16 @@ function fixture(t: TestContext, options: { empty?: boolean; holdInitialStatus?:
   const fetch = async (path: string, init: RequestInit = {}) => {
     calls.push({ path, method: init.method ?? 'GET', device: new Headers(init.headers).get('X-Sync-Device'), preview: new Headers(init.headers).get('X-Import-Preview') });
     if (path.startsWith('/api/health?')) return Response.json({ measurements: [], lastSync: null });
+    if (path === '/api/health/import/preview' && server.failure === 'format') return Response.json({ error: '数据格式不正确。', code: 'INVALID_HEALTH_SYNC' }, { status: 400 });
     if (path === '/api/health/import/preview') return Response.json({ preview: { token: 'a'.repeat(64), added: 1, updated: 0, skipped: 0, sourceChanges: 0, manualOverrides: 0, from: '2026-11-12', to: '2026-11-12', metrics: ['步数'], examples: [] } });
     if (path === '/api/health/import' && init.method === 'POST') {
       const failure = server.failure; server.failure = '';
       if (failure === 'network') throw new Error('synthetic interrupted connection');
       if (failure === '401') return Response.json({ error: '请先登录', code: 'SIGN_IN_REQUIRED' }, { status: 401 });
       if (failure === 'revoked') return Response.json({ error: '同步连接已撤销', code: 'SYNC_DEVICE_INVALID' }, { status: 403 });
+      if (failure === 'format') return Response.json({ error: '第 2 段的睡眠状态无法识别。', code: 'INVALID_HEALTH_SYNC',
+        issues: [{ path: 'sleepReport.segments[1].state', message: 'Expected a recognized Apple sleep state' },
+          { path: 'sleepReport.segments[2].state', message: 'Expected a recognized Apple sleep state' }] }, { status: 400 });
       return Response.json({ ok: true, imported: 1, skipped: 0, lastSync: NOW });
     }
     if (path === '/api/health/import') {
@@ -121,4 +125,28 @@ void test('a revoked handoff requires preview and explicit manual confirmation w
   assert.match(f.el('import-error').textContent!, /重新生成同步连接.*手动确认/);
   await f.submit(); assert.equal(imports().length, 1); assert.equal(f.el('import-preview').hidden, false);
   await f.submit(); assert.equal(imports().length, 2); assert.equal(imports()[1].device, null); assert.equal(imports()[1].preview, 'a'.repeat(64));
+});
+
+void test('invalid automatic sleep data preserves its draft and asks for corrected input without suggesting confirmation', async (t) => {
+  const f = fixture(t, { handoff: true, failure: 'format' });
+  await settled(() => !f.el('import-error').hidden);
+  const message = f.el('import-error').textContent!;
+  assert.match(message, /第 2 段的睡眠状态无法识别/);
+  assert.equal(message.match(/Expected a recognized Apple sleep state/g)?.length, 1);
+  assert.match(message, /本次未导入。请修正快捷指令或导入文件后重试/);
+  assert.doesNotMatch(message, /手动确认|自动同步未确认/);
+  assert.equal((f.el('import-json') as HTMLTextAreaElement).value, JSON.stringify(payload));
+  assert.equal(f.el('import-preview').hidden, true);
+  assert.equal(f.el('import-recovery').hidden, true);
+  assert.equal(f.calls.filter(call => call.path === '/api/health/import' && call.method === 'POST').length, 1);
+});
+
+void test('invalid manual previews request corrected input and never reach the import endpoint', async (t) => {
+  const f = fixture(t, { failure: 'format' });
+  f.click('[data-open-import]'); (f.el('import-json') as HTMLTextAreaElement).value = JSON.stringify(payload);
+  await f.submit();
+  assert.match(f.el('import-error').textContent!, /数据格式不正确.*请修正快捷指令或导入文件后重试/);
+  assert.equal(f.el('import-preview').hidden, true);
+  assert.equal((f.el('import-json') as HTMLTextAreaElement).value, JSON.stringify(payload));
+  assert.equal(f.calls.filter(call => call.path === '/api/health/import' && call.method === 'POST').length, 0);
 });
