@@ -7,7 +7,7 @@ app_dir=/opt/jiashu-test
 phase=${1:-}
 expected_sha=${2:-}
 expected_plan=${3:-}
-case "$phase" in prepare|fetch-plan|apply|verify|cleanup) ;; *) die 'Unsupported owner migration phase.';; esac
+case "$phase" in prepare|fetch-plan|unseal-request|plan-envelope|apply|verify|cleanup) ;; *) die 'Unsupported owner migration phase.';; esac
 validate_sha "$expected_sha"
 if [[ "$phase" == apply ]]; then [[ "$expected_plan" =~ ^[a-f0-9]{64}$ ]] || die 'Apply requires the reviewed plan hash.'; fi
 require_managed_dir "$app_dir"

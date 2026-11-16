@@ -55,11 +55,16 @@ foods. Omit auth grants/owner identity, local users, leases and internal metadat
 Public IMDb cache can be omitted and rebuilt. Read table availability from schema
 so older/missing tables are not guessed. Fail rather than silently truncate.
 
-ECS downloads directly from the exact source HTTPS origin with redirects disabled
-and bounded response size. The service and transfer credentials arrive only as a
-hybrid-encrypted `migration_request` workflow input (same RSA/AES envelope scheme,
-header format `jiashu-migration-request-v1`, same other identifiers). Its plaintext
-payload is `{sourceBearer,transferSecret}`. No credential is logged or persisted.
+The service and transfer credentials arrive as a hybrid-encrypted
+`migration_request` workflow input (same RSA/AES envelope scheme, header format
+`jiashu-migration-request-v1`, same other identifiers). Its plaintext payload is
+`{sourceBearer,transferSecret}`. The source returned 403 to a direct ECS request,
+so the workflow captures the ECS-unsealed credentials in a private memory pipe
+and relays the request from its runner. The runner only handles credentials and
+the destination-sealed ciphertext, and never decrypts personal data. It calls only
+the exact source HTTPS origin with redirects disabled and bounded response size.
+No credential is logged or persisted; the encrypted dataset streams over SSH to
+the ECS-only decryption and preview phase without any Artifact.
 
 Importer verifies envelope, header/fingerprint, source hashes, allowed table names,
 columns and owner scope. Explicitly map only structured identity columns from the

@@ -12,6 +12,11 @@ const phase = process.argv[2];
 const digest = value => createHash('sha256').update(value).digest('hex');
 const output = value => process.stdout.write(JSON.stringify(value) + '\n');
 const privatePath = directory + '/private-key.pem';
+async function stdinJSON(maximumBytes) {
+  let raw = '';
+  for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > maximumBytes) throw new Error(); }
+  return JSON.parse(raw);
+}
 const readJSON = name => JSON.parse(readFileSync(directory + '/' + name, 'utf8'));
 function writeJSON(name, value) {
   const temporary = directory + '/' + name + '.next';
@@ -38,7 +43,7 @@ function inventory() {
   } finally { db.close(); }
 }
 async function main() {
-  if (!['prepare', 'fetch-plan', 'apply-candidate', 'verify', 'cleanup'].includes(phase)) throw new Error();
+  if (!['prepare', 'fetch-plan', 'unseal-request', 'plan-envelope', 'apply-candidate', 'verify', 'cleanup'].includes(phase)) throw new Error();
   if (process.env.APP_OWNER_USER_ID !== targetOwnerId || process.env.SELFHOST_DB_PATH !== databasePath) throw new Error();
   if (phase === 'prepare') {
     if (!existsSync(privatePath)) {
@@ -53,6 +58,19 @@ async function main() {
     return;
   }
   const { decryptMigrationRequest, decryptOwnerMigrationEnvelope, planOwnerMigration, buildOwnerMigrationCandidate, verifyOwnerMigration } = await import('./owner-migration-import.ts');
+  if (phase === 'unseal-request') {
+    // This stdout is captured only by the private SSH-to-relay pipe. The workflow
+    // must never stream it to its log or persist the resulting credentials.
+    const request = decryptMigrationRequest(await stdinJSON(16000), readFileSync(privatePath, 'utf8'));
+    process.stdout.write(JSON.stringify(request)); return;
+  }
+  async function planEnvelope(envelope) {
+    const snapshot = decryptOwnerMigrationEnvelope(envelope, readFileSync(privatePath, 'utf8'));
+    writeJSON('source-envelope.json', envelope); writeJSON('source-snapshot.json', snapshot);
+    const plan = await planOwnerMigration({ snapshot, databasePath, masterKey: process.env.AI_SETTINGS_ENCRYPTION_KEY, workDirectory: directory });
+    writeJSON('plan.json', plan); output({ ok: true, phase, plan });
+  }
+  if (phase === 'plan-envelope') { await planEnvelope(await stdinJSON(48 * 1024 * 1024)); return; }
   if (phase === 'fetch-plan') {
     let raw = '';
     for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > 16000) throw new Error(); }
@@ -65,10 +83,7 @@ async function main() {
       const chunks = []; let size = 0;
       for await (const part of response.body) { size += part.length; if (size > 48 * 1024 * 1024) throw new Error(); chunks.push(part); }
       const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      const snapshot = await decryptOwnerMigrationEnvelope(envelope, readFileSync(privatePath, 'utf8'));
-      writeJSON('source-envelope.json', envelope); writeJSON('source-snapshot.json', snapshot);
-      const plan = await planOwnerMigration({ snapshot, databasePath, masterKey: process.env.AI_SETTINGS_ENCRYPTION_KEY, workDirectory: directory });
-      writeJSON('plan.json', plan); output({ ok: true, phase, plan });
+      await planEnvelope(envelope);
     } finally { clearTimeout(timeout); }
     return;
   }

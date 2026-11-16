@@ -114,7 +114,14 @@ jobs:
               if [[ -f selfhost/owner-migration-import.ts ]]; then scp -F "$config" selfhost/owner-migration-import.ts "jiashu-aliyun:$remote_dir/"; fi
               printf -v remote_command '%q ' bash "$remote_dir/run-owner-migration.sh" "$phase" "$EXPECTED_APP_COMMIT" "$EXPECTED_PLAN_HASH"
               if [[ "$phase" == fetch-plan ]]; then
-                printf '%s\n' "$MIGRATION_REQUEST" | ssh -T -F "$config" jiashu-aliyun "$remote_command"
+                printf -v remote_unseal '%q ' bash "$remote_dir/run-owner-migration.sh" unseal-request "$EXPECTED_APP_COMMIT" ''
+                printf -v remote_plan '%q ' bash "$remote_dir/run-owner-migration.sh" plan-envelope "$EXPECTED_APP_COMMIT" ''
+                # Finish the first locked SSH phase before starting the next.
+                # The credentials stay in runner memory; only the sealed dataset
+                # is streamed onward. No raw dataset or credential is an artifact.
+                credentials=$(printf '%s\n' "$MIGRATION_REQUEST" | ssh -T -F "$config" jiashu-aliyun "$remote_unseal")
+                printf '%s' "$credentials" | node deploy/aliyun/relay-owner-export.mjs | ssh -T -F "$config" jiashu-aliyun "$remote_plan"
+                unset credentials
               else
                 ssh -T -F "$config" jiashu-aliyun "$remote_command" < /dev/null
               fi
