@@ -4,6 +4,7 @@ import { normalizeLocalEmail } from '../lib/local-users.ts';
 import type { LocalUser } from '../lib/local-users.ts';
 import { isValidPasswordHash, verifyPassword } from './password-hash.ts';
 import { renderSelfhostLoginPage } from './login-page.ts';
+import { createNativeGateway } from './native-auth.ts';
 export { hashPassword, verifyPassword } from './password-hash.ts';
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeader, OutgoingHttpHeaders, ServerResponse } from 'node:http';
 
@@ -243,10 +244,14 @@ export interface SelfhostGatewayOptions {
 /** The downstream listener only receives gateway-owned identity and canonical origin headers. */
 export function createSelfhostGateway(config: SelfhostAuthConfig, downstream: (req: IncomingMessage, res: ServerResponse) => unknown, options: SelfhostGatewayOptions) {
   const now = options.now ?? Date.now, limiter = options.limiter ?? new SelfhostLoginLimiter(); let verifications = 0, authenticationGeneration = 0;
+  const native = createNativeGateway(config, downstream, options, limiter, sanitizedSelfhostHeaders);
   return async function gateway(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const raw = req.url ?? '/';
       if (!raw.startsWith('/') || raw.startsWith('//') || raw.length > 16384 || /[\u0000-\u001f\u007f\\]/.test(raw)) { respond(res, 400, '请求地址无效。'); return; }
+      if (raw === '/api/native' || raw.startsWith('/api/native/') || raw.startsWith('/api/native?')) {
+        await native(req, res); return;
+      }
       const url = new URL(raw, config.origin), names = selfhostCookieNames(config), cookies = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
       const checkedAt = now(), requestGeneration = authenticationGeneration, claims = validToken(config, 'session', readCookie(cookies, names.session), checkedAt);
       let user: LocalUser | null = null;
