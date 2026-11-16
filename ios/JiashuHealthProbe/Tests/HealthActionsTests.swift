@@ -59,4 +59,27 @@ final class HealthActionsTests: XCTestCase {
         XCTAssertEqual(review.metrics[0].previousAverage, 0)
         XCTAssertEqual(review.metrics[0].currentRecordedDays, 0)
     }
+
+    func testNutritionDayDecodesUnknownMacrosAndConfirmedZero() throws {
+        let json = #"{"date":"2026-11-16","entries":[{"id":"meal-1","meal":"lunch","name":"食物","portion":"一份","note":"","calories":"0.0","carbs":null,"protein":"2.0","fat":null,"deleted":false}],"summary":{"entryCount":1,"knownCount":1,"unknownCount":0,"knownCalories":"0.0","nutrients":{"calories":{"total":"0.0","knownCount":1,"unknownCount":0},"carbs":{"total":null,"knownCount":0,"unknownCount":1},"protein":{"total":"2.0","knownCount":1,"unknownCount":0},"fat":{"total":null,"knownCount":0,"unknownCount":1}}},"dayStatus":{"complete":false,"meals":{"breakfast":"unrecorded","lunch":"recorded","dinner":"unrecorded","snack":"unrecorded"}}}"#
+        let day = try JSONDecoder().decode(NativeNutritionDay.self, from: Data(json.utf8))
+        XCTAssertEqual(day.entries[0].calories, "0.0")
+        XCTAssertNil(day.entries[0].carbs)
+        XCTAssertEqual(day.summary.nutrients["carbs"]?.unknownCount, 1)
+        XCTAssertNil(day.summary.nutrients["carbs"]?.total)
+        XCTAssertFalse(day.dayStatus.complete)
+    }
+
+    func testQuickNutritionRetainsEachNutrientsProvenance() throws {
+        let now = date("2026-11-16T08:00:00Z")
+        let entry = try NativePendingEntry.nutrition(name: "食物", meal: .lunch, portion: "", calories: "", note: "", date: now, now: now, carbs: "0", protein: "12.5")
+        let data = try object(entry)
+        XCTAssertTrue(data["calories"] is NSNull)
+        XCTAssertEqual(data["carbs"] as? String, "0")
+        XCTAssertEqual(data["protein"] as? String, "12.5")
+        XCTAssertTrue(data["fat"] is NSNull)
+        let origins = try XCTUnwrap(data["provenance"] as? [String: [String: String]])
+        XCTAssertEqual(origins["carbs"]?["source"], "manual")
+        XCTAssertEqual(origins["fat"]?["source"], "unknown")
+    }
 }

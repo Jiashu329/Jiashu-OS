@@ -26,7 +26,7 @@ struct ContentView: View {
         }
         .tint(.indigo)
         .task { await model.restore() }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await model.becameActive() } } }
+        .onChange(of: scenePhase) { _, phase in if phase == .active && !model.restoring { Task { await model.becameActive() } } }
         .alert("操作未完成", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("知道了") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
@@ -94,8 +94,8 @@ private enum MetricDisplay {
     static func source(_ value: String?) -> String {
         guard let value else { return "无来源" }
         if value == "apple-health-merged" { return "苹果健康 · 系统合并" }
-        if value.hasPrefix("apple-health-sleep:") { return "苹果健康 · 睡眠来源 " + value.suffix(6) }
-        if value.hasPrefix("apple-health-mass:") { return "苹果健康 · 测量来源 " + value.suffix(6) }
+        if value.hasPrefix("apple-health-sleep:") { return "苹果健康 · 睡眠来源 " + String(value.suffix(6)) }
+        if value.hasPrefix("apple-health-mass:") { return "苹果健康 · 测量来源 " + String(value.suffix(6)) }
         if value.hasPrefix("manual") { return "手工记录" }
         return value
     }
@@ -139,6 +139,13 @@ private struct NativeTodayView: View {
                     else { ContentUnavailableView("暂未取得总览", systemImage: "heart.text.square", description: Text("下拉刷新，或先连接苹果健康。")) }
                     Button { quickEntry = true } label: { Label("记饮食或补记健康数据", systemImage: "plus.circle.fill").frame(maxWidth: .infinity, minHeight: 34) }
                         .buttonStyle(.borderedProminent).controlSize(.large)
+                    if let session = model.session {
+                        NavigationLink {
+                            NativeNutritionDayView(api: model.api, token: session.accessToken, userID: session.user.id) { await model.reload() }
+                        } label: {
+                            Label("查看饮食记录与营养小计", systemImage: "fork.knife").frame(maxWidth: .infinity, minHeight: 34)
+                        }.buttonStyle(.bordered).controlSize(.large)
+                    }
                     Button { tab = .review } label: {
                         HStack {
                             Image(systemName: "calendar.badge.clock").font(.title2)

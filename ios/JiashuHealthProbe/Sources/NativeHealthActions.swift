@@ -125,23 +125,28 @@ struct NativePendingEntry: Codable, Equatable {
     }
 
     static func nutrition(name: String, meal: QuickEntryMeal, portion: String, calories: String,
-                          note: String, date: Date, now: Date = Date(), requestID: UUID = UUID()) throws -> NativePendingEntry {
+                          note: String, date: Date, now: Date = Date(), requestID: UUID = UUID(),
+                          carbs: String = "", protein: String = "", fat: String = "") throws -> NativePendingEntry {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let calorieText = calories.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 100, portion.count <= 100, note.count <= 500,
               NativeActionDates.day(date) <= NativeActionDates.day(now), NativeActionDates.day(date) >= "1970-01-01" else {
             throw NativeActionInputError.invalid("请填写食物名称并核对日期，名称最多100字，备注最多500字。")
         }
-        if !calorieText.isEmpty {
-            guard calorieText.range(of: #"^\d+(?:\.\d)?$"#, options: .regularExpression) != nil,
-                  let value = Double(calorieText), value.isFinite, value <= 20_000 else {
-                throw NativeActionInputError.invalid("热量请填写0–20000之间的数字，最多一位小数；未知时留空。")
+        var body: [String: Any] = ["date": NativeActionDates.day(date), "meal": meal.rawValue,
+                                   "name": name, "portion": portion, "note": note]
+        var provenance: [String: Any] = [:]
+        for (key, supplied) in [("calories", calories), ("carbs", carbs), ("protein", protein), ("fat", fat)] {
+            let text = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                guard text.range(of: #"^\d+(?:\.\d)?$"#, options: .regularExpression) != nil,
+                      let value = Double(text), value.isFinite, value <= 20_000 else {
+                    throw NativeActionInputError.invalid("营养值请填写0–20000之间的数字，最多一位小数；未知时留空。")
+                }
             }
+            body[key] = text.isEmpty ? NSNull() : text as Any
+            provenance[key] = ["source": text.isEmpty ? "unknown" : "manual"]
         }
-        let body: [String: Any] = ["date": NativeActionDates.day(date), "meal": meal.rawValue,
-                                   "name": name, "portion": portion, "note": note,
-                                   "calories": calorieText.isEmpty ? NSNull() : calorieText as Any,
-                                   "provenance": ["calories": ["source": calorieText.isEmpty ? "unknown" : "manual"]]]
+        body["provenance"] = provenance
         return NativePendingEntry(requestID: requestID.uuidString.lowercased(), path: "health/nutrition",
                                   label: meal.title + " · " + name,
                                   body: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]))
@@ -243,7 +248,45 @@ struct NativeWeeklyActionEnvelope: Decodable {
     let action: NativeWeeklyActionEntry?
 }
 
+struct NativeNutritionDay: Decodable {
+    struct Entry: Decodable, Identifiable {
+        let id: String
+        let meal: String
+        let name: String
+        let portion: String
+        let note: String
+        let calories: String?
+        let carbs: String?
+        let protein: String?
+        let fat: String?
+        let deleted: Bool
+    }
+    struct Nutrient: Decodable {
+        let total: String?
+        let knownCount: Int
+        let unknownCount: Int
+    }
+    struct Summary: Decodable {
+        let entryCount: Int
+        let knownCount: Int
+        let unknownCount: Int
+        let knownCalories: String?
+        let nutrients: [String: Nutrient]
+    }
+    struct DayStatus: Decodable {
+        let complete: Bool
+        let meals: [String: String]
+    }
+    let date: String
+    let entries: [Entry]
+    let summary: Summary
+    let dayStatus: DayStatus
+}
+
 extension NativeAPI {
+    func nutritionDay(token: String, date: String) async throws -> NativeNutritionDay {
+        try await request(path: "health/nutrition?date=" + date, token: token)
+    }
     func saveQuickEntry(token: String, entry: NativePendingEntry) async throws -> NativeEntryReceipt {
         try await request(path: entry.path, method: "POST", token: token, body: entry.body,
                           headers: ["Idempotency-Key": entry.requestID])

@@ -60,14 +60,6 @@ jobs:
           TEST_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
         run: |
           xcrun simctl bootstatus "$TEST_SIMULATOR_ID" -b
-          xcodebuild build-for-testing \
-            -project ios/JiashuHealthProbe/JiashuHealthProbe.xcodeproj \
-            -scheme JiashuHealthProbe \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=$TEST_SIMULATOR_ID" \
-            -derivedDataPath "$RUNNER_TEMP/healthprobe-derived" \
-            -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
           # Simulator-only ad-hoc identity gives the app a real Keychain access
           # group. No Apple account, certificate or device signing is involved.
           export NATIVE_SIM_ENTITLEMENTS="$RUNNER_TEMP/native-simulator.entitlements"
@@ -85,10 +77,7 @@ jobs:
           with open(os.environ['NATIVE_SIM_ENTITLEMENTS'], 'wb') as output:
               plistlib.dump(entitlements, output)
           PY
-          NATIVE_SIM_APP="$RUNNER_TEMP/healthprobe-derived/Build/Products/Debug-iphonesimulator/JiashuHealthProbe.app"
-          codesign --force --sign - "$NATIVE_SIM_APP/PlugIns/JiashuHealthProbeTests.xctest"
-          codesign --force --sign - --entitlements "$NATIVE_SIM_ENTITLEMENTS" "$NATIVE_SIM_APP"
-          xcodebuild test-without-building \
+          xcodebuild test \
             -project ios/JiashuHealthProbe/JiashuHealthProbe.xcodeproj \
             -scheme JiashuHealthProbe \
             -sdk iphonesimulator \
@@ -96,7 +85,9 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/healthprobe-derived" \
             -resultBundlePath "$RUNNER_TEMP/healthprobe-tests.xcresult" \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_ENTITLEMENTS="$NATIVE_SIM_ENTITLEMENTS"
 
       - name: Save test results
         uses: actions/upload-artifact@v4

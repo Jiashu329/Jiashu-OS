@@ -17,10 +17,23 @@ struct HealthQuickEntryView: View {
     @State private var foodName = ""
     @State private var meal: QuickEntryMeal = .lunch
     @State private var portion = ""
+    @State private var carbs = ""
+    @State private var protein = ""
+    @State private var fat = ""
     @State private var pending: NativePendingEntry?
     @State private var isSaving = false
     @State private var hasLoaded = false
     @State private var message: String?
+
+    init(api: NativeAPI, token: String, userID: String, defaultIsNutrition: Bool = false,
+         initialDate: Date = Date(), onSaved: @escaping () async -> Void) {
+        self.api = api
+        self.token = token
+        self.userID = userID
+        self.onSaved = onSaved
+        _isNutrition = State(initialValue: defaultIsNutrition)
+        _date = State(initialValue: initialDate)
+    }
 
     var body: some View {
         NavigationStack {
@@ -49,6 +62,9 @@ struct HealthQuickEntryView: View {
                             }
                             TextField("份量，例如一碗、200克", text: $portion)
                             TextField("热量（千卡，未知时留空）", text: $value).keyboardType(.decimalPad)
+                            TextField("碳水化合物（克，未知时留空）", text: $carbs).keyboardType(.decimalPad)
+                            TextField("蛋白质（克，未知时留空）", text: $protein).keyboardType(.decimalPad)
+                            TextField("脂肪（克，未知时留空）", text: $fat).keyboardType(.decimalPad)
                         }
                         Section {
                             Text("未知热量保持未知；填写0表示已确认这份食物的热量为0。此处记录本人核对的值，不自动估算。")
@@ -112,7 +128,8 @@ struct HealthQuickEntryView: View {
         message = nil
         do {
             let entry = try isNutrition
-                ? NativePendingEntry.nutrition(name: foodName, meal: meal, portion: portion, calories: value, note: note, date: date)
+                ? NativePendingEntry.nutrition(name: foodName, meal: meal, portion: portion, calories: value,
+                    note: note, date: date, carbs: carbs, protein: protein, fat: fat)
                 : NativePendingEntry.health(metric: metric, value: value, date: date, time: time, reason: note)
             try NativePendingEntryStore(userID: userID).save(entry)
             pending = entry
@@ -147,6 +164,122 @@ struct HealthQuickEntryView: View {
         } catch {
             message = error.localizedDescription + " 原操作已保留，请稍后继续核对。"
         }
+    }
+}
+
+@MainActor
+struct NativeNutritionDayView: View {
+    let api: NativeAPI
+    let token: String
+    let userID: String
+    let onSaved: () async -> Void
+
+    @State private var date = Date()
+    @State private var records: NativeNutritionDay?
+    @State private var loading = false
+    @State private var errorMessage: String?
+    @State private var showingEntry = false
+
+    private var selectedDay: String { NativeActionDates.day(date) }
+
+    var body: some View {
+        List {
+            Section {
+                DatePicker("记录日期", selection: $date, in: ...Date(), displayedComponents: .date)
+            }
+            if loading { Section { ProgressView("正在读取饮食…") } }
+            if let errorMessage {
+                Section {
+                    Text(errorMessage).foregroundStyle(.red)
+                    Button("重新读取") { Task { await load() } }
+                }
+            }
+            if let records {
+                Section("当天记录 · " + records.date) {
+                    LabeledContent("食物记录", value: "\(records.summary.entryCount)项")
+                    LabeledContent("已知热量小计", value: amount(records.summary.knownCalories, unit: "千卡"))
+                    Text("热量已知\(records.summary.knownCount)项，未知\(records.summary.unknownCount)项。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(records.dayStatus.complete ? "已确认全天记录完整" : "尚未确认全天记全")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    nutrientRow("碳水化合物", key: "carbs", in: records)
+                    nutrientRow("蛋白质", key: "protein", in: records)
+                    nutrientRow("脂肪", key: "fat", in: records)
+                }
+                ForEach(QuickEntryMeal.allCases) { meal in
+                    Section(meal.title) {
+                        let entries = records.entries.filter { $0.meal == meal.rawValue && !$0.deleted }
+                        if entries.isEmpty {
+                            Text(records.dayStatus.meals[meal.rawValue] == "skipped" ? "已标记未进食" : "尚无食物记录")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(entries) { entry in
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text(entry.name).fontWeight(.medium)
+                                    Spacer()
+                                    Text(amount(entry.calories, unit: "千卡"))
+                                }
+                                if !entry.portion.isEmpty { Text(entry.portion).font(.footnote).foregroundStyle(.secondary) }
+                                Text("碳水 " + amount(entry.carbs, unit: "克") + " · 蛋白质 " + amount(entry.protein, unit: "克") + " · 脂肪 " + amount(entry.fat, unit: "克"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if !entry.note.isEmpty { Text(entry.note).font(.footnote).foregroundStyle(.secondary) }
+                            }.padding(.vertical, 3)
+                        }
+                    }
+                }
+                Section {
+                    Text("以上只汇总已记录且已知的营养值。部分记录和未知值不能代表全天真实摄入。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("饮食记录")
+        .navigationBarTitleDisplayMode(.inline)
+        .environment(\.timeZone, NativeActionDates.timeZone)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("记饮食", systemImage: "plus") { showingEntry = true }
+            }
+        }
+        .task(id: selectedDay) { await load() }
+        .refreshable { await load() }
+        .sheet(isPresented: $showingEntry) {
+            HealthQuickEntryView(api: api, token: token, userID: userID, defaultIsNutrition: true, initialDate: date) {
+                await load()
+                await onSaved()
+            }
+        }
+    }
+
+    private func amount(_ value: String?, unit: String) -> String {
+        guard let value else { return "未知" }
+        return value + " " + unit
+    }
+    private func nutrientRow(_ title: String, key: String, in records: NativeNutritionDay) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            LabeledContent(title + "已知小计", value: amount(records.summary.nutrients[key]?.total, unit: "克"))
+            if let nutrient = records.summary.nutrients[key] {
+                Text("已知\(nutrient.knownCount)项 · 未知\(nutrient.unknownCount)项")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    private func load() async {
+        let day = selectedDay
+        loading = true
+        records = nil
+        errorMessage = nil
+        do {
+            let result = try await api.nutritionDay(token: token, date: day)
+            guard !Task.isCancelled, selectedDay == day else { return }
+            guard result.date == day else { throw NativeAPIError.invalidResponse }
+            records = result
+        } catch {
+            guard !Task.isCancelled, selectedDay == day else { return }
+            errorMessage = error.localizedDescription
+        }
+        if selectedDay == day { loading = false }
     }
 }
 

@@ -93,7 +93,13 @@ final class NativeAppModel: ObservableObject {
     }
 
     func becameActive() async {
-        guard !activating, let current = session else { return }
+        guard !activating else { return }
+        guard let current = session else {
+            // Keychain may have been unavailable before the first device unlock.
+            // A later foreground activation can restore it without a new login.
+            if started { started = false; await restore() }
+            return
+        }
         activating = true
         let epoch = generation
         defer { if generation == epoch { activating = false } }
