@@ -96,6 +96,7 @@ os.chmod(path,0o600)
 PY
 worker apply-candidate "$expected_plan"
 [[ -f "$work/candidate.sqlite3" && ! -L "$work/candidate.sqlite3" && $(stat -c '%u:%g' "$work/candidate.sqlite3") == "$identity" ]] || die 'Invalid migration candidate.'
+[[ $(stat -c '%d' "$work/candidate.sqlite3") == $(stat -c '%d' "$app_dir/data") ]] || die 'Candidate and data must share a filesystem for atomic cutover.'
 # No app connections remain. Ensure old WAL pages are checkpointed before the
 # new single-file candidate takes this basename; never attach an old WAL to it.
 compose "$current_env" run --rm --no-deps -T --entrypoint node app --input-type=module -e '
