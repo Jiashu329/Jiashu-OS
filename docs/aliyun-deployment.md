@@ -75,6 +75,14 @@ docker build -f selfhost/Dockerfile \
 
 首次接入时，在 **Aliyun server setup** 选择 `inspect`，审阅脱敏后的虚拟主机和 include 结构，并记录 `expectedHash`。应用就绪、同提交检查全部通过后，选择 `configure-web` 并填写该哈希。工具只接受已审阅的配置结构；配置变化时停止，先备份再检查和重载 Nginx。它保留 apex 主页及证书，仅为 www 复制原 HTTPS 虚拟主机并替换根路径，同时保留业务接口 include。后续自动更新不执行该切换步骤。[location 示例](../deploy/aliyun/nginx-location.example.conf)仅供参考，不能当作完整配置覆盖现站。
 
+## iPhone 步数测试 App
+
+个人测试工程位于 [`ios/JiashuHealthProbe`](../ios/JiashuHealthProbe/README.md)，默认同步目标为本阿里云站 `https://www.treefund.asia`。用 Mac 的 Xcode 打开工程，选择自己的 Personal Team 后在真实 iPhone 上运行。App 使用 HealthKit 的系统合并统计读取步数。
+
+先在 App 点击“打开阿里云网站并登录”，用本站邮箱和密码在 Safari 登录，再返回 App 读取并点击“在阿里云网站预览导入”。健康数据保留在 URL fragment 中，不放入登录返回地址或查询参数；如果首次登录后没有显示本次导入，回 App 再次打开预览。也可导出 JSON，在已登录的网站选择文件导入。
+
+此流程复用当前登录会话、导入预览和来源变更确认，不提供后台自动上传。GitHub 的 `iOS HealthKit checks` 在 macOS 模拟器构建工程并运行日期与导出测试；真实健康数据仍需在自己的 iPhone 核对。此独立检查不会改变阿里云原有四项部署门槛。
+
 ## 自动更新顺序
 
 本仓库在测试站验证后通过 `deploy/aliyun/activation.json` 激活自动更新，配置仅匹配 `Jiashu329/Jiashu-OS`，无需手动填写 GitHub 变量。复制仓库时不会自动激活其他仓库。若要暂停，可在 **Settings → Secrets and variables → Actions → Variables** 设置 `ALIYUN_DEPLOY_ENABLED=false`；删除该覆盖项或设为 `true` 可恢复。
