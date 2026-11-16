@@ -102,7 +102,7 @@ export async function relayOwnerExport({ input = process.stdin, fetchAPI = fetch
     if (controller.signal.aborted) fail('source', 'SOURCE_TIMEOUT');
     if (error instanceof OwnerExportRelayError) throw error;
     fail('source', 'SOURCE_UNAVAILABLE');
-  } finally { clearTimeout(timer); request = undefined; }
+  } finally { clearTimeout(timer); controller.abort(); request = undefined; }
 }
 
 export async function runOwnerExportRelay(options = {}) {

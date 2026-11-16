@@ -104,6 +104,15 @@ void test('fetch deadline aborts and exposes only a timeout code', async () => {
   }) }), diagnostic('SOURCE_TIMEOUT'));
 });
 
+void test('rejecting a response before reading its body still cancels the fetch connection', async () => {
+  let signal;
+  await assert.rejects(relayOwnerExport({ input: input(credentials), fetchAPI: async (_url, options) => {
+    signal = options.signal;
+    return new Response('untrusted body', { headers: { 'Content-Type': 'text/html' } });
+  } }), diagnostic('INVALID_CONTENT_TYPE'));
+  assert.equal(signal.aborted, true);
+});
+
 void test('CLI rejects arguments or invalid stdin with empty stdout and safe JSON-only stderr', () => {
   for (const args of [[], ['unexpected']]) {
     const result = spawnSync(process.execPath, [new URL('./relay-owner-export.mjs', import.meta.url).pathname, ...args], {
