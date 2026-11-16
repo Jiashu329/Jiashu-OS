@@ -5,11 +5,24 @@ on:
       operation:
         description: Server inspection, read-only live verification or one-time setup
         type: choice
-        options: [inspect, verify, install-docker, configure-web, inspect-retired, retire-old, transport-test]
+        options: [inspect, verify, install-docker, configure-web, inspect-retired, retire-old, transport-test, migration-prepare, migration-fetch-plan, migration-apply, migration-verify, migration-cleanup]
         default: inspect
       expected_config_hash:
         description: Reviewed Nginx or retired-service plan SHA-256
         type: string
+        required: false
+      migration_request:
+        description: RSA/AES sealed request; never provide a plaintext token or data
+        type: string
+        required: false
+      expected_plan_hash:
+        description: Reviewed owner migration plan SHA-256; required for apply
+        type: string
+        required: false
+      expected_app_commit:
+        description: Running application commit reviewed for this migration
+        type: string
+        default: 65285905bc2738f57576e97f76ce8f8ea240321a
         required: false
 permissions:
   contents: read
@@ -19,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   setup:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/codex/aliyun-data-migration' && startsWith(inputs.operation, 'migration-'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -66,6 +79,9 @@ jobs:
           ARTIFACT_ID: ${{ steps.probe.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.probe.outputs.artifact-digest }}
           GITHUB_TOKEN: ${{ github.token }}
+          MIGRATION_REQUEST: ${{ inputs.migration_request }}
+          EXPECTED_PLAN_HASH: ${{ inputs.expected_plan_hash }}
+          EXPECTED_APP_COMMIT: ${{ inputs.expected_app_commit }}
         run: |
           set -euo pipefail
           config=$(bash deploy/aliyun/ssh-config.sh)
@@ -77,6 +93,23 @@ jobs:
             verify)
               [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
               ssh -T -F "$config" jiashu-aliyun "python3 - --expected-commit '$EXPECTED_COMMIT'" < deploy/aliyun/verify-live.py
+              ;;
+            migration-prepare|migration-fetch-plan|migration-apply|migration-verify|migration-cleanup)
+              [[ "$EXPECTED_APP_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              phase=${OPERATION#migration-}
+              if [[ "$phase" == apply ]]; then [[ "$EXPECTED_PLAN_HASH" =~ ^[a-f0-9]{64}$ ]]; fi
+              if [[ "$phase" == fetch-plan ]]; then [[ -n "$MIGRATION_REQUEST" && ${#MIGRATION_REQUEST} -le 16000 ]]; fi
+              remote_dir=$(ssh -T -F "$config" jiashu-aliyun 'umask 077; mktemp -d /tmp/jiashu-owner-migration.XXXXXXXX')
+              [[ "$remote_dir" =~ ^/tmp/jiashu-owner-migration\.[A-Za-z0-9]+$ ]]
+              cleanup_migration() { ssh -T -F "$config" jiashu-aliyun "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
+              trap cleanup_migration EXIT
+              scp -F "$config" deploy/aliyun/common.sh deploy/aliyun/run-owner-migration.sh deploy/aliyun/owner-migration-worker.mjs "jiashu-aliyun:$remote_dir/"
+              if [[ -f selfhost/owner-migration-import.ts ]]; then scp -F "$config" selfhost/owner-migration-import.ts "jiashu-aliyun:$remote_dir/"; fi
+              if [[ "$phase" == fetch-plan ]]; then
+                printf '%s\n' "$MIGRATION_REQUEST" | ssh -T -F "$config" jiashu-aliyun "bash '$remote_dir/run-owner-migration.sh' '$phase' '$EXPECTED_APP_COMMIT' '$EXPECTED_PLAN_HASH'"
+              else
+                ssh -T -F "$config" jiashu-aliyun "bash '$remote_dir/run-owner-migration.sh' '$phase' '$EXPECTED_APP_COMMIT' '$EXPECTED_PLAN_HASH'" < /dev/null
+              fi
               ;;
             install-docker)
               ssh -T -F "$config" jiashu-aliyun 'bash -s -- --install' < deploy/aliyun/install-docker.sh
