@@ -66,6 +66,12 @@ jobs:
         run: |
           node deploy/aliyun/check-ci.mjs
           grep -qx 'ready=true' "$GITHUB_OUTPUT"
+      - name: Validate owner migration code
+        if: startsWith(inputs.operation, 'migration-')
+        run: |
+          bash -n deploy/aliyun/run-owner-migration.sh
+          node --check deploy/aliyun/owner-migration-worker.mjs
+          if [[ -f selfhost/owner-migration-import.test.ts ]]; then node --test selfhost/owner-migration-import.test.ts; fi
       - name: Run the selected setup step
         env:
           ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
