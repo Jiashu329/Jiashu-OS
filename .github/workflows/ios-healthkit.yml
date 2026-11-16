@@ -60,7 +60,35 @@ jobs:
           TEST_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
         run: |
           xcrun simctl bootstatus "$TEST_SIMULATOR_ID" -b
-          xcodebuild test \
+          xcodebuild build-for-testing \
+            -project ios/JiashuHealthProbe/JiashuHealthProbe.xcodeproj \
+            -scheme JiashuHealthProbe \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$TEST_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/healthprobe-derived" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+          # Simulator-only ad-hoc identity gives the app a real Keychain access
+          # group. No Apple account, certificate or device signing is involved.
+          export NATIVE_SIM_ENTITLEMENTS="$RUNNER_TEMP/native-simulator.entitlements"
+          python3 - <<'PY'
+          import os
+          import plistlib
+          with open('ios/JiashuHealthProbe/Config/JiashuHealthProbe.entitlements', 'rb') as source:
+              entitlements = plistlib.load(source)
+          entitlements.update({
+              'application-identifier': 'JIASHUCI00.com.jiashu.healthprobe',
+              'keychain-access-groups': ['JIASHUCI00.com.jiashu.healthprobe'],
+              'com.apple.developer.team-identifier': 'JIASHUCI00',
+              'get-task-allow': True,
+          })
+          with open(os.environ['NATIVE_SIM_ENTITLEMENTS'], 'wb') as output:
+              plistlib.dump(entitlements, output)
+          PY
+          NATIVE_SIM_APP="$RUNNER_TEMP/healthprobe-derived/Build/Products/Debug-iphonesimulator/JiashuHealthProbe.app"
+          codesign --force --sign - "$NATIVE_SIM_APP/PlugIns/JiashuHealthProbeTests.xctest"
+          codesign --force --sign - --entitlements "$NATIVE_SIM_ENTITLEMENTS" "$NATIVE_SIM_APP"
+          xcodebuild test-without-building \
             -project ios/JiashuHealthProbe/JiashuHealthProbe.xcodeproj \
             -scheme JiashuHealthProbe \
             -sdk iphonesimulator \
@@ -78,3 +106,20 @@ jobs:
           path: ${{ runner.temp }}/healthprobe-tests.xcresult
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Capture the signed-out native screen
+        env:
+          TEST_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
+        run: |
+          xcrun simctl install "$TEST_SIMULATOR_ID" "$RUNNER_TEMP/healthprobe-derived/Build/Products/Debug-iphonesimulator/JiashuHealthProbe.app"
+          xcrun simctl terminate "$TEST_SIMULATOR_ID" com.jiashu.healthprobe || true
+          xcrun simctl launch "$TEST_SIMULATOR_ID" com.jiashu.healthprobe
+          sleep 3
+          xcrun simctl io "$TEST_SIMULATOR_ID" screenshot "$RUNNER_TEMP/native-login.png"
+
+      - name: Save anonymous app preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-login-preview
+          path: ${{ runner.temp }}/native-login.png
+          retention-days: 7

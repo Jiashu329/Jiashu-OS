@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct PendingHealthImport: Identifiable {
     let id = UUID()
@@ -32,6 +33,11 @@ final class NativeAppModel: ObservableObject {
     private var started = false
     private var activating = false
     private var observationsStarted = false
+    private var observationStartID: UUID?
+    private var syncOperation: Task<Void, Never>?
+    private var syncOperationID: UUID?
+    private var syncAgain = false
+    private var loadID = UUID()
     private var lastAutomaticAttempt: Date?
 
     init(api: NativeAPI = NativeAPI(), sessions: NativeSessionStore = NativeSessionStore(), reader: HealthKitReader? = nil) {
@@ -46,17 +52,25 @@ final class NativeAppModel: ObservableObject {
     func restore() async {
         guard !started else { return }
         started = true
+        let epoch = generation
         defer { restoring = false }
         do {
             guard let stored = try sessions.load() else { return }
+            session = stored
+            autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(stored.user.id))
+            // Register restored HealthKit observers before waiting for network
+            // calls, including when iOS cold-launches us for a health update.
+            if autoSyncEnabled { await observeHealth() }
             let valid = try await api.refresh(token: stored.accessToken)
+            guard isCurrent(stored.user.id, epoch) else { return }
             try sessions.save(valid)
             session = valid
             autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(valid.user.id))
             await becameActive()
         } catch {
+            guard generation == epoch else { return }
             // A temporarily unreachable server must not destroy the saved login.
-            if let apiError = error as? NativeAPIError, apiError.isAuthenticationFailure { try? sessions.clear() }
+            if let apiError = error as? NativeAPIError, apiError.isAuthenticationFailure { clearDisplayedAccount(); try? sessions.clear() }
             errorMessage = error.localizedDescription
         }
     }
@@ -69,7 +83,7 @@ final class NativeAppModel: ObservableObject {
         do {
             let loggedIn = try await api.login(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
             try sessions.save(loggedIn)
-            generation = UUID()
+            clearDisplayedAccount()
             session = loggedIn
             autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(loggedIn.user.id))
             await becameActive()
@@ -80,7 +94,7 @@ final class NativeAppModel: ObservableObject {
         guard !activating, let current = session else { return }
         activating = true
         let epoch = generation
-        defer { activating = false }
+        defer { if generation == epoch { activating = false } }
         do {
             if let expiry = current.expiryDate, expiry.timeIntervalSinceNow < 3 * 86400 {
                 let refreshed = try await api.refresh(token: current.accessToken)
@@ -88,6 +102,7 @@ final class NativeAppModel: ObservableObject {
                 try sessions.save(refreshed)
                 session = refreshed
             }
+            if autoSyncEnabled { await observeHealth() }
             await reload()
             guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
             await observeHealth()
@@ -99,19 +114,21 @@ final class NativeAppModel: ObservableObject {
     }
 
     func reload(days: Int = 30) async {
-        guard !loading, let current = session else { return }
+        guard let current = session else { return }
         let epoch = generation
+        let requestID = UUID()
+        loadID = requestID
         loading = true
-        defer { if generation == epoch { loading = false } }
+        defer { if generation == epoch && loadID == requestID { loading = false } }
         let overviewRequest = Task { try await api.overview(token: current.accessToken) }
         let healthRequest = Task { try await api.health(token: current.accessToken, days: days) }
         do {
             let value = try await overviewRequest.value
-            if isCurrent(current.user.id, epoch) { overview = value }
+            if isCurrent(current.user.id, epoch), loadID == requestID { overview = value }
         } catch { handle(error, owner: current.user.id, epoch: epoch) }
         do {
             let value = try await healthRequest.value
-            if isCurrent(current.user.id, epoch) { health = value }
+            if isCurrent(current.user.id, epoch), loadID == requestID { health = value }
         } catch { handle(error, owner: current.user.id, epoch: epoch) }
     }
 
@@ -133,6 +150,8 @@ final class NativeAppModel: ObservableObject {
         guard let current = session else { return }
         if enabled { await connectHealth(); return }
         autoSyncEnabled = false
+        syncOperation?.cancel()
+        observationStartID = nil
         UserDefaults.standard.set(false, forKey: syncKey(current.user.id))
         reader.stopObserving()
         observationsStarted = false
@@ -141,20 +160,64 @@ final class NativeAppModel: ObservableObject {
     }
 
     private func observeHealth() async {
-        guard autoSyncEnabled, !observationsStarted else { return }
+        guard autoSyncEnabled, !observationsStarted, observationStartID == nil, let current = session else { return }
+        let epoch = generation, operationID = UUID()
+        observationStartID = operationID
         do {
             try await reader.startObserving { [weak self] in
-                await self?.sync(background: true)
+                guard let self else { return }
+                await self.observedChange(owner: current.user.id, epoch: epoch)
             }
+            guard isCurrent(current.user.id, epoch), autoSyncEnabled, observationStartID == operationID else { return }
+            observationStartID = nil
             observationsStarted = true
             observerMessage = nil
         } catch {
+            guard isCurrent(current.user.id, epoch), autoSyncEnabled, observationStartID == operationID else { return }
+            observationStartID = nil
+            // Queries stay registered even if this device cannot enable every
+            // background type; do not repeatedly tear them down on foreground.
+            observationsStarted = true
             observerMessage = "后台观察暂不可用；打开 App 仍会尝试同步。" + error.localizedDescription
         }
     }
 
+    private func observedChange(owner: String, epoch: UUID) async {
+        guard isCurrent(owner, epoch), autoSyncEnabled else { return }
+        await sync(background: true)
+    }
+
     func sync(background: Bool = false, days: Int = 30) async {
-        guard !syncing, let current = session, autoSyncEnabled, pendingImport == nil else { return }
+        guard session != nil, autoSyncEnabled, pendingImport == nil else { return }
+        if let running = syncOperation {
+            syncAgain = true
+            await running.value
+            return
+        }
+        let operationID = UUID(), epoch = generation
+        syncOperationID = operationID
+        syncAgain = false
+        let operation = Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                self.syncAgain = false
+                await self.performSync(background: background, days: background ? 7 : days)
+            } while self.syncAgain && !Task.isCancelled && self.generation == epoch && self.autoSyncEnabled && self.pendingImport == nil
+        }
+        syncOperation = operation
+        let backgroundID = UIApplication.shared.beginBackgroundTask(withName: "Jiashu Health Sync") { operation.cancel() }
+        let deadline = Task {
+            do { try await Task.sleep(nanoseconds: background ? 25_000_000_000 : 120_000_000_000); operation.cancel() }
+            catch { /* The operation finished before its deadline. */ }
+        }
+        await operation.value
+        deadline.cancel()
+        if backgroundID != .invalid { UIApplication.shared.endBackgroundTask(backgroundID) }
+        if syncOperationID == operationID { syncOperation = nil; syncOperationID = nil; syncAgain = false }
+    }
+
+    private func performSync(background: Bool, days: Int) async {
+        guard !Task.isCancelled, let current = session, autoSyncEnabled, pendingImport == nil else { return }
         let epoch = generation
         syncing = true
         lastAutomaticAttempt = Date()
@@ -181,10 +244,19 @@ final class NativeAppModel: ObservableObject {
             let receipt = try await api.upload(token: current.accessToken, payload: payload, previewToken: preview.token, confirmSourceChanges: false)
             guard isCurrent(current.user.id, epoch) else { return }
             lastReceipt = receipt
-            syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。"
+            if autoSyncEnabled { syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。" }
             if !background { await reload() }
         } catch {
             guard isCurrent(current.user.id, epoch) else { return }
+            if !autoSyncEnabled { return }
+            if error is CancellationError {
+                syncMessage = "本次同步已暂停，将在下次打开 App 时重试。"
+                return
+            }
+            if case NativeHealthError.noReadableData = error {
+                syncMessage = "本次未取得可同步记录。请核对系统健康读取权限和记录范围；缺失不会记为零。"
+                return
+            }
             syncMessage = "本次同步未完成，下次打开 App 会再次核对；也可手动重试。"
             handle(error, owner: current.user.id, epoch: epoch)
         }
@@ -216,16 +288,24 @@ final class NativeAppModel: ObservableObject {
 
     func signOut() async {
         guard let current = session else { return }
+        let epoch = generation
         do { try await api.logout(token: current.accessToken) }
         catch {
+            guard isCurrent(current.user.id, epoch) else { return }
             if (error as? NativeAPIError)?.isAuthenticationFailure != true { errorMessage = error.localizedDescription; return }
         }
+        guard isCurrent(current.user.id, epoch) else { return }
         clearDisplayedAccount()
         do { try sessions.clear() } catch { errorMessage = error.localizedDescription }
     }
 
     private func clearDisplayedAccount() {
         generation = UUID()
+        syncOperation?.cancel()
+        syncOperation = nil
+        syncOperationID = nil
+        syncAgain = false
+        observationStartID = nil
         reader.stopObserving()
         observationsStarted = false
         session = nil

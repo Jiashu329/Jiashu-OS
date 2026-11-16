@@ -286,12 +286,15 @@ enum NativeChartDates {
 private struct NativeSettingsView: View {
     @ObservedObject var model: NativeAppModel
     @State private var signingOut = false
+    @State private var syncDays = 30
     var body: some View {
         NavigationStack {
             Form {
                 Section("当前账户") { LabeledContent("邮箱", value: model.session?.user.email ?? ""); LabeledContent("服务", value: "www.treefund.asia") }
                 Section("苹果健康") {
                     Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { enabled in Task { await model.setAutomaticSync(enabled) } }))
+                    Picker("补同步范围", selection: $syncDays) { Text("最近 7 天").tag(7); Text("最近 30 天").tag(30); Text("最近 90 天").tag(90) }
+                    Button("同步所选范围") { Task { await model.sync(days: syncDays) } }.disabled(!model.autoSyncEnabled || model.syncing)
                     Text("打开 App 和健康数据变化时尝试同步，后台唤醒时机由 iOS 决定。只读取健康记录，不写入苹果健康。").font(.footnote).foregroundStyle(.secondary)
                     Text("同步保留人工更正。苹果健康中删除的样本不会自动删除服务器记录，需要在记录管理中核对。").font(.footnote).foregroundStyle(.secondary)
                 }

@@ -10,6 +10,9 @@ final class HealthKitReader {
     private let store: HKHealthStore
     private var observers: [HKObserverQuery] = []
     private var observationGeneration = 0
+    // Every enable/disable waits for the preceding HealthKit callback. A rapid
+    // off/on sequence must not let an old disable finish after the new enable.
+    private var deliveryQueue: Task<Bool, Never>?
     private let sampleTypes: [HKSampleType] = [
         HKQuantityType(.stepCount), HKQuantityType(.activeEnergyBurned),
         HKQuantityType(.bodyMass), HKQuantityType(.leanBodyMass),
@@ -80,44 +83,83 @@ final class HealthKitReader {
     /// by iOS and cannot be promised at a fixed interval.
     func startObserving(onChange: @escaping @Sendable () async -> Void) async throws {
         guard HKHealthStore.isHealthDataAvailable() else { throw NativeHealthError.unavailable }
-        stopObserving()
+        tearDownQueries()
         let generation = observationGeneration
-        for type in sampleTypes {
-            let query = HKObserverQuery(sampleType: type, predicate: nil) { [weak self] _, completion, error in
-                Task { @MainActor in
-                    guard let self, self.observationGeneration == generation else { completion(); return }
-                    if error == nil { await onChange() }
-                    completion()
+        let preceding = deliveryQueue
+        let operation = Task { @MainActor [weak self] () -> Bool in
+            let previousSucceeded = await preceding?.value ?? true
+            guard let self, self.observationGeneration == generation else { return false }
+            // A failed earlier change has an uncertain delivery state. Reset
+            // it explicitly and await completion before a fresh enable.
+            if !previousSucceeded {
+                var resetSucceeded = true
+                for type in self.sampleTypes {
+                    let success = await self.changeBackgroundDelivery(for: type, enabled: false)
+                    if !success { resetSucceeded = false }
                 }
+                guard resetSucceeded, self.observationGeneration == generation else { return false }
             }
-            observers.append(query)
-            store.execute(query)
-        }
-        var failed = false
-        for type in sampleTypes {
-            guard observationGeneration == generation else { return }
-            do {
-                let success: Bool = try await withCheckedThrowingContinuation { continuation in
-                    store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
-                        if let error { continuation.resume(throwing: error) }
-                        else { continuation.resume(returning: success) }
+            for type in self.sampleTypes {
+                let query = HKObserverQuery(sampleType: type, predicate: nil) { [weak self] _, completion, error in
+                    Task { @MainActor in
+                        guard let self, self.observationGeneration == generation else { completion(); return }
+                        if error == nil { await onChange() }
+                        completion()
                     }
                 }
-                if !success { failed = true }
-            } catch { failed = true }
-            if observationGeneration != generation {
-                if observers.isEmpty { store.disableBackgroundDelivery(for: type) { _, _ in } }
-                return
+                self.observers.append(query)
+                self.store.execute(query)
             }
+            var succeeded = true
+            for type in self.sampleTypes {
+                guard self.observationGeneration == generation else { return false }
+                let success = await self.changeBackgroundDelivery(for: type, enabled: true)
+                if !success { succeeded = false }
+            }
+            return succeeded
         }
-        if failed { throw NativeHealthError.backgroundDeliveryUnavailable }
+        deliveryQueue = operation
+        let succeeded = await operation.value
+        guard observationGeneration == generation else { return }
+        if !succeeded { throw NativeHealthError.backgroundDeliveryUnavailable }
     }
 
+    /// Explicit user pause/logout stops callbacks immediately and then queues
+    /// the delivery disable behind any still-pending enable operation.
     func stopObserving() {
+        tearDownQueries()
+        let preceding = deliveryQueue
+        deliveryQueue = Task { @MainActor [weak self] () -> Bool in
+            _ = await preceding?.value
+            guard let self else { return false }
+            var succeeded = true
+            for type in self.sampleTypes {
+                let success = await self.changeBackgroundDelivery(for: type, enabled: false)
+                if !success { succeeded = false }
+            }
+            return succeeded
+        }
+    }
+
+    /// Restarting observers does not itself disable background delivery.
+    private func tearDownQueries() {
         observationGeneration += 1
         observers.forEach { store.stop($0) }
         observers.removeAll()
-        sampleTypes.forEach { store.disableBackgroundDelivery(for: $0) { _, _ in } }
+    }
+
+    private func changeBackgroundDelivery(for type: HKSampleType, enabled: Bool) async -> Bool {
+        await withCheckedContinuation { continuation in
+            if enabled {
+                store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
+                    continuation.resume(returning: success && error == nil)
+                }
+            } else {
+                store.disableBackgroundDelivery(for: type) { success, error in
+                    continuation.resume(returning: success && error == nil)
+                }
+            }
+        }
     }
 
     private func dailyTotals(type: HKQuantityType, unit: HKUnit, windows: [NativeHealthWindow]) async throws -> [String: Double] {
