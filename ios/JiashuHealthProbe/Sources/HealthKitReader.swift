@@ -172,8 +172,9 @@ final class HealthKitReader {
                 let predicate = HKQuery.predicateForSamples(withStart: window.start, end: window.end, options: [])
                 return HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate,
                                          options: .cumulativeSum) { _, statistic, error in
-                    if let error { finish(.failure(error)) }
-                    else { finish(.success(statistic?.sumQuantity()?.doubleValue(for: unit))) }
+                    NativeHealthQueryCompletion.complete(error: error, emptyValue: nil, value: {
+                        statistic?.sumQuantity()?.doubleValue(for: unit)
+                    }, finish: finish)
                 }
             }
             if let total { values[window.day] = total }
@@ -186,8 +187,9 @@ final class HealthKitReader {
             let predicate = HKQuery.predicateForSamples(withStart: from, end: to, options: .strictStartDate)
             return HKSampleQuery(sampleType: type, predicate: predicate, limit: 1_001,
                                  sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, samples, error in
-                if let error { finish(.failure(error)) }
-                else { finish(.success((samples ?? []).compactMap { $0 as? HKQuantitySample })) }
+                NativeHealthQueryCompletion.complete(error: error, emptyValue: [], value: {
+                    (samples ?? []).compactMap { $0 as? HKQuantitySample }
+                }, finish: finish)
             }
         }
         guard samples.count <= 1_000 else { throw NativeHealthError.tooManyRecords }
@@ -199,16 +201,16 @@ final class HealthKitReader {
             let predicate = HKQuery.predicateForSamples(withStart: from, end: to, options: [])
             return HKSampleQuery(sampleType: HKCategoryType(.sleepAnalysis), predicate: predicate, limit: 20_001,
                                  sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, samples, error in
-                if let error { finish(.failure(error)); return }
-                let segments = (samples ?? []).compactMap { raw -> NativeHealthSleepSegment? in
-                    guard let sample = raw as? HKCategorySample else { return nil }
-                    let product = sample.sourceRevision.productType?.lowercased() ?? ""
-                    let model = sample.device?.model?.lowercased() ?? ""
-                    return NativeHealthSleepSegment(start: sample.startDate, end: sample.endDate, state: sample.value,
-                                              source: Self.sourceIdentifier(sample, prefix: "apple-health-sleep"),
-                                              isWatch: product.hasPrefix("watch") || model.contains("watch"))
-                }
-                finish(.success(segments))
+                NativeHealthQueryCompletion.complete(error: error, emptyValue: [], value: {
+                    (samples ?? []).compactMap { raw -> NativeHealthSleepSegment? in
+                        guard let sample = raw as? HKCategorySample else { return nil }
+                        let product = sample.sourceRevision.productType?.lowercased() ?? ""
+                        let model = sample.device?.model?.lowercased() ?? ""
+                        return NativeHealthSleepSegment(start: sample.startDate, end: sample.endDate, state: sample.value,
+                                                  source: Self.sourceIdentifier(sample, prefix: "apple-health-sleep"),
+                                                  isWatch: product.hasPrefix("watch") || model.contains("watch"))
+                    }
+                }, finish: finish)
             }
         }
         guard samples.count <= 20_000 else { throw NativeHealthError.tooManyRecords }
@@ -231,6 +233,26 @@ final class HealthKitReader {
                 operation.begin(continuation, make: make)
             }
         } onCancel: { operation.finish(.failure(CancellationError())) }
+    }
+}
+
+/// HealthKit can report an empty predicate as errorNoData rather than as an
+/// empty result. This is absence, not a failed read or a recorded zero. Other
+/// errors must still stop the batch so a locked/failed query is never uploaded
+/// as if it were a complete successful snapshot.
+enum NativeHealthQueryCompletion {
+    static func complete<Value>(error: Error?, emptyValue: Value, value: () -> Value,
+                                finish: (Result<Value, Error>) -> Void) {
+        if let error {
+            let healthError = error as NSError
+            if healthError.domain == HKErrorDomain && healthError.code == HKError.Code.errorNoData.rawValue {
+                finish(.success(emptyValue))
+            } else {
+                finish(.failure(error))
+            }
+        } else {
+            finish(.success(value()))
+        }
     }
 }
 

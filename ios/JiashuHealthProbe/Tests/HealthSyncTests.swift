@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 import XCTest
 @testable import JiashuHealthProbe
 
@@ -15,6 +16,82 @@ final class HealthSyncTests: XCTestCase {
         NativeHealthMeasurement(id: "healthkit-merged-" + metric + ":" + day, metric: metric, value: value,
                                 unit: metric == "steps" ? "count" : "kcal", startDate: day + "T00:00:00+08:00",
                                 endDate: day + "T12:00:00+08:00", source: "apple-health-merged", aggregation: "daily")
+    }
+
+    private func completedQuery<Value>(error: Error? = nil, empty: Value, value: Value) async throws -> Value {
+        try await withCheckedThrowingContinuation { continuation in
+            NativeHealthQueryCompletion.complete(error: error, emptyValue: empty, value: { value }) {
+                continuation.resume(with: $0)
+            }
+        }
+    }
+
+    func testEmptyHistoricalDayDoesNotStopFollowingDaysOrTurnIntoZero() async throws {
+        let noData = NSError(domain: HKErrorDomain, code: HKError.Code.errorNoData.rawValue,
+                             userInfo: [NSLocalizedDescriptionKey: "No data available for the specified predicate."])
+        let inputs: [(String, Double?, Error?)] = [
+            ("2026-11-13", nil, nil), ("2026-11-14", nil, noData),
+            ("2026-11-15", 0, nil), ("2026-11-16", 1_234, nil),
+        ]
+        var rows: [NativeHealthMeasurement] = []
+        for (day, sample, error) in inputs {
+            let value: Double? = try await completedQuery(error: error, empty: nil, value: sample)
+            if let value { rows.append(measurement(value: value, day: day)) }
+        }
+        let snapshot = NativeHealthSnapshot(capturedAt: capture, measurements: rows)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot.encodePayload()) as? [String: Any])
+        let exported = try XCTUnwrap(object["measurements"] as? [[String: Any]])
+        XCTAssertEqual(exported.count, 2)
+        XCTAssertEqual(exported.compactMap { $0["value"] as? Double }, [0, 1_234])
+        XCTAssertFalse(rows.contains(where: { $0.id.hasSuffix("2026-11-14") }))
+    }
+
+    func testEmptySampleQueriesDoNotBlockOtherHealthMetrics() async throws {
+        let noData = NSError(domain: HKErrorDomain, code: HKError.Code.errorNoData.rawValue)
+        let weights: [NativeHealthMeasurement] = try await completedQuery(error: noData, empty: [], value: [])
+        let sleep: [NativeHealthSleepSegment] = try await completedQuery(error: noData, empty: [], value: [])
+        XCTAssertTrue(weights.isEmpty)
+        XCTAssertTrue(sleep.isEmpty)
+        var rows = weights
+        rows.append(measurement(metric: "active_energy", value: 321))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: NativeHealthSnapshot(capturedAt: capture, measurements: rows).encodePayload()) as? [String: Any])
+        let exported = try XCTUnwrap(object["measurements"] as? [[String: Any]])
+        XCTAssertEqual(exported.compactMap { $0["metric"] as? String }, ["active_energy"])
+    }
+
+    func testNoDataStillUsesTheExistingEmptySnapshotHandling() async throws {
+        let noData = NSError(domain: HKErrorDomain, code: HKError.Code.errorNoData.rawValue)
+        var evaluatedValue = false
+        let value: Double? = try await withCheckedThrowingContinuation { continuation in
+            NativeHealthQueryCompletion.complete(error: noData, emptyValue: nil, value: {
+                evaluatedValue = true
+                return 9.0
+            }) { continuation.resume(with: $0) }
+        }
+        XCTAssertNil(value)
+        XCTAssertFalse(evaluatedValue, "A failed query cannot expose a stale result")
+        XCTAssertThrowsError(try NativeHealthSnapshot(capturedAt: capture, measurements: []).encodePayload()) { error in
+            guard case NativeHealthError.noReadableData = error else { return XCTFail("Expected the existing localized no-readable-data state") }
+        }
+    }
+
+    func testOnlyHealthKitNoDataIsTreatedAsAnEmptyQuery() async {
+        let errors: [Error] = [
+            NSError(domain: "synthetic.network", code: HKError.Code.errorNoData.rawValue),
+            NSError(domain: HKErrorDomain, code: HKError.Code.errorAuthorizationDenied.rawValue),
+            NSError(domain: HKErrorDomain, code: HKError.Code.errorDatabaseInaccessible.rawValue),
+            NSError(domain: "synthetic.network", code: 1, userInfo: [NSLocalizedDescriptionKey: "No data available for the specified predicate."]),
+            CancellationError(), NativeHealthError.queryTimedOut,
+        ]
+        for error in errors {
+            do {
+                let _: Double? = try await completedQuery(error: error, empty: nil, value: 1)
+                XCTFail("A real query failure must not be converted into missing data")
+            } catch let observed {
+                XCTAssertEqual((observed as NSError).domain, (error as NSError).domain)
+                XCTAssertEqual((observed as NSError).code, (error as NSError).code)
+            }
+        }
     }
 
     func testCalendarWindowsUseShanghaiRegardlessOfSystemTimezone() throws {
