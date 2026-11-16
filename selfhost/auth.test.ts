@@ -8,6 +8,7 @@ import { createSelfhostUserManagement } from './user-management.ts';
 import { isLocalSessionRevoked, revokeLocalSession } from '../db/local-session-revocations-store.ts';
 import type { SelfhostAuthConfig, SelfhostGatewayOptions } from './auth.ts';
 import { Readable } from 'node:stream';
+import { parseHTML } from 'linkedom';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSelfhostGateway, hashPassword, issueSelfhostSession, loadSelfhostAuthConfig, readCookie, safeSelfhostReturnTo,
   sanitizedSelfhostHeaders, selfhostCookieNames, SelfhostLoginLimiter, verifyPassword, verifySelfhostSession } from './auth.ts';
@@ -150,9 +151,35 @@ void test('login requires same-origin CSRF, issues a host-only secure cookie and
   assert.equal((await f.call('/signin-with-chatgpt', 'GET', { cookie })).res.statusCode, 303);
 });
 
+void test('the styled login retains the native email form, CSRF token and escaped return destination', async () => {
+  const f = fixture();
+  const returnTo = '/health?days=30&note=<img src=x onerror=alert(1)>"';
+  const response = (await f.call('/signin-with-chatgpt?return_to=' + encodeURIComponent(returnTo))).res;
+  assert.equal(response.statusCode, 200);
+  const { document } = parseHTML(response.body);
+  const form = document.querySelector('form'); assert.ok(form);
+  assert.equal(form.getAttribute('action'), '/signin-with-chatgpt');
+  assert.equal(form.getAttribute('method')?.toLowerCase(), 'post');
+  assert.equal(form.querySelector('input[name="csrf"]')?.getAttribute('value'), csrfForm(response).csrf);
+  assert.equal(form.querySelector('input[name="return_to"]')?.getAttribute('value'), safeSelfhostReturnTo(returnTo));
+  const email = form.querySelector('input[name="email"]'), password = form.querySelector('input[name="password"]');
+  assert.equal(email?.getAttribute('type'), 'email');
+  assert.equal(email?.getAttribute('autocomplete'), 'username');
+  assert.equal(password?.getAttribute('type'), 'password');
+  assert.equal(password?.getAttribute('autocomplete'), 'current-password');
+  assert.equal(form.querySelector('[name="username"]'), null);
+  assert.equal(form.querySelector('button[type="submit"]')?.textContent.trim(), '登录');
+  assert.equal(document.querySelector('[onerror]'), null);
+  assert.match(response.body, /&amp;note=/);
+  assert.doesNotMatch(response.body, /scrypt-v1|synthetic-long-password/);
+});
+
 void test('wrong login stays generic, expired CSRF is rejected and unsafe business requests need the canonical Origin', async () => {
   const f = fixture(); const rejected = await login(f, 'invalid-password', 'not-admin');
   assert.equal(rejected.res.statusCode, 401); assert.match(rejected.res.body, /邮箱或密码不正确/); assert.doesNotMatch(rejected.res.body, /not-admin|invalid-password/);
+  const { document } = parseHTML(rejected.res.body);
+  assert.equal(document.querySelector('[role="alert"]')?.textContent.trim(), '邮箱或密码不正确。');
+  assert.equal(document.querySelector('input[name="password"]')?.getAttribute('value') ?? '', '');
   const page = await f.call('/signin-with-chatgpt'); const csrf = csrfForm(page.res); f.time(NOW + 600001);
   assert.equal((await f.call('/signin-with-chatgpt', 'POST', { cookie: csrf.cookie, origin: config.origin }, new URLSearchParams({ email: config.ownerEmail, password: PASSWORD, csrf: csrf.csrf, return_to: '/' }))).res.statusCode, 403);
   const cookie = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);

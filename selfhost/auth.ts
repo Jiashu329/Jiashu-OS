@@ -3,6 +3,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { normalizeLocalEmail } from '../lib/local-users.ts';
 import type { LocalUser } from '../lib/local-users.ts';
 import { isValidPasswordHash, verifyPassword } from './password-hash.ts';
+import { renderSelfhostLoginPage } from './login-page.ts';
 export { hashPassword, verifyPassword } from './password-hash.ts';
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeader, OutgoingHttpHeaders, ServerResponse } from 'node:http';
 
@@ -202,6 +203,7 @@ export class SelfhostLoginLimiter {
 const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 function page(config: SelfhostAuthConfig, action: 'login' | 'logout', csrf: string, returnTo: string, error = ''): string {
   const login = action === 'login', endpoint = login ? '/signin-with-chatgpt' : '/signout-with-chatgpt';
+  if (login) return renderSelfhostLoginPage({ csrf, returnTo, error });
   return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${login ? '登录' : '退出'} · Jiashu OS</title><style>body{margin:0;background:#f3f5f8;color:#1d2738;font:15px/1.7 system-ui,sans-serif}main{max-width:420px;margin:10vh auto;padding:28px;background:white;border:1px solid #dfe5ee;border-radius:14px}h1{font-size:25px;margin:0 0 8px}p{color:#627089}label{display:grid;gap:5px;margin-top:16px}input,button{font:inherit;min-height:44px;border:1px solid #dfe5ee;border-radius:8px;padding:8px 12px;box-sizing:border-box;width:100%}button{margin-top:22px;background:#4267a8;color:white;cursor:pointer}a{color:#4267a8}input:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid #4267a8;outline-offset:3px}.error{color:#aa263d}@media(max-width:500px){main{margin:40px 16px;padding:22px}}</style></head><body><main><h1>${login ? '登录测试站' : '退出当前登录'}</h1><p>${login ? '使用管理员为你开通的邮箱和密码。' : '退出后，需要重新输入账号和密码。'}</p>${error ? '<p class="error" role="alert">' + escape(error) + '</p>' : ''}<form action="${endpoint}" method="post"><input type="hidden" name="csrf" value="${escape(csrf)}"><input type="hidden" name="return_to" value="${escape(returnTo)}">${login ? '<label>邮箱<input type="email" name="email" autocomplete="username" maxlength="254" required></label><label>密码<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label>' : ''}<button type="submit">${login ? '登录' : '确认退出'}</button></form><p><a href="${login ? '/' : escape(returnTo)}">${login ? '返回首页' : '继续使用'}</a></p></main></body></html>`;
 }
 function authHeaders(): Record<string, string> {

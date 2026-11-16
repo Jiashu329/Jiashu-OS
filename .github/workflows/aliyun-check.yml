@@ -23,6 +23,17 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Exercise native self-hosted browser login and logout forms
         run: node scripts/test-selfhost-browser.mjs
+      - name: Save anonymous login layout previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-login-previews
+          path: |
+            outputs/selfhost-browser/login-desktop.png
+            outputs/selfhost-browser/login-mobile.png
+            outputs/selfhost-browser/login-compact.png
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Check deployment scripts
         run: |
           for script in deploy/aliyun/*.sh; do bash -n "$script"; done
