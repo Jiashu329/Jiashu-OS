@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   const url=new URL(request.url),view=readHealthView(url.search);
   const returnTo=url.search?healthViewPath(view.metric,view.days,false,view):'/health';
   const pageUser = await requireChatGPTUser(returnTo);
-  return new Response(withPageAccount(renderApp(), pageUser.userId), { headers: {
+  return new Response(withPageAccount(renderApp(), pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

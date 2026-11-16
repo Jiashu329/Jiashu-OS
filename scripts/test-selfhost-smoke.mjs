@@ -22,7 +22,7 @@ const app = resolve('dist/standalone');
 for (const file of ['selfhost/server.mjs', 'selfhost/auth.ts', 'selfhost/migrations.ts', 'dist/server/index.js']) {
   if (!existsSync(join(app, file))) throw new Error('Standalone production output is incomplete; run npm run build:selfhost first.');
 }
-const { hashPassword } = await import(pathToFileURL(join(app, 'selfhost/auth.ts')).href);
+const { hashPassword, issueSelfhostSession, loadSelfhostAuthConfig } = await import(pathToFileURL(join(app, 'selfhost/auth.ts')).href);
 const temporary = mkdtempSync(join(tmpdir(), 'jiashu-selfhost-smoke-'));
 const database = join(temporary, 'smoke.sqlite3');
 const password = randomBytes(24).toString('base64url');
@@ -135,11 +135,78 @@ async function login(browser, loginEmail = email, loginPassword = password, expe
     body: new URLSearchParams({ csrf, return_to: '/health', email: loginEmail, password: loginPassword }),
   });
   assert.equal(response.status, expectedStatus, 'Email credentials return the expected authentication status');
-  if (expectedStatus !== 303) return;
+  if (expectedStatus !== 303) return response;
   assert.equal(response.headers.get('location'), '/health', 'Login preserves an allowed return path');
   const cookie = response.headers.getSetCookie().find(item => item.startsWith('jso-test-session='));
   assert.ok(cookie && /; HttpOnly;/.test(cookie) && /; SameSite=Lax;/.test(cookie), 'Session cookie attributes');
+  assert.equal(Number(/;\s*Max-Age=(\d+)/i.exec(cookie)?.[1]), 30 * 86400, 'The default login is persistent for thirty days');
+  return response;
 }
+
+async function persistentSessionAcceptance() {
+  const config = loadSelfhostAuthConfig(childEnvironment), subject = { id: ownerId, revision: 1 };
+  assert.equal(config.sessionTtl, 30 * 86400);
+  const cookieName = 'jso-test-session';
+  const sessionCookies = response => response.headers.getSetCookie().filter(cookie => cookie.startsWith(cookieName + '='));
+  const maxAge = cookie => Number(/;\s*Max-Age=(\d+)/i.exec(cookie)?.[1]);
+  const now = Date.now();
+  const fresh = new Browser(); fresh.cookies.set(cookieName, issueSelfhostSession(config, subject, now));
+  const freshRead = await fresh.request('/api/session');
+  assert.equal((await json(freshRead, 200, 'Fresh persistent identity')).userId, ownerId);
+  assert.equal(sessionCookies(freshRead).length, 0, 'A fresh login cookie is not rewritten on every API read');
+
+  const legacy = new Browser();
+  legacy.cookies.set(cookieName, issueSelfhostSession({ ...config, sessionTtl: 12 * 3600 }, subject, now));
+  const legacyToken = legacy.cookies.get(cookieName);
+  const readiness = await legacy.request('/_selfhost/healthz');
+  assert.equal(readiness.status, 200);
+  assert.equal(sessionCookies(readiness).length, 0, 'Readiness probes do not renew session cookies');
+  const navigation = await legacy.request('/health');
+  assert.equal(navigation.status, 200);
+  const navigationHTML = await navigation.text();
+  assert.ok(navigationHTML.includes('__JIASHU_PAGE_SESSION__'), 'Authenticated HTML includes its server-verified session bootstrap');
+  assert.equal(sessionCookies(navigation).length, 1);
+  assert.equal(maxAge(sessionCookies(navigation)[0]), config.sessionTtl, 'An existing twelve-hour login upgrades without another password entry');
+  assert.ok(legacy.cookies.get(cookieName) !== legacyToken, 'Legacy session renewal emits a newly signed cookie');
+  const nextRead = await legacy.request('/api/session');
+  assert.equal(nextRead.status, 200); assert.equal(sessionCookies(nextRead).length, 0);
+
+  const agedToken = issueSelfhostSession(config, subject, now - 2 * 86400000);
+  const aged = new Browser(); aged.cookies.set(cookieName, agedToken);
+  const agedRead = await aged.request('/api/session');
+  assert.equal(agedRead.status, 200);
+  assert.equal(maxAge(sessionCookies(agedRead)[0]), config.sessionTtl, 'Active use rolls an older valid session forward');
+  aged.cookies.set(cookieName, agedToken);
+  const administrative = await aged.request('/api/admin/users', { headers: { 'X-Page-Owner': ownerId } });
+  assert.equal(administrative.status, 200);
+  assert.ok(sessionCookies(administrative).some(cookie => maxAge(cookie) === config.sessionTtl));
+  assert.ok(administrative.headers.getSetCookie().some(cookie => cookie.startsWith('jso-test-admin-csrf=')), 'Renewal preserves the administrative CSRF cookie');
+  const renewalBeforeLogout = aged.cookies.get(cookieName);
+
+  const expired = new Browser(); expired.cookies.set(cookieName, issueSelfhostSession({ ...config, sessionTtl: 12 * 3600 }, subject, now - 13 * 3600000));
+  const expiredRead = await expired.request('/api/session');
+  assert.equal(expiredRead.status, 401);
+  assert.equal(sessionCookies(expiredRead).some(cookie => maxAge(cookie) > 0), false, 'Expired cookies never regain a valid session');
+
+  const signingOut = new Browser(); signingOut.cookies.set(cookieName, agedToken);
+  const csrf = await form(signingOut, '/signout-with-chatgpt');
+  const loggedOut = await signingOut.request('/signout-with-chatgpt', {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf, return_to: '/health' }),
+  });
+  assert.equal(loggedOut.status, 303);
+  assert.equal(sessionCookies(loggedOut).length, 1);
+  assert.equal(maxAge(sessionCookies(loggedOut)[0]), 0, 'Aging sessions log out without an accidental renewal cookie');
+  assert.equal(signingOut.cookies.has(cookieName), false);
+  for (const oldCookie of [agedToken, renewalBeforeLogout]) {
+    const late = new Browser(); late.cookies.set(cookieName, oldCookie);
+    const replay = await late.request('/api/session');
+    assert.equal(replay.status, 401, 'A late pre-logout renewal cookie cannot restore the logged-out session family');
+    assert.equal(sessionCookies(replay).some(cookie => maxAge(cookie) > 0), false);
+  }
+  return [agedToken, renewalBeforeLogout];
+}
+
 
 async function adminMetadata(browser) {
   const value = await json(await browser.request('/api/admin/users', { headers: { 'X-Page-Owner': ownerId } }), 200, 'Administrator account metadata');
@@ -284,6 +351,7 @@ async function main() {
   await json(await anonymous.request('/api/session'), 401, 'Incorrect password grants no session');
 
   await login(authenticated);
+  const revokedPersistentSessions = await persistentSessionAcceptance();
   const session = await json(await authenticated.request('/api/session'), 200, 'Authenticated session');
   assert.equal(session.userId, ownerId); assert.equal(session.isOwner, true);
   const page = await authenticated.request('/health');
@@ -321,6 +389,10 @@ async function main() {
   await stop();
   migrate(); // Existing migration ledger is safe to re-check on every deployment.
   await start();
+  for (const oldCookie of revokedPersistentSessions) {
+    const replay = new Browser(); replay.cookies.set('jso-test-session', oldCookie);
+    assert.equal((await replay.request('/api/session')).status, 401, 'Logout remains revoked after the production server and database restart');
+  }
   const persistedGoals = await json(await authenticated.request('/api/health/goals'), 200, 'Restarted goal persistence');
   assert.deepEqual(persistedGoals.targets, targets); assert.equal(persistedGoals.revision, 1);
   const nutrition = await json(await authenticated.request('/api/health/nutrition?date=' + date), 200, 'Restarted nutrition persistence');
@@ -336,7 +408,7 @@ async function main() {
   await json(await authenticated.request('/api/session'), 401, 'Logged out session');
   await json(await authenticated.request('/api/health/goals'), 401, 'Logged out business data');
   await multiuserAcceptance();
-  process.stdout.write('Self-hosted production smoke passed: migrations, authentication, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, isolation and immediate session revocation.\n');
+  process.stdout.write('Self-hosted production smoke passed: migrations, persistent rolling authentication, SSR identity bootstrap, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, isolation and immediate session revocation.\n');
 }
 
 try { await main(); }

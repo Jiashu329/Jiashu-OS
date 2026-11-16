@@ -14,7 +14,7 @@ export async function GET(request: Request) {
   if (source.get('includeArchived') === '1') query.set('includeArchived', '1');
   for (const key of ['book', 'bookRevision']) for (const value of source.getAll(key)) query.append(key, value);
   const user = await requireChatGPTUser('/finance/goals?' + query);
-  return new Response(withPageAccount(renderFinanceGoalsPage(user.userId), user.userId), { headers: {
+  return new Response(withPageAccount(renderFinanceGoalsPage(user.userId), user.userId, user), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

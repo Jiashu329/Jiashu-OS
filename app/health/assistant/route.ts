@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const pageUser = await requireChatGPTUser('/health/assistant');
-  return new Response(withPageAccount(renderHealthAssistantPage(), pageUser.userId), { headers: {
+  return new Response(withPageAccount(renderHealthAssistantPage(), pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

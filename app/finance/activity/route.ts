@@ -9,5 +9,5 @@ export async function GET(request: Request) {
   const destination='/finance/activity?'+query;
   if (source.get('ledger')!=='family') return Response.redirect(new URL(destination,request.url),302);
   const user=await requireChatGPTUser(destination);
-  return new Response(withPageAccount(renderFinanceActivityPage(user.userId),user.userId),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
+  return new Response(withPageAccount(renderFinanceActivityPage(user.userId), user.userId, user),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
 }

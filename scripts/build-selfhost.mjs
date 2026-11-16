@@ -26,7 +26,7 @@ for (const name of readdirSync('selfhost')) {
 }
 // These pure TypeScript modules are also consumed by the native Node gateway,
 // outside Vinext's bundled application. Keep the authentication registry shared.
-for (const path of ['db/local-users-store.ts', 'lib/local-users.ts', 'lib/access-control.ts']) {
+for (const path of ['db/local-users-store.ts', 'db/local-session-revocations-store.ts', 'lib/local-users.ts', 'lib/access-control.ts']) {
   mkdirSync(resolve(output, path, '..'), { recursive: true });
   cpSync(resolve(path), resolve(output, path));
 }

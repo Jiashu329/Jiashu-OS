@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   if (scope && ['all','public','mine'].includes(scope)) query.set('scope', scope);
   if (offset && /^(?:0|[1-9]\d*)$/.test(offset) && Number.isSafeInteger(Number(offset))) query.set('offset', String(Math.floor(Number(offset) / 24) * 24));
   const user = await requireChatGPTUser('/health/foods' + (query.size ? '?' + query : ''));
-  return new Response(withPageAccount(renderFoodLibraryPage(), user.userId), { headers: {
+  return new Response(withPageAccount(renderFoodLibraryPage(), user.userId, user), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

@@ -30,7 +30,7 @@ export async function GET(request: Request) {
     } else query.set('configurationInvalid', '1');
   }
   const user = await requireChatGPTUser('/health/nutrition?' + query);
-  return new Response(withPageAccount(renderNutritionPage(user.userId), user.userId), { headers: {
+  return new Response(withPageAccount(renderNutritionPage(user.userId), user.userId, user), { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

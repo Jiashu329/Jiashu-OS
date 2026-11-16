@@ -11,9 +11,11 @@ function storage(values = new Map<string,string>()) {
 type Item = {id:string;label:string;url:string;kind:string;updatedAt:string;data:unknown};
 type Manager = {owner:string;problem:string;setOwner(owner:string):boolean;ready():Promise<string|null>;save(id:string,label:string,data:unknown,options?:{url?:string;kind?:string}):boolean;get(id:string):Item|null;list():Omit<Item,'data'>[];remove(id:string):boolean;clearConfirmed(id:string):boolean;storage(owner:string):Storage};
 async function settle(check:()=>boolean){for(let i=0;i<40;i++){if(check())return;await new Promise<void>(resolve=>setImmediate(resolve));}assert.ok(check());}
-function fixture(options:{local?:ReturnType<typeof storage>;session?:ReturnType<typeof storage>;owner?:string;now?:number;contextId?:string;fields?:string}={}){
+interface DraftSession { owner: string; attested: boolean; changed: boolean; bootstrap: { userId: string }; bind(id: string): boolean }
+function fixture(options:{local?:ReturnType<typeof storage>;session?:ReturnType<typeof storage>;owner?:string;now?:number;contextId?:string;fields?:string;guard?:DraftSession;pageOwner?:string}={}){
   const {window,document}=parseHTML('<html><head></head><body><dialog id="editor"><form id="edit-form"><label for="name">名称</label><input id="name" value=""><label for="secret">密钥</label><input type="password" id="secret" value="">'+(options.fields??'')+'<button type="submit">保存</button></form></dialog></body></html>');
   const local=options.local??storage(),session=options.session??storage();Object.defineProperty(window,'localStorage',{value:local,configurable:true});Object.defineProperty(window,'sessionStorage',{value:session,configurable:true});
+  Object.assign(window, { JiashuAccountSession: options.guard, __JIASHU_PAGE_OWNER__: options.pageOwner });
   const dialog=document.getElementById('editor')!;Object.defineProperty(dialog,'open',{get(){return dialog.hasAttribute('open');}});Object.assign(dialog,{showModal(){dialog.setAttribute('open','');dialog.dispatchEvent(new window.Event('toggle'));},close(){dialog.removeAttribute('open');dialog.dispatchEvent(new window.Event('close'));},getBoundingClientRect(){return {left:0,top:0,right:400,bottom:400};}});
   const requests:Array<{url:string;options?:RequestInit}>=[];const now=options.now??Date.parse('2026-11-12T04:00:00Z');class FixedDate extends Date{constructor(value?:string|number){super(value===undefined?now:value);}static now(){return now;}}
   const location=new URL('https://synthetic-drafts.example/health/weight-plan');const context={window,document,location,history:{state:null},URL,URLSearchParams,Date:FixedDate,Event:window.Event,queueMicrotask,fetch:async(url:string,init?:RequestInit)=>{requests.push({url,options:init});return Response.json({userId:options.owner??'alice'});}};
@@ -26,7 +28,30 @@ function fixture(options:{local?:ReturnType<typeof storage>;session?:ReturnType<
   return {window,document,manager,local,session,requests,dialog:dialog as unknown as HTMLDialogElement,form,name,input,click,guard};
 }
 
-test('recovery starts without network and explicit owner bootstrap only sends a read-only identity request',async()=>{
+void test('server-confirmed page ownership initializes only that owner draft space without an identity round trip', async () => {
+  const guard: DraftSession = { owner: 'alice', bootstrap: { userId: 'alice' }, attested: true, changed: false, bind(id) { return id === this.owner; } };
+  const local = storage(); const saved = fixture({ owner: 'alice', local }); saved.manager.save('meal', '草稿', { name: 'alice-only' });
+  const current = fixture({ local, guard, pageOwner: 'alice' });
+  assert.equal(current.manager.owner, 'alice'); assert.equal(await current.manager.ready(), 'alice'); assert.equal(current.requests.length, 0);
+  assert.equal((current.manager.get('meal')!.data as { name: string }).name, 'alice-only');
+  guard.attested = false; // A bfcache suspension pauses requests, not original-owner local preservation.
+  assert.equal(current.manager.save('second', '草稿', { name: 'still-alice' }), true);
+  assert.equal(current.requests.length, 0);
+  current.document.dispatchEvent(new current.window.Event('jiashu-account-signed-out'));
+  assert.equal(await current.manager.ready(), null); assert.equal(current.manager.get('meal'), null);
+  assert.ok([...local.values.values()].join('').includes('alice-only'), 'Sign-out never deletes the old owner recovery data');
+});
+
+void test('a mismatched or unconfirmed draft guard cannot bootstrap identity from a stored owner hint', async () => {
+  for (const properties of [{ attested: false, bootstrap: { userId: 'alice' } }, { attested: true, bootstrap: { userId: 'bob' } }]) {
+    const guard: DraftSession = { owner: 'alice', changed: false, ...properties, bind(id) { return id === this.owner; } };
+    const f = fixture({ guard, pageOwner: 'alice' });
+    assert.equal(f.manager.owner, ''); assert.equal(f.requests.length, 0);
+    assert.equal(await f.manager.ready(), 'alice'); assert.equal(f.requests.length, 1);
+  }
+});
+
+void test('recovery starts without network and explicit owner bootstrap only sends a read-only identity request',async()=>{
   const f=fixture();assert.equal(f.requests.length,0);assert.deepEqual(Array.from(f.manager.list()),[]);
   assert.deepEqual(await Promise.all([f.manager.ready(),f.manager.ready()]),['alice','alice']);assert.equal(f.requests.length,1);
   assert.equal(f.requests[0].url,'/api/session');assert.equal(f.requests[0].options?.body,undefined);
@@ -34,23 +59,23 @@ test('recovery starts without network and explicit owner bootstrap only sends a 
   assert.equal(f.requests.length,1);const listed=f.manager.list()[0];assert.equal(Object.hasOwn(listed,'data'),false);assert.match(listed.url,/resumeDraft=meal/);
 });
 
-test('drafts survive reopening but are only listed and read for their signed-in owner',()=>{
+void test('drafts survive reopening but are only listed and read for their signed-in owner',()=>{
   const local=storage();const first=fixture({local,owner:'alice'});first.manager.save('meal','饮食草稿',{name:'alice-only'});
   const second=fixture({local,owner:'bob'});assert.equal(second.manager.get('meal'),null);assert.equal(second.manager.list().length,0);
   assert.equal(second.manager.setOwner('alice'),false);assert.equal(second.manager.owner,'bob');assert.equal(second.manager.get('meal'),null);
-  const reopened=fixture({local,owner:'alice'});assert.equal((reopened.manager.get('meal')?.data as {name:string}).name,'alice-only');assert.equal(reopened.manager.get('meal')?.kind,'draft');
+  const reopened=fixture({local,owner:'alice'});assert.equal((reopened.manager.get('meal')!.data as {name:string}).name,'alice-only');assert.equal(reopened.manager.get('meal')?.kind,'draft');
 });
 
-test('a delayed identity response cannot replace an owner explicitly initialized by the current signed-in page',async()=>{
+void test('a delayed identity response cannot replace an owner explicitly initialized by the current signed-in page',async()=>{
   const f=fixture();const loading=f.manager.ready();f.manager.setOwner('bob');assert.equal(await loading,'bob');assert.equal(f.manager.owner,'bob');
 });
 
-test('expired ordinary drafts disappear while unresolved submissions never silently expire',()=>{
+void test('expired ordinary drafts disappear while unresolved submissions never silently expire',()=>{
   const local=storage();const first=fixture({local,owner:'alice'});first.manager.save('draft','草稿',{value:'one'});first.manager.save('pending','原提交',{key:'original'},{kind:'pending'});
   const later=fixture({local,owner:'alice',now:Date.parse('2027-01-12T04:00:00Z')});assert.equal(later.manager.get('draft'),null);assert.equal(later.manager.get('pending')?.kind,'pending');assert.equal(later.manager.remove('pending'),false);
 });
 
-test('secret-shaped fields, invalid destinations and oversized payloads are never persisted',()=>{
+void test('secret-shaped fields, invalid destinations and oversized payloads are never persisted',()=>{
   const f=fixture({owner:'alice'});
   for(const data of [{apiKey:'do-not-store'},{nested:{password:'do-not-store'}},{credentials:'do-not-store'}])assert.equal(f.manager.save('bad','草稿',data),false);
   assert.equal(f.manager.save('bad','草稿',{text:'ok'},{url:'https://elsewhere.example/'}),false);
@@ -59,7 +84,7 @@ test('secret-shaped fields, invalid destinations and oversized payloads are neve
   assert.equal(f.manager.get('url')?.url,'/health?metric=weight');assert.ok(![...f.local.values.values()].join('').includes('DO_NOT_SAVE'));
 });
 
-test('pending storage preserves exact original bytes across browser sessions, rejects replacements and requires confirmation to remove',()=>{
+void test('pending storage preserves exact original bytes across browser sessions, rejects replacements and requires confirmation to remove',()=>{
   const local=storage(),session=storage();const first=fixture({local,session,owner:'alice'}),key='jiashu-nutrition-batch:alice';
   const raw=JSON.stringify({key:'11111111-1111-4111-8111-111111111111',body:{entries:[{name:'合成午餐',calories:null}]}});
   first.manager.storage('alice').setItem(key,raw);assert.equal(first.manager.remove('pending:'+key),false);
@@ -69,26 +94,26 @@ test('pending storage preserves exact original bytes across browser sessions, re
   const confirmed=fixture({local,owner:'alice'});confirmed.manager.storage('alice').removeItem(key);assert.equal(confirmed.manager.get('pending:'+key),null);
 });
 
-test('an old owner-scoped session submission migrates without regenerating identifiers or fields',()=>{
+void test('an old owner-scoped session submission migrates without regenerating identifiers or fields',()=>{
   const session=storage(),local=storage(),key='jiashu-finance-pending:v1:alice',raw=JSON.stringify({version:1,ownerId:'alice',key:'legacy-original',body:{amount:'0.00'}});session.setItem(key,raw);
   const f=fixture({local,session,owner:'alice'});assert.equal(f.manager.storage('alice').getItem(key),raw);
   assert.equal(fixture({local,owner:'alice'}).manager.storage('alice').getItem(key),raw);
 });
 
-test('nutrition history recovery keeps its original revision and operation key in the pending inbox',()=>{
+void test('nutrition history recovery keeps its original revision and operation key in the pending inbox',()=>{
   const local=storage(),f=fixture({local,owner:'alice'}),key='jiashu-nutrition-history:alice';
   const raw=JSON.stringify({key:'11111111-1111-4111-8111-111111111111',entryId:'22222222-2222-4222-8222-222222222222',body:{revision:1,expectedRevision:4}});
   f.manager.storage('alice').setItem(key,raw);const reopened=fixture({local,owner:'alice'});
   assert.equal(reopened.manager.storage('alice').getItem(key),raw);assert.match(reopened.manager.list()[0].label,/版本恢复/);
 });
 
-test('goal and balance pending inbox links return to the matching ledger workflow rather than an unrelated page',()=>{
+void test('goal and balance pending inbox links return to the matching ledger workflow rather than an unrelated page',()=>{
   const f=fixture({owner:'alice'});
   f.manager.storage('alice').setItem('jiashu-finance-goal-create:alice',JSON.stringify({key:'original',body:{ledger:'family',currency:'USD',name:'合成目标'}}));
   assert.equal(f.manager.list()[0].url,'/finance/goals?ledger=family&currency=USD');
 });
 
-test('an unchanged generic form restores only on explicit action and never captures a password',async()=>{
+void test('an unchanged generic form restores only on explicit action and never captures a password',async()=>{
   const local=storage(),first=fixture({local,owner:'alice',fields:'<input id="connection-token" type="text">'});const guard=first.guard();first.dialog.showModal();guard.reset();first.input('name','未完成的合成名称');first.input('secret','NEVER_PERSIST_THIS');first.input('connection-token','NEVER_PERSIST_TOKEN');
   await settle(()=>first.manager.list().length===1);assert.ok(![...local.values.values()].join('').includes('NEVER_PERSIST_THIS'));assert.ok(![...local.values.values()].join('').includes('NEVER_PERSIST_TOKEN'));
   const reopened=fixture({local,owner:'alice'}),next=reopened.guard();reopened.dialog.showModal();next.reset();await settle(()=>!!reopened.document.querySelector('[data-durable-recovery]'));
@@ -96,33 +121,33 @@ test('an unchanged generic form restores only on explicit action and never captu
   next.saved();assert.equal(reopened.manager.list().length,0);
 });
 
-test('a changed record context blocks applying an old draft instead of editing a different record',async()=>{
+void test('a changed record context blocks applying an old draft instead of editing a different record',async()=>{
   const local=storage(),first=fixture({local,owner:'alice',contextId:'record-a'});const guard=first.guard();first.dialog.showModal();guard.reset();first.input('name','属于 A 的草稿');
   const reopened=fixture({local,owner:'alice',contextId:'record-b'}),next=reopened.guard();reopened.dialog.showModal();next.reset();await settle(()=>!!reopened.document.querySelector('[data-durable-recovery]'));
   reopened.click('[data-durable-choice="restore"]');assert.equal(reopened.name.value,'');assert.match(reopened.document.querySelector('[data-durable-recovery]')?.textContent??'',/已经变化/);
 });
 
-test('prefilled passwords and text API keys are excluded from the stored restore baseline as well as field values',()=>{
+void test('prefilled passwords and text API keys are excluded from the stored restore baseline as well as field values',()=>{
   const f=fixture({owner:'alice',fields:'<input id="api-key" type="text" value="INITIAL_API_KEY">'});
   (f.document.getElementById('secret') as unknown as HTMLInputElement).value='INITIAL_PASSWORD';
   const guard=f.guard();f.dialog.showModal();guard.reset();f.input('name','仅保存这项普通填写');
   const saved=[...f.local.values.values()].join('');assert.ok(saved.includes('仅保存这项普通填写'));assert.ok(!saved.includes('INITIAL_PASSWORD'));assert.ok(!saved.includes('INITIAL_API_KEY'));
 });
 
-test('a stale restore control cannot overwrite fresh unsaved input typed after the offer',async()=>{
+void test('a stale restore control cannot overwrite fresh unsaved input typed after the offer',async()=>{
   const local=storage(),first=fixture({local,owner:'alice'}),guard=first.guard();first.dialog.showModal();guard.reset();first.input('name','旧草稿');
   const next=fixture({local,owner:'alice'}),registration=next.guard();next.dialog.showModal();registration.reset();await settle(()=>!!next.document.querySelector('[data-durable-recovery]'));
   const oldControl=next.document.querySelector('[data-durable-choice="restore"]')!;next.input('name','新的尚未保存内容');oldControl.dispatchEvent(new next.window.Event('click',{bubbles:true}));
   assert.equal(next.name.value,'新的尚未保存内容');assert.ok(JSON.stringify(next.manager.get('form:/health/weight-plan:edit-form')?.data).includes('新的尚未保存内容'));
 });
 
-test('storage failures retain the currently typed input and the original pending submission',()=>{
+void test('storage failures retain the currently typed input and the original pending submission',()=>{
   const local=storage(),f=fixture({local,owner:'alice'}),key='jiashu-nutrition-create:alice';f.manager.storage('alice').setItem(key,JSON.stringify({key:'original',body:{name:'合成'}}));
   local.setItem=()=>{throw new Error('synthetic storage full');};f.name.value='仍在本页';assert.equal(f.manager.save('new','草稿',{name:f.name.value}),false);assert.equal(f.name.value,'仍在本页');
   assert.throws(()=>f.manager.storage('alice').removeItem(key),/无法清理/);assert.ok(f.manager.storage('alice').getItem(key));
 });
 
-test('failed session cleanup retains the durable original instead of erasing a still-unconfirmed request',()=>{
+void test('failed session cleanup retains the durable original instead of erasing a still-unconfirmed request',()=>{
   const local=storage(),session=storage(),f=fixture({local,session,owner:'alice'}),key='jiashu-nutrition-create:alice';
   const raw=JSON.stringify({key:'original',body:{name:'合成'}});f.manager.storage('alice').setItem(key,raw);
   session.removeItem=()=>{throw new Error('synthetic cleanup blocked');};
@@ -130,14 +155,14 @@ test('failed session cleanup retains the durable original instead of erasing a s
   assert.equal(fixture({local,owner:'alice'}).manager.storage('alice').getItem(key),raw);
 });
 
-test('a malformed recovery store is not silently overwritten by a new draft or cleanup operation',()=>{
+void test('a malformed recovery store is not silently overwritten by a new draft or cleanup operation',()=>{
   const local=storage(),raw='{incomplete-recovery-data';local.setItem('jiashu-work:v1:alice',raw);const f=fixture({local,owner:'alice'});
   assert.equal(f.manager.get('anything'),null);assert.equal(f.manager.save('new','新草稿',{name:'one'}),false);assert.equal(f.manager.clearConfirmed('old'),false);
   assert.equal(local.getItem('jiashu-work:v1:alice'),raw);
 });
 
 
-test('account-change blocks viewing and deleting original drafts while retaining exact pending bytes for the original account',async()=>{
+void test('account-change blocks viewing and deleting original drafts while retaining exact pending bytes for the original account',async()=>{
   const local=storage(),session=storage(),f=fixture({local,session,owner:'alice'}),key='jiashu-nutrition-create:alice';
   const original=JSON.stringify({key:'original-operation',body:{name:'alice private meal'}}),store=f.manager.storage('alice');
   store.setItem(key,original);f.manager.save('draft','原草稿',{name:'alice draft'});
@@ -148,10 +173,10 @@ test('account-change blocks viewing and deleting original drafts while retaining
   assert.throws(()=>store.removeItem(key),/原账号/);assert.throws(()=>store.setItem(key,original),/重新登录/);
   assert.deepEqual([...local.values.entries()],beforeLocal);assert.deepEqual([...session.values.entries()],beforeSession);
   const reopened=fixture({local,owner:'alice'});assert.equal(reopened.manager.storage('alice').getItem(key),original);
-  assert.equal((reopened.manager.get('draft')?.data as {name:string}).name,'alice draft');
+  assert.equal((reopened.manager.get('draft')!.data as {name:string}).name,'alice draft');
 });
 
-test('shared finance pending storage retains its exact book target and keeps other books separate', () => {
+void test('shared finance pending storage retains its exact book target and keeps other books separate', () => {
   const f=fixture({owner:'alice'}), book='11111111-1111-4111-8111-111111111111', other='22222222-2222-4222-8222-222222222222';
   const key='jiashu-finance-pending:v1:alice:scope:'+encodeURIComponent(book+':2');
   const raw=JSON.stringify({key:'33333333-3333-4333-8333-333333333333',path:'/api/finance/accounts?book='+book+'&bookRevision=2',body:{ledger:'family',currency:'CNY',name:'家庭私有草稿'}});
@@ -165,14 +190,14 @@ test('shared finance pending storage retains its exact book target and keeps oth
   assert.throws(()=>store.setItem('jiashu-finance-pending:v1:alice:scope:'+encodeURIComponent(book+':missing'),raw));
 });
 
-test('a pending family submission does not hide another family book draft from recovery', () => {
+void test('a pending family submission does not hide another family book draft from recovery', () => {
   const f=fixture({owner:'alice'}), book='11111111-1111-4111-8111-111111111111', other='22222222-2222-4222-8222-222222222222';
   assert.equal(f.manager.save('book-b-draft','另一家庭草稿',{name:'待恢复'},{url:'/finance?ledger=family&book='+other+'&bookRevision=2'}),true);
   f.manager.storage('alice').setItem('jiashu-finance-goal-create:alice:scope:'+encodeURIComponent(book+':2'),JSON.stringify({body:{ledger:'family',currency:'CNY'}}));
   assert.ok(f.manager.list().some(item=>item.id==='book-b-draft'));
 });
 
-test('durable form recovery never offers a different family book draft to the same signed-in actor', async () => {
+void test('durable form recovery never offers a different family book draft to the same signed-in actor', async () => {
   const local=storage(),book='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222';
   const first=fixture({owner:'alice',local});Object.assign(first.window,{JiashuFinanceBooks:{scopeKey:()=>book+':2'}});first.guard();first.dialog.showModal();first.input('name','仅第一家庭的草稿');
   await settle(()=>first.manager.list().some(item=>item.id.includes(encodeURIComponent(book+':2'))));

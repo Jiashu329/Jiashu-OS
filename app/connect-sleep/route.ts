@@ -91,7 +91,7 @@ async function copyText(text,field){try{if(!navigator.clipboard?.writeText)throw
 $('copy-address').addEventListener('click',async()=>{if(!deviceToken||!$('address').value)return;const copied=await copyText($('address').value,$('address'));addressStatus(copied?'地址已复制。先粘贴到“文本”开头，再依次加入四个变量。':'地址已选中，请长按输入框“全选 → 复制”。',!copied);});
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这个名称。';}));
 updateSource();showStep(0,false);
-</script></body></html>`, pageUser.userId), { headers: {
+</script></body></html>`, pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

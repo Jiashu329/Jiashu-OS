@@ -3,9 +3,10 @@ import test, { afterEach } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { SQLiteD1Database } from './database.ts';
-import { bootstrapLocalOwner, getLocalUserByEmail, getLocalUserById, touchLocalUserLogin, updateLocalUser } from '../db/local-users-store.ts';
+import { bootstrapLocalOwner, createLocalUser, getLocalUserByEmail, getLocalUserById, touchLocalUserLogin, updateLocalUser } from '../db/local-users-store.ts';
 import { createSelfhostUserManagement } from './user-management.ts';
-import type { SelfhostGatewayOptions } from './auth.ts';
+import { isLocalSessionRevoked, revokeLocalSession } from '../db/local-session-revocations-store.ts';
+import type { SelfhostAuthConfig, SelfhostGatewayOptions } from './auth.ts';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSelfhostGateway, hashPassword, issueSelfhostSession, loadSelfhostAuthConfig, readCookie, safeSelfhostReturnTo,
@@ -22,7 +23,21 @@ const databases = new Set<SQLiteD1Database>();
 afterEach(() => { for (const db of databases) db.close(); databases.clear(); });
 class FakeResponse {
   headersSent = false; statusCode = 0; headers: Record<string, string | string[]> = {}; body = '';
-  writeHead(status: number, headers: Record<string, string | string[]>) { this.statusCode = status; this.headers = headers; this.headersSent = true; return this; }
+  getHeader(name: string) { const key = Object.keys(this.headers).find(key => key.toLowerCase() === name.toLowerCase()); return key ? this.headers[key] : undefined; }
+  setHeader(name: string, value: string | string[]) { this.headers[name] = value; return this; }
+  writeHead(status: number, messageOrHeaders: string | Record<string, string | string[]> | string[] = {}, optionalHeaders?: Record<string, string | string[]> | string[]) {
+    const headers = typeof messageOrHeaders === 'string' ? optionalHeaders ?? {} : messageOrHeaders;
+    this.statusCode = status;
+    if (Array.isArray(headers)) {
+      for (let index = 0; index < headers.length; index += 2) {
+        const name = headers[index], value = headers[index + 1];
+        if (name.toLowerCase() === 'set-cookie') {
+          const current = this.getHeader('set-cookie'); this.headers['Set-Cookie'] = [...(Array.isArray(current) ? current : current ? [current] : []), value];
+        } else this.headers[name] = value;
+      }
+    } else this.headers = { ...this.headers, ...headers };
+    this.headersSent = true; return this;
+  }
   end(value = '') { this.body += String(value); return this; }
 }
 function request(path: string, method = 'GET', headers: Record<string, string> = {}, body?: URLSearchParams | string) {
@@ -30,18 +45,22 @@ function request(path: string, method = 'GET', headers: Record<string, string> =
   return Object.assign(req, { method, url: path, headers: { host: config.host, ...(encoded === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' }), ...headers },
     rawHeaders: Object.entries(headers).flat(), socket: { remoteAddress: '127.0.0.1' } }) as unknown as IncomingMessage;
 }
-function fixture(options: { readiness?: () => { schemaReady: boolean; applied: number; total: number; pending: number }; limiter?: SelfhostLoginLimiter; users?: SelfhostGatewayOptions['users'] } = {}) {
+function fixture(options: { config?: SelfhostAuthConfig; readiness?: () => { schemaReady: boolean; applied: number; total: number; pending: number }; limiter?: SelfhostLoginLimiter; users?: SelfhostGatewayOptions['users']; sessions?: SelfhostGatewayOptions['sessions']; downstream?: (req: IncomingMessage, res: ServerResponse) => void } = {}) {
   let time = NOW; const downstream: IncomingMessage[] = [];
   const db = new SQLiteD1Database(':memory:'); databases.add(db);
   db.transaction(() => db.executeMigrationSQL(readFileSync(new URL('../drizzle/0034_local_users.sql', import.meta.url), 'utf8')));
+  db.transaction(() => db.executeMigrationSQL(readFileSync(new URL('../drizzle/0035_local_session_revocations.sql', import.meta.url), 'utf8')));
   const ready = bootstrapLocalOwner(db, { id: config.ownerId, email: config.ownerEmail, passwordHash: PASSWORD_HASH }, new Date(NOW).toISOString());
   const users = options.users ?? {
     async getById(id: string) { await ready; return getLocalUserById(db, id); },
     async getByEmail(email: string) { await ready; return getLocalUserByEmail(db, email); },
     async touchLogin(id: string, at: number) { await touchLocalUserLogin(db, id, new Date(at).toISOString()); },
   };
-  const gateway = createSelfhostGateway(config, (req, res) => { downstream.push(req); res.writeHead(200); res.end('application'); }, {
-    now: () => time, commitSha: 'a'.repeat(40), readiness: options.readiness ?? (() => ({ schemaReady: true, applied: 34, total: 34, pending: 0 })), limiter: options.limiter, users, manageUsers: createSelfhostUserManagement(config, db, { now: () => time }),
+  const authConfig = options.config ?? config;
+  const gateway = createSelfhostGateway(authConfig, (req, res) => { downstream.push(req); if (options.downstream) options.downstream(req, res); else { res.writeHead(200); res.end('application'); } }, {
+    now: () => time, commitSha: 'a'.repeat(40), readiness: options.readiness ?? (() => ({ schemaReady: true, applied: 34, total: 34, pending: 0 })), limiter: options.limiter, users,
+    sessions: options.sessions ?? { isRevoked: (familyHash, now) => isLocalSessionRevoked(db, familyHash, now), revoke: (familyHash, expiresAt, now) => revokeLocalSession(db, familyHash, expiresAt, now) },
+    manageUsers: createSelfhostUserManagement(authConfig, db, { now: () => time }),
   });
   return { downstream, db, ready, time(value: number) { time = value; }, async call(path: string, method = 'GET', headers: Record<string, string> = {}, body?: URLSearchParams | string) {
     const req = request(path, method, headers, body), res = new FakeResponse(); await gateway(req, res as unknown as ServerResponse); return { req, res };
@@ -71,12 +90,15 @@ void test('password hashes use bounded scrypt parameters and never accept malfor
 void test('production configuration requires HTTPS and full credentials; HTTP only exists for explicit loopback CI', () => {
   assert.equal(config.origin, base.SELFHOST_PUBLIC_ORIGIN);
   for (const changed of [{ SELFHOST_SESSION_SECRET: 'short' }, { SELFHOST_PASSWORD_HASH: 'plain-password' }, { APP_OWNER_USER_ID: '' }, { APP_OWNER_EMAIL: '' },
-    { SELFHOST_PUBLIC_ORIGIN: 'https://u:p@treefund.example/' }, { SELFHOST_PUBLIC_ORIGIN: 'https://treefund.example/path' }, { SELFHOST_SESSION_TTL_SECONDS: '86401' },
+    { SELFHOST_PUBLIC_ORIGIN: 'https://u:p@treefund.example/' }, { SELFHOST_PUBLIC_ORIGIN: 'https://treefund.example/path' }, { SELFHOST_SESSION_TTL_SECONDS: '2592001' }, { SELFHOST_SESSION_TTL_SECONDS: '299' },
     { SELFHOST_PUBLIC_ORIGIN: 'http://127.0.0.1:3000' }, { SELFHOST_PUBLIC_ORIGIN: 'http://treefund.example', CI: 'true', SELFHOST_ALLOW_HTTP: '1' }]) {
     assert.throws(() => loadSelfhostAuthConfig({ ...base, ...changed }), /configuration/);
   }
   const dev = loadSelfhostAuthConfig({ ...base, SELFHOST_PUBLIC_ORIGIN: 'http://127.0.0.1:3000', CI: 'true', SELFHOST_ALLOW_HTTP: '1' });
   assert.equal(dev.secure, false); assert.equal(selfhostCookieNames(dev).session, 'jso-test-session');
+  assert.equal(config.sessionTtl, 30 * 24 * 60 * 60);
+  assert.equal(loadSelfhostAuthConfig({ ...base, SELFHOST_SESSION_TTL_SECONDS: '300' }).sessionTtl, 300);
+  assert.equal(loadSelfhostAuthConfig({ ...base, SELFHOST_SESSION_TTL_SECONDS: '86400' }).sessionTtl, 86400);
 });
 
 void test('v2 sessions expire, reject tampering, rotate with origin/secret and do not depend on bootstrap credentials', () => {
@@ -290,4 +312,178 @@ void test('successful logins do not exhaust the shared failure budget across leg
   for (let attempt = 0; attempt < 35; attempt++) assert.equal((await login(f)).res.statusCode, 303);
   for (let attempt = 0; attempt < 10; attempt++) assert.equal((await login(f, 'wrong-long-password')).res.statusCode, 401);
   assert.equal((await login(f, 'wrong-long-password')).res.statusCode, 429);
+});
+
+const DAY = 24 * 60 * 60;
+function sessionCookies(response: FakeResponse) { return setCookies(response).filter(value => value.startsWith('__Host-jso-session=')); }
+function cookieToken(value: string) { return value.split(';')[0].slice('__Host-jso-session='.length); }
+
+void test('new logins persist for thirty days while existing valid twelve-hour v2 sessions upgrade without another login', async () => {
+  const f = fixture(), signedIn = await login(f);
+  assert.match(sessionCookies(signedIn.res)[0], /Max-Age=2592000; Secure$/);
+  const legacyConfig = { ...config, sessionTtl: 12 * 60 * 60 };
+  const legacy = issueSelfhostSession(legacyConfig, owner, NOW);
+  f.time(NOW + 60 * 60 * 1000);
+  const upgraded = await f.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + legacy });
+  const renewal = sessionCookies(upgraded.res);
+  assert.equal(renewal.length, 1); assert.match(renewal[0], /HttpOnly; SameSite=Lax; Max-Age=2592000; Secure$/);
+  assert.equal(upgraded.res.headers['Cache-Control'], 'private, no-store');
+  const value = cookieToken(renewal[0]);
+  assert.notEqual(value, legacy);
+  assert.deepEqual(verifySelfhostSession(config, value, NOW + 29 * DAY * 1000), { sub: owner.id, revision: 1 });
+  assert.equal((await getLocalUserById(f.db, owner.id))?.revision, 1, 'Renewing a cookie does not modify credentials or user revision.');
+});
+
+void test('active sessions renew at most daily, and explicit short lifetimes renew halfway through their configured duration', async () => {
+  const f = fixture(), cookie = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
+  assert.equal(sessionCookies((await f.call('/health', 'GET', { cookie })).res).length, 0);
+  f.time(NOW + DAY * 1000 - 1);
+  assert.equal(sessionCookies((await f.call('/api/session', 'GET', { cookie })).res).length, 0);
+  f.time(NOW + DAY * 1000);
+  const renewed = (await f.call('/health', 'GET', { cookie })).res;
+  assert.equal(sessionCookies(renewed).length, 1);
+  const currentCookie = sessionCookies(renewed)[0].split(';')[0];
+  f.time(NOW + (DAY + 60) * 1000);
+  assert.equal(sessionCookies((await f.call('/api/session', 'GET', { cookie: currentCookie })).res).length, 0);
+  const short = { ...config, sessionTtl: 300 }, shortFixture = fixture({ config: short });
+  const shortCookie = '__Host-jso-session=' + issueSelfhostSession(short, owner, NOW);
+  shortFixture.time(NOW + 149999);
+  assert.equal(sessionCookies((await shortFixture.call('/api/session', 'GET', { cookie: shortCookie })).res).length, 0);
+  shortFixture.time(NOW + 150000);
+  assert.match(sessionCookies((await shortFixture.call('/api/session', 'GET', { cookie: shortCookie })).res)[0], /Max-Age=300;/);
+});
+
+void test('renewal merges dedicated administrator and application cookies and honors explicit session replacement or clearing', async () => {
+  const legacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), cookie = '__Host-jso-session=' + legacy;
+  const administrator = fixture();
+  const response = (await administrator.call('/api/admin/users', 'GET', { cookie, 'x-page-owner': owner.id })).res;
+  assert.equal(sessionCookies(response).length, 1);
+  assert.equal(setCookies(response).filter(value => value.startsWith('__Host-jso-admin-csrf=')).length, 1);
+  assert.equal(response.headers['Cache-Control'], 'private, no-store');
+  const ordinary = fixture({ downstream(_req, res) {
+    res.setHeader('Set-Cookie', ['existing-app=one; Path=/', 'other-app=before; Path=/']);
+    res.writeHead(200, { 'set-cookie': ['other-app=after; Path=/', 'new-app=two; Path=/'] }); res.end();
+  } });
+  const merged = (await ordinary.call('/api/example', 'GET', { cookie })).res;
+  assert.deepEqual(setCookies(merged).filter(value => !value.startsWith('__Host-jso-session=')), ['existing-app=one; Path=/', 'other-app=after; Path=/', 'new-app=two; Path=/']);
+  for (const explicit of ['__Host-jso-session=replaced; Path=/; HttpOnly', '__Host-jso-session=; Path=/; Max-Age=0']) {
+    const application = fixture({ downstream(_req, res) { res.writeHead(200, { 'Set-Cookie': explicit }); res.end(); } });
+    assert.deepEqual(sessionCookies((await application.call('/health', 'GET', { cookie })).res), [explicit]);
+  }
+  const rawHeaders = fixture({ downstream(_req, res) { res.writeHead(200, 'OK', ['X-Example', 'kept', 'Set-Cookie', 'app-raw=one; Path=/']); res.end(); } });
+  const raw = (await rawHeaders.call('/health', 'GET', { cookie })).res;
+  assert.equal(raw.headers['X-Example'], 'kept');
+  assert.equal(setCookies(raw).filter(value => value.startsWith('app-raw=')).length, 1);
+  assert.equal(sessionCookies(raw).length, 1);
+  assert.equal(raw.headers['Cache-Control'], 'private, no-store');
+});
+
+void test('logout and administrator self edits never replace their explicit effects with background renewal', async () => {
+  const f = fixture(), legacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), cookie = '__Host-jso-session=' + legacy;
+  const page = await f.call('/signout-with-chatgpt?return_to=%2Fhealth', 'GET', { cookie });
+  assert.equal(sessionCookies(page.res).length, 0);
+  const form = csrfForm(page.res);
+  const loggedOut = (await f.call('/signout-with-chatgpt', 'POST', { cookie: cookie + '; ' + form.cookie, origin: config.origin }, new URLSearchParams({ csrf: form.csrf, return_to: '/health' }))).res;
+  assert.equal(sessionCookies(loggedOut).length, 1); assert.match(sessionCookies(loggedOut)[0], /Max-Age=0/);
+  const currentLegacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW);
+  const context = await adminContext(f, currentLegacy);
+  const changed = (await adminWrite(f, context, 'PATCH', '/api/admin/users/' + owner.id, { expectedRevision: 1, email: 'persistent-new-admin@example.test' })).res;
+  assert.equal(changed.statusCode, 200); assert.equal(JSON.parse(changed.body).reauthRequired, true);
+  assert.deepEqual(sessionCookies(changed), []);
+  const prior = await f.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + currentLegacy });
+  assert.equal(prior.req.headers['oai-authenticated-user-id'], undefined); assert.deepEqual(sessionCookies(prior.res), []);
+});
+
+void test('expired, tampered, disabled, revision-changed and unavailable sessions cannot be renewed', async () => {
+  const legacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW);
+  for (const value of [legacy + 'x', issueSelfhostSession({ ...config, sessionTtl: 300 }, owner, NOW - 300000)]) {
+    const f = fixture(), response = await f.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + value });
+    assert.equal(response.req.headers['oai-authenticated-user-id'], undefined); assert.deepEqual(sessionCookies(response.res), []);
+  }
+  for (const sql of ["UPDATE local_users SET status='disabled'", 'UPDATE local_users SET revision=revision+1']) {
+    const f = fixture(); await f.ready; await f.db.prepare(sql).run();
+    const response = await f.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + legacy });
+    assert.equal(response.req.headers['oai-authenticated-user-id'], undefined); assert.deepEqual(sessionCookies(response.res), []);
+  }
+  const broken = fixture({ users: { async getById() { throw new Error('private state'); }, async getByEmail() { return null; }, async touchLogin() {} } });
+  const response = await broken.call('/api/session', 'GET', { cookie: '__Host-jso-session=' + legacy });
+  assert.equal(response.res.statusCode, 503); assert.deepEqual(sessionCookies(response.res), []);
+});
+
+void test('static resources, failed responses and explicit public caches never acquire a session cookie', async () => {
+  const cookie = '__Host-jso-session=' + issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), f = fixture();
+  for (const path of ['/manifest.webmanifest', '/_next/static/asset.js', '/downloads/extension.zip', '/robots.txt', '/favicon.ico', '/_selfhost/healthz']) {
+    assert.deepEqual(sessionCookies((await f.call(path, 'GET', { cookie })).res), [], path);
+  }
+  for (const cache of ['public, max-age=3600', 'max-age=3600', 'immutable', 's-maxage=3600']) {
+    const cached = fixture({ downstream(_req, res) { res.writeHead(200, { 'Cache-Control': cache }); res.end(); } });
+    const response = (await cached.call('/dynamic-cached-resource', 'GET', { cookie })).res;
+    assert.deepEqual(sessionCookies(response), []); assert.equal(response.headers['Cache-Control'], cache);
+  }
+  for (const status of [304, 401, 403, 503]) {
+    const rejected = fixture({ downstream(_req, res) { res.writeHead(status); res.end(); } });
+    assert.deepEqual(sessionCookies((await rejected.call('/health', 'GET', { cookie })).res), []);
+  }
+});
+
+void test('logout revokes an already issued twelve-hour upgrade for thirty days and suppresses a still-pending renewal', async () => {
+  const delayed: ServerResponse[] = [];
+  const f = fixture({ downstream(req, res) { if (req.url === '/health?slow') delayed.push(res); else { res.writeHead(200); res.end(); } } });
+  const legacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), cookie = '__Host-jso-session=' + legacy;
+  const issuedRenewal = sessionCookies((await f.call('/api/session', 'GET', { cookie })).res)[0];
+  assert.ok(issuedRenewal);
+  const pending = await f.call('/health?slow', 'GET', { cookie });
+  assert.equal(pending.res.headersSent, false);
+  const form = csrfForm((await f.call('/signout-with-chatgpt', 'GET', { cookie })).res);
+  const logout = (await f.call('/signout-with-chatgpt', 'POST', { cookie: cookie + '; ' + form.cookie, origin: config.origin }, new URLSearchParams({ csrf: form.csrf, return_to: '/' }))).res;
+  assert.equal(logout.statusCode, 303); assert.match(sessionCookies(logout)[0], /Max-Age=0/);
+  delayed[0].writeHead(200); delayed[0].end();
+  assert.deepEqual(sessionCookies(pending.res), [], 'A response queued before logout cannot overwrite the cleared cookie.');
+  const late = issuedRenewal;
+  const originalClaims = JSON.parse(Buffer.from(legacy.split('.')[0], 'base64url').toString());
+  const renewedClaims = JSON.parse(Buffer.from(cookieToken(late).split('.')[0], 'base64url').toString());
+  assert.equal(originalClaims.nonce, renewedClaims.nonce, 'Renewal never escapes its revoked family.');
+  assert.deepEqual(verifySelfhostSession(config, cookieToken(late), NOW + 13 * 60 * 60 * 1000), { sub: owner.id, revision: 1 }, 'The signature remains structurally valid after the original twelve-hour expiry.');
+  for (const at of [NOW, NOW + 13 * 60 * 60 * 1000, NOW + 29 * DAY * 1000]) {
+    f.time(at);
+    const replay = await f.call('/api/session', 'GET', { cookie: late.split(';')[0] });
+    assert.equal(replay.req.headers['oai-authenticated-user-id'], undefined, 'The revoked family cannot restore authorization.');
+    assert.deepEqual(sessionCookies(replay.res), []);
+  }
+});
+
+void test('password login revokes a previous browser family before creating a fresh one without logging out other devices', async () => {
+  const delayed: ServerResponse[] = [], bob = '11111111-1111-4111-8111-111111111111';
+  const f = fixture({ downstream(req, res) { if (req.url === '/health?slow') delayed.push(res); else { res.writeHead(200); res.end(); } } });
+  await f.ready; await createLocalUser(f.db, { id: bob, email: 'bob@example.test', passwordHash: PASSWORD_HASH });
+  const prior = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), cookie = '__Host-jso-session=' + prior;
+  const otherDevice = '__Host-jso-session=' + issueSelfhostSession(config, owner, NOW);
+  const issuedRenewal = sessionCookies((await f.call('/api/session', 'GET', { cookie })).res)[0];
+  const pending = await f.call('/health?slow', 'GET', { cookie });
+  const anonymousForm = csrfForm((await f.call('/signin-with-chatgpt')).res);
+  const switched = (await f.call('/signin-with-chatgpt', 'POST', { cookie: cookie + '; ' + anonymousForm.cookie, origin: config.origin }, new URLSearchParams({ csrf: anonymousForm.csrf, return_to: '/', email: 'bob@example.test', password: PASSWORD }))).res;
+  assert.equal(switched.statusCode, 303);
+  const bobCookie = sessionCookies(switched)[0].split(';')[0];
+  assert.equal((await f.call('/api/session', 'GET', { cookie: bobCookie })).req.headers['oai-authenticated-user-id'], bob);
+  delayed[0].writeHead(200); delayed[0].end();
+  assert.deepEqual(sessionCookies(pending.res), [], 'The old response leaves Bob’s new browser cookie intact.');
+  const late = issuedRenewal.split(';')[0];
+  assert.equal((await f.call('/api/session', 'GET', { cookie: late })).req.headers['oai-authenticated-user-id'], undefined);
+  assert.equal((await f.call('/api/session', 'GET', { cookie })).req.headers['oai-authenticated-user-id'], undefined);
+  assert.equal((await f.call('/api/session', 'GET', { cookie: otherDevice })).req.headers['oai-authenticated-user-id'], owner.id);
+  assert.equal((await f.call('/api/session', 'GET', { cookie: bobCookie })).req.headers['oai-authenticated-user-id'], bob);
+});
+
+void test('revocation lookup and persistence failures fail closed before identity exposure, cookie clearing or account switching', async () => {
+  const legacy = issueSelfhostSession({ ...config, sessionTtl: 43200 }, owner, NOW), cookie = '__Host-jso-session=' + legacy;
+  const unavailable = fixture({ sessions: { async isRevoked() { throw new Error('PRIVATE revocation data'); }, async revoke() {} } });
+  const read = await unavailable.call('/api/session', 'GET', { cookie });
+  assert.equal(read.res.statusCode, 503); assert.equal(unavailable.downstream.length, 0); assert.deepEqual(sessionCookies(read.res), []); assert.doesNotMatch(read.res.body, /PRIVATE/);
+  const failing = fixture({ sessions: { async isRevoked() { return false; }, async revoke() { throw new Error('PRIVATE write'); } } });
+  const form = csrfForm((await failing.call('/signout-with-chatgpt', 'GET', { cookie })).res);
+  const logout = (await failing.call('/signout-with-chatgpt', 'POST', { cookie: cookie + '; ' + form.cookie, origin: config.origin }, new URLSearchParams({ csrf: form.csrf, return_to: '/' }))).res;
+  assert.equal(logout.statusCode, 503); assert.deepEqual(setCookies(logout), []); assert.doesNotMatch(logout.body, /PRIVATE/);
+  const anonymousForm = csrfForm((await failing.call('/signin-with-chatgpt')).res);
+  const login = (await failing.call('/signin-with-chatgpt', 'POST', { cookie: cookie + '; ' + anonymousForm.cookie, origin: config.origin }, new URLSearchParams({ csrf: anonymousForm.csrf, return_to: '/', email: config.ownerEmail, password: PASSWORD }))).res;
+  assert.equal(login.statusCode, 503); assert.deepEqual(setCookies(login), []); assert.doesNotMatch(login.body, /PRIVATE/);
 });

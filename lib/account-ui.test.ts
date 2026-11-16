@@ -10,26 +10,112 @@ async function settled(check: () => boolean) {
   assert.ok(check(), 'Account identity did not settle');
 }
 
-function fixture(responses: Array<Response | Promise<Response>>, expectedOwner = 'alice', pageOwner = '', localAuth = false) {
+function fixture(responses: Array<Response | Promise<Response>>, expectedOwner = 'alice', pageOwner = '', localAuth = false, bootstrap: Record<string, unknown> | null = null, readIdentity?: () => Promise<unknown>) {
   const { window, document } = parseHTML(`<html><body><div class="app"><aside><a href="/account"><span data-current-account-avatar>我</span><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></a><button data-account-retry data-account-sidebar-retry hidden>重新确认账户</button></aside>${renderAccountRecovery()}<main${localAuth ? ' data-account-auth-provider="local"' : ''}><p data-account-status role="status"></p><dl data-account-profile hidden><dd data-current-account-name></dd><dd data-current-account-email></dd></dl><button data-account-retry hidden>重试</button><a data-account-sign-in hidden>登录</a><a data-account-sign-out>退出</a><a data-account-owner-only hidden>管理使用名单</a><p>Private content belongs to alice</p></main></div></body></html>`);
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const bound: string[] = [];
-  const guard = { changed: false, bind(owner: string) { bound.push(owner); if (expectedOwner && owner !== expectedOwner) { this.changed = true; document.dispatchEvent(new window.Event('jiashu-account-changed')); return false; } return true; } };
+  let signOutNotices = 0;
+  const guard = { changed: false, readIdentity, notifySignedOut() { signOutNotices++; }, bind(owner: string) { bound.push(owner); if (expectedOwner && owner !== expectedOwner) { this.changed = true; document.dispatchEvent(new window.Event('jiashu-account-changed')); return false; } return true; } };
   Object.assign(window, { JiashuAccountSession: guard, __JIASHU_PAGE_OWNER__: pageOwner });
+  Object.defineProperty(window, '__JIASHU_PAGE_SESSION__', { value: bootstrap ? Object.freeze(bootstrap) : null, configurable: true });
   let reloads = 0;
   const timers = new Set<() => void>();
+  const intervals = new Set<() => void>();
+  let now = Date.now();
+  class Clock extends Date { static now() { return now; } }
   const source = renderAccountIdentityScript().replace(/^<script type="module">/, '').replace(/<\/script>$/, '');
-  runInNewContext(source, { window, document, fetch: async (url: string, init: RequestInit) => { requests.push({ url, init }); const response = responses.shift(); if (!response) throw new Error('Synthetic session unavailable'); return response; }, AbortController,
+  runInNewContext(source, { window, document, fetch: async (url: string, init: RequestInit) => { requests.push({ url, init }); const response = responses.shift(); if (!response) throw new Error('Synthetic session unavailable'); return response; }, AbortController, Date: Clock,
     setTimeout(callback: () => void) { timers.add(callback); return callback; }, clearTimeout(callback: () => void) { timers.delete(callback); },
+    setInterval(callback: () => void) { intervals.add(callback); return callback; },
     location: { pathname: '/health', search: '?days=7', reload() { reloads++; } } });
   return { document, window, requests, bound, guard, get reloads() { return reloads; },
+    get signOutNotices() { return signOutNotices; },
     names: () => [...document.querySelectorAll('[data-current-account-name]')].map((node) => node.textContent),
     status: () => document.querySelector('[data-account-status]')!,
     profile: () => document.querySelector('[data-account-profile]') as HTMLElement,
     recovery: () => document.querySelector('[data-account-recovery]') as HTMLElement,
     timeout() { for (const callback of timers) callback(); },
+    backgroundTick() { now += 60001; for (const callback of intervals) callback(); },
+    refresh() { return (window as unknown as { JiashuAccountIdentity: { refresh(options: { force: boolean }): Promise<void> } }).JiashuAccountIdentity.refresh({ force: true }); },
   };
 }
+
+const ALICE_SESSION = { userId: 'alice', displayName: 'Alice', email: 'alice@example.test', isOwner: true };
+
+void test('an unbound public sign-out receipt confirms the real session before notifying other tabs', async () => {
+  let guardReads = 0;
+  const f = fixture([Response.json({}, { status: 401 })], 'alice', '', true, null, async () => { guardReads++; throw new Error('Unbound guard must not be queried'); });
+  await settled(() => f.status().getAttribute('data-account-status') === 'signed-out');
+  assert.equal(guardReads, 0); assert.equal(f.requests.length, 1); assert.equal(f.signOutNotices, 1);
+  assert.equal(f.recovery().hidden, true);
+  const active = fixture([], 'alice', 'alice', true, ALICE_SESSION);
+  assert.equal(active.requests.length, 0); assert.equal(active.signOutNotices, 0, 'Only a confirmed 401 receipt broadcasts sign-out');
+});
+
+void test('fresh server-attested pages display immediately without another identity request or full-screen checking', async () => {
+  const f = fixture([], 'alice', 'alice', false, ALICE_SESSION);
+  assert.deepEqual(f.names(), ['Alice', 'Alice']); assert.equal(f.profile().hidden, false);
+  assert.equal(f.recovery().hidden, true); assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+  assert.equal(f.requests.length, 0); assert.equal((f.document.querySelector('[data-account-owner-only]') as HTMLElement).hidden, false);
+  f.window.dispatchEvent(new f.window.Event('focus'));
+  f.document.dispatchEvent(new f.window.Event('visibilitychange'));
+  assert.equal(f.requests.length, 0, 'Immediate focus events reuse the just-authorized document');
+});
+
+void test('background session failures leave the confirmed page visible and offer a small retry notice', async () => {
+  for (const response of [Response.json({}, { status: 503 }), new Response('invalid json'), Response.json({})]) {
+    const f = fixture([response, Response.json(ALICE_SESSION)], 'alice', 'alice', false, ALICE_SESSION);
+    f.backgroundTick();
+    await settled(() => f.document.documentElement.hasAttribute('data-account-background-error'));
+    assert.equal(f.recovery().hidden, true); assert.equal(f.profile().hidden, false);
+    assert.equal(f.names()[0], 'Alice'); assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+    const notice = f.document.querySelector('[data-account-background-status]') as HTMLElement;
+    assert.equal(notice.hidden, false); assert.equal(notice.closest('main'), null);
+    notice.querySelector('[data-account-background-retry]')?.dispatchEvent(new f.window.Event('click'));
+    await settled(() => notice.hidden === true);
+    assert.equal(f.names()[0], 'Alice'); assert.equal(f.document.documentElement.hasAttribute('data-account-background-error'), false);
+  }
+});
+
+void test('hung background checks do not cover the page, but known signed-out and denied sessions do', async () => {
+  const waiting = fixture([new Promise<Response>(() => {})], 'alice', 'alice', false, ALICE_SESSION);
+  void waiting.refresh();
+  assert.equal(waiting.recovery().hidden, true); assert.equal(waiting.profile().hidden, false);
+  waiting.timeout();
+  await settled(() => waiting.document.documentElement.hasAttribute('data-account-background-error'));
+  assert.equal(waiting.recovery().hidden, true); assert.equal(waiting.names()[0], 'Alice');
+  for (const status of [401, 403]) {
+    const f = fixture([Response.json({}, { status })], 'alice', 'alice', false, ALICE_SESSION);
+    await f.refresh();
+    assert.equal(f.recovery().hidden, false); assert.equal(f.recovery().dataset.accountRecoveryState, 'signed-out');
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+    assert.equal(f.profile().hidden, true); assert.equal(f.names()[0], '尚未登录');
+  }
+});
+
+void test('a bfcache document is covered before restore and a delayed old check cannot reveal it', async () => {
+  let finish!: (value: Response) => void;
+  const old = new Promise<Response>(resolve => { finish = resolve; });
+  const f = fixture([old, Response.json({ ...ALICE_SESSION, userId: 'bob' })], 'alice', 'alice', false, ALICE_SESSION);
+  void f.refresh();
+  const hide = new f.window.Event('pagehide'); Object.assign(hide, { persisted: true }); f.window.dispatchEvent(hide);
+  assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+  const show = new f.window.Event('pageshow'); Object.assign(show, { persisted: true }); f.window.dispatchEvent(show);
+  await settled(() => f.recovery().dataset.accountRecoveryState === 'changed');
+  finish(Response.json(ALICE_SESSION));
+  await settled(() => f.names()[0] === '账户已切换');
+  assert.equal(f.recovery().hidden, false); assert.equal(f.document.documentElement.hasAttribute('data-account-changed'), true);
+});
+
+void test('a malformed or mismatched bootstrap never authorizes a fresh private document', async () => {
+  for (const bootstrap of [{ ...ALICE_SESSION, userId: 'bob' }, { userId: 'alice' }]) {
+    const f = fixture([Response.json(ALICE_SESSION)], 'alice', 'alice', false, bootstrap);
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+    assert.equal(f.recovery().hidden, false);
+    await settled(() => f.recovery().hidden === true);
+    assert.equal(f.requests.length, 1);
+  }
+});
 
 void test('account identity renders only the current name and email as text and binds the immutable document owner', async () => {
   const malicious = '<img src=x onerror=alert(1)>';
@@ -139,7 +225,7 @@ void test('failed SSR identity checks stay covered but the sidebar can retry and
 });
 
 void test('SSR session failures show public recovery outside the hidden private main and can retry successfully', async () => {
-  for (const failed of [Response.json({}, { status: 503 }), Response.json({}, { status: 403 }), new Response('not valid JSON', { headers: { 'Content-Type': 'application/json' } }), Response.json({})]) {
+  for (const failed of [Response.json({}, { status: 503 }), new Response('not valid JSON', { headers: { 'Content-Type': 'application/json' } }), Response.json({})]) {
     const f = fixture([failed, Response.json({ userId: 'alice', displayName: 'Alice', email: 'alice@example.test' })], 'alice', 'alice');
     assert.equal(f.recovery().hidden, false);
     assert.equal(f.recovery().dataset.accountRecoveryState, 'loading');

@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     signInHref: chatGPTSignInPath('/account'),
     signOutHref: chatGPTSignOutPath('/account?signedOut=1'),
   });
-  return new Response(user ? withPageAccount(html, user.userId) : html, { headers: {
+  return new Response(user ? withPageAccount(html, user.userId, user) : html, { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   } });

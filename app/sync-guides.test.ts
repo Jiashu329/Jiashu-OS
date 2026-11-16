@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
-import { Script, runInNewContext } from 'node:vm';
+import { compileFunction, Script, runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { APP_THEME_CSS } from '../lib/app-theme.ts';
@@ -19,15 +19,15 @@ async function render(name: typeof pages[number], query = '') {
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   const authorized: string[] = [];
   const bindings = { APP_THEME_CSS, APP_BRAND_HEAD, APP_SIDEBAR_CSS, renderAppSidebar, multiDayStepsGuide, renderShortcutInstallCard, withShortcutInstallCard, withPageAccount,
-    requireChatGPTUser: async (path: string) => { authorized.push(path); return { userId: 'synthetic-guide-owner' }; } };
-  const handler = new Function(...Object.keys(bindings), source + '\nreturn GET;')(...Object.values(bindings)) as (request: Request) => Promise<Response>;
+    requireChatGPTUser: async (path: string) => { authorized.push(path); return { userId: 'synthetic-guide-owner', email: 'guide@example.test', displayName: 'Guide owner', isOwner: true }; } };
+  const handler = compileFunction(source + '\nreturn GET;', Object.keys(bindings))(...Object.values(bindings)) as (request: Request) => Promise<Response>;
   const response = await handler(new Request(ORIGIN + '/' + name + query));
   const html = await response.text();
   const { window, document } = parseHTML(html);
   return { response, html, authorized, window, document };
 }
 
-test('all synchronization guides use the shared navigation and exactly one health chat without losing the guide body', async () => {
+void test('all synchronization guides use the shared navigation and exactly one health chat without losing the guide body', async () => {
   for (const name of pages) {
     const page = await render(name);
     assert.equal(page.response.status, 200);
@@ -43,7 +43,7 @@ test('all synchronization guides use the shared navigation and exactly one healt
   }
 });
 
-test('daily steps and energy retain their distinct complete configuration and privacy controls', async () => {
+void test('daily steps and energy retain their distinct complete configuration and privacy controls', async () => {
   for (const metric of ['steps', 'active_energy'] as const) {
     const page = await render('connect-steps', metric === 'active_energy' ? '?metric=active_energy' : '');
     assert.equal(page.document.querySelectorAll('[data-step]').length, 9);
@@ -58,7 +58,7 @@ test('daily steps and energy retain their distinct complete configuration and pr
   }
 });
 
-test('sleep, body-composition and file-import guide safeguards remain accessible', async () => {
+void test('sleep, body-composition and file-import guide safeguards remain accessible', async () => {
   const sleep = await render('connect-sleep');
   assert.equal(sleep.document.querySelectorAll('[data-step]').length, 9);
   for (const id of ['confirm-samples', 'source', 'sleep-days', 'navigation-status', 'address-status']) assert.ok(sleep.document.getElementById(id));
@@ -72,7 +72,7 @@ test('sleep, body-composition and file-import guide safeguards remain accessible
   assert.ok(file.document.getElementById('sleep-files'));
 });
 
-test('the shared shell preserves step navigation and does not generate a synchronization credential on load', async () => {
+void test('the shared shell preserves step navigation and does not generate a synchronization credential on load', async () => {
   const page = await render('connect-steps');
   const guideScript = Array.from(page.document.querySelectorAll('script')).at(-1)?.textContent ?? '';
   const assign: string[] = [];

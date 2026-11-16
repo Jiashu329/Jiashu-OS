@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   const query = new URLSearchParams();
   if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) query.set('week', week);
   const pageUser = await requireChatGPTUser('/health/review' + (query.size ? '?' + query : ''));
-  return new Response(withPageAccount(renderHealthWeeklyPage(), pageUser.userId), { headers: {
+  return new Response(withPageAccount(renderHealthWeeklyPage(), pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

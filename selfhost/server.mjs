@@ -4,6 +4,7 @@ import { createSelfhostGateway, loadSelfhostAuthConfig } from './auth.ts';
 import { closeSelfhostDatabase, getSelfhostDatabase, readSelfhostReadiness } from './env.ts';
 import { bootstrapLocalOwner, getLocalUserByEmail, getLocalUserById, touchLocalUserLogin } from '../db/local-users-store.ts';
 import { createSelfhostUserManagement } from './user-management.ts';
+import { isLocalSessionRevoked, revokeLocalSession } from '../db/local-session-revocations-store.ts';
 
 export async function startSelfhostServer() {
   const config = loadSelfhostAuthConfig();
@@ -24,6 +25,8 @@ export async function startSelfhostServer() {
     commitSha: process.env.APP_COMMIT_SHA ?? '', readiness: readSelfhostReadiness,
     users: { getById: id => getLocalUserById(database, id), getByEmail: email => getLocalUserByEmail(database, email),
       touchLogin: (id, now) => touchLocalUserLogin(database, id, new Date(now).toISOString()) },
+    sessions: { isRevoked: (familyHash, now) => isLocalSessionRevoked(database, familyHash, now),
+      revoke: (familyHash, expiresAt, now) => revokeLocalSession(database, familyHash, expiresAt, now) },
     manageUsers: createSelfhostUserManagement(config, database),
   });
   instance.server.removeListener('request', original);

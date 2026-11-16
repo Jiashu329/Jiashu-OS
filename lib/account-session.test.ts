@@ -5,24 +5,37 @@ import { ACCOUNT_SESSION_SCRIPT, renderAccountSessionScript } from './account-se
 import { CLIENT_REQUEST_SCRIPT } from './client-request.ts';
 
 interface AccountSession {
-  owner: string; changed: boolean; problem: string;
+  owner: string; changed: boolean; problem: string; attested: boolean;
   bind(owner: string): boolean;
+  readIdentity(): Promise<{ userId: string }>;
+  invalidate(): void;
   verify(): Promise<string>;
   request(url: string, options?: RequestInit): Promise<Response>;
 }
 interface Call { url: string; options: RequestInit }
-function fixture(options: { pageOwner?: string; response?: (call: Call) => Promise<Response> } = {}) {
+type SessionBootstrap = { userId: string; displayName: string; email: string; isOwner: boolean };
+interface Channel { name: string; closed: boolean; onmessage: ((event: { data: unknown }) => void) | null }
+function fixture(options: { pageOwner?: string; bootstrap?: SessionBootstrap; bus?: Channel[]; response?: (call: Call) => Promise<Response> } = {}) {
   const calls: Call[] = [];
   const attributes = new Map<string,string>();
   const events: string[] = [];
-  let current = 'alice';
+  let current = options.pageOwner ?? 'alice';
   let session: (() => Promise<Response>) | null = null;
+  const listeners = new Map<string, Array<(event: Event) => void>>();
+  class SessionChannel implements Channel {
+    name: string; closed = false; onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(name: string) { this.name = name; options.bus!.push(this); }
+    postMessage(data: unknown) { for (const target of options.bus!) if (target !== this && !target.closed && target.name === this.name) target.onmessage?.({ data }); }
+    close() { this.closed = true; }
+  }
   const sandbox = {
     __JIASHU_PAGE_OWNER__: options.pageOwner,
+    __JIASHU_PAGE_SESSION__: options.bootstrap,
+    addEventListener(type: string, handler: (event: Event) => void) { const items = listeners.get(type) ?? []; items.push(handler); listeners.set(type, items); },
     document: { documentElement: { setAttribute(key: string, value: string) { attributes.set(key,value); } },
       dispatchEvent(event: Event) { events.push(event.type); } },
     location: new URL('https://synthetic-account.example/health/nutrition'),
-    URL, Headers, Response, AbortController, Event, setTimeout, clearTimeout,
+    URL, Headers, Response, AbortController, Event, setTimeout, clearTimeout, BroadcastChannel: options.bus ? SessionChannel : undefined,
     fetch: async (url: string, init: RequestInit = {}) => {
       const call = { url: String(url), options: init };calls.push(call);
       if (call.url === '/api/session') return session ? session() : Response.json({ userId: current });
@@ -33,10 +46,81 @@ function fixture(options: { pageOwner?: string; response?: (call: Call) => Promi
   runInNewContext(ACCOUNT_SESSION_SCRIPT, context);
   const guard = (sandbox as typeof sandbox & { JiashuAccountSession: AccountSession }).JiashuAccountSession;
   return { guard, context, calls, attributes, events,
+    fire(type: string, values: Record<string, unknown> = {}) { const event = Object.assign(new Event(type), values); for (const handler of listeners.get(type) ?? []) handler(event); },
     account(owner: string) { current=owner; }, identity(run: () => Promise<Response>) { session=run; },
     fetch(url: string, init?: RequestInit) { return sandbox.fetch(url,init); },
   };
 }
+
+const bootstrap = (userId = 'alice'): SessionBootstrap => ({ userId, displayName: userId, email: userId + '@example.test', isOwner: userId === 'alice' });
+
+void test('server bootstrap avoids all business-request preflights while every response attests the same immutable owner', async () => {
+  const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap() });
+  assert.equal(f.guard.attested, true);
+  for (const path of ['/api/health', '/api/finance', '/api/life/douban']) assert.equal((await f.fetch(path)).status, 200);
+  assert.equal(f.calls.some(call => call.url === '/api/session'), false);
+  assert.ok(f.calls.every(call => new Headers(call.options.headers).get('X-Page-Owner') === 'alice'));
+  assert.equal(f.attributes.has('data-account-verifying'), false);
+});
+
+void test('a mismatched bootstrap stays unconfirmed and cannot alter the document owner', async () => {
+  const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap('bob') });
+  assert.equal(f.guard.attested, false); assert.equal(f.attributes.has('data-account-verifying'), true);
+  await f.fetch('/api/health'); assert.equal(f.calls[0].url, '/api/session'); assert.equal(f.guard.owner, 'alice');
+});
+
+void test('known sign-out revokes the confirmed client guard while ordinary permission denials keep the account usable', async () => {
+  const denied = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), response: async () => Response.json({ code: 'LOCAL_USER_FORBIDDEN' }, { status: 403, headers: { 'X-Account-Owner': 'alice' } }) });
+  assert.equal((await denied.fetch('/api/admin/users')).status, 403); assert.equal(denied.guard.changed, false);
+  const ended = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), response: async () => Response.json({ code: 'SIGN_IN_REQUIRED' }, { status: 401 }) });
+  assert.equal((await ended.fetch('/api/health')).status, 401); assert.equal(ended.guard.changed, true);
+  assert.equal(ended.guard.attested, false); assert.deepEqual(ended.events, ['jiashu-account-signed-out']);
+});
+
+void test('invalidating a cached document isolates stale verification responses from the fresh restored check', async () => {
+  const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap() });
+  let finishOld!: (response: Response) => void, finishNew!: (response: Response) => void;
+  const resolvers = [() => new Promise<Response>(resolve => { finishOld = resolve; }), () => new Promise<Response>(resolve => { finishNew = resolve; })];
+  f.identity(() => resolvers.shift()!());
+  const old = f.guard.readIdentity().catch(error => error as { code: string });
+  f.fire('pagehide', { persisted: true });
+  assert.equal(f.guard.attested, false); assert.equal(f.attributes.has('data-account-verifying'), true);
+  const restored = f.guard.readIdentity().catch(error => error as { code: string });
+  finishNew(Response.json({ userId: 'bob' }));
+  await restored;
+  finishOld(Response.json({ userId: 'alice' }));
+  await old;
+  assert.equal(f.guard.changed, true); assert.equal(f.guard.attested, false); assert.equal(f.guard.owner, 'alice');
+});
+
+void test('a superseded old-owner mismatch cannot undo a newer successful same-owner check', async () => {
+  const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap() }); let finish!: (response: Response) => void;
+  f.identity(() => new Promise(resolve => { finish = resolve; }));
+  const old = f.guard.readIdentity().catch(error => error as { code: string });
+  f.guard.invalidate(); f.identity(async () => Response.json({ userId: 'alice' }));
+  await f.guard.readIdentity(); finish(Response.json({ userId: 'bob' })); await old;
+  assert.equal(f.guard.attested, true); assert.equal(f.guard.changed, false);
+});
+
+void test('a freshly authorized different-owner tab invalidates late responses without trusting the broadcast as identity', async () => {
+  const bus: Channel[] = []; let finish!: (response: Response) => void;
+  const alice = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), bus, response: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = alice.fetch('/api/overview');
+  const bob = fixture({ pageOwner: 'bob', bootstrap: bootstrap('bob'), bus });
+  assert.equal(alice.guard.changed, true); assert.equal(bob.guard.changed, false);
+  finish(Response.json({ private: 'alice-only' }, { headers: { 'X-Account-Owner': 'alice' } }));
+  const withheld = await pending; assert.equal(withheld.status, 401); assert.ok(!(await withheld.text()).includes('alice-only'));
+  assert.equal(alice.guard.owner, 'alice'); assert.equal(alice.calls.some(call => call.url === '/api/session'), false);
+});
+
+void test('same-owner navigation broadcasts do not hide or invalidate another confirmed page', () => {
+  const bus: Channel[] = [];
+  const one = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), bus });
+  fixture({ pageOwner: 'alice', bootstrap: bootstrap(), bus });
+  assert.equal(one.guard.changed, false); assert.equal(one.guard.attested, true); assert.equal(one.events.length, 0);
+  one.fire('storage', { key: 'jiashu:session-notice', newValue: JSON.stringify({ kind: 'identity', owner: 'bob' }) });
+  assert.equal(one.guard.changed, true); assert.equal(one.guard.owner, 'alice');
+});
 
 void test('SSR owner binding blocks an old page first used only after another account signs in',async()=>{
   const f=fixture({pageOwner:'alice'});f.account('bob');

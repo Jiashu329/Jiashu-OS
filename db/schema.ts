@@ -413,6 +413,15 @@ export const financeMonthCloses = sqliteTable('finance_month_closes', {
 ]);
 
 // Authorization records are intentionally excluded from portable business backups.
+export const localSessionRevocations = sqliteTable('local_session_revocations', {
+  familyHash: text('family_hash').primaryKey().notNull(),
+  expiresAt: integer('expires_at').notNull(),
+}, (table) => [
+  index('local_session_revocations_expiry_idx').on(table.expiresAt),
+  check('local_session_revocations_hash_check', sql`typeof(${table.familyHash})='text' AND length(CAST(${table.familyHash} AS BLOB))=64 AND ${table.familyHash} NOT GLOB '*[^0-9a-f]*'`),
+  check('local_session_revocations_expiry_check', sql`typeof(${table.expiresAt})='integer' AND ${table.expiresAt} >= 0 AND ${table.expiresAt} <= 9007199254740991`),
+]);
+
 export const localUsers = sqliteTable('local_users', {
   id: text('id').primaryKey().notNull(),
   email: text('email').notNull(),

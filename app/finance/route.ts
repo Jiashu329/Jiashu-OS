@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   if (currency && Object.hasOwn(CURRENCIES, currency)) query.set('currency', currency);
   for (const key of ['book', 'bookRevision']) for (const value of source.getAll(key)) query.append(key, value);
   const user = await requireChatGPTUser('/finance?' + query);
-  return new Response(withPageAccount(renderFinanceApp(user.userId), user.userId), { headers: {
+  return new Response(withPageAccount(renderFinanceApp(user.userId), user.userId, user), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

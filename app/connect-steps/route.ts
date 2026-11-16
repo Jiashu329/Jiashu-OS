@@ -83,7 +83,7 @@ $('copy-address').addEventListener('click',async()=>{if(!deviceToken)return;cons
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请直接在快捷指令中输入这段文字。';}));
 updateSource();showStep(0,false);
 </script></body></html>`;
-  return new Response(withPageAccount(withShortcutInstallCard(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), isEnergy ? 'active_energy' : 'steps'), pageUser.userId), { headers: {
+  return new Response(withPageAccount(withShortcutInstallCard(multiDayStepsGuide(html, isEnergy ? 'active_energy' : 'steps').replace('</main>', '</main></div>'), isEnergy ? 'active_energy' : 'steps'), pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

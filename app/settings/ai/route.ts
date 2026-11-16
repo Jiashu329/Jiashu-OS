@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const pageUser = await requireChatGPTUser('/settings/ai');
-  return new Response(withPageAccount(renderAISettingsPage(), pageUser.userId), { headers: {
+  return new Response(withPageAccount(renderAISettingsPage(), pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

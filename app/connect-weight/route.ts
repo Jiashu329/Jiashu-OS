@@ -101,7 +101,7 @@ async function copyText(text,field){try{if(!navigator.clipboard?.writeText)throw
 $('copy-address').addEventListener('click',async()=>{if(!isConfirmed()||!$('address').value)return;const copied=await copyText($('address').value,$('address'));addressStatus(copied?'已复制。把合并前缀粘贴到第 9 步“文本”的开头，按当前样例接上对应蓝变量。':'地址已选中，请长按输入框，选择“全选 → 复制”。',!copied);});
 document.querySelectorAll('[data-copy]').forEach((button)=>button.addEventListener('click',async()=>{const copied=await copyText(button.dataset.copy);$('copy-status').textContent=copied?'已复制：'+button.dataset.copy:'复制未完成，请按页面显示的名称或文字输入。';}));
 updateSelection();showStep(0,false);
-</script></body></html>`, pageUser.userId), { headers: {
+</script></body></html>`, pageUser.userId, pageUser), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

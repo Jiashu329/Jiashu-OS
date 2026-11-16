@@ -28,8 +28,8 @@ void test('all current migrations initialize an empty database once, before owne
   try {
     const result = await migrateDatabase({ path: f.path, directory: resolve('drizzle') });
     assert.equal(result.schemaReady, true);
-    assert.equal(result.changed, 35);
-    assert.equal(result.applied, 35);
+    assert.equal(result.changed, 36);
+    assert.equal(result.applied, 36);
     assert.equal(result.backupPath, undefined);
     const db = new SQLiteD1Database(f.path);
     try {
@@ -42,6 +42,45 @@ void test('all current migrations initialize an empty database once, before owne
     assert.equal(again.changed, 0);
     assert.equal(again.backupPath, undefined);
     assert.equal(existsSync(join(f.root, 'backups')), false);
+  } finally { f.cleanup(); }
+});
+
+void test('session revocation upgrade preserves existing business records, credentials and the entire applied prefix', async () => {
+  const f = fixture(), current = loadMigrations(resolve('drizzle'));
+  try {
+    assert.equal(current.length, 36);
+    f.migrations(current.slice(0, -1).map(migration => migration.sql));
+    await migrateDatabase(f);
+    const before = new SQLiteD1Database(f.path);
+    let ledger: unknown[];
+    try {
+      before.transaction(() => {
+        before.sqlite.prepare("INSERT INTO local_users(id,email,password_hash,status,revision,created_at,updated_at) VALUES('existing-owner','admin@example.test','preserved-password-hash','active',7,'2026-11-16','2026-11-16')").run();
+        const add = before.sqlite.prepare("INSERT INTO health_measurements VALUES('existing-owner',?,'steps','2026-11-16','{}','2026-11-16','2026-11-16')");
+        for (let index = 0; index < 638; index++) add.run('retained-' + index);
+        before.sqlite.prepare("INSERT INTO douban_items(user_id,profile_id,domain,subject_id,kind,title,url,source,observed_at,created_at,updated_at) VALUES('existing-owner','personal','screen','1292052','movie','Retained media','https://movie.douban.com/subject/1292052/','import','2026-11-16','2026-11-16','2026-11-16')").run();
+      });
+      ledger = before.sqlite.prepare('SELECT * FROM _selfhost_migrations ORDER BY idx').all();
+    } finally { before.close(); }
+    f.migrations(current.map(migration => migration.sql));
+    const result = await migrateDatabase(f);
+    assert.equal(result.changed, 1); assert.equal(result.applied, 36); assert.ok(result.backupPath);
+    const after = new SQLiteD1Database(f.path);
+    try {
+      assert.equal(after.sqlite.prepare('SELECT COUNT(*) n FROM health_measurements').get()!.n, 638);
+      assert.equal(after.sqlite.prepare('SELECT title FROM douban_items').get()!.title, 'Retained media');
+      const user = after.sqlite.prepare('SELECT password_hash,revision FROM local_users').get()!;
+      assert.equal(user.password_hash, 'preserved-password-hash'); assert.equal(user.revision, 7);
+      assert.equal(after.sqlite.prepare('SELECT COUNT(*) n FROM local_session_revocations').get()!.n, 0);
+      assert.deepEqual(after.sqlite.prepare('SELECT * FROM _selfhost_migrations ORDER BY idx LIMIT 35').all(), ledger);
+      assert.equal(checkDatabase(after, loadMigrations(f.directory)).schemaReady, true);
+    } finally { after.close(); }
+    const snapshot = new DatabaseSync(result.backupPath, { readOnly: true });
+    try {
+      assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM health_measurements').get()!.n, 638);
+      assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM _selfhost_migrations').get()!.n, 35);
+      assert.equal(snapshot.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name='local_session_revocations'").get()!.n, 0);
+    } finally { snapshot.close(); }
   } finally { f.cleanup(); }
 });
 

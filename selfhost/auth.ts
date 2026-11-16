@@ -1,13 +1,14 @@
 /* oxlint-disable no-control-regex -- Authentication boundaries intentionally reject control bytes in credentials, identity fields and request paths. */
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { normalizeLocalEmail } from '../lib/local-users.ts';
 import type { LocalUser } from '../lib/local-users.ts';
 import { isValidPasswordHash, verifyPassword } from './password-hash.ts';
 export { hashPassword, verifyPassword } from './password-hash.ts';
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
+import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeader, OutgoingHttpHeaders, ServerResponse } from 'node:http';
 
 const FORM_LIMIT = 16384;
-const SESSION_TTL = 12 * 60 * 60;
+const SESSION_TTL = 30 * 24 * 60 * 60;
+const SESSION_RENEW_INTERVAL = 24 * 60 * 60;
 export interface SelfhostAuthConfig {
   origin: string; host: string; secure: boolean; passwordHash: string;
   sessionSecret: string; ownerId: string; ownerEmail: string; sessionTtl: number;
@@ -35,7 +36,7 @@ export function loadSelfhostAuthConfig(source: Record<string, string | undefined
     const sessionTtl = source.SELFHOST_SESSION_TTL_SECONDS === undefined ? SESSION_TTL : Number(source.SELFHOST_SESSION_TTL_SECONDS);
     if (!isValidPasswordHash(passwordHash)
       || typeof sessionSecret !== 'string' || !decode(sessionSecret, 32) || !simple(ownerId, 200) || !simple(ownerEmail, 254)
-      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail) || !Number.isInteger(sessionTtl) || sessionTtl < 300 || sessionTtl > 86400) throw new Error();
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail) || !Number.isInteger(sessionTtl) || sessionTtl < 300 || sessionTtl > SESSION_TTL) throw new Error();
     return Object.freeze({ origin: origin.origin, host: origin.host, secure: origin.protocol === 'https:', passwordHash: passwordHash!, sessionSecret, ownerId, ownerEmail, sessionTtl });
   } catch { throw new SelfhostAuthConfigurationError(); }
 }
@@ -52,6 +53,7 @@ export function safeSelfhostReturnTo(value: unknown): string {
 type TokenPurpose = 'session' | 'form' | 'admin';
 export interface SelfhostSubject { id: string; revision: number }
 export interface SelfhostSession { sub: string; revision: number }
+interface VerifiedToken extends SelfhostSession { issuedAt: number; expiresAt: number; nonce: string }
 function key(config: SelfhostAuthConfig, purpose: TokenPurpose): Buffer {
   return createHmac('sha256', Buffer.from(config.sessionSecret, 'base64url'))
     .update(JSON.stringify(['jiashu-selfhost-v2', purpose, config.origin])).digest();
@@ -59,12 +61,12 @@ function key(config: SelfhostAuthConfig, purpose: TokenPurpose): Buffer {
 function sign(config: SelfhostAuthConfig, purpose: TokenPurpose, encoded: string): string {
   return createHmac('sha256', key(config, purpose)).update(encoded).digest('base64url');
 }
-function token(config: SelfhostAuthConfig, purpose: TokenPurpose, subject: SelfhostSubject | null, ttl: number, now: number): string {
-  const iat = Math.floor(now / 1000), payload = { v: 2, sub: subject?.id ?? '', rev: subject?.revision ?? 0, iat, exp: iat + ttl, nonce: randomBytes(24).toString('base64url') };
+function token(config: SelfhostAuthConfig, purpose: TokenPurpose, subject: SelfhostSubject | null, ttl: number, now: number, nonce = randomBytes(24).toString('base64url')): string {
+  const iat = Math.floor(now / 1000), payload = { v: 2, sub: subject?.id ?? '', rev: subject?.revision ?? 0, iat, exp: iat + ttl, nonce };
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
   return encoded + '.' + sign(config, purpose, encoded);
 }
-function validToken(config: SelfhostAuthConfig, purpose: TokenPurpose, value: unknown, now: number): SelfhostSession | null {
+function validToken(config: SelfhostAuthConfig, purpose: TokenPurpose, value: unknown, now: number): VerifiedToken | null {
   if (typeof value !== 'string' || value.length > 1500 || !Number.isFinite(now)) return null;
   const fields = value.split('.'); if (fields.length !== 2) return null;
   const content = decode(fields[0]), signature = decode(fields[1], 32);
@@ -76,11 +78,14 @@ function validToken(config: SelfhostAuthConfig, purpose: TokenPurpose, value: un
       || !Number.isSafeInteger(payload.rev) || payload.rev < 0 || (purpose === 'session' && (!payload.sub || payload.rev < 1))
       || typeof payload.nonce !== 'string' || decode(payload.nonce, 24) === null || !Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp)
       || payload.iat < 0 || payload.iat > at + 30 || payload.exp <= at || payload.exp <= payload.iat || payload.exp - payload.iat > ttl) return null;
-    return { sub: payload.sub, revision: payload.rev };
+    return { sub: payload.sub, revision: payload.rev, issuedAt: payload.iat, expiresAt: payload.exp, nonce: payload.nonce };
   } catch { return null; }
 }
 export const issueSelfhostSession = (config: SelfhostAuthConfig, subject: SelfhostSubject, now = Date.now()) => token(config, 'session', subject, config.sessionTtl, now);
-export const verifySelfhostSession = (config: SelfhostAuthConfig, value: unknown, now = Date.now()) => validToken(config, 'session', value, now);
+export function verifySelfhostSession(config: SelfhostAuthConfig, value: unknown, now = Date.now()): SelfhostSession | null {
+  const claims = validToken(config, 'session', value, now);
+  return claims ? { sub: claims.sub, revision: claims.revision } : null;
+}
 export const issueSelfhostCsrf = (config: SelfhostAuthConfig, subject: SelfhostSubject | null, purpose: 'form' | 'admin', now = Date.now()) => token(config, purpose, subject, 600, now);
 export function verifySelfhostCsrf(config: SelfhostAuthConfig, value: unknown, stored: unknown, subject: SelfhostSubject | null, purpose: 'form' | 'admin', now = Date.now()): boolean {
   if (typeof value !== 'string' || typeof stored !== 'string' || !bytesEqual(Buffer.from(value), Buffer.from(stored))) return false;
@@ -97,6 +102,69 @@ export function readCookie(header: string | undefined, name: string): string | n
 }
 export function selfhostCookie(config: SelfhostAuthConfig, name: string, value: string, maxAge: number): string {
   return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${config.secure ? '; Secure' : ''}`;
+}
+type ResponseHeaders = OutgoingHttpHeaders | OutgoingHttpHeader[];
+const cookiesFrom = (value: OutgoingHttpHeader | undefined): string[] => value === undefined ? [] : Array.isArray(value) ? value.map(String) : [String(value)];
+const cookieName = (value: string) => { const separator = value.indexOf('='); return (separator < 0 ? value : value.slice(0, separator)).trim(); };
+/** Merge only when headers are actually committed, preserving application cookies
+ * and giving an explicit session replacement/clear priority over background renewal. */
+function renewSessionOnResponse(res: ServerResponse, config: SelfhostAuthConfig, user: LocalUser, claims: VerifiedToken, now: number, mayRenew: () => boolean): void {
+  const original = res.writeHead.bind(res), name = selfhostCookieNames(config).session;
+  // A family nonce stays stable across renewal, so a logout revokes even tokens
+  // from an older request that finishes after its clear-cookie response.
+  const renewal = selfhostCookie(config, name, token(config, 'session', user, config.sessionTtl, now, claims.nonce), config.sessionTtl);
+  res.writeHead = ((status: number, messageOrHeaders?: string | ResponseHeaders, optionalHeaders?: ResponseHeaders) => {
+    const message = typeof messageOrHeaders === 'string' ? messageOrHeaders : undefined;
+    const headers = typeof messageOrHeaders === 'string' ? optionalHeaders : messageOrHeaders ?? optionalHeaders;
+    if (!mayRenew()) return message === undefined ? original(status, headers) : original(status, message, headers);
+    let cacheControl = String(res.getHeader?.('cache-control') ?? '');
+    if (Array.isArray(headers)) {
+      for (let index = 0; index < headers.length; index += 2) if (String(headers[index]).toLowerCase() === 'cache-control') cacheControl = cookiesFrom(headers[index + 1]).join(',');
+    } else if (headers) {
+      for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === 'cache-control') cacheControl = cookiesFrom(value).join(',');
+    }
+    // Static/shared-cache responses must never acquire a visitor's session.
+    if (status < 200 || status >= 400 || status === 304 || /\b(?:public|immutable|max-age|s-maxage)\b/i.test(cacheControl)) return message === undefined ? original(status, headers) : original(status, message, headers);
+    const explicit: string[] = [];
+    if (Array.isArray(headers)) {
+      for (let index = 0; index < headers.length; index += 2) if (String(headers[index]).toLowerCase() === 'set-cookie') explicit.push(...cookiesFrom(headers[index + 1]));
+    } else if (headers) {
+      for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === 'set-cookie') explicit.push(...cookiesFrom(value));
+    }
+    const replaced = new Set(explicit.map(cookieName));
+    const existing = cookiesFrom(res.getHeader?.('set-cookie')).filter(cookie => !replaced.has(cookieName(cookie)));
+    const merged = [...existing, ...explicit];
+    const renewing = !merged.some(cookie => cookieName(cookie) === name);
+    if (renewing) merged.push(renewal);
+    let combined: ResponseHeaders;
+    if (Array.isArray(headers)) {
+      combined = [];
+      for (let index = 0; index < headers.length; index += 2) if (String(headers[index]).toLowerCase() !== 'set-cookie' && !(renewing && String(headers[index]).toLowerCase() === 'cache-control')) combined.push(headers[index], headers[index + 1]);
+      for (const cookie of merged) combined.push('Set-Cookie', cookie);
+      if (renewing) combined.push('Cache-Control', 'private, no-store');
+    } else {
+      combined = { ...headers };
+      for (const key of Object.keys(combined)) if (key.toLowerCase() === 'set-cookie') delete combined[key];
+      combined['Set-Cookie'] = merged;
+      if (renewing) {
+        for (const key of Object.keys(combined)) if (key.toLowerCase() === 'cache-control') delete combined[key];
+        combined['Cache-Control'] = 'private, no-store';
+      }
+    }
+    return message === undefined ? original(status, combined) : original(status, message, combined);
+  }) as ServerResponse['writeHead'];
+}
+function renewalDue(config: SelfhostAuthConfig, claims: VerifiedToken, now: number): boolean {
+  // Existing valid 12-hour v2 sessions transparently adopt the new lifetime.
+  return claims.expiresAt - claims.issuedAt < config.sessionTtl
+    || Math.floor(now / 1000) - claims.issuedAt >= Math.min(SESSION_RENEW_INTERVAL, config.sessionTtl / 2);
+}
+function sessionFamily(claims: VerifiedToken): string {
+  return createHash('sha256').update(JSON.stringify([claims.sub, claims.nonce])).digest('hex');
+}
+function renewableRead(path: string, method: string | undefined): boolean {
+  return ['GET', 'HEAD'].includes(method ?? 'GET') && !['/signin-with-chatgpt', '/signout-with-chatgpt', '/_selfhost/healthz'].includes(path)
+    && !path.startsWith('/_next/') && !path.startsWith('/downloads/') && !/\.(?:css|js|mjs|map|json|webmanifest|txt|xml|pdf|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|zip|mp4|webm|mp3|ogg)$/i.test(path);
 }
 export function sanitizedSelfhostHeaders(headers: IncomingHttpHeaders, config: SelfhostAuthConfig, user: Pick<LocalUser, 'id' | 'email'> | null): IncomingHttpHeaders {
   const result: IncomingHttpHeaders = {};
@@ -164,23 +232,28 @@ export interface SelfhostGatewayOptions {
     getByEmail(email: string): Promise<LocalUser | null>;
     touchLogin(id: string, now: number): Promise<void>;
   };
+  sessions: {
+    isRevoked(familyHash: string, now: number): Promise<boolean>;
+    revoke(familyHash: string, expiresAt: number, now: number): Promise<void>;
+  };
   manageUsers?: (req: IncomingMessage, res: ServerResponse, user: LocalUser | null) => Promise<void>;
 }
 /** The downstream listener only receives gateway-owned identity and canonical origin headers. */
 export function createSelfhostGateway(config: SelfhostAuthConfig, downstream: (req: IncomingMessage, res: ServerResponse) => unknown, options: SelfhostGatewayOptions) {
-  const now = options.now ?? Date.now, limiter = options.limiter ?? new SelfhostLoginLimiter(); let verifications = 0;
+  const now = options.now ?? Date.now, limiter = options.limiter ?? new SelfhostLoginLimiter(); let verifications = 0, authenticationGeneration = 0;
   return async function gateway(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const raw = req.url ?? '/';
       if (!raw.startsWith('/') || raw.startsWith('//') || raw.length > 16384 || /[\u0000-\u001f\u007f\\]/.test(raw)) { respond(res, 400, '请求地址无效。'); return; }
       const url = new URL(raw, config.origin), names = selfhostCookieNames(config), cookies = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
-      const claims = verifySelfhostSession(config, readCookie(cookies, names.session), now());
+      const checkedAt = now(), requestGeneration = authenticationGeneration, claims = validToken(config, 'session', readCookie(cookies, names.session), checkedAt);
       let user: LocalUser | null = null;
       if (claims) {
-        try { const found = await options.users.getById(claims.sub); if (found?.status === 'active' && found.revision === claims.revision) user = found; }
+        try { const found = await options.users.getById(claims.sub); if (found?.status === 'active' && found.revision === claims.revision && !await options.sessions.isRevoked(sessionFamily(claims), checkedAt)) user = found; }
         catch { respond(res, 503, url.pathname.startsWith('/api/admin/users') ? JSON.stringify({ error: '账户服务暂时不可用。', code: 'LOCAL_USERS_UNAVAILABLE' }) : '账户服务暂时不可用，请稍后重试。', url.pathname.startsWith('/api/admin/users') ? { 'Content-Type': 'application/json; charset=utf-8' } : {}); return; }
       }
       const authenticated = user !== null;
+      if (user && claims && renewableRead(url.pathname, req.method) && renewalDue(config, claims, checkedAt)) renewSessionOnResponse(res, config, user, claims, checkedAt, () => authenticationGeneration === requestGeneration);
       req.headers = sanitizedSelfhostHeaders(req.headers, config, user);
       req.rawHeaders = Object.entries(req.headers).flatMap(([name, value]) => Array.isArray(value) ? value.flatMap(item => [name, item]) : value === undefined ? [] : [name, value]);
       if (url.pathname === '/_selfhost/healthz') {
@@ -212,7 +285,15 @@ export function createSelfhostGateway(config: SelfhostAuthConfig, downstream: (r
       if ([...body.keys()].some(name => !expected.includes(name) || body.getAll(name).length !== 1) || expected.some(name => !body.has(name))
         || !verifySelfhostCsrf(config, csrf, storedCsrf, login ? null : user, 'form', now())) { respond(res, 403, '登录页面已过期，请重新打开后重试。'); return; }
       const returnTo = safeSelfhostReturnTo(body.get('return_to'));
-      if (logout) { respond(res, 303, '', { Location: returnTo, 'Set-Cookie': [selfhostCookie(config, names.session, '', 0), selfhostCookie(config, names.csrf, '', 0), selfhostCookie(config, names.adminCsrf, '', 0)] }); return; }
+      if (logout) {
+        if (claims) {
+          const revokedAt = now();
+          try { await options.sessions.revoke(sessionFamily(claims), Math.max(revokedAt, checkedAt) + SESSION_TTL * 1000, revokedAt); }
+          catch { respond(res, 503, '暂时无法安全退出，请稍后重试。'); return; }
+        }
+        authenticationGeneration++;
+        respond(res, 303, '', { Location: returnTo, 'Set-Cookie': [selfhostCookie(config, names.session, '', 0), selfhostCookie(config, names.csrf, '', 0), selfhostCookie(config, names.adminCsrf, '', 0)] }); return;
+      }
       const peer = req.socket.remoteAddress ?? 'unknown';
       const attemptedAt = now();
       if (!limiter.consume(peer, attemptedAt) || verifications >= 2) { respond(res, 429, '尝试次数较多，请稍后重新打开登录页面。', { 'Retry-After': '900' }); return; }
@@ -233,8 +314,15 @@ export function createSelfhostGateway(config: SelfhostAuthConfig, downstream: (r
       if (!found || !passwordMatches || fresh?.status !== 'active' || fresh.revision !== found.revision || fresh.email !== email) {
         const nextCsrf = issueSelfhostCsrf(config, null, 'form', now()); respond(res, 401, page(config, 'login', nextCsrf, returnTo, '邮箱或密码不正确。'), { 'Set-Cookie': selfhostCookie(config, names.csrf, nextCsrf, 600) }); return;
       }
-      try { await options.users.touchLogin(fresh.id, now()); }
+      try {
+        if (claims) {
+          const revokedAt = now();
+          await options.sessions.revoke(sessionFamily(claims), Math.max(revokedAt, checkedAt) + SESSION_TTL * 1000, revokedAt);
+        }
+        await options.users.touchLogin(fresh.id, now());
+      }
       catch { respond(res, 503, '账户服务暂时不可用，请稍后重试。'); return; }
+      authenticationGeneration++;
       limiter.successful(peer, attemptedAt);
       respond(res, 303, '', { Location: returnTo, 'Set-Cookie': [selfhostCookie(config, names.session, issueSelfhostSession(config, fresh, now()), config.sessionTtl), selfhostCookie(config, names.csrf, '', 0), selfhostCookie(config, names.adminCsrf, '', 0)] });
       } finally { verifications--; }
