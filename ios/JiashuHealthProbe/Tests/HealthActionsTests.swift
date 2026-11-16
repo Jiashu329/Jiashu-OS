@@ -82,4 +82,22 @@ final class HealthActionsTests: XCTestCase {
         XCTAssertEqual(origins["carbs"]?["source"], "manual")
         XCTAssertEqual(origins["fat"]?["source"], "unknown")
     }
+
+    func testSundayActionSaveAndRetryStayBoundToLoadedWeekAfterMonday() throws {
+        let sunday = date("2026-11-22T15:59:00Z")
+        let monday = date("2026-11-22T16:01:00Z")
+        let loadedWeek = NativeActionDates.day(NativeActionDates.monday(sunday))
+        let currentWeek = NativeActionDates.day(NativeActionDates.monday(monday))
+        XCTAssertNotEqual(loadedWeek, currentWeek)
+        let pending = NativeWeeklyActionCommand(weekStart: loadedWeek, text: "饭后走动三次", status: .completed,
+            feedback: "已完成", expectedRevision: 4)
+        // This is the encoder used by the actual save API, not a separate test payload.
+        let firstSubmission = try pending.encodedBody()
+        let retry = try pending.encodedBody()
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: retry) as? [String: Any])
+        XCTAssertEqual(payload["weekStart"] as? String, "2026-11-16")
+        XCTAssertNotEqual(payload["weekStart"] as? String, currentWeek)
+        XCTAssertEqual(payload["expectedRevision"] as? Int, 4)
+        XCTAssertEqual(firstSubmission, retry)
+    }
 }

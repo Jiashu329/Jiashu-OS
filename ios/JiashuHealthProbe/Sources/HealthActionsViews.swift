@@ -289,11 +289,15 @@ struct HealthWeeklyReviewView: View {
     let token: String
     let userID: String
 
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var calendarNow = Date()
     @State private var previousWeek = false
     @State private var review: NativeWeeklyDetails?
     @State private var loading = false
     @State private var reviewError: String?
     @State private var actionLoaded = false
+    @State private var loadingAction = false
+    @State private var actionWeek = NativeActionDates.day(NativeActionDates.monday(Date()))
     @State private var actionRevision = 0
     @State private var actionText = ""
     @State private var actionStatus: NativeWeeklyActionStatus = .planned
@@ -301,18 +305,13 @@ struct HealthWeeklyReviewView: View {
     @State private var savingAction = false
     @State private var actionMessage: String?
     @State private var actionError: String?
-    @State private var pendingAction: WeeklyActionDraft?
+    @State private var pendingAction: NativeWeeklyActionCommand?
     @State private var confirmReload = false
+    @State private var reloadWeek: String?
 
-    private struct WeeklyActionDraft {
-        let text: String
-        let status: NativeWeeklyActionStatus
-        let feedback: String
-        let revision: Int
-    }
-    private var actionWeek: String { NativeActionDates.day(NativeActionDates.monday(Date())) }
+    private var currentCalendarWeek: String { NativeActionDates.day(NativeActionDates.monday(calendarNow)) }
     private var selectedWeek: String {
-        let monday = NativeActionDates.monday(Date())
+        let monday = NativeActionDates.monday(calendarNow)
         let day = previousWeek ? NativeActionDates.calendar.date(byAdding: .day, value: -7, to: monday)! : monday
         return NativeActionDates.day(day)
     }
@@ -373,7 +372,15 @@ struct HealthWeeklyReviewView: View {
                     }
                 }
             }
-            Section("本周的一项行动 · " + actionWeek) {
+            Section("所选周的一项行动 · " + actionWeek) {
+                if actionWeek != currentCalendarWeek {
+                    Text("已进入新的一周。当前填写仍属于\(actionWeek)，保存和重试都会保留原周。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("载入本周行动 · " + currentCalendarWeek) {
+                        reloadWeek = currentCalendarWeek
+                        confirmReload = true
+                    }
+                }
                 if !actionLoaded {
                     ProgressView("正在读取行动…")
                 } else {
@@ -390,12 +397,15 @@ struct HealthWeeklyReviewView: View {
                 if savingAction { ProgressView("正在核对…") }
                 if let actionMessage { Text(actionMessage).foregroundStyle(.green) }
                 if let actionError { Text(actionError).foregroundStyle(.red) }
-                Button("读取服务器最新行动") { confirmReload = true }.disabled(savingAction)
+                Button("读取所选周的最新行动") {
+                    reloadWeek = actionWeek
+                    confirmReload = true
+                }
             }
-            .disabled(savingAction)
+            .disabled(savingAction || loadingAction)
             .onChange(of: actionText) { _, _ in actionMessage = nil }
             Section {
-                Text("记录日均只使用有记录的日期，缺失记录不会补成0；两期覆盖不同的日期时，日均不能直接代表改善或下降。行动始终保存到上方标明的本周。")
+                Text("记录日均只使用有记录的日期，缺失记录不会补成0；两期覆盖不同的日期时，日均不能直接代表改善或下降。行动始终保存到上方标明的所选周。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -404,8 +414,13 @@ struct HealthWeeklyReviewView: View {
         .task(id: selectedWeek) { await loadReview() }
         .task { if !actionLoaded { await loadAction() } }
         .refreshable { await loadReview() }
-        .confirmationDialog("读取最新行动会替换本页尚未保存的填写。", isPresented: $confirmReload, titleVisibility: .visible) {
-            Button("读取并替换填写") { Task { await loadAction() } }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { calendarNow = $0 }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { calendarNow = Date() } }
+        .confirmationDialog("读取\(reloadWeek ?? actionWeek)的行动会替换本页尚未保存的填写。", isPresented: $confirmReload, titleVisibility: .visible) {
+            Button("读取并替换填写") {
+                let week = reloadWeek ?? actionWeek
+                Task { await loadAction(week: week) }
+            }
         }
     }
 
@@ -430,12 +445,18 @@ struct HealthWeeklyReviewView: View {
         if selectedWeek == week { loading = false }
     }
 
-    private func loadAction() async {
+    private func loadAction(week: String? = nil) async {
+        guard !loadingAction, !savingAction else { return }
+        let requestedWeek = week ?? actionWeek
+        loadingAction = true
+        defer { loadingAction = false }
         actionError = nil
         actionMessage = nil
         do {
-            let action = try await api.weeklyAction(token: token, week: actionWeek)
+            let action = try await api.weeklyAction(token: token, week: requestedWeek)
             guard !Task.isCancelled else { return }
+            guard action == nil || action?.weekStart == requestedWeek else { throw NativeAPIError.invalidResponse }
+            actionWeek = requestedWeek
             actionText = action?.text ?? ""
             actionStatus = action?.status ?? .planned
             feedback = action?.feedback ?? ""
@@ -449,22 +470,24 @@ struct HealthWeeklyReviewView: View {
 
     private func saveAction() async {
         guard !savingAction else { return }
-        let draft = pendingAction ?? WeeklyActionDraft(text: actionText, status: actionStatus, feedback: feedback, revision: actionRevision)
+        let draft = pendingAction ?? NativeWeeklyActionCommand(weekStart: actionWeek, text: actionText,
+            status: actionStatus, feedback: feedback, expectedRevision: actionRevision)
         pendingAction = draft
         savingAction = true
         actionError = nil
         actionMessage = nil
         defer { savingAction = false }
         do {
-            let action = try await api.saveWeeklyAction(token: token, week: actionWeek, text: draft.text,
-                status: draft.status, feedback: draft.feedback, expectedRevision: draft.revision)
+            let action = try await api.saveWeeklyAction(token: token, command: draft)
             guard !Task.isCancelled else { return }
+            guard action == nil || action?.weekStart == draft.weekStart else { throw NativeAPIError.invalidResponse }
+            actionWeek = draft.weekStart
             actionRevision = action?.revision ?? actionRevision
             actionText = action?.text ?? draft.text
             actionStatus = action?.status ?? draft.status
             feedback = action?.feedback ?? draft.feedback
             pendingAction = nil
-            actionMessage = "本周行动已保存。"
+            actionMessage = "\(draft.weekStart)这周的行动已保存。"
         } catch {
             actionError = error.localizedDescription + " 原填写已保留；重试核对同一次保存。"
         }

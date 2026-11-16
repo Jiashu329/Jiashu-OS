@@ -248,6 +248,26 @@ struct NativeWeeklyActionEnvelope: Decodable {
     let action: NativeWeeklyActionEntry?
 }
 
+/// Captures both the execution week and its revision when editing starts.
+/// Submission and retries use this snapshot even if the calendar week changes.
+struct NativeWeeklyActionCommand: Encodable, Equatable {
+    let weekStart: String
+    let text: String
+    let status: NativeWeeklyActionStatus
+    let feedback: String
+    let expectedRevision: Int
+
+    func encodedBody() throws -> Data {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 200, feedback.count <= 500 else {
+            throw NativeActionInputError.invalid("请填写一项200字以内的行动，反馈最多500字。")
+        }
+        let object: [String: Any] = ["weekStart": weekStart, "text": trimmed,
+            "status": status.rawValue, "feedback": feedback, "expectedRevision": expectedRevision]
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+}
+
 struct NativeNutritionDay: Decodable {
     struct Entry: Decodable, Identifiable {
         let id: String
@@ -300,13 +320,11 @@ extension NativeAPI {
     }
     func saveWeeklyAction(token: String, week: String, text: String, status: NativeWeeklyActionStatus,
                           feedback: String, expectedRevision: Int) async throws -> NativeWeeklyActionEntry? {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.count <= 200, feedback.count <= 500 else {
-            throw NativeActionInputError.invalid("请填写一项200字以内的行动，反馈最多500字。")
-        }
-        let object: [String: Any] = ["weekStart": week, "text": text,
-            "status": status.rawValue, "feedback": feedback, "expectedRevision": expectedRevision]
-        let body = try JSONSerialization.data(withJSONObject: object)
+        try await saveWeeklyAction(token: token, command: NativeWeeklyActionCommand(weekStart: week, text: text,
+            status: status, feedback: feedback, expectedRevision: expectedRevision))
+    }
+    func saveWeeklyAction(token: String, command: NativeWeeklyActionCommand) async throws -> NativeWeeklyActionEntry? {
+        let body = try command.encodedBody()
         let result: NativeWeeklyActionEnvelope = try await request(path: "health/actions", method: "PUT", token: token, body: body)
         return result.action
     }
