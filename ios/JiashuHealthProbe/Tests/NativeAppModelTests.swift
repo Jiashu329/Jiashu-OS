@@ -107,6 +107,10 @@ final class NativeAppModelTests: XCTestCase {
 
         XCTAssertEqual(fixture.model.health?.summary.metrics["steps"]?.latestValue, 90)
         XCTAssertFalse(fixture.model.loading)
+        XCTAssertEqual(fixture.model.healthDays, 90)
+        await fixture.model.reload()
+        XCTAssertEqual(fixture.model.healthDays, 90)
+        XCTAssertEqual(fixture.model.health?.summary.metrics["steps"]?.latestValue, 90)
     }
 
     @MainActor

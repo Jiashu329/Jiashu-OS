@@ -18,6 +18,8 @@ final class NativeAppModel: ObservableObject {
     @Published private(set) var restoring = true
     @Published private(set) var signingIn = false
     @Published private(set) var loading = false
+    @Published private(set) var healthDays = 30
+    @Published private(set) var authorizingHealth = false
     @Published private(set) var syncing = false
     @Published private(set) var autoSyncEnabled = false
     @Published private(set) var syncMessage = "连接苹果健康后，可在打开 App 或健康数据变化时同步。"
@@ -110,31 +112,35 @@ final class NativeAppModel: ObservableObject {
             if pendingImport == nil, lastAutomaticAttempt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
                 await sync(background: false)
             }
-        } catch { handle(error, owner: current.user.id, epoch: epoch) }
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
     }
 
-    func reload(days: Int = 30) async {
+    func reload(days: Int? = nil) async {
         guard let current = session else { return }
+        let requestedDays = days ?? healthDays
+        healthDays = requestedDays
         let epoch = generation
         let requestID = UUID()
         loadID = requestID
         loading = true
         defer { if generation == epoch && loadID == requestID { loading = false } }
         let overviewRequest = Task { try await api.overview(token: current.accessToken) }
-        let healthRequest = Task { try await api.health(token: current.accessToken, days: days) }
+        let healthRequest = Task { try await api.health(token: current.accessToken, days: requestedDays) }
         do {
             let value = try await overviewRequest.value
             if isCurrent(current.user.id, epoch), loadID == requestID { overview = value }
-        } catch { handle(error, owner: current.user.id, epoch: epoch) }
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
         do {
             let value = try await healthRequest.value
             if isCurrent(current.user.id, epoch), loadID == requestID { health = value }
-        } catch { handle(error, owner: current.user.id, epoch: epoch) }
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
     }
 
     func connectHealth() async {
-        guard let current = session, !syncing else { return }
+        guard let current = session, !syncing, !authorizingHealth else { return }
         let epoch = generation
+        authorizingHealth = true
+        defer { if generation == epoch { authorizingHealth = false } }
         do {
             // This is the only place that requests the system permission dialog.
             try await reader.authorize()
@@ -143,13 +149,14 @@ final class NativeAppModel: ObservableObject {
             UserDefaults.standard.set(true, forKey: syncKey(current.user.id))
             await observeHealth()
             await sync(background: false)
-        } catch { handle(error, owner: current.user.id, epoch: epoch) }
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
     }
 
     func setAutomaticSync(_ enabled: Bool) async {
         guard let current = session else { return }
         if enabled { await connectHealth(); return }
         autoSyncEnabled = false
+        authorizingHealth = false
         syncOperation?.cancel()
         observationStartID = nil
         UserDefaults.standard.set(false, forKey: syncKey(current.user.id))
@@ -258,7 +265,7 @@ final class NativeAppModel: ObservableObject {
                 return
             }
             syncMessage = "本次同步未完成，下次打开 App 会再次核对；也可手动重试。"
-            handle(error, owner: current.user.id, epoch: epoch)
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
         }
     }
 
@@ -280,9 +287,9 @@ final class NativeAppModel: ObservableObject {
                 do {
                     let preview = try await api.preview(token: current.accessToken, payload: pending.payload)
                     if isCurrent(current.user.id, epoch) { pendingImport = PendingHealthImport(ownerID: current.user.id, payload: pending.payload, preview: preview) }
-                } catch { handle(error, owner: current.user.id, epoch: epoch) }
+                } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
             }
-            handle(error, owner: current.user.id, epoch: epoch)
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
         }
     }
 
@@ -311,6 +318,8 @@ final class NativeAppModel: ObservableObject {
         session = nil
         overview = nil
         health = nil
+        healthDays = 30
+        authorizingHealth = false
         pendingImport = nil
         lastReceipt = nil
         autoSyncEnabled = false
@@ -322,9 +331,10 @@ final class NativeAppModel: ObservableObject {
         syncMessage = "连接苹果健康后，可在打开 App 或健康数据变化时同步。"
     }
 
-    private func handle(_ error: Error, owner: String, epoch: UUID) {
+    private func handle(_ error: Error, owner: String, epoch: UUID, token: String) {
         guard isCurrent(owner, epoch) else { return }
         if let failure = error as? NativeAPIError, failure.isAuthenticationFailure {
+            guard session?.accessToken == token else { return }
             clearDisplayedAccount()
             try? sessions.clear()
         }

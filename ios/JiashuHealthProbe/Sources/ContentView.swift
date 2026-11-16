@@ -91,6 +91,14 @@ private enum MetricDisplay {
     static func color(_ key: String) -> Color {
         switch key { case "steps": return .green; case "active_energy": return .orange; case "sleep": return .indigo; case "weight": return .blue; default: return .teal }
     }
+    static func source(_ value: String?) -> String {
+        guard let value else { return "无来源" }
+        if value == "apple-health-merged" { return "苹果健康 · 系统合并" }
+        if value.hasPrefix("apple-health-sleep:") { return "苹果健康 · 睡眠来源 " + value.suffix(6) }
+        if value.hasPrefix("apple-health-mass:") { return "苹果健康 · 测量来源 " + value.suffix(6) }
+        if value.hasPrefix("manual") { return "手工记录" }
+        return value
+    }
     static func value(_ value: Double?, key: String) -> String {
         guard let value else { return "—" }
         if key == "steps" { return value.formatted(.number.precision(.fractionLength(0))) }
@@ -155,14 +163,14 @@ private struct NativeSyncCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "heart.circle.fill").font(.title2).foregroundStyle(.indigo)
-                Text(model.autoSyncEnabled ? "苹果健康已连接" : "连接苹果健康").font(.headline)
+                Text(model.autoSyncEnabled ? "健康同步已开启" : "连接苹果健康").font(.headline)
                 Spacer(); if model.syncing { ProgressView() }
             }
             Text(model.syncMessage).font(.subheadline).foregroundStyle(.secondary)
             if let note = model.observerMessage { Text(note).font(.footnote).foregroundStyle(.orange) }
             if !model.autoSyncEnabled {
                 Text("读取步数、活动能量、睡眠、体重和去脂体重，仅同步授权后实际可读的记录。").font(.footnote).foregroundStyle(.secondary)
-                Button("授权并开启自动同步") { Task { await model.connectHealth() } }.buttonStyle(.borderedProminent).disabled(model.syncing)
+                Button(model.authorizingHealth ? "等待系统授权…" : "授权并开启自动同步") { Task { await model.connectHealth() } }.buttonStyle(.borderedProminent).disabled(model.syncing || model.authorizingHealth)
             } else if model.pendingImport != nil {
                 Button("核对来源变化") { showingConfirmation = true }.buttonStyle(.borderedProminent)
             } else {
@@ -192,7 +200,7 @@ private struct NativeSourceConfirmation: View {
                         ForEach(pending.preview.examples) { row in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(row.day + " · " + row.metric).font(.headline)
-                                Text((row.oldSource ?? "无原来源") + " → " + (row.newSource ?? "无来源")).font(.subheadline)
+                                Text(MetricDisplay.source(row.oldSource) + " → " + MetricDisplay.source(row.newSource)).font(.subheadline)
                                 Text("\(row.before.map { $0.formatted() } ?? "无原记录") → \(row.after.formatted())").monospacedDigit()
                                 Text(row.reason).font(.footnote).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)
@@ -242,7 +250,7 @@ private struct NativeHealthView: View {
                                 if metric == "sleep", let stage = point.sleepStages {
                                     Text("深睡 \(stage.deep.formatted(.number.precision(.fractionLength(1)))) · 核心 \(stage.core.formatted(.number.precision(.fractionLength(1)))) · REM \(stage.rem.formatted(.number.precision(.fractionLength(1)))) 小时").font(.caption).foregroundStyle(.secondary)
                                 }
-                                if let source = point.source { Text(source).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                                if let source = point.source { Text(MetricDisplay.source(source)).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                             }.padding(.vertical, 4)
                         }
                     }
@@ -292,7 +300,7 @@ private struct NativeSettingsView: View {
             Form {
                 Section("当前账户") { LabeledContent("邮箱", value: model.session?.user.email ?? ""); LabeledContent("服务", value: "www.treefund.asia") }
                 Section("苹果健康") {
-                    Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { enabled in Task { await model.setAutomaticSync(enabled) } }))
+                    Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { enabled in Task { await model.setAutomaticSync(enabled) } })).disabled(model.authorizingHealth)
                     Picker("补同步范围", selection: $syncDays) { Text("最近 7 天").tag(7); Text("最近 30 天").tag(30); Text("最近 90 天").tag(90) }
                     Button("同步所选范围") { Task { await model.sync(days: syncDays) } }.disabled(!model.autoSyncEnabled || model.syncing)
                     Text("打开 App 和健康数据变化时尝试同步，后台唤醒时机由 iOS 决定。只读取健康记录，不写入苹果健康。").font(.footnote).foregroundStyle(.secondary)
