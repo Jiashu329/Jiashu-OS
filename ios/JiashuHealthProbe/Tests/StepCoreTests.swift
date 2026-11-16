@@ -96,10 +96,18 @@ final class StepCoreTests: XCTestCase {
         XCTAssertFalse(fragment.contains("%257B"))
     }
 
-    func testLargeRangeKeepsFileExportButRefusesOverlongPreview() throws {
-        let source = try snapshot(values: Array(repeating: 12_244, count: 90))
-        XCTAssertNoThrow(try StepExport.jsonData(for: source))
-        XCTAssertThrowsError(try StepExport.previewURL(for: source))
+    func testMaximumRangeKeepsAllRecordsWithinTheAliyunPreviewLimit() throws {
+        let source = try snapshot(values: Array(repeating: 200_000, count: 90))
+        let data = try StepExport.jsonData(for: source)
+        let url = try StepExport.previewURL(for: source)
+        XCTAssertLessThanOrEqual(url.absoluteString.utf8.count, 32_768)
+        let fragment = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedFragment)
+        let decoded = try XCTUnwrap(String(fragment.dropFirst("payload=".count)).removingPercentEncoding)
+        XCTAssertEqual(Data(decoded.utf8), data, "the largest allowed range must not truncate any records")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rows = try XCTUnwrap(json["measurements"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 90)
+        XCTAssertTrue(rows.allSatisfy { $0["value"] as? Int == 200_000 })
     }
 
     func testDuplicateOrPartialHistoricalDaysAreRejected() throws {
