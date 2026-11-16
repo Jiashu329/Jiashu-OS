@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -188,6 +189,9 @@ def verify(expected_commit):
     require(session_cookie.secure and session_cookie.path == "/" and not session_cookie.domain_specified
             and session_cookie.has_nonstandard_attr("HttpOnly")
             and session_cookie.get_nonstandard_attr("SameSite", "").lower() == "lax", "session_cookie_attributes")
+    require(isinstance(session_cookie.expires, int) and 29 * 86400 <= session_cookie.expires - time.time() <= 31 * 86400,
+            "persistent_session_cookie")
+    replay_cookie = session_cookie.name + "=" + session_cookie.value
     identity = parsed_json(browser.request("/api/session", "authenticated_session"), 200, "authenticated_session")
     require(identity.get("userId") == OWNER_ID and identity.get("email") == OWNER_EMAIL
             and identity.get("isOwner") is True, "authenticated_owner")
@@ -205,6 +209,8 @@ def verify(expected_commit):
     status_code, headers, html = browser.request("/health", "health_page")
     require(status_code == 200 and "text/html" in headers.get("Content-Type", "").lower()
             and b"<!doctype html>" in html.lower(), "health_page_html", status_code)
+    require(b"Object.defineProperty(window,'__JIASHU_PAGE_SESSION__'" in html
+            and b"value:Object.freeze(" in html, "server_verified_page_session")
     catalog = parsed_json(browser.request("/api/health/nutrition/foods?limit=1", "food_catalog"), 200, "food_catalog")
     require(isinstance(catalog.get("foods"), list) and len(catalog["foods"]) == 1
             and isinstance(catalog.get("total"), int) and catalog["total"] > 0
@@ -217,10 +223,12 @@ def verify(expected_commit):
     require(status_code == 303 and headers.get("Location") == "/health", "logout_status", status_code)
     require(not any(cookie.name == "__Host-jso-session" for cookie in browser.cookies), "logout_cookie")
     parsed_json(browser.request("/api/session", "logged_out_session"), 401, "logged_out_session")
+    parsed_json(Browser().request("/api/session", "revoked_session_replay", headers={"Cookie": replay_cookie}), 401, "revoked_session_replay")
+    replay_cookie = None
     parsed_json(browser.request("/api/admin/users", "logged_out_admin_users", headers={
         "X-Page-Owner": OWNER_ID,
     }), 401, "logged_out_admin_users")
-    return {"ok": True, "commitSha": expected_commit, "checks": ["https", "schema", "identity_isolation", "login", "owner", "admin_user_view", "health_page", "food_catalog", "logout"]}
+    return {"ok": True, "commitSha": expected_commit, "checks": ["https", "schema", "identity_isolation", "login", "persistent_cookie", "owner", "admin_user_view", "health_page", "server_verified_page_session", "food_catalog", "logout", "revoked_session_replay"]}
 
 
 def main():

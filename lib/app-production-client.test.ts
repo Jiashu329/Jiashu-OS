@@ -1804,9 +1804,13 @@ for (const hangingStage of ['headers', 'body'] as const) {
 
 test('minified account guard retries permission storage failures without losing a draft but still freezes a true sign-out', { skip: !hasBuild }, async () => {
   let failure: 503 | 401 | null = null;
+  const failedReads: number[] = [];
   const f = await fixture('id="nutrition-page"', '/health/nutrition', 390, {}, { foods: [] }, {
     fetch(path) {
-      if (path === '/api/session' && failure) return Response.json({ error: failure === 503 ? '权限存储暂时不可用。' : '请重新登录。', code: failure === 503 ? 'ACCOUNT_ACCESS_UNAVAILABLE' : 'SIGN_IN_REQUIRED' }, { status: failure });
+      if (!failure) return;
+      const nutrition = new URL(path, 'https://synthetic-production.example').pathname === '/api/health/nutrition';
+      if (nutrition) failedReads.push(failure);
+      if (nutrition || path === '/api/session') return Response.json({ error: failure === 503 ? '权限存储暂时不可用。' : '请重新登录。', code: failure === 503 ? 'ACCOUNT_ACCESS_UNAVAILABLE' : 'SIGN_IN_REQUIRED' }, { status: failure });
     },
   });
   const get = (id: string) => f.document.getElementById('nutrition-' + id)! as unknown as HTMLInputElement;
@@ -1814,12 +1818,23 @@ test('minified account guard retries permission storage failures without losing 
   get('ai-text').value = '恢复权限后继续整理的午餐';
   failure = 503; get('previous').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => !get('retry').hidden && get('page').getAttribute('aria-busy') === 'false');
+  assert.deepEqual(failedReads, [503], 'a real business read must encounter the permission-storage outage');
   assert.equal(f.document.documentElement.hasAttribute('data-account-changed'), false);
+  assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+  assert.equal(get('status').classList.contains('error'), true);
   assert.equal(get('ai-text').value, '恢复权限后继续整理的午餐'); assert.equal(get('login').hidden, true);
   failure = null; get('retry').dispatchEvent(new f.window.Event('click', { bubbles: true }));
   await settle(() => get('status').hidden && get('page').getAttribute('aria-busy') === 'false');
   assert.equal(get('ai-text').value, '恢复权限后继续整理的午餐');
   failure = 401; get('previous').dispatchEvent(new f.window.Event('click', { bubbles: true }));
-  await settle(() => f.document.documentElement.hasAttribute('data-account-changed'));
+  const recovery = f.document.querySelector('[data-account-recovery]')! as unknown as HTMLElement;
+  await settle(() => !recovery.hidden && recovery.dataset.accountRecoveryState === 'signed-out');
+  assert.deepEqual(failedReads, [503, 401]);
+  assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+  assert.equal(get('ai-text').value, '恢复权限后继续整理的午餐');
+  const readsBeforeRetry = f.requests.length;
+  get('retry').dispatchEvent(new f.window.Event('click', { bubbles: true }));
+  await settle(() => get('page').getAttribute('aria-busy') === 'false');
+  assert.equal(f.requests.length, readsBeforeRetry, 'a known signed-out document cannot send another business request');
   assert.ok(f.requests.every(request => request.method === 'GET'));
 });

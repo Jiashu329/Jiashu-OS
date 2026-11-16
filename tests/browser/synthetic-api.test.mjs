@@ -119,10 +119,15 @@ test('browser goals fixture retains a delayed GET snapshot and rejects stale tar
 
 test('browser permission fixture distinguishes unavailable storage from a signed-out session', async () => {
   const { state, request } = await fixture();
-  state.sessionFailure = { status: 503, body: { error: '权限服务暂时不可用。', code: 'ACCOUNT_ACCESS_UNAVAILABLE' } };
+  state.nutritionReadFailure = state.sessionFailure = { status: 503, body: { error: '权限服务暂时不可用。', code: 'ACCOUNT_ACCESS_UNAVAILABLE' } };
   assert.deepEqual(await request('/api/session'), { status: 503, body: state.sessionFailure.body });
-  state.sessionFailure = null;
+  assert.deepEqual(await request('/api/health/nutrition?date=' + DAY), { status: 503, body: state.nutritionReadFailure.body });
+  assert.equal((await request('/api/health/nutrition/goals')).status, 200, 'nutrition read failures must stay scoped to their business endpoint');
+  state.nutritionReadFailure = state.sessionFailure = null;
   assert.equal((await request('/api/session')).body.userId, state.owner);
-  state.sessionFailure = { status: 401, body: { error: '请重新登录。', code: 'SIGN_IN_REQUIRED' } };
+  assert.equal((await request('/api/health/nutrition?date=' + DAY)).status, 200);
+  state.nutritionReadFailure = state.sessionFailure = { status: 401, body: { error: '请重新登录。', code: 'SIGN_IN_REQUIRED' } };
   assert.equal((await request('/api/session')).status, 401);
+  assert.deepEqual(await request('/api/health/nutrition?date=' + DAY), { status: 401, body: state.nutritionReadFailure.body });
+  assert.ok(state.requests.every(({ method }) => method === 'GET'));
 });

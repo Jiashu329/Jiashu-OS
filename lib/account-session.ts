@@ -16,7 +16,7 @@ if(!window.JiashuAccountSession||window.JiashuAccountSession.document!==document
   let channel=null,announcedEnded=false;
   function notice(message){if(!owner||changed||!message||typeof message!=='object')return;if(message.kind==='signed-out'||message.kind==='identity'&&valid(message.owner)&&message.owner!==owner)markChanged();}
   function connect(){if(channel||typeof BroadcastChannel!=='function')return;try{channel=new BroadcastChannel('jiashu-session');channel.onmessage=(event)=>notice(event.data);}catch{}}
-  function announce(kind='identity'){const message={kind,owner,nonce:String(Date.now())+':'+Math.random()};try{channel?.postMessage(message);}catch{}try{if(typeof localStorage!=='undefined')localStorage.setItem('jiashu:session-notice',JSON.stringify(message));}catch{}}
+  function announce(kind='identity'){const message={kind,owner};try{channel?.postMessage(message);}catch{}try{if(typeof localStorage!=='undefined'){const value=JSON.stringify(message);if(localStorage.getItem('jiashu:session-notice')!==value)localStorage.setItem('jiashu:session-notice',value);}}catch{}}
   function notifySignedOut(){if(!announcedEnded){announcedEnded=true;announce('signed-out');}}
   async function readIdentity(){
     if(changed)throw markChanged();if(!owner)throw failure('请刷新已登录页面后继续原操作。','ACCOUNT_SESSION_UNBOUND',401);if(verification)return verification;
@@ -35,7 +35,7 @@ if(!window.JiashuAccountSession||window.JiashuAccountSession.document!==document
           let data;try{data=await response.json();}catch{throw failure('登录信息暂时无法核对，本次尚未发送。');}
           current();
           if(!valid(data?.userId))throw failure('登录信息暂时无法核对，本次尚未发送。');
-          if(!acceptIdentity(data.userId))throw markChanged();announce();return data;
+          if(!acceptIdentity(data.userId))throw markChanged();return data;
         })(),deadline]);
         return result;
       }catch(error){if(error?.code)throw error;throw failure('暂时无法核对当前登录账号，本次尚未发送。请保留填写后重试。');}
@@ -52,7 +52,8 @@ if(!window.JiashuAccountSession||window.JiashuAccountSession.document!==document
       const headers=new Headers(options.headers||((typeof input==='object'&&input?.headers)||{}));
       const explicit=headers.get('X-Page-Owner');const draftOwner=window.JiashuDrafts?.owner;
       if(explicit&&!bind(explicit)||!owner&&valid(draftOwner)&&!bind(draftOwner))throw markChanged();
-      const expected=attested?owner:await verify();checkAbort();if(changed)throw markChanged();headers.set('X-Page-Owner',expected);
+      const method=String(options.method||(typeof input==='object'&&input?.method)||'GET').toUpperCase();
+      const expected=attested&&['GET','HEAD','OPTIONS'].includes(method)?owner:await verify();checkAbort();if(changed)throw markChanged();headers.set('X-Page-Owner',expected);
       const response=await transport(input,{...options,headers});
       if(changed)throw markChanged();
       const responseOwner=response.headers?.get?.('X-Account-Owner');

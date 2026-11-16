@@ -22,7 +22,7 @@ function makeEntry(input, id = crypto.randomUUID(), revision = 1) {
 export function syntheticState() {
   return {
     owner: BROWSER_FIXTURE_OWNER, requests: [], externalRequests: [], entries: [], histories: new Map(),
-    sessionFailure: null, goalsReadGate: null, failNextGoalsRead: false,
+    sessionFailure: null, nutritionReadFailure: null, goalsReadGate: null, failNextGoalsRead: false,
     healthRecords: [], healthRecordReplays: new Map(), hangNextHealthWrite: false,
     dayStatus: { date: DAY, complete: false, revision: 0, meals: meals() },
     goals: { calories: null, carbs: null, protein: null, fat: null, revision: 0, createdAt: null, updatedAt: null },
@@ -68,6 +68,7 @@ export async function interceptSyntheticAPI(context, state) {
       return send({ record, replayed: false }, 201);
     }
     if (url.pathname === '/api/health/nutrition' && method === 'GET') {
+      if (state.nutritionReadFailure) return send(state.nutritionReadFailure.body, state.nutritionReadFailure.status);
       const selection = parseNutritionQuery(url.searchParams);
       return send({ ...buildNutritionReview(state.entries, selection), recentFoods: state.entries.map(presentNutritionEntry), dayStatus: { ...state.dayStatus, date: selection.date } });
     }

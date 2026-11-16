@@ -218,6 +218,15 @@ async function persistentNavigation(page, origin) {
       assert.equal(text.includes(privateValue), false, 'Recovery copy does not show account identity data.');
     }
   }
+  async function clickBackgroundRetry() {
+    const retry = page.locator('[data-account-background-retry]');
+    const reachable = await retry.evaluate(button => {
+      const box = button.getBoundingClientRect(), hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return hit === button || button.contains(hit);
+    });
+    assert.equal(reachable, true, 'The real background retry target must remain above or outside floating assistant controls.');
+    await retry.click();
+  }
   async function refreshIdentity() {
     const requested = page.waitForRequest(request => request.url() === sessionPattern);
     await page.evaluate(() => { void window.JiashuAccountIdentity.refresh({ force: true }); });
@@ -252,16 +261,20 @@ async function persistentNavigation(page, origin) {
     }
 
     for (const [responseMode, label] of [['unavailable', '503'], ['invalid-json', 'invalid-json']]) {
-      phase = 'persistent-background-' + label;
+      phase = 'persistent-background-' + label + '-navigation';
       mode = responseMode; releasePending();
       await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
       await noBlockingCheck();
+      phase = 'persistent-background-' + label + '-refresh';
       await refreshIdentity();
+      phase = 'persistent-background-' + label + '-feedback';
       await page.waitForFunction(() => document.documentElement.hasAttribute('data-account-background-error'));
       assert.equal(await page.locator('[data-account-background-status]').isVisible(), true);
       await noBlockingCheck();
       mode = 'healthy';
-      await page.locator('[data-account-background-retry]').click();
+      phase = 'persistent-background-' + label + '-retry';
+      await clickBackgroundRetry();
+      phase = 'persistent-background-' + label + '-recovered';
       await page.waitForFunction(() => !document.documentElement.hasAttribute('data-account-background-error'));
       await noBlockingCheck();
     }
@@ -279,7 +292,8 @@ async function persistentNavigation(page, origin) {
     await page.waitForFunction(() => document.documentElement.hasAttribute('data-account-background-error'), undefined, { timeout: 20000 });
     await noBlockingCheck();
     mode = 'healthy'; releasePending();
-    await page.locator('[data-account-background-retry]').click();
+    phase = 'persistent-background-timeout-retry';
+    await clickBackgroundRetry();
     await page.waitForFunction(() => !document.documentElement.hasAttribute('data-account-background-error'));
     await noBlockingCheck();
 
@@ -547,10 +561,11 @@ async function main() {
 }
 
 try { await main(); }
-catch {
+catch (error) {
   // Playwright errors can embed filled values. Never print an error object,
   // request body, trace, screenshot, cookie, environment or private password.
-  process.stderr.write('Self-hosted real-browser acceptance failed at phase: ' + phase + '.\n');
+  const kind = ['AssertionError', 'TimeoutError', 'Error'].includes(error?.name) ? error.name : 'Error';
+  process.stderr.write('Self-hosted real-browser acceptance failed at phase: ' + phase + ' (' + kind + ').\n');
   process.exitCode = 1;
 }
 finally {

@@ -10,13 +10,15 @@ interface AccountSession {
   readIdentity(): Promise<{ userId: string }>;
   invalidate(): void;
   verify(): Promise<string>;
-  request(url: string, options?: RequestInit): Promise<Response>;
+  request(url: string | URL | Request, options?: RequestInit): Promise<Response>;
 }
 interface Call { url: string; options: RequestInit }
 type SessionBootstrap = { userId: string; displayName: string; email: string; isOwner: boolean };
 interface Channel { name: string; closed: boolean; onmessage: ((event: { data: unknown }) => void) | null }
-function fixture(options: { pageOwner?: string; bootstrap?: SessionBootstrap; bus?: Channel[]; response?: (call: Call) => Promise<Response> } = {}) {
+function fixture(options: { pageOwner?: string; bootstrap?: SessionBootstrap; bus?: Channel[]; storage?: Map<string, string>; response?: (call: Call) => Promise<Response> } = {}) {
   const calls: Call[] = [];
+  const storageWrites: Array<{ key: string; value: string }> = [];
+  const stored = options.storage ?? new Map<string, string>();
   const attributes = new Map<string,string>();
   const events: string[] = [];
   let current = options.pageOwner ?? 'alice';
@@ -35,9 +37,10 @@ function fixture(options: { pageOwner?: string; bootstrap?: SessionBootstrap; bu
     document: { documentElement: { setAttribute(key: string, value: string) { attributes.set(key,value); } },
       dispatchEvent(event: Event) { events.push(event.type); } },
     location: new URL('https://synthetic-account.example/health/nutrition'),
+    localStorage: { getItem(key: string) { return stored.get(key) ?? null; }, setItem(key: string, value: string) { stored.set(key, value); storageWrites.push({ key, value }); } },
     URL, Headers, Response, AbortController, Event, setTimeout, clearTimeout, BroadcastChannel: options.bus ? SessionChannel : undefined,
-    fetch: async (url: string, init: RequestInit = {}) => {
-      const call = { url: String(url), options: init };calls.push(call);
+    fetch: async (url: string | URL | Request, init: RequestInit = {}) => {
+      const call = { url: typeof url === 'object' && 'url' in url ? url.url : String(url), options: init };calls.push(call);
       if (call.url === '/api/session') return session ? session() : Response.json({ userId: current });
       return options.response ? options.response(call) : Response.json({ ok:true }, { headers: { 'X-Account-Owner': current } });
     },
@@ -45,22 +48,39 @@ function fixture(options: { pageOwner?: string; bootstrap?: SessionBootstrap; bu
   const context = { ...sandbox, window: sandbox };
   runInNewContext(ACCOUNT_SESSION_SCRIPT, context);
   const guard = (sandbox as typeof sandbox & { JiashuAccountSession: AccountSession }).JiashuAccountSession;
-  return { guard, context, calls, attributes, events,
+  return { guard, context, calls, attributes, events, storageWrites,
     fire(type: string, values: Record<string, unknown> = {}) { const event = Object.assign(new Event(type), values); for (const handler of listeners.get(type) ?? []) handler(event); },
     account(owner: string) { current=owner; }, identity(run: () => Promise<Response>) { session=run; },
-    fetch(url: string, init?: RequestInit) { return sandbox.fetch(url,init); },
+    fetch(url: string | URL | Request, init?: RequestInit) { return sandbox.fetch(url,init); },
   };
 }
 
 const bootstrap = (userId = 'alice'): SessionBootstrap => ({ userId, displayName: userId, email: userId + '@example.test', isOwner: userId === 'alice' });
 
-void test('server bootstrap avoids all business-request preflights while every response attests the same immutable owner', async () => {
+void test('server bootstrap avoids read preflights while every response attests the same immutable owner', async () => {
   const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap() });
   assert.equal(f.guard.attested, true);
   for (const path of ['/api/health', '/api/finance', '/api/life/douban']) assert.equal((await f.fetch(path)).status, 200);
   assert.equal(f.calls.some(call => call.url === '/api/session'), false);
   assert.ok(f.calls.every(call => new Headers(call.options.headers).get('X-Page-Owner') === 'alice'));
   assert.equal(f.attributes.has('data-account-verifying'), false);
+});
+
+void test('server-confirmed mutations recheck identity before sending draft bytes and honor the effective Request method', async () => {
+  const f = fixture({ pageOwner: 'alice', bootstrap: bootstrap() });
+  for (const method of ['GET', 'HEAD', 'OPTIONS']) assert.equal((await f.fetch('/api/health', { method })).status, 200);
+  assert.equal(f.calls.some(call => call.url === '/api/session'), false);
+  assert.equal((await f.fetch('/api/health', { method: 'POST', body: 'alice-draft' })).status, 200);
+  assert.equal(f.calls.filter(call => call.url === '/api/session').length, 1);
+  const request = new Request('https://synthetic-account.example/api/health', { method: 'PUT' });
+  assert.equal((await f.fetch(request)).status, 200);
+  assert.equal(f.calls.filter(call => call.url === '/api/session').length, 2, 'Request.method also requires a fresh check');
+  assert.equal((await f.fetch(request, { method: 'GET' })).status, 200);
+  assert.equal(f.calls.filter(call => call.url === '/api/session').length, 2, 'an explicit method overrides the Request method');
+  f.account('bob');
+  const writesBefore = f.calls.filter(call => call.url !== '/api/session').length;
+  assert.equal((await f.fetch(request, { method: 'DELETE' })).status, 401);
+  assert.equal(f.calls.filter(call => call.url !== '/api/session').length, writesBefore, 'a switched session never receives the previous owner payload');
 });
 
 void test('a mismatched bootstrap stays unconfirmed and cannot alter the document owner', async () => {
@@ -120,6 +140,21 @@ void test('same-owner navigation broadcasts do not hide or invalidate another co
   assert.equal(one.guard.changed, false); assert.equal(one.guard.attested, true); assert.equal(one.events.length, 0);
   one.fire('storage', { key: 'jiashu:session-notice', newValue: JSON.stringify({ kind: 'identity', owner: 'bob' }) });
   assert.equal(one.guard.changed, true); assert.equal(one.guard.owner, 'alice');
+});
+
+void test('same-owner identity checks and navigation do not rewrite the durable session notice', async () => {
+  const storage = new Map<string, string>();
+  const first = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), storage });
+  assert.deepEqual(first.storageWrites, [{ key: 'jiashu:session-notice', value: JSON.stringify({ kind: 'identity', owner: 'alice' }) }]);
+  await first.guard.readIdentity(); await first.guard.readIdentity();
+  assert.equal(first.storageWrites.length, 1, 'background verification cannot create unrelated durable writes');
+  const second = fixture({ pageOwner: 'alice', bootstrap: bootstrap(), storage });
+  assert.equal(second.storageWrites.length, 0, 'a same-owner page reuses the existing negative-only notice');
+  const different = fixture({ pageOwner: 'bob', bootstrap: bootstrap('bob'), storage });
+  assert.deepEqual(different.storageWrites, [{ key: 'jiashu:session-notice', value: JSON.stringify({ kind: 'identity', owner: 'bob' }) }]);
+  const legacy = fixture({ pageOwner: 'bob', storage });
+  await legacy.guard.readIdentity();
+  assert.equal(legacy.storageWrites.length, 0, 'legacy identity reads do not publish a navigation notice');
 });
 
 void test('SSR owner binding blocks an old page first used only after another account signs in',async()=>{
