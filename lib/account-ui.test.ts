@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
-import { renderAccountIdentityScript } from './account-ui.ts';
+import { renderAccountIdentityScript, renderAccountRecovery } from './account-ui.ts';
 import { renderAccountPage } from '../account-page.ts';
 
 async function settled(check: () => boolean) {
@@ -11,18 +11,23 @@ async function settled(check: () => boolean) {
 }
 
 function fixture(responses: Array<Response | Promise<Response>>, expectedOwner = 'alice', pageOwner = '', localAuth = false) {
-  const { window, document } = parseHTML(`<html><body><a href="/account"><span data-current-account-avatar>我</span><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></a><button data-account-retry data-account-sidebar-retry hidden>重新确认账户</button><main${localAuth ? ' data-account-auth-provider="local"' : ''}><p data-account-status role="status"></p><dl data-account-profile hidden><dd data-current-account-name></dd><dd data-current-account-email></dd></dl><button data-account-retry hidden>重试</button><a data-account-sign-in hidden>登录</a><a data-account-sign-out>退出</a><a data-account-owner-only hidden>管理使用名单</a></main></body></html>`);
+  const { window, document } = parseHTML(`<html><body><div class="app"><aside><a href="/account"><span data-current-account-avatar>我</span><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></a><button data-account-retry data-account-sidebar-retry hidden>重新确认账户</button></aside>${renderAccountRecovery()}<main${localAuth ? ' data-account-auth-provider="local"' : ''}><p data-account-status role="status"></p><dl data-account-profile hidden><dd data-current-account-name></dd><dd data-current-account-email></dd></dl><button data-account-retry hidden>重试</button><a data-account-sign-in hidden>登录</a><a data-account-sign-out>退出</a><a data-account-owner-only hidden>管理使用名单</a><p>Private content belongs to alice</p></main></div></body></html>`);
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const bound: string[] = [];
   const guard = { changed: false, bind(owner: string) { bound.push(owner); if (expectedOwner && owner !== expectedOwner) { this.changed = true; document.dispatchEvent(new window.Event('jiashu-account-changed')); return false; } return true; } };
   Object.assign(window, { JiashuAccountSession: guard, __JIASHU_PAGE_OWNER__: pageOwner });
   let reloads = 0;
+  const timers = new Set<() => void>();
   const source = renderAccountIdentityScript().replace(/^<script type="module">/, '').replace(/<\/script>$/, '');
-  runInNewContext(source, { window, document, fetch: async (url: string, init: RequestInit) => { requests.push({ url, init }); const response = responses.shift(); if (!response) throw new Error('Synthetic session unavailable'); return response; }, AbortController, setTimeout, clearTimeout, location: { reload() { reloads++; } } });
+  runInNewContext(source, { window, document, fetch: async (url: string, init: RequestInit) => { requests.push({ url, init }); const response = responses.shift(); if (!response) throw new Error('Synthetic session unavailable'); return response; }, AbortController,
+    setTimeout(callback: () => void) { timers.add(callback); return callback; }, clearTimeout(callback: () => void) { timers.delete(callback); },
+    location: { pathname: '/health', search: '?days=7', reload() { reloads++; } } });
   return { document, window, requests, bound, guard, get reloads() { return reloads; },
     names: () => [...document.querySelectorAll('[data-current-account-name]')].map((node) => node.textContent),
     status: () => document.querySelector('[data-account-status]')!,
     profile: () => document.querySelector('[data-account-profile]') as HTMLElement,
+    recovery: () => document.querySelector('[data-account-recovery]') as HTMLElement,
+    timeout() { for (const callback of timers) callback(); },
   };
 }
 
@@ -133,6 +138,76 @@ void test('failed SSR identity checks stay covered but the sidebar can retry and
   assert.equal(retry.hidden, true); assert.equal(f.names()[0], 'Alice');
 });
 
+void test('SSR session failures show public recovery outside the hidden private main and can retry successfully', async () => {
+  for (const failed of [Response.json({}, { status: 503 }), Response.json({}, { status: 403 }), new Response('not valid JSON', { headers: { 'Content-Type': 'application/json' } }), Response.json({})]) {
+    const f = fixture([failed, Response.json({ userId: 'alice', displayName: 'Alice', email: 'alice@example.test' })], 'alice', 'alice');
+    assert.equal(f.recovery().hidden, false);
+    assert.equal(f.recovery().dataset.accountRecoveryState, 'loading');
+    await settled(() => f.recovery().dataset.accountRecoveryState === 'error');
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+    assert.equal(f.recovery().closest('main'), null);
+    assert.equal(f.recovery().hidden, false);
+    assert.match(f.recovery().textContent ?? '', /暂时无法打开页面/);
+    assert.doesNotMatch(f.recovery().textContent ?? '', /alice|Alice|Private content|example\.test/);
+    const retry = f.recovery().querySelector('[data-account-recovery-retry]') as HTMLElement;
+    const login = f.recovery().querySelector('[data-account-recovery-login]') as HTMLAnchorElement;
+    assert.equal(retry.hidden, false); assert.equal(login.hidden, false);
+    assert.equal(login.getAttribute('href'), '/signin-with-chatgpt?return_to=%2Fhealth%3Fdays%3D7');
+    retry.dispatchEvent(new f.window.Event('click'));
+    await settled(() => f.recovery().hidden === true);
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+    assert.equal(f.names()[0], 'Alice');
+  }
+});
+
+void test('a hung session transport or JSON body reaches a visible timeout even when abort is ignored', async () => {
+  const hungBody = Response.json({ userId: 'alice' });
+  hungBody.json = () => new Promise<never>(() => {});
+  for (const response of [new Promise<Response>(() => {}), hungBody]) {
+    const f = fixture([response, Response.json({ userId: 'alice', displayName: 'Alice' })], 'alice', 'alice');
+    assert.equal(f.recovery().hidden, false);
+    assert.equal(f.recovery().dataset.accountRecoveryState, 'loading');
+    f.timeout();
+    await settled(() => f.recovery().dataset.accountRecoveryState === 'error');
+    assert.match(f.recovery().textContent ?? '', /确认超时/);
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+    f.recovery().querySelector('[data-account-recovery-retry]')?.dispatchEvent(new f.window.Event('click'));
+    await settled(() => f.recovery().hidden === true);
+    assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+  }
+});
+
+void test('signed-out SSR pages provide a visible top-level sign-in while old private content remains covered', async () => {
+  const f = fixture([Response.json({}, { status: 401 })], 'alice', 'alice', true);
+  await settled(() => f.recovery().dataset.accountRecoveryState === 'signed-out');
+  assert.equal(f.recovery().hidden, false);
+  assert.match(f.recovery().textContent ?? '', /请重新登录/);
+  assert.doesNotMatch(f.recovery().textContent ?? '', /alice|Private content/);
+  assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), true);
+  assert.equal(f.recovery().querySelector('[data-account-recovery-login]')?.getAttribute('target'), '_top');
+});
+
+void test('an SSR owner mismatch requires a refresh even when the shared session guard has not detected the change', async () => {
+  const f = fixture([Response.json({ userId: 'bob', displayName: 'Bob', email: 'bob@example.test' })], 'alice', 'alice');
+  await settled(() => f.recovery().dataset.accountRecoveryState === 'changed');
+  assert.equal(f.guard.changed, false, 'Owner mismatch short-circuits before shared bind');
+  assert.equal(f.recovery().hidden, false);
+  assert.doesNotMatch(f.recovery().textContent ?? '', /Bob|bob@example/);
+  const retry = f.recovery().querySelector('[data-account-recovery-retry]') as HTMLElement;
+  assert.equal(retry.textContent, '刷新页面');
+  retry.dispatchEvent(new f.window.Event('click'));
+  assert.equal(f.reloads, 1);
+  assert.equal(f.requests.length, 1, 'Refreshing does not silently adopt a queried account');
+  assert.equal(f.document.documentElement.hasAttribute('data-account-changed'), true);
+});
+
+void test('unscoped documents do not activate the private-document recovery cover', async () => {
+  const f = fixture([Response.json({}, { status: 503 })]);
+  await settled(() => f.status().getAttribute('data-account-status') === 'error');
+  assert.equal(f.recovery().hidden, true);
+  assert.equal(f.document.documentElement.hasAttribute('data-account-verifying'), false);
+});
+
 void test('account page keeps auth navigation and data scope explanations while hiding owner tools before identity verification', () => {
   const html = renderAccountPage({ signInHref: '/signin-with-chatgpt?return_to=%2Faccount', signOutHref: '/signout-with-chatgpt?return_to=%2Faccount%3FsignedOut%3D1' });
   const { document } = parseHTML(html);
@@ -146,4 +221,6 @@ void test('account page keeps auth navigation and data scope explanations while 
   assert.match(html, /html\[data-account-changed\] \.app>main/);
   assert.match(html, /html\[data-account-verifying\] \.app>main/);
   assert.ok(document.querySelector('[data-account-sidebar-retry]'));
+  const recovery = document.querySelector('[data-account-recovery]') as HTMLElement;
+  assert.ok(recovery); assert.equal(recovery.closest('main'), null); assert.equal(recovery.hidden, true);
 });

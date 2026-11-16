@@ -124,6 +124,109 @@ async function adminUIResponse(page, memberId, action) {
   assert.equal((await response.request().allHeaders()).origin, new URL(page.url()).origin);
 }
 
+async function blankPageRecovery(page, origin) {
+  const sessionPattern = origin + '/api/session';
+  const foreignId = 'synthetic-other-owner', foreignName = 'PRIVATE_SESSION_NAME', foreignEmail = 'private-session@example.invalid';
+  const pending = new Set();
+  let mode = 'healthy';
+  const interceptSession = async route => {
+    if (mode === 'healthy') { await route.continue(); return; }
+    if (mode === 'pending') {
+      await new Promise(resolvePending => pending.add(resolvePending));
+      // AbortController has normally canceled this synthetic request by now.
+      // Releasing the fixture must never surface a browser request or token.
+      try { await route.abort('failed'); } catch { /* Expected after cancellation or reload. */ }
+      return;
+    }
+    const status = mode === 'signed-out' ? 401 : mode === 'unavailable' ? 503 : 200;
+    const body = mode === 'invalid-json' ? '{' : mode === 'changed'
+      ? JSON.stringify({ userId: foreignId, displayName: foreignName, email: foreignEmail, isOwner: true })
+      : JSON.stringify({ code: mode === 'signed-out' ? 'SIGN_IN_REQUIRED' : 'ACCOUNT_ACCESS_UNAVAILABLE' });
+    await route.fulfill({ status, contentType: 'application/json', headers: { 'Cache-Control': 'no-store' }, body });
+  };
+  const releasePending = () => { for (const resolvePending of pending) resolvePending(); pending.clear(); };
+  const recovery = page.locator('[data-account-recovery]');
+  async function covered(states) {
+    await page.waitForFunction(expected => {
+      const panel = document.querySelector('[data-account-recovery]');
+      return panel && !panel.hidden && expected.includes(panel.dataset.accountRecoveryState);
+    }, states, { timeout: 20000 });
+    assert.equal(await recovery.isVisible(), true, 'A public recovery panel stays visible while private content is covered.');
+    assert.equal(await page.locator('.app > main').isVisible(), false, 'A failed identity check never reveals the old account content.');
+    assert.equal(await recovery.evaluate(panel => panel.closest('main') === null), true, 'Recovery must be outside the private content guard.');
+    const text = await recovery.textContent();
+    assert.ok(text.trim().length > 0);
+    for (const privateValue of [ownerId, ownerEmail, foreignId, foreignName, foreignEmail]) {
+      assert.equal(text.includes(privateValue), false, 'Recovery copy does not show session identity data.');
+    }
+  }
+  async function restored() {
+    await page.waitForFunction(() => {
+      const main = document.querySelector('.app > main'), panel = document.querySelector('[data-account-recovery]');
+      return main && getComputedStyle(main).visibility === 'visible' && panel?.hidden
+        && !document.documentElement.hasAttribute('data-account-verifying')
+        && !document.documentElement.hasAttribute('data-account-changed');
+    });
+  }
+  await page.route(sessionPattern, interceptSession);
+  try {
+    for (const [responseMode, label] of [['unavailable', '503'], ['invalid-json', 'invalid-json']]) {
+      phase = 'blank-recovery-' + label;
+      mode = responseMode;
+      await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
+      await covered(['error']);
+      assert.equal(await recovery.locator('[data-account-recovery-retry]').isVisible(), true);
+      mode = 'healthy';
+      await recovery.locator('[data-account-recovery-retry]').click();
+      await restored();
+    }
+
+    phase = 'blank-recovery-signed-out';
+    mode = 'signed-out';
+    await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
+    // Concurrent API guards may classify an expired cookie as account changed;
+    // both states must retain an explicit same-origin sign-in route.
+    await covered(['signed-out', 'changed']);
+    const login = recovery.locator('[data-account-recovery-login]');
+    assert.equal(await login.isVisible(), true);
+    const signIn = new URL(await login.getAttribute('href'), origin);
+    assert.equal(signIn.origin, origin); assert.equal(signIn.pathname, '/signin-with-chatgpt');
+
+    phase = 'blank-recovery-pending-session';
+    mode = 'pending';
+    await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
+    await covered(['loading']);
+    phase = 'blank-recovery-session-timeout';
+    await covered(['error']);
+    releasePending();
+    mode = 'healthy';
+    await recovery.locator('[data-account-recovery-retry]').click();
+    await restored();
+
+    phase = 'blank-recovery-account-changed';
+    mode = 'changed';
+    await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
+    await covered(['changed']);
+    assert.equal(await recovery.locator('[data-account-recovery-retry]').textContent(), '刷新页面');
+    await Promise.all([
+      page.waitForEvent('domcontentloaded'),
+      recovery.locator('[data-account-recovery-retry]').click(),
+    ]);
+    await covered(['changed']);
+    mode = 'healthy';
+    await Promise.all([
+      page.waitForEvent('domcontentloaded'),
+      recovery.locator('[data-account-recovery-retry]').click(),
+    ]);
+    await restored();
+  } finally {
+    mode = 'healthy'; releasePending();
+    await page.unroute(sessionPattern, interceptSession);
+    await page.goto(origin + '/health', { waitUntil: 'domcontentloaded' });
+    await restored();
+  }
+}
+
 async function multiuserBrowser(context, administratorPage, origin) {
   phase = 'administrator-goal-fixture';
   const date = '2026-01-01';
@@ -283,6 +386,7 @@ async function main() {
   assert.equal(identity.userId, ownerId); assert.equal(identity.email, ownerEmail); assert.equal(identity.isOwner, true);
   assert.ok((await context.cookies()).some(cookie => cookie.name === 'jso-test-session' && cookie.httpOnly && cookie.sameSite === 'Lax'));
 
+  await blankPageRecovery(page, origin);
   await multiuserBrowser(context, page, origin);
 
   phase = 'logout-page';
@@ -293,7 +397,7 @@ async function main() {
   phase = 'logged-out-session';
   assert.equal((await context.request.get(origin + '/api/session')).status(), 401);
   assert.equal((await context.cookies()).some(cookie => cookie.name === 'jso-test-session'), false);
-  process.stdout.write('Real Chromium self-hosted email login/logout passed: native Origin, administrator UI accounts, isolation, disable/reset/email session revocation, and missing/empty/null/foreign Origin rejection.\n');
+  process.stdout.write('Real Chromium self-hosted email login/logout passed: native Origin, visible privacy-preserving session recovery, administrator UI accounts, isolation, disable/reset/email session revocation, and missing/empty/null/foreign Origin rejection.\n');
 }
 
 try { await main(); }
