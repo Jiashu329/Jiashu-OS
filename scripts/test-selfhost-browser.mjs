@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -75,6 +75,48 @@ async function submitNormalForm(page, endpoint, buttonName, origin, landingPath 
   if (expectedStatus !== 303) return;
   assert.equal(response.headers().location, expectedRedirect);
   await page.waitForURL(url => url.origin === origin && url.pathname === landingPath);
+}
+
+async function inspectLoginViewports(origin) {
+  // This isolated context is closed before any credential is filled. Screenshots
+  // contain only anonymous, empty forms; later authenticated pages are never captured.
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const output = resolve('outputs/selfhost-browser'); mkdirSync(output, { recursive: true });
+    let loginPosts = 0;
+    page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/signin-with-chatgpt') loginPosts++; });
+    for (const [name, width, height] of [['desktop', 1440, 1000], ['mobile', 390, 844], ['compact', 320, 568]]) {
+      phase = 'login-layout-' + name;
+      await page.setViewportSize({ width, height });
+      const response = await page.goto(origin + '/signin-with-chatgpt?return_to=%2Fhealth');
+      assert.equal(response.status(), 200);
+      const dimensions = await page.evaluate(() => ({ width: document.documentElement.clientWidth, content: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) }));
+      assert.ok(dimensions.content <= dimensions.width + 1, 'The login page has no horizontal overflow.');
+      const emailField = page.locator('input[name="email"]'), passwordField = page.locator('input[name="password"]');
+      const submit = page.getByRole('button', { name: '登录', exact: true });
+      for (const field of [emailField, passwordField, submit]) {
+        await field.scrollIntoViewIfNeeded();
+        const box = await field.boundingBox();
+        assert.ok(await field.isVisible() && box && box.x >= -1 && box.x + box.width <= width + 1 && box.y >= -1 && box.y + box.height <= height + 1,
+          'Every login control can be reached within the viewport.');
+      }
+      assert.equal(await emailField.evaluate(field => field.validity.valueMissing), true);
+      assert.equal(await passwordField.evaluate(field => field.validity.valueMissing), true);
+      await submit.click();
+      assert.equal(loginPosts, 0, 'Native required validation prevents an empty login POST.');
+      assert.equal(new URL(page.url()).pathname, '/signin-with-chatgpt');
+      const help = page.locator('details.login-help');
+      await help.locator('summary').click();
+      assert.equal(await help.evaluate(element => element.open), true);
+      assert.equal(await help.locator('p').isVisible(), true);
+      await help.locator('summary').click();
+      assert.equal(await help.evaluate(element => element.open), false);
+      await page.reload(); // Clear native validation/focus before the clean preview.
+      assert.equal(await emailField.inputValue(), ''); assert.equal(await passwordField.inputValue(), '');
+      await page.screenshot({ path: join(output, 'login-' + name + '.png'), fullPage: true, animations: 'disabled' });
+    }
+  } finally { await context.close(); }
 }
 
 async function loginEmail(browserInstance, origin, accountEmail, accountPassword, expectedStatus = 303) {
@@ -513,6 +555,7 @@ async function main() {
   await start(environment, port);
   phase = 'chromium';
   browser = await chromium.launch({ headless: true });
+  await inspectLoginViewports(origin);
   const context = await browser.newContext();
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
@@ -563,7 +606,8 @@ async function main() {
 try { await main(); }
 catch (error) {
   // Playwright errors can embed filled values. Never print an error object,
-  // request body, trace, screenshot, cookie, environment or private password.
+  // request body, trace, cookie, environment or private password. Only the
+  // explicitly anonymous previews above may be saved as screenshots.
   const kind = ['AssertionError', 'TimeoutError', 'Error'].includes(error?.name) ? error.name : 'Error';
   process.stderr.write('Self-hosted real-browser acceptance failed at phase: ' + phase + ' (' + kind + ').\n');
   process.exitCode = 1;
