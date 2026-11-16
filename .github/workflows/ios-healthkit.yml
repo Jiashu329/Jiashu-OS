@@ -1,0 +1,80 @@
+name: iOS HealthKit checks
+
+on:
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-healthkit.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-healthkit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check Xcode project structure
+        run: python3 ios/JiashuHealthProbe/scripts/verify-project.py
+
+      - name: Select an installed iPhone simulator
+        id: simulator
+        run: |
+          xcodebuild -version
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          data = json.loads(subprocess.check_output(
+              ['xcrun', 'simctl', 'list', 'devices', 'available', '--json']
+          ))
+          candidates = []
+          for runtime, devices in data['devices'].items():
+              if '.iOS-' not in runtime:
+                  continue
+              version = tuple(map(int, re.findall(r'\d+', runtime.split('.iOS-')[1])))
+              for device in devices:
+                  if version >= (17,) and device.get('isAvailable') and device['name'].startswith('iPhone'):
+                      candidates.append((version, device['udid']))
+          if not candidates:
+              raise SystemExit('No available iPhone simulator with iOS 17 or later')
+          simulator = max(candidates)[1]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'id={simulator}\n')
+          PY
+
+      - name: Build the app and run XCTest
+        env:
+          TEST_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
+        run: |
+          xcrun simctl bootstatus "$TEST_SIMULATOR_ID" -b
+          xcodebuild test \
+            -project ios/JiashuHealthProbe/JiashuHealthProbe.xcodeproj \
+            -scheme JiashuHealthProbe \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$TEST_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/healthprobe-derived" \
+            -resultBundlePath "$RUNNER_TEMP/healthprobe-tests.xcresult" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Save test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: healthprobe-xctest-results
+          path: ${{ runner.temp }}/healthprobe-tests.xcresult
+          retention-days: 7
+          if-no-files-found: ignore

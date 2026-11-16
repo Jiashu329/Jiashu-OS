@@ -9,9 +9,9 @@ async function settled(check: () => boolean) {
   for (let index = 0; index < 80; index++) { if (check()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
   assert.ok(check(), 'Import UI did not settle');
 }
-function fixture(t: TestContext, options: { automatic?: boolean; stale?: boolean } = {}) {
+function fixture(t: TestContext, options: { automatic?: boolean; stale?: boolean; fragment?: string } = {}) {
   const { window, document } = parseHTML(renderApp());
-  let url = new URL('https://synthetic-import.example/sync' + (options.automatic ? '#device=jso_sync_' + 'a'.repeat(43) + '&payload=' + encodeURIComponent(JSON.stringify({ version: 1, measurements: [] })) : ''));
+  let url = new URL('https://synthetic-import.example/sync' + (options.fragment ?? (options.automatic ? '#device=jso_sync_' + 'a'.repeat(43) + '&payload=' + encodeURIComponent(JSON.stringify({ version: 1, measurements: [] })) : '')));
   const location = { get origin() { return url.origin; }, get pathname() { return url.pathname; }, get search() { return url.search; }, get hash() { return url.hash; }, get href() { return url.href; } };
   const history = { state: null, replaceState(_state: unknown, _title: string, path: string) { url = new URL(path, url); }, pushState(_state: unknown, _title: string, path: string) { url = new URL(path, url); } };
   for (const dialog of document.querySelectorAll('dialog')) Object.assign(dialog, { showModal() { dialog.setAttribute('open', ''); }, close() { dialog.removeAttribute('open'); dialog.dispatchEvent(new window.Event('close')); } });
@@ -82,4 +82,30 @@ test('automatic source switch stops for human confirmation and recent imports ca
   assert.equal(f.document.querySelector('[data-revert-import]'), null);
   const post = f.requests.find((row) => row.path.endsWith('/revert'))!;
   assert.deepEqual(JSON.parse(post.options.body as string), { reason: '选错来源' });
+});
+
+test('native HealthKit totals use the existing manual preview and source-change confirmation flow', async (t) => {
+  const payload = { version: 1, source: 'apple-health-shortcuts', timezone: 'Asia/Shanghai', exportedAt: '2026-11-16T00:04:40.000Z',
+    measurements: [{ id: 'healthkit-merged-steps:2026-11-13', metric: 'steps', value: 8462, unit: 'count', source: 'apple-health-merged', aggregation: 'daily',
+      startDate: '2026-11-12T16:00:00.000Z', endDate: '2026-11-13T16:00:00.000Z' }] };
+  const params = new URLSearchParams({ payload: JSON.stringify(payload) });
+  const f = fixture(t, { fragment: '#' + params });
+  await settled(() => f.el('import-dialog').hasAttribute('open'));
+  assert.equal(f.requests.some((row) => row.path.startsWith('/api/health/import') && row.options.method === 'POST'), false);
+  f.submit('import-form');
+  await settled(() => !f.el('import-submit').disabled);
+  assert.equal(f.requests.filter((row) => row.path === '/api/health/import/preview').length, 1);
+  assert.equal(f.committed, 0);
+  f.submit('import-form');
+  await settled(() => !f.el('import-submit').disabled);
+  assert.equal(f.committed, 0, 'an existing source change still needs explicit confirmation');
+  f.el('import-source-confirm').checked = true;
+  f.submit('import-form');
+  await settled(() => f.committed === 1 && !f.el('import-submit').disabled);
+  const request = f.requests.find((row) => row.path === '/api/health/import' && row.options.method === 'POST')!;
+  const headers = request.options.headers as Record<string, string>;
+  assert.equal(headers['X-Sync-Device'], undefined);
+  assert.equal(headers['X-Import-Preview'], 'a'.repeat(64));
+  assert.equal(headers['X-Confirm-Source-Changes'], 'true');
+  assert.deepEqual(JSON.parse(request.options.body as string), payload);
 });
