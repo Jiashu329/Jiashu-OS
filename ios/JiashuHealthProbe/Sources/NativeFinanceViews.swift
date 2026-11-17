@@ -960,7 +960,7 @@ private struct NativeFinanceGoalForm: View {
     private var fieldsDisabled: Bool { context.busy || context.pending != nil }
     private var draftBasis: NativeJSON { current ?? .null }
     private var missingIDs: [String] {
-        let known: Set<String> = Set(accounts.map(.financeID))
+        let known: Set<String> = Set(accounts.map { $0.financeID })
         return ids.subtracting(known).sorted()
     }
     private var latestSummary: String {
