@@ -41,107 +41,154 @@ struct HealthQuickEntryView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if let pending {
-                    Section("待确认的原操作") {
-                        Label(pending.label, systemImage: "clock.arrow.circlepath")
-                        Text("这次提交的内容和标识已安全保存在本机。继续核对会重试同一次保存；你也可以关闭页面后再回来处理。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button("继续核对并保存") { Task { await submit(pending) } }
-                            .disabled(isSaving)
-                    }
-                } else {
-                    if let saved = drafts.recovery {
-                        Section("发现未完成的填写") {
-                            Text("此前的" + (saved.isNutrition ? "饮食" : "健康") + "填写已加密保存在本机。你可以恢复或丢弃；不会自动保存为记录。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            Button("恢复填写") { restoreDraft() }
-                            Button("丢弃旧草稿", role: .destructive) {
-                                do { try drafts.discard(); message = nil }
-                                catch { message = error.localizedDescription }
-                            }
-                        }
-                    }
-                    Group {
-                    Section {
-                        Picker("记录类型", selection: $isNutrition) {
-                            Text("健康数据").tag(false)
-                            Text("饮食").tag(true)
-                        }.pickerStyle(.segmented)
-                        DatePicker("记录日期", selection: $date, in: ...Date(), displayedComponents: .date)
-                    }
-                    if isNutrition {
-                        Section("这次吃了什么") {
-                            TextField("食物名称", text: $foodName)
-                            Picker("餐次", selection: $meal) {
-                                ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0) }
-                            }
-                            TextField("份量，例如一碗、200克", text: $portion)
-                            TextField("热量（千卡，未知时留空）", text: $value).keyboardType(.decimalPad)
-                            TextField("碳水化合物（克，未知时留空）", text: $carbs).keyboardType(.decimalPad)
-                            TextField("蛋白质（克，未知时留空）", text: $protein).keyboardType(.decimalPad)
-                            TextField("脂肪（克，未知时留空）", text: $fat).keyboardType(.decimalPad)
-                        }
-                        Section {
-                            Text("未知热量保持未知；填写0表示已确认这份食物的热量为0。此处记录本人核对的值，不自动估算。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Section("健康记录") {
-                            Picker("指标", selection: $metric) {
-                                ForEach(QuickEntryMetric.allCases) { Text($0.title).tag($0) }
-                            }
-                            HStack {
-                                TextField("数值", text: $value).keyboardType(.decimalPad)
-                                Text(metric.unit).foregroundStyle(.secondary)
-                            }
-                            if metric.isSample {
-                                DatePicker("测量时间", selection: $time, displayedComponents: .hourAndMinute)
-                            }
-                        }
-                        Section {
-                            Text(metric.isSample ? "保存为一次人工测量，时间按北京时间。" : "保存为所选日期的人工汇总值；人工补录会保留修改依据。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                    Section("备注（可选）") {
-                        TextField("记录说明", text: $note, axis: .vertical).lineLimit(2...4)
-                    }
-                    Section {
-                        Button("确认保存") { Task { await prepareAndSubmit() } }
-                            .disabled(isSaving || !hasLoaded || !drafts.canWrite)
-                    }
-                    }.disabled(!drafts.canWrite)
-                }
-                if isSaving { Section { ProgressView("正在核对保存结果…") } }
-                if let message {
-                    Section {
-                        Text(message).foregroundStyle(.red).textSelection(.enabled)
-                        if !hasLoaded { Button("重新读取原操作") { loadPending() } }
-                        else if pending == nil && !drafts.hasLoaded {
-                            Button("重新读取草稿") {
-                                do { try drafts.read(); message = nil }
-                                catch { message = error.localizedDescription }
-                            }
-                        }
+            entryForm
+                .disabled(isSaving)
+                .environment(\.timeZone, NativeActionDates.timeZone)
+                .navigationTitle("快速记录")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("关闭") { close() }.disabled(isSaving)
                     }
                 }
+                .interactiveDismissDisabled(shouldPreventDismissal)
+                .task { loadPending() }
+                .onChange(of: currentDraft) { _, draft in persistDraftChange(draft) }
+        }
+    }
+
+    private var shouldPreventDismissal: Bool {
+        isSaving || (pending == nil && (!drafts.canWrite || currentDraft != initialDraft))
+    }
+    private var canSave: Bool { !isSaving && hasLoaded && drafts.canWrite }
+    private var healthEntryExplanation: String {
+        metric.isSample ? "保存为一次人工测量，时间按北京时间。" : "保存为所选日期的人工汇总值；人工补录会保留修改依据。"
+    }
+    private var entryForm: some View {
+        Form {
+            if pending != nil {
+                pendingSection
+            } else {
+                recoverySection
+                entryFields.disabled(!drafts.canWrite)
             }
-            .disabled(isSaving)
-            .environment(\.timeZone, NativeActionDates.timeZone)
-            .navigationTitle("快速记录")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { close() }.disabled(isSaving) }
-            }
-            .interactiveDismissDisabled(isSaving || (pending == nil && (!drafts.canWrite || currentDraft != initialDraft)))
-            .task { loadPending() }
-            .onChange(of: currentDraft) { _, value in
-                guard hasLoaded, pending == nil, drafts.canWrite else { return }
-                do { try drafts.save(value) }
-                catch { message = error.localizedDescription }
+            if isSaving { Section { ProgressView("正在核对保存结果…") } }
+            messageSection
+        }
+    }
+
+    @ViewBuilder
+    private var pendingSection: some View {
+        if let pending {
+            Section("待确认的原操作") {
+                Label(pending.label, systemImage: "clock.arrow.circlepath")
+                Text("这次提交的内容和标识已安全保存在本机。继续核对会重试同一次保存；你也可以关闭页面后再回来处理。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("继续核对并保存") { Task { await submit(pending) } }.disabled(isSaving)
             }
         }
+    }
+
+    @ViewBuilder
+    private var recoverySection: some View {
+        if let saved = drafts.recovery {
+            Section("发现未完成的填写") {
+                Text(recoveryDescription(saved)).font(.footnote).foregroundStyle(.secondary)
+                Button("恢复填写") { restoreDraft() }
+                Button("丢弃旧草稿", role: .destructive) { discardDraft() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var entryFields: some View {
+        selectionSection
+        if isNutrition { nutritionFields } else { healthFields }
+        Section("备注（可选）") {
+            TextField("记录说明", text: $note, axis: .vertical).lineLimit(2...4)
+        }
+        Section {
+            Button("确认保存") { Task { await prepareAndSubmit() } }.disabled(!canSave)
+        }
+    }
+
+    private var selectionSection: some View {
+        Section {
+            Picker("记录类型", selection: $isNutrition) {
+                Text("健康数据").tag(false)
+                Text("饮食").tag(true)
+            }.pickerStyle(.segmented)
+            DatePicker("记录日期", selection: $date, in: ...Date(), displayedComponents: .date)
+        }
+    }
+
+    @ViewBuilder
+    private var nutritionFields: some View {
+        Section("这次吃了什么") {
+            TextField("食物名称", text: $foodName)
+            Picker("餐次", selection: $meal) {
+                ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0) }
+            }
+            TextField("份量，例如一碗、200克", text: $portion)
+            TextField("热量（千卡，未知时留空）", text: $value).keyboardType(.decimalPad)
+            TextField("碳水化合物（克，未知时留空）", text: $carbs).keyboardType(.decimalPad)
+            TextField("蛋白质（克，未知时留空）", text: $protein).keyboardType(.decimalPad)
+            TextField("脂肪（克，未知时留空）", text: $fat).keyboardType(.decimalPad)
+        }
+        Section {
+            Text("未知热量保持未知；填写0表示已确认这份食物的热量为0。此处记录本人核对的值，不自动估算。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var healthFields: some View {
+        Section("健康记录") {
+            Picker("指标", selection: $metric) {
+                ForEach(QuickEntryMetric.allCases) { Text($0.title).tag($0) }
+            }
+            HStack {
+                TextField("数值", text: $value).keyboardType(.decimalPad)
+                Text(metric.unit).foregroundStyle(.secondary)
+            }
+            if metric.isSample {
+                DatePicker("测量时间", selection: $time, displayedComponents: .hourAndMinute)
+            }
+        }
+        Section {
+            Text(healthEntryExplanation).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var messageSection: some View {
+        if let message {
+            Section {
+                Text(message).foregroundStyle(.red).textSelection(.enabled)
+                if !hasLoaded { Button("重新读取原操作") { loadPending() } }
+                else if pending == nil && !drafts.hasLoaded {
+                    Button("重新读取草稿") { reloadDraft() }
+                }
+            }
+        }
+    }
+
+    private func recoveryDescription(_ draft: NativeQuickEntryDraft) -> String {
+        let kind: String = draft.isNutrition ? "饮食" : "健康"
+        return "此前的" + kind + "填写已加密保存在本机。你可以恢复或丢弃；不会自动保存为记录。"
+    }
+    private func discardDraft() {
+        do { try drafts.discard(); message = nil }
+        catch { message = error.localizedDescription }
+    }
+    private func reloadDraft() {
+        do { try drafts.read(); message = nil }
+        catch { message = error.localizedDescription }
+    }
+    private func persistDraftChange(_ draft: NativeQuickEntryDraft) {
+        guard hasLoaded, pending == nil, drafts.canWrite else { return }
+        do { try drafts.save(draft) }
+        catch { message = error.localizedDescription }
     }
 
     private func loadPending() {
