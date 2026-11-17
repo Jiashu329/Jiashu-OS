@@ -98,11 +98,17 @@ private struct NativeTodayView: View {
     let showHealth: (String) -> Void
     @State private var quickWeight = false
     @State private var hasShownHome = false
+    private var dateLabel: String {
+        let now = Date()
+        let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        let weekday = NativeActionDates.calendar.component(.weekday, from: now)
+        return NativeActionDates.formatted(now, pattern: "M月d日") + " · " + weekdays[weekday - 1]
+    }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text(NativeActionDates.formatted(Date(), pattern: "M月d日 · EEEE"))
+                    Text(dateLabel)
                         .font(.subheadline).foregroundStyle(NativePalette.muted)
                     if let error = model.sessionError, error != model.overviewError {
                         NativeInlineNotice(error, tone: .attention)

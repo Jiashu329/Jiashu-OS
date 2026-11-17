@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import JiashuHealthProbe
 
@@ -39,4 +40,36 @@ final class NativeHomeFinanceTests: XCTestCase {
         XCTAssertEqual(allChecked?.total, 4)
         XCTAssertNil(NativeHomeFinanceCardRules.checkProgress(finance([])))
     }
+    func testBalanceDatesUseValidatedLedgerRangeAndKeepCrossYearContext() throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-17T00:00:00Z"))
+        var value = finance([cny, usd])
+        value.oldestBalanceDate = "2026-11-01"; value.latestBalanceDate = "2026-11-16"
+        XCTAssertEqual(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now), "账本余额日期（全部币种） 11/1–11/16")
+        value.oldestBalanceDate = "2025-12-31"; value.latestBalanceDate = "2026-01-01"
+        XCTAssertEqual(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now), "账本余额日期（全部币种） 2025/12/31–2026/1/1")
+        value.oldestBalanceDate = "2025-11-01"; value.latestBalanceDate = "2025-11-16"
+        XCTAssertEqual(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now), "账本余额日期（全部币种） 2025/11/1–2025/11/16")
+        value.oldestBalanceDate = "2026-11-16"; value.latestBalanceDate = "2026-11-16"
+        XCTAssertEqual(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now), "账本余额日期（全部币种） 11/16")
+        for invalid in ["2026-02-29", "2026-13-01", "2026-11-31", "2026-1-01", "2026-11-16T00:00:00Z", "2026-11-16\n"] {
+            value.oldestBalanceDate = invalid
+            XCTAssertNil(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now), invalid)
+        }
+        value.oldestBalanceDate = "2026-11-17"; value.latestBalanceDate = "2026-11-16"
+        XCTAssertNil(NativeHomeFinanceCardRules.balanceDateCaption(value, now: now))
+    }
+
+    func testOlderOverviewWithoutBalanceDateFieldsDoesNotInventDates() throws {
+        let json = Data("{\"status\":\"ready\",\"accountCount\":0,\"currencies\":[],\"staleAccountCount\":0,\"uncheckedAccountCount\":0,\"pendingBalanceCount\":0}".utf8)
+        let value = try JSONDecoder().decode(NativeOverviewFinance.self, from: json)
+        XCTAssertNil(value.oldestBalanceDate); XCTAssertNil(value.latestBalanceDate)
+        XCTAssertNil(NativeHomeFinanceCardRules.balanceDateCaption(value))
+        var partial = finance([cny]); partial.latestBalanceDate = "2026-11-16"
+        XCTAssertNil(NativeHomeFinanceCardRules.balanceDateCaption(partial), "A latest date alone is not an all-account as-of date")
+        let datedJSON = Data("{\"status\":\"ready\",\"accountCount\":0,\"currencies\":[],\"staleAccountCount\":0,\"uncheckedAccountCount\":0,\"pendingBalanceCount\":0,\"oldestBalanceDate\":\"2026-11-01\",\"latestBalanceDate\":\"2026-11-16\"}".utf8)
+        let dated = try JSONDecoder().decode(NativeOverviewFinance.self, from: datedJSON)
+        XCTAssertEqual(dated.oldestBalanceDate, "2026-11-01")
+        XCTAssertEqual(dated.latestBalanceDate, "2026-11-16")
+    }
+
 }

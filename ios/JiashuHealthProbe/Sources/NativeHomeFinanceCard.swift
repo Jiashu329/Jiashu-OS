@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// The overview has ledger-wide check counts and per-currency formatted money.
@@ -20,6 +21,34 @@ enum NativeHomeFinanceCardRules {
     static func displayValues(currency: String?, values: [NativeOverviewCurrency]) -> NativeOverviewCurrency? {
         guard let currency else { return nil }
         return values.first { $0.currency == currency }
+    }
+
+    static func balanceDateCaption(_ finance: NativeOverviewFinance, now: Date = Date()) -> String? {
+        guard finance.status == "ready", let oldest = balanceDay(finance.oldestBalanceDate),
+              let latest = balanceDay(finance.latestBalanceDate), oldest.iso <= latest.iso else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let currentYear = calendar.component(.year, from: now)
+        let shortDates = oldest.year == latest.year && oldest.year == currentYear
+        let first = shortDates ? oldest.short : oldest.full
+        let last = shortDates ? latest.short : latest.full
+        let range = oldest.iso == latest.iso ? first : first + "–" + last
+        let scope = finance.currencies.count > 1 ? "账本余额日期（全部币种）" : "账本余额日期"
+        return scope + " " + range
+    }
+
+    private static func balanceDay(_ value: String?) -> (iso: String, year: Int, short: String, full: String)? {
+        guard let value, value.utf8.count == 10, value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return nil }
+        let pieces = value.split(separator: "-").compactMap { Int($0) }
+        guard pieces.count == 3, (1970...2100).contains(pieces[0]) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = DateComponents(year: pieces[0], month: pieces[1], day: pieces[2])
+        guard let date = calendar.date(from: components) else { return nil }
+        let checked = calendar.dateComponents([.year, .month, .day], from: date)
+        guard checked.year == pieces[0], checked.month == pieces[1], checked.day == pieces[2] else { return nil }
+        let short = "\(pieces[1])/\(pieces[2])"
+        return (value, pieces[0], short, "\(pieces[0])/" + short)
     }
 
     static func checkProgress(_ finance: NativeOverviewFinance) -> (checked: Int, total: Int)? {
@@ -184,7 +213,7 @@ struct NativeHomeFinanceCard: View {
             emptyLedger
         } else if let values {
             moneyContent(values)
-            if let finance { checkRow(finance) }
+            if let finance { balanceAge(finance); checkRow(finance) }
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 Text("暂无" + (currency ?? "当前币种") + "金额").font(.callout).foregroundStyle(NativePalette.muted)
@@ -252,6 +281,15 @@ struct NativeHomeFinanceCard: View {
             .fixedSize(horizontal: false, vertical: true)
             .privacySensitive()
             .accessibilityLabel(title + "，" + (moneyHidden ? "金额已隐藏" : shown))
+    }
+
+    private func balanceAge(_ finance: NativeOverviewFinance) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let caption = NativeHomeFinanceCardRules.balanceDateCaption(finance) { Text(caption) }
+            if finance.staleAccountCount > 0 {
+                Text((finance.currencies.count > 1 ? "全账本" : "") + "\(finance.staleAccountCount)个余额超过30天")
+            }
+        }.font(.caption).foregroundStyle(NativePalette.muted)
     }
 
     private func checkRow(_ finance: NativeOverviewFinance) -> some View {
