@@ -11,9 +11,10 @@
         {"title": "一般已完成", "url": "https://music.douban.com/subject/1005/", "state": "已完成"},
         {"title": "状态类别不符", "url": "https://book.douban.com/subject/1006/", "state": "看过"},
         {"title": "状态中", "url": "https://movie.douban.com/subject/1007/", "state": "在看"},
-        {"title": "未知状态", "url": "https://music.douban.com/subject/1008/", "state": "未知状态"}
+        {"title": "未知状态", "url": "https://music.douban.com/subject/1008/", "state": "未知状态"},
+        {"title": "通用完成状态", "url": "https://book.douban.com/subject/1009/", "state": "complete"}
       ]}],
-      "expected": {"subjects": ["1001", "1002", "1003", "1004", "1005"], "skipped": 3, "duplicates": 0}
+      "expected": {"subjects": ["1001", "1002", "1003", "1004", "1005", "1009"], "skipped": 3, "duplicates": 0}
     },
     {
       "name": "Known completions can preview when missing statuses are skipped",
@@ -33,7 +34,7 @@
       "files": [{"name": "confirmed.json", "input": [
         {"title": "无状态", "url": "https://book.douban.com/subject/2001/", "state": null},
         {"title": "插件占位符", "url": "https://book.douban.com/subject/2002/", "state": "{{myState}}"},
-        {"title": "想读", "url": "https://book.douban.com/subject/2003/", "state": "想读"}
+        {"title": "想读", "url": "https://book.douban.com/subject/2003/", "collectionStatus": "想读"}
       ]}],
       "expected": {"subjects": ["2001", "2002"], "skipped": 1, "duplicates": 0}
     },
