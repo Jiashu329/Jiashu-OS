@@ -133,7 +133,7 @@ final class NativeAppModelTests: XCTestCase {
         XCTAssertNil(fixture.model.session)
         XCTAssertNil(fixture.model.overview)
         XCTAssertNil(fixture.model.health)
-        XCTAssertNil(fixture.model.pendingImport)
+        XCTAssertNil(fixture.model.pendingChannelConsent)
         XCTAssertNil(try fixture.store.load())
         XCTAssertNotNil(fixture.model.errorMessage)
     }
@@ -177,6 +177,228 @@ final class NativeAppModelTests: XCTestCase {
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(password))
         XCTAssertEqual(try fixture.store.load(), fixture.context.a)
     }
+    @MainActor
+    func testDailySourceConsentSavesCredentialBeforeSelectionAndThenSyncsWithoutBatchConfirmation() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        await fixture.model.connectHealth()
+        XCTAssertNotNil(fixture.model.pendingChannelConsent)
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(reader.authorizationCount, 1)
+        XCTAssertEqual(reader.readCount, 0, "No upload should happen before daily-source consent")
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertEqual(server.selectionCount, 0)
+
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+
+        XCTAssertNil(fixture.model.pendingChannelConsent)
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(server.selectionCount, 1)
+        XCTAssertEqual(server.savedBeforeSelectionCount, 1)
+        XCTAssertEqual(server.uploadCount, 1)
+        XCTAssertEqual(fixture.model.lastReceipt?.imported, 1)
+        let selected = try XCTUnwrap(fixture.context.deviceStore(for: fixture.context.a).load())
+        XCTAssertEqual(server.selectedToken(owner: fixture.context.a.user.id), selected.deviceToken)
+
+        await fixture.model.sync()
+        XCTAssertEqual(server.selectionCount, 1, "Continuing sync must not select again")
+        XCTAssertEqual(server.uploadCount, 2)
+        XCTAssertEqual(reader.authorizationCount, 1)
+        XCTAssertNil(fixture.model.pendingChannelConsent)
+    }
+
+    @MainActor
+    func testPreviouslySelectedDeviceResumesWithoutNewConsentOrHealthPermissionPrompt() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        let credential = try NativeHealthDeviceCredential.generate()
+        try fixture.context.deviceStore(for: fixture.context.a).save(credential)
+        server.configure(owner: fixture.context.a.user.id, token: credential.deviceToken, revision: 3)
+        UserDefaults.standard.set(true, forKey: "jiashu.native.health-auto-sync." + fixture.context.a.user.id)
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(fixture.model.channel?.revision, 3)
+        XCTAssertEqual(fixture.model.channel?.isCurrentDevice, true)
+        XCTAssertNil(fixture.model.pendingChannelConsent)
+        XCTAssertEqual(reader.authorizationCount, 0)
+        XCTAssertEqual(server.selectionCount, 0)
+        XCTAssertEqual(server.uploadCount, 1)
+        XCTAssertEqual(fixture.model.lastReceipt?.imported, 1)
+    }
+
+    @MainActor
+    func testAnotherDeviceTakingOverPausesSyncWithoutSilentReselection() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        let local = try NativeHealthDeviceCredential.generate()
+        try fixture.context.deviceStore(for: fixture.context.a).save(local)
+        server.configure(owner: fixture.context.a.user.id, token: local.deviceToken, revision: 1)
+        UserDefaults.standard.set(true, forKey: "jiashu.native.health-auto-sync." + fixture.context.a.user.id)
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        let uploadsBeforeChange = server.uploadCount
+        let other = try NativeHealthDeviceCredential.generate()
+        server.configure(owner: fixture.context.a.user.id, token: other.deviceToken, revision: 2)
+
+        await fixture.model.refreshChannelStatus()
+        await fixture.model.sync()
+
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(fixture.model.channel?.isCurrentDevice, false)
+        XCTAssertEqual(fixture.model.channel?.revision, 2)
+        XCTAssertEqual(server.selectionCount, 0)
+        XCTAssertEqual(server.uploadCount, uploadsBeforeChange)
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.a).load(), local)
+        XCTAssertGreaterThan(reader.stopCount, 0)
+    }
+
+    @MainActor
+    func testLostSelectionAcknowledgementReconcilesSameCredentialWithoutSecondSelection() async throws {
+        let server = NativeModelChannelServer()
+        server.failNextSelectionAfterCommit = true
+        let reader = NativeModelHealthReader()
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        await fixture.model.connectHealth()
+
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+
+        let credential = try XCTUnwrap(fixture.context.deviceStore(for: fixture.context.a).load())
+        XCTAssertEqual(server.selectionCount, 1)
+        XCTAssertEqual(server.savedBeforeSelectionCount, 1)
+        XCTAssertEqual(server.selectedToken(owner: fixture.context.a.user.id), credential.deviceToken)
+        XCTAssertGreaterThanOrEqual(server.statusCount, 3)
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertNil(fixture.model.pendingChannelConsent)
+        XCTAssertEqual(fixture.model.lastReceipt?.imported, 1)
+        await fixture.model.confirmDailyChannel(label: "再次点击")
+        XCTAssertEqual(server.selectionCount, 1)
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.a).load(), credential)
+    }
+
+    @MainActor
+    func testPauseAndLogoutPreserveCredentialWhileOtherAccountGetsSeparateDeviceIdentity() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-a-password")
+        await fixture.model.connectHealth()
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+        let a = try XCTUnwrap(fixture.context.deviceStore(for: fixture.context.a).load())
+
+        await fixture.model.setAutomaticSync(false)
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.a).load(), a)
+        XCTAssertEqual(server.clearCount, 0)
+        await fixture.model.signOut()
+        XCTAssertNil(fixture.model.session)
+        XCTAssertNil(try fixture.store.load())
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.a).load(), a)
+        XCTAssertNil(try fixture.context.deviceStore(for: fixture.context.b).load())
+
+        await fixture.model.login(email: fixture.context.b.user.email, password: "synthetic-b-password")
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        await fixture.model.connectHealth()
+        XCTAssertNotNil(fixture.model.pendingChannelConsent)
+        await fixture.model.confirmDailyChannel(label: "家人的 iPhone")
+        let b = try XCTUnwrap(fixture.context.deviceStore(for: fixture.context.b).load())
+        XCTAssertNotEqual(a.deviceToken, b.deviceToken)
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.a).load(), a)
+        XCTAssertEqual(server.selectedToken(owner: fixture.context.a.user.id), a.deviceToken)
+        XCTAssertEqual(server.selectedToken(owner: fixture.context.b.user.id), b.deviceToken)
+        XCTAssertEqual(server.selectionCount, 2)
+    }
+
+    @MainActor
+    func testSelectionRevisionChangedBeforeConsentRequiresAnotherExplicitDecision() async throws {
+        let server = NativeModelChannelServer()
+        let fixture = try NativeModelFixture(reader: NativeModelHealthReader()) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        await fixture.model.connectHealth()
+        XCTAssertEqual(fixture.model.pendingChannelConsent?.expectedRevision, 0)
+        let another = try NativeHealthDeviceCredential.generate()
+        server.configure(owner: fixture.context.a.user.id, token: another.deviceToken, revision: 1)
+
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(server.selectionCount, 0)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertEqual(fixture.model.pendingChannelConsent?.expectedRevision, 1)
+        XCTAssertNil(try fixture.context.deviceStore(for: fixture.context.a).load())
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertEqual(server.selectionCount, 1)
+    }
+
+    @MainActor
+    func testExplicitReleaseClearsOnlyCurrentOwnersCredential() async throws {
+        let server = NativeModelChannelServer()
+        let fixture = try NativeModelFixture(reader: NativeModelHealthReader()) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        let otherOwner = try NativeHealthDeviceCredential.generate()
+        try fixture.context.deviceStore(for: fixture.context.b).save(otherOwner)
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        await fixture.model.connectHealth()
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+
+        await fixture.model.releaseDailyChannel()
+
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertFalse(fixture.model.channel?.hasActiveChannel ?? true)
+        XCTAssertEqual(server.clearCount, 1)
+        XCTAssertNil(try fixture.context.deviceStore(for: fixture.context.a).load())
+        XCTAssertEqual(try fixture.context.deviceStore(for: fixture.context.b).load(), otherOwner)
+        XCTAssertNotNil(fixture.model.session)
+    }
+
+    @MainActor
+    func testServerChannelRejectionPausesSyncWithoutAttemptingAnotherSelection() async throws {
+        let server = NativeModelChannelServer()
+        server.rejectUploadsAsChannelChanged = true
+        let fixture = try NativeModelFixture(reader: NativeModelHealthReader()) { request, context in
+            try server.reply(request, context: context)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        await fixture.model.connectHealth()
+        await fixture.model.confirmDailyChannel(label: "我的 iPhone")
+
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertNil(fixture.model.pendingChannelConsent)
+        XCTAssertNil(fixture.model.lastReceipt)
+        XCTAssertEqual(server.selectionCount, 1)
+        XCTAssertEqual(server.uploadCount, 1)
+        XCTAssertNotNil(try fixture.context.deviceStore(for: fixture.context.a).load())
+        XCTAssertNotNil(fixture.model.session)
+    }
 }
 
 @MainActor
@@ -185,9 +407,11 @@ private final class NativeModelFixture {
     let store: NativeSessionStore
     let context: NativeModelFixtureContext
     let keychainService: String
+    let reader: NativeModelHealthReader?
     private let host: String
 
-    init(handler: @escaping (URLRequest, NativeModelFixtureContext) throws -> NativeModelDelivery) throws {
+    init(reader: NativeModelHealthReader? = nil, handler: @escaping (URLRequest, NativeModelFixtureContext) throws -> NativeModelDelivery) throws {
+        self.reader = reader
         let unique = UUID().uuidString.lowercased()
         host = "model-" + unique + ".example"
         keychainService = "synthetic.native-model-tests." + unique
@@ -200,11 +424,14 @@ private final class NativeModelFixture {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [NativeModelProtocol.self]
         let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
-        model = NativeAppModel(api: api, sessions: store)
+        model = NativeAppModel(api: api, sessions: store, reader: reader, healthDeviceService: context.healthDeviceService)
     }
 
     func cleanup() {
+        reader?.stopObserving()
         try? store.clear()
+        try? context.deviceStore(for: context.a).clear()
+        try? context.deviceStore(for: context.b).clear()
         NativeModelProtocol.remove(host: host)
         UserDefaults.standard.removeObject(forKey: "jiashu.native.health-auto-sync." + context.a.user.id)
         UserDefaults.standard.removeObject(forKey: "jiashu.native.health-auto-sync." + context.b.user.id)
@@ -214,12 +441,22 @@ private final class NativeModelFixture {
 private struct NativeModelFixtureContext: Sendable {
     let a: NativeSession
     let b: NativeSession
+    let healthDeviceService: String
 
     init(unique: String) {
+        healthDeviceService = "synthetic.native-model-devices." + unique
         a = NativeSession(accessToken: "synthetic-token-a-" + unique, expiresAt: "2099-11-16T08:00:00.000Z",
                           user: NativeUser(id: "synthetic-a-" + unique, email: "a-" + unique + "@example.com"))
         b = NativeSession(accessToken: "synthetic-token-b-" + unique, expiresAt: "2099-11-16T08:00:00.000Z",
                           user: NativeUser(id: "synthetic-b-" + unique, email: "b-" + unique + "@example.com"))
+    }
+
+    func deviceStore(for session: NativeSession) -> NativeHealthDeviceStore {
+        NativeHealthDeviceStore(userID: session.user.id, service: healthDeviceService)
+    }
+
+    func owner(for request: URLRequest) -> NativeSession {
+        request.value(forHTTPHeaderField: "Authorization") == "Bearer " + b.accessToken ? b : a
     }
 
     func standardReply(_ request: URLRequest) throws -> NativeModelDelivery {
@@ -365,4 +602,160 @@ private final class NativeModelProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() { stateLock.lock(); stopped = true; stateLock.unlock() }
+}
+
+@MainActor
+private final class NativeModelHealthReader: NativeHealthReading {
+    private(set) var authorizationCount = 0
+    private(set) var readCount = 0
+    private(set) var stopCount = 0
+    private(set) var observerCount = 0
+    private var callback: (@Sendable () async -> Void)?
+
+    func authorize() async throws { authorizationCount += 1 }
+
+    func read(days: Int) async throws -> NativeHealthSnapshot {
+        readCount += 1
+        let captured = NativeDates.parse("2026-11-17T08:00:00Z")!
+        return NativeHealthSnapshot(capturedAt: captured, measurements: [
+            NativeHealthMeasurement(id: "synthetic-daily-steps", metric: "steps", value: 1234, unit: "count",
+                startDate: "2026-11-16T16:00:00.000Z", endDate: "2026-11-17T08:00:00.000Z",
+                source: "apple-health-merged", aggregation: "daily"),
+        ])
+    }
+
+    func startObserving(onChange: @escaping @Sendable () async -> Void) async throws {
+        observerCount += 1
+        callback = onChange
+    }
+
+    func stopObserving() { stopCount += 1; callback = nil }
+}
+
+/// A small stateful server fixture models account-scoped source selection and
+/// an acknowledgement lost after commit. All observations cross a lock, and
+/// no fixture secret is logged or placed in UserDefaults.
+private final class NativeModelChannelServer: @unchecked Sendable {
+    private struct Selection {
+        let revision: Int
+        let token: String?
+        let label: String?
+    }
+    private let lock = NSLock()
+    private var selections: [String: Selection] = [:]
+    private var selectionsWritten = 0
+    private var statusesRead = 0
+    private var uploadsReceived = 0
+    private var channelsCleared = 0
+    private var credentialsSavedBeforeWrite = 0
+    private var failSelection = false
+    private var rejectUploads = false
+
+    var selectionCount: Int { locked { selectionsWritten } }
+    var statusCount: Int { locked { statusesRead } }
+    var uploadCount: Int { locked { uploadsReceived } }
+    var clearCount: Int { locked { channelsCleared } }
+    var savedBeforeSelectionCount: Int { locked { credentialsSavedBeforeWrite } }
+    var failNextSelectionAfterCommit: Bool {
+        get { locked { failSelection } }
+        set { locked { failSelection = newValue } }
+    }
+    var rejectUploadsAsChannelChanged: Bool {
+        get { locked { rejectUploads } }
+        set { locked { rejectUploads = newValue } }
+    }
+
+    private func locked<T>(_ operation: () -> T) -> T {
+        lock.lock(); defer { lock.unlock() }; return operation()
+    }
+
+    func configure(owner: String, token: String?, revision: Int) {
+        locked { selections[owner] = Selection(revision: revision, token: token, label: token == nil ? nil : "Synthetic iPhone") }
+    }
+
+    func selectedToken(owner: String) -> String? { locked { selections[owner]?.token } }
+
+    private func statusReply(owner: String, credential: String?) -> NativeModelReply {
+        let selection = locked { selections[owner] ?? Selection(revision: 0, token: nil, label: nil) }
+        let active = selection.token != nil
+        let current = credential != nil && selection.token == credential
+        return .json([
+            "revision": selection.revision,
+            "deviceId": active ? "synthetic-selected-device" as Any : NSNull(),
+            "label": selection.label.map { $0 as Any } ?? NSNull(),
+            "updatedAt": selection.revision == 0 ? NSNull() : "2026-11-17T08:00:00Z" as Any,
+            "isCurrentDevice": active && current,
+        ])
+    }
+
+    func reply(_ request: URLRequest, context: NativeModelFixtureContext) throws -> NativeModelDelivery {
+        let path = request.url?.path ?? ""
+        let owner = context.owner(for: request)
+        let suppliedDevice = request.value(forHTTPHeaderField: "X-Sync-Device")
+        if path == "/api/native/sync/channel" {
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Origin"))
+            if request.httpMethod == "GET" {
+                locked { statusesRead += 1 }
+                return .immediate(statusReply(owner: owner.user.id, credential: suppliedDevice))
+            }
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: nativeModelRequestBody(request)) as? [String: Any])
+            let expected = try XCTUnwrap(body["expectedRevision"] as? Int)
+            if request.httpMethod == "PUT" {
+                let token = try XCTUnwrap(body["deviceToken"] as? String)
+                let label = try XCTUnwrap(body["label"] as? String)
+                let persisted = try context.deviceStore(for: owner).load()
+                XCTAssertEqual(persisted?.deviceToken, token, "The exact selected credential must already be in Keychain before PUT")
+                let result: (matched: Bool, failAfterCommit: Bool) = locked {
+                    selectionsWritten += 1
+                    if persisted?.deviceToken == token { credentialsSavedBeforeWrite += 1 }
+                    guard (selections[owner.user.id]?.revision ?? 0) == expected else { return (false, false) }
+                    selections[owner.user.id] = Selection(revision: expected + 1, token: token, label: label)
+                    let fail = failSelection
+                    failSelection = false
+                    return (true, fail)
+                }
+                if !result.matched {
+                    return .immediate(.json(["error": "来源设置已变化", "code": "NATIVE_HEALTH_CHANNEL_CONFLICT"], status: 409))
+                }
+                if result.failAfterCommit {
+                    return .immediate(.json(["error": "回执暂时不可用", "code": "HEALTH_STORAGE_UNAVAILABLE"], status: 503))
+                }
+                return .immediate(statusReply(owner: owner.user.id, credential: token))
+            }
+            if request.httpMethod == "DELETE" {
+                let cleared: Bool = locked {
+                    channelsCleared += 1
+                    guard let selection = selections[owner.user.id], selection.revision == expected,
+                          suppliedDevice != nil, selection.token == suppliedDevice else { return false }
+                    selections[owner.user.id] = Selection(revision: expected + 1, token: nil, label: nil)
+                    return true
+                }
+                if !cleared {
+                    return .immediate(.json(["error": "来源设置已变化", "code": "NATIVE_HEALTH_CHANNEL_NOT_CURRENT"], status: 409))
+                }
+                return .immediate(statusReply(owner: owner.user.id, credential: suppliedDevice))
+            }
+        }
+        if path == "/api/native/health/import/preview" || (path == "/api/native/health/import" && request.httpMethod == "POST") {
+            let selected = selectedToken(owner: owner.user.id)
+            XCTAssertNotNil(suppliedDevice)
+            XCTAssertEqual(suppliedDevice, selected)
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"), "Daily source consent must never manufacture a per-batch source confirmation")
+            if path.hasSuffix("preview") {
+                return .immediate(.json([
+                    "preview": ["token": "synthetic-preview-token", "total": 1, "added": 0, "updated": 1,
+                        "skipped": 0, "sourceChanges": 1, "manualOverrides": 0, "from": "2026-11-17",
+                        "to": "2026-11-17", "metrics": ["步数"], "examples": []] as [String: Any],
+                ]))
+            }
+            let reject = locked { uploadsReceived += 1; return rejectUploads }
+            if reject {
+                return .immediate(.json(["error": "日常同步来源已变化", "code": "HEALTH_SYNC_CHANNEL_CHANGED"], status: 409))
+            }
+            return .immediate(.json(["ok": true, "imported": 1, "skipped": 0,
+                "lastSync": "2026-11-17T08:00:00Z", "batchId": "synthetic-batch"]))
+        }
+        return try context.standardReply(request)
+    }
 }

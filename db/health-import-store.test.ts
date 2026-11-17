@@ -5,6 +5,7 @@ import test, { type TestContext } from 'node:test';
 import { measurementKey, parseSyncPayload, type HealthSyncPayload } from '../lib/health.ts';
 import { HealthImportConflictError, listHealthImports, previewHealthImport, revertHealthImport, writeHealthImport, type HealthImportDatabase } from './health-import-store.ts';
 import {parseMobileSyncPayload} from '../lib/mobile-sync.ts';
+import { clearNativeHealthChannel, readNativeHealthChannel, selectNativeHealthChannel } from './native-health-channel-store.ts';
 
 function fixture(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
@@ -58,7 +59,96 @@ function rollingPayload(exportedAt = '2026-11-09T10:00:00.000Z'): HealthSyncPayl
     })).flat() });
 }
 
-test('manual preview performs no writes and submission requires its exact token', async (t) => {
+const NATIVE_HASH_A = 'a'.repeat(64), NATIVE_HASH_B = 'b'.repeat(64), CHANNEL_TIME = '2026-11-17T08:00:00.000Z';
+function raceChannel(sqlite: DatabaseSync, id: string, hash: string, revision: number, clear = false) {
+  sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run(id, 'alice', 'Race iPhone', hash, CHANNEL_TIME, null, clear ? CHANNEL_TIME : null);
+  sqlite.prepare(`INSERT INTO native_health_channels(user_id,device_id,last_device_id,revision,created_at,updated_at) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET device_id=excluded.device_id,last_device_id=excluded.last_device_id,revision=excluded.revision,updated_at=excluded.updated_at`)
+    .run('alice', clear ? null : id, id, revision, CHANNEL_TIME, CHANNEL_TIME);
+}
+
+void test('selected native channel gates preview, raw sessions, old shortcuts and receipt replays by the server-owned credential', async t => {
+  const f = fixture(t), input = payload();
+  const original = await manual(f.db, input);
+  f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('legacy', 'alice', 'Old shortcut', 'legacy-hash', CHANNEL_TIME, null, null);
+  const selected = await selectNativeHealthChannel(f.db, 'alice', { deviceTokenHash: NATIVE_HASH_A, label: 'Current iPhone', expectedRevision: 0 }, CHANNEL_TIME);
+  for (const device of [null, 'legacy', 'not-an-owned-device']) {
+    await assert.rejects(previewHealthImport(f.db, 'alice', input, device), isConflict('HEALTH_SYNC_CHANNEL_REQUIRED'));
+    await assert.rejects(writeHealthImport(f.db, 'alice', input, device, { confirmSourceChanges: true }), isConflict('HEALTH_SYNC_CHANNEL_REQUIRED'));
+  }
+  const preview = await previewHealthImport(f.db, 'alice', input, selected.deviceId);
+  assert.equal(preview.sourceChangesAuthorized, true);
+  const replay = await writeHealthImport(f.db, 'alice', input, selected.deviceId);
+  assert.equal(replay.replayed, true); assert.equal(replay.batchId, original.batchId);
+  assert.equal((await listHealthImports(f.db, 'alice')).length, 1);
+  assert.equal((await previewHealthImport(f.db, 'bob', input)).sourceChangesAuthorized, false, 'Another owner keeps the legacy policy.');
+});
+
+void test('one selected native channel authorizes all five metrics and physical source changes without recurring confirmation while retaining manual overlays', async t => {
+  const f = fixture(t), initial = rollingPayload(); await manual(f.db, initial);
+  const step = initial.measurements.find(row => row.metric === 'steps')!;
+  const override = JSON.stringify({ ...step, value: 9999 });
+  f.sqlite.prepare('INSERT INTO health_record_overrides VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run('alice', measurementKey(step), 'steps', '2026-10-01', override, 1, 3, 'synthetic-manual-change', CHANNEL_TIME, CHANNEL_TIME);
+  const selected = await selectNativeHealthChannel(f.db, 'alice', { deviceTokenHash: NATIVE_HASH_A, label: 'iPhone', expectedRevision: 0 }, CHANNEL_TIME);
+  const next = { ...rollingPayload('2026-11-09T11:00:00.000Z'), measurements: initial.measurements.map(row => ({ ...row, source: 'new-watch-or-phone' })) };
+  const preview = await previewHealthImport(f.db, 'alice', next, selected.deviceId);
+  assert.equal(preview.sourceChanges, 150); assert.equal(preview.sourceChangesAuthorized, true); assert.equal(preview.manualOverrides, 1);
+  const saved = await writeHealthImport(f.db, 'alice', next, selected.deviceId);
+  assert.equal(saved.imported, 150); assert.equal(saved.summary.sourceChanges, 150); assert.equal(saved.summary.manualOverrides, 1);
+  const row = f.sqlite.prepare('SELECT override_json,deleted,revision FROM health_record_overrides WHERE user_id=? AND record_key=?').get('alice', measurementKey(step));
+  assert.equal(row?.override_json, override); assert.equal(row?.deleted, 1); assert.equal(row?.revision, 3);
+  assert.equal(new Set(current(f.sqlite).map(row => JSON.parse(String(row.measurement_json)).source)).size, 1);
+  await assert.rejects(revertHealthImport(f.db, 'alice', saved.batchId, 'old raw rollback'), isConflict('HEALTH_SYNC_CHANNEL_REQUIRED'));
+});
+
+void test('selecting a native channel while an old manual import is committing fences the entire transaction', async t => {
+  const f = fixture(t), input = payload(), preview = await previewHealthImport(f.db, 'alice', input);
+  f.race(() => raceChannel(f.sqlite, 'new-native', NATIVE_HASH_A, 1));
+  await assert.rejects(writeHealthImport(f.db, 'alice', input, null, { previewToken: preview.token }), isConflict('HEALTH_SYNC_CHANNEL_CHANGED'));
+  assert.equal(current(f.sqlite).length, 0); assert.equal((await listHealthImports(f.db, 'alice')).length, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM health_syncs').get()!.n, 0);
+});
+
+void test('switching or clearing a selected device during import cannot commit old-channel rows or receipts', async t => {
+  for (const clear of [false, true]) {
+    const f = fixture(t); await manual(f.db, payload());
+    const selected = await selectNativeHealthChannel(f.db, 'alice', { deviceTokenHash: NATIVE_HASH_A, label: 'Old iPhone', expectedRevision: 0 }, CHANNEL_TIME);
+    f.race(() => {
+      if (clear) {
+        f.sqlite.prepare('UPDATE native_health_channels SET device_id=NULL,revision=revision+1 WHERE user_id=?').run('alice');
+      } else raceChannel(f.sqlite, 'replacement', NATIVE_HASH_B, 2);
+      f.sqlite.prepare('UPDATE sync_devices SET revoked_at=? WHERE id=?').run(CHANNEL_TIME, selected.deviceId);
+    });
+    await assert.rejects(writeHealthImport(f.db, 'alice', payload(6000, 'other-physical-source', '2026-11-09T11:00:00.000Z'), selected.deviceId), isConflict('HEALTH_SYNC_CHANNEL_CHANGED'));
+    assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).value, 5000);
+    assert.equal((await listHealthImports(f.db, 'alice')).length, 1);
+  }
+});
+
+void test('selection followed by clear is not an ABA bypass for old manual imports or raw rollback', async t => {
+  const f = fixture(t), input = payload(), preview = await previewHealthImport(f.db, 'alice', input);
+  f.race(() => raceChannel(f.sqlite, 'selected-then-cleared', NATIVE_HASH_A, 2, true));
+  await assert.rejects(writeHealthImport(f.db, 'alice', input, null, { previewToken: preview.token }), isConflict('HEALTH_SYNC_CHANNEL_CHANGED'));
+  assert.equal(current(f.sqlite).length, 0);
+  const saved = await manual(f.db, input);
+  f.race(() => f.sqlite.prepare('UPDATE native_health_channels SET revision=revision+2 WHERE user_id=?').run('alice'));
+  await assert.rejects(revertHealthImport(f.db, 'alice', saved.batchId, 'stale rollback'), isConflict('HEALTH_SYNC_CHANNEL_CHANGED'));
+  assert.equal(current(f.sqlite).length, 1);
+  assert.equal((await listHealthImports(f.db, 'alice'))[0].revertedAt, null);
+});
+
+void test('clear returns to the legacy admission rules while a saved old preview remains stale through its tombstone revision', async t => {
+  const f = fixture(t), input = payload(), before = await previewHealthImport(f.db, 'alice', input);
+  const selected = await selectNativeHealthChannel(f.db, 'alice', { deviceTokenHash: NATIVE_HASH_A, label: 'iPhone', expectedRevision: 0 }, CHANNEL_TIME);
+  await clearNativeHealthChannel(f.db, 'alice', { deviceTokenHash: NATIVE_HASH_A, expectedRevision: selected.revision }, CHANNEL_TIME);
+  assert.equal((await readNativeHealthChannel(f.db, 'alice')).revision, 2);
+  await assert.rejects(writeHealthImport(f.db, 'alice', input, null, { previewToken: before.token }), isConflict('HEALTH_IMPORT_STALE'));
+  const next = await previewHealthImport(f.db, 'alice', input); assert.equal(next.sourceChangesAuthorized, false);
+  assert.equal((await writeHealthImport(f.db, 'alice', input, null, { previewToken: next.token })).imported, 1);
+});
+
+void test('manual preview performs no writes and submission requires its exact token', async (t) => {
   const f = fixture(t), input = payload();
   const preview = await previewHealthImport(f.db, 'alice', input);
   assert.equal(preview.added, 1); assert.equal(preview.updated, 0); assert.equal(preview.skipped, 0);
@@ -73,7 +163,7 @@ test('manual preview performs no writes and submission requires its exact token'
   assert.equal((await listHealthImports(f.db, 'alice')).length, 1);
 });
 
-test('same-source device refresh remains automatic and identical payload replays once', async (t) => {
+void test('same-source device refresh remains automatic and identical payload replays once', async (t) => {
   const f = fixture(t);
   f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device', 'alice', 'watch', 'synthetic', '2026-11-09', null, null);
   const input = payload();
@@ -86,7 +176,7 @@ test('same-source device refresh remains automatic and identical payload replays
   assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).value, 6000);
 });
 
-test('additive sleep timing preserves pre-upgrade receipts and explicit rollback for an identical original report',async(t)=>{
+void test('additive sleep timing preserves pre-upgrade receipts and explicit rollback for an identical original report',async(t)=>{
   const f=fixture(t),raw={version:1,source:'apple-health-shortcuts',timezone:'Asia/Shanghai',exportedAt:'2026-11-09T05:00:00Z',measurements:[],sleepReport:{day:'2026-11-09',source:'synthetic-watch',segments:[{state:'core',startDate:'2026-11-08T23:00:00+08:00',endDate:'2026-11-09T07:00:00+08:00'}]}};
   const upgraded=parseMobileSyncPayload(raw),legacy={...upgraded,measurements:upgraded.measurements.map((measurement)=>{const {sleepTiming:_timing,...rest}=measurement;return rest;})};
   const first=await manual(f.db,legacy),replay=await manual(f.db,upgraded);assert.equal(replay.replayed,true);assert.equal(replay.batchId,first.batchId);assert.equal((await listHealthImports(f.db,'alice')).length,1);assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).sleepTiming,undefined);
@@ -94,7 +184,7 @@ test('additive sleep timing preserves pre-upgrade receipts and explicit rollback
   const fresh=parseMobileSyncPayload({...raw,exportedAt:'2026-11-09T06:00:00Z'}),next=await manual(f.db,fresh);assert.equal(next.replayed,false);assert.notEqual(next.batchId,first.batchId);assert.ok(JSON.parse(String(current(f.sqlite)[0].measurement_json)).sleepTiming);
 });
 
-test('source changes block automatic import until explicit preview confirmation', async (t) => {
+void test('source changes block automatic import until explicit preview confirmation', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device', 'alice', 'watch', 'synthetic', '2026-11-09', null, null);
   const next = payload(7000, 'selected-phone', '2026-11-09T11:00:00.000Z');
@@ -107,7 +197,7 @@ test('source changes block automatic import until explicit preview confirmation'
   assert.equal(JSON.parse(String(current(f.sqlite)[0].measurement_json)).source, 'selected-phone');
 });
 
-test('manual corrections and hidden state are visible in preview and untouched by import/revert', async (t) => {
+void test('manual corrections and hidden state are visible in preview and untouched by import/revert', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   const override = JSON.stringify({ ...payload().measurements[0], value: 4000 });
   f.sqlite.prepare('INSERT INTO health_record_overrides VALUES (?,?,?,?,?,?,?,?,?,?)')
@@ -122,7 +212,7 @@ test('manual corrections and hidden state are visible in preview and untouched b
   assert.equal(row?.override_json, override); assert.equal(row?.deleted, 1); assert.equal(row?.revision, 3);
 });
 
-test('stale previews fail when base or overlay changes, even if exported timestamp stays equal', async (t) => {
+void test('stale previews fail when base or overlay changes, even if exported timestamp stays equal', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   const next = payload(6000, 'selected-watch', '2026-11-09T11:00:00.000Z');
   const preview = await previewHealthImport(f.db, 'alice', next);
@@ -134,7 +224,7 @@ test('stale previews fail when base or overlay changes, even if exported timesta
   await assert.rejects(writeHealthImport(f.db, 'alice', next, null, { previewToken: fresh.token }), isConflict('HEALTH_IMPORT_STALE'));
 });
 
-test('database race after planning is rejected atomically without receipt or partial update', async (t) => {
+void test('database race after planning is rejected atomically without receipt or partial update', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   const next = payload(6000, 'selected-watch', '2026-11-09T11:00:00.000Z');
   const preview = await previewHealthImport(f.db, 'alice', next);
@@ -144,7 +234,7 @@ test('database race after planning is rejected atomically without receipt or par
   assert.equal((await listHealthImports(f.db, 'alice')).length, 1);
 });
 
-test('connection revocation racing commit leaves no records and no receipt', async (t) => {
+void test('connection revocation racing commit leaves no records and no receipt', async (t) => {
   const f = fixture(t);
   f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device', 'alice', 'watch', 'synthetic', '2026-11-09', null, null);
   f.race(() => f.sqlite.prepare('UPDATE sync_devices SET revoked_at=?').run('2026-11-09'));
@@ -152,7 +242,7 @@ test('connection revocation racing commit leaves no records and no receipt', asy
   assert.equal(current(f.sqlite).length, 0); assert.equal((await listHealthImports(f.db, 'alice')).length, 0);
 });
 
-test('rollback removes new originals, keeps audit and replay does not reapply reverted payload', async (t) => {
+void test('rollback removes new originals, keeps audit and replay does not reapply reverted payload', async (t) => {
   const f = fixture(t), input = payload();
   const saved = await manual(f.db, input);
   await revertHealthImport(f.db, 'alice', saved.batchId, '误导入测试数据');
@@ -165,7 +255,7 @@ test('rollback removes new originals, keeps audit and replay does not reapply re
   assert.equal(history.length, 1); assert.equal(history[0].revertReason, '误导入测试数据');
 });
 
-test('later raw synchronization prevents rollback without changing either batch', async (t) => {
+void test('later raw synchronization prevents rollback without changing either batch', async (t) => {
   const f = fixture(t);
   const first = await manual(f.db, payload());
   await manual(f.db, payload(7000, 'selected-watch', '2026-11-09T11:00:00.000Z'));
@@ -174,7 +264,7 @@ test('later raw synchronization prevents rollback without changing either batch'
   assert.equal((await listHealthImports(f.db, 'alice')).find((row) => row.batchId === first.batchId)?.revertedAt, null);
 });
 
-test('rollback never deletes a new raw record required by a later hide or reset overlay', async (t) => {
+void test('rollback never deletes a new raw record required by a later hide or reset overlay', async (t) => {
   const f = fixture(t), input = payload();
   const saved = await manual(f.db, input);
   f.sqlite.prepare('INSERT INTO health_record_overrides VALUES (?,?,?,?,?,?,?,?,?,?)')
@@ -185,7 +275,7 @@ test('rollback never deletes a new raw record required by a later hide or reset 
   assert.equal((await listHealthImports(f.db, 'alice'))[0].revertedAt, null);
 });
 
-test('owner isolation covers preview tokens, history and rollback', async (t) => {
+void test('owner isolation covers preview tokens, history and rollback', async (t) => {
   const f = fixture(t), input = payload();
   const preview = await previewHealthImport(f.db, 'alice', input);
   await assert.rejects(writeHealthImport(f.db, 'bob', input, null, { previewToken: preview.token }), isConflict('HEALTH_IMPORT_STALE'));
@@ -195,7 +285,7 @@ test('owner isolation covers preview tokens, history and rollback', async (t) =>
   assert.equal(current(f.sqlite).length, 1);
 });
 
-test('unchanged and older exports explain skipped records and preserve newest version', async (t) => {
+void test('unchanged and older exports explain skipped records and preserve newest version', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   const same = payload(5000, 'selected-watch', '2026-11-09T11:00:00.000Z');
   const preview = await previewHealthImport(f.db, 'alice', same);
@@ -207,7 +297,7 @@ test('unchanged and older exports explain skipped records and preserve newest ve
   assert.match(older.examples[0].reason, /不晚于/);
 });
 
-test('repeated unchanged rolling exports advance every raw watermark without repeating rollback snapshots', async (t) => {
+void test('repeated unchanged rolling exports advance every raw watermark without repeating rollback snapshots', async (t) => {
   const f = fixture(t), input = rollingPayload(), first = await manual(f.db, input);
   f.sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device', 'alice', 'watch', 'synthetic', '2026-11-09', null, null);
   let latest = input, lastReceipt = first;
@@ -233,7 +323,7 @@ test('repeated unchanged rolling exports advance every raw watermark without rep
   assert.deepEqual(current(f.sqlite, 'bob'), []);
 });
 
-test('a mixed import reverts only changed content while preserving later unchanged-row watermarks', async (t) => {
+void test('a mixed import reverts only changed content while preserving later unchanged-row watermarks', async (t) => {
   const f = fixture(t), original = parseSyncPayload({ ...payload(), measurements: [...payload().measurements,
     { id: 'weight-nine', metric: 'weight', value: 70, unit: 'kg', startDate: '2026-11-09T02:00:00.000Z', aggregation: 'sample', source: 'selected-scale' }] });
   await manual(f.db, original);
@@ -253,7 +343,7 @@ test('a mixed import reverts only changed content while preserving later unchang
   assert.equal(current(f.sqlite).find(row => row.metric === 'weight')?.exported_at, later.exportedAt);
 });
 
-test('a same-value refresh after a changed import still prevents the older rollback', async (t) => {
+void test('a same-value refresh after a changed import still prevents the older rollback', async (t) => {
   const f = fixture(t); await manual(f.db, payload());
   const changed = await manual(f.db, payload(6000, 'selected-watch', '2026-11-09T11:00:00.000Z'));
   const refreshed = await manual(f.db, payload(6000, 'selected-watch', '2026-11-09T12:00:00.000Z'));
@@ -263,7 +353,7 @@ test('a same-value refresh after a changed import still prevents the older rollb
   assert.equal(current(f.sqlite)[0].exported_at, '2026-11-09T12:00:00.000Z');
 });
 
-test('an unchanged watermark race fails atomically without a compact receipt or partial writes', async (t) => {
+void test('an unchanged watermark race fails atomically without a compact receipt or partial writes', async (t) => {
   const f = fixture(t), input = rollingPayload(); await manual(f.db, input);
   const newer = { ...input, exportedAt: '2026-11-09T11:00:00.000Z' }, preview = await previewHealthImport(f.db, 'alice', newer);
   const key = measurementKey(input.measurements[0]);
@@ -273,7 +363,7 @@ test('an unchanged watermark race fails atomically without a compact receipt or 
   assert.ok(current(f.sqlite).every(row => row.exported_at === input.exportedAt));
 });
 
-test('1000 record batch uses bounded statements and can be entirely reverted', async (t) => {
+void test('1000 record batch uses bounded statements and can be entirely reverted', async (t) => {
   const f = fixture(t), input = payload();
   input.measurements = Array.from({ length: 1000 }, (_, index) => {
     const day = new Date(Date.parse('2026-11-09T00:00:00Z') - index * 86400000).toISOString().slice(0, 10);

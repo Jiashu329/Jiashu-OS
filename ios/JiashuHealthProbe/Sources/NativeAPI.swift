@@ -49,16 +49,61 @@ final class NativeAPI: @unchecked Sendable {
         return try await request(path: "health?days=\(days)", token: token)
     }
 
-    func preview(token: String, payload: Data) async throws -> NativeImportPreview {
+    func preview(token: String, payload: Data, deviceToken: String? = nil) async throws -> NativeImportPreview {
         struct Envelope: Decodable { let preview: NativeImportPreview }
-        let response: Envelope = try await request(path: "health/import/preview", method: "POST", token: token, body: payload)
+        let headers = try syncDeviceHeaders(deviceToken)
+        let response: Envelope = try await request(path: "health/import/preview", method: "POST", token: token, body: payload, headers: headers)
         return response.preview
     }
 
-    func upload(token: String, payload: Data, previewToken: String, confirmSourceChanges: Bool = false) async throws -> NativeSyncReceipt {
-        var headers = ["X-Import-Preview": previewToken]
+    func upload(token: String, payload: Data, previewToken: String, confirmSourceChanges: Bool = false, deviceToken: String? = nil) async throws -> NativeSyncReceipt {
+        var headers = try syncDeviceHeaders(deviceToken)
+        headers["X-Import-Preview"] = previewToken
         if confirmSourceChanges { headers["X-Confirm-Source-Changes"] = "true" }
         return try await request(path: "health/import", method: "POST", token: token, body: payload, headers: headers)
+    }
+
+    /// Reading status never selects a device. Supplying the local credential lets
+    /// the server distinguish this phone from another already selected phone.
+    func channel(token: String, deviceToken: String? = nil) async throws -> NativeHealthChannel {
+        let headers = try syncDeviceHeaders(deviceToken)
+        let response: NativeHealthChannel = try await request(path: "sync/channel", token: token, headers: headers)
+        return try validatedChannel(response)
+    }
+
+    /// The caller must securely persist this credential before selecting it, so
+    /// a timeout can be reconciled by reading status with the same credential.
+    func selectChannel(token: String, deviceToken: String, label: String, expectedRevision: Int) async throws -> NativeHealthChannel {
+        struct Selection: Encodable { let deviceToken: String; let label: String; let expectedRevision: Int }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard NativeHealthDeviceCredential(deviceToken: deviceToken).isValid,
+              (0...9_007_199_254_740_991).contains(expectedRevision), !trimmed.isEmpty, trimmed.utf16.count <= 40,
+              !label.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { throw NativeAPIError.invalidRequest }
+        let body = try JSONEncoder().encode(Selection(deviceToken: deviceToken, label: trimmed, expectedRevision: expectedRevision))
+        let response: NativeHealthChannel = try await request(path: "sync/channel", method: "PUT", token: token, body: body)
+        return try validatedChannel(response)
+    }
+
+    func clearChannel(token: String, deviceToken: String, expectedRevision: Int) async throws -> NativeHealthChannel {
+        struct Clear: Encodable { let expectedRevision: Int }
+        guard (0...9_007_199_254_740_991).contains(expectedRevision) else { throw NativeAPIError.invalidRequest }
+        let headers = try syncDeviceHeaders(deviceToken)
+        let body = try JSONEncoder().encode(Clear(expectedRevision: expectedRevision))
+        let response: NativeHealthChannel = try await request(path: "sync/channel", method: "DELETE", token: token, body: body, headers: headers)
+        return try validatedChannel(response)
+    }
+
+    private func syncDeviceHeaders(_ deviceToken: String?) throws -> [String: String] {
+        guard let deviceToken else { return [:] }
+        guard NativeHealthDeviceCredential(deviceToken: deviceToken).isValid else { throw NativeAPIError.invalidRequest }
+        return ["X-Sync-Device": deviceToken]
+    }
+
+    private func validatedChannel(_ response: NativeHealthChannel) throws -> NativeHealthChannel {
+        guard (0...9_007_199_254_740_991).contains(response.revision),
+              response.deviceId.map({ !$0.isEmpty }) ?? true,
+              !response.isCurrentDevice || response.deviceId != nil else { throw NativeAPIError.invalidResponse }
+        return response
     }
 
     func importHistory(token: String) async throws -> NativeImportHistoryResponse {

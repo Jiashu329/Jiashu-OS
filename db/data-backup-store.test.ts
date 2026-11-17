@@ -10,6 +10,7 @@ import { readWeightCycleState, writeWeightCycle } from './weight-cycles-store.ts
 import { patchFinanceAccount } from './finance-store.ts';
 import { BackupConflictError, exportDataBackup, previewDataRestore, restoreDataBackup } from './data-backup-store.ts';
 import { HealthImportConflictError, previewHealthImport, revertHealthImport, writeHealthImport } from './health-import-store.ts';
+import { readNativeHealthChannel, selectNativeHealthChannel } from './native-health-channel-store.ts';
 import { parseSyncPayload } from '../lib/health.ts';
 import { writeHealthRecord } from './health-records-store.ts';
 import { parseHealthRecordCreate } from '../lib/health-records.ts';
@@ -66,6 +67,18 @@ async function seed(db:D1Database,sqlite:DatabaseSync,owner='alice') {
   sqlite.prepare('INSERT INTO sync_devices VALUES (?,?,?,?,?,?,?)').run('device',owner,'synthetic device','synthetic-token-hash',NOW,null,null);
 }
 function semantic(backup:DataBackup){return Object.fromEntries(BACKUP_TABLE_NAMES.map((table)=>[table,backup.tables[table].map((row)=>comparableBackupRow(table,row))]));}
+
+void test('portable backup excludes native ingestion authorization and restoring it preserves the target account channel', async t => {
+  const source = fixture(t), target = fixture(t);
+  await selectNativeHealthChannel(source.db, 'alice', { deviceTokenHash: 'a'.repeat(64), label: 'Source iPhone', expectedRevision: 0 }, NOW);
+  const selected = await selectNativeHealthChannel(target.db, 'bob', { deviceTokenHash: 'b'.repeat(64), label: 'Target iPhone', expectedRevision: 0 }, NOW);
+  const backup = await exportDataBackup(source.db, 'alice', NOW);
+  assert.equal(Object.hasOwn(backup.tables, 'native_health_channels'), false);
+  assert.equal(Object.hasOwn(backup.tables, 'sync_devices'), false);
+  const preview = await previewDataRestore(target.db, 'bob', backup);
+  await restoreDataBackup(target.db, 'bob', backup, preview.previewHash);
+  assert.deepEqual(await readNativeHealthChannel(target.db, 'bob', 'b'.repeat(64)), selected);
+});
 
 void test('complete backup roundtrips old records, real import receipts, edits, deleted nutrition and exact ordered finance history',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);

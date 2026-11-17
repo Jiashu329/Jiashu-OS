@@ -2,11 +2,12 @@ import Foundation
 import SwiftUI
 import UIKit
 
-struct PendingHealthImport: Identifiable {
+struct PendingNativeHealthChannelConsent: Identifiable {
     let id = UUID()
     let ownerID: String
-    let payload: Data
-    let preview: NativeImportPreview
+    let expectedRevision: Int
+    let currentLabel: String?
+    var candidate: NativeHealthDeviceCredential?
 }
 
 /// One authenticated account owns every in-flight operation and its displayed result.
@@ -25,12 +26,15 @@ final class NativeAppModel: ObservableObject {
     @Published private(set) var syncMessage = "连接苹果健康后，可在打开 App 或健康数据变化时同步。"
     @Published private(set) var observerMessage: String?
     @Published private(set) var lastReceipt: NativeSyncReceipt?
-    @Published var pendingImport: PendingHealthImport?
+    @Published var pendingChannelConsent: PendingNativeHealthChannelConsent?
+    @Published private(set) var channel: NativeHealthChannel?
+    @Published private(set) var configuringChannel = false
     @Published var errorMessage: String?
 
     let api: NativeAPI
     private let sessions: NativeSessionStore
-    private let reader: HealthKitReader
+    private let reader: any NativeHealthReading
+    private let healthDeviceService: String
     private var generation = UUID()
     private var started = false
     private var activating = false
@@ -38,14 +42,18 @@ final class NativeAppModel: ObservableObject {
     private var observationStartID: UUID?
     private var syncOperation: Task<Void, Never>?
     private var syncOperationID: UUID?
+    private var syncIsBackground = false
+    private var syncDays = 0
     private var syncAgain = false
     private var loadID = UUID()
     private var lastAutomaticAttempt: Date?
+    private var channelRequestID = UUID()
 
-    init(api: NativeAPI = NativeAPI(), sessions: NativeSessionStore = NativeSessionStore(), reader: HealthKitReader? = nil) {
+    init(api: NativeAPI = NativeAPI(), sessions: NativeSessionStore = NativeSessionStore(), reader: (any NativeHealthReading)? = nil, healthDeviceService: String = "asia.treefund.jiashu.native-health-device") {
         self.api = api
         self.sessions = sessions
         self.reader = reader ?? HealthKitReader()
+        self.healthDeviceService = healthDeviceService
     }
 
     private func syncKey(_ userID: String) -> String { "jiashu.native.health-auto-sync." + userID }
@@ -59,7 +67,7 @@ final class NativeAppModel: ObservableObject {
         do {
             guard let stored = try sessions.load() else { return }
             session = stored
-            autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(stored.user.id))
+            try restoreSyncPreference(userID: stored.user.id)
             // Register restored HealthKit observers before waiting for network
             // calls, including when iOS cold-launches us for a health update.
             if autoSyncEnabled { await observeHealth() }
@@ -67,7 +75,7 @@ final class NativeAppModel: ObservableObject {
             guard isCurrent(stored.user.id, epoch) else { return }
             try sessions.save(valid)
             session = valid
-            autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(valid.user.id))
+            try restoreSyncPreference(userID: valid.user.id)
             await becameActive()
         } catch {
             guard generation == epoch else { return }
@@ -87,7 +95,7 @@ final class NativeAppModel: ObservableObject {
             try sessions.save(loggedIn)
             clearDisplayedAccount()
             session = loggedIn
-            autoSyncEnabled = UserDefaults.standard.bool(forKey: syncKey(loggedIn.user.id))
+            try restoreSyncPreference(userID: loggedIn.user.id)
             await becameActive()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -110,12 +118,14 @@ final class NativeAppModel: ObservableObject {
                 try sessions.save(refreshed)
                 session = refreshed
             }
+            if autoSyncEnabled { await refreshChannelStatus() }
+            guard isCurrent(current.user.id, epoch) else { return }
             if autoSyncEnabled { await observeHealth() }
             await reload()
             guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
             await observeHealth()
             // Foreground visits are a fallback for background delivery, whose timing iOS controls.
-            if pendingImport == nil, lastAutomaticAttempt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
+            if pendingChannelConsent == nil, lastAutomaticAttempt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
                 await sync(background: false)
             }
         } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
@@ -142,34 +152,193 @@ final class NativeAppModel: ObservableObject {
         } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
     }
 
+    private func deviceStore(_ owner: String) -> NativeHealthDeviceStore {
+        NativeHealthDeviceStore(userID: owner, service: healthDeviceService)
+    }
+
+    private func restoreSyncPreference(userID: String) throws {
+        let requested = UserDefaults.standard.bool(forKey: syncKey(userID))
+        if requested {
+            do { autoSyncEnabled = try deviceStore(userID).load() != nil }
+            catch NativeHealthDeviceStoreError.invalidCredential { autoSyncEnabled = false }
+        }
+        else { autoSyncEnabled = false }
+        if requested && !autoSyncEnabled {
+            UserDefaults.standard.set(false, forKey: syncKey(userID))
+            syncMessage = "请先确认日常同步来源，之后会自动同步。"
+        }
+    }
+
     func connectHealth() async {
-        guard let current = session, !syncing, !authorizingHealth else { return }
+        guard let current = session, !syncing, !authorizingHealth, !configuringChannel else { return }
         let epoch = generation
+        channelRequestID = UUID()
         authorizingHealth = true
         defer { if generation == epoch { authorizingHealth = false } }
         do {
-            // This is the only place that requests the system permission dialog.
+            // HealthKit permission and the server's daily-source selection are
+            // distinct decisions. Only this explicit user action requests either.
             try await reader.authorize()
             guard isCurrent(current.user.id, epoch) else { return }
-            autoSyncEnabled = true
-            UserDefaults.standard.set(true, forKey: syncKey(current.user.id))
-            await observeHealth()
-            await sync(background: false)
+            let credential: NativeHealthDeviceCredential?
+            do { credential = try deviceStore(current.user.id).load() }
+            catch NativeHealthDeviceStoreError.invalidCredential {
+                // Only an explicit reconnect discards a corrupted credential.
+                // A locked/unavailable Keychain remains untouched for retry.
+                try deviceStore(current.user.id).clear()
+                credential = nil
+            }
+            let status = try await api.channel(token: current.accessToken, deviceToken: credential?.deviceToken)
+            guard isCurrent(current.user.id, epoch) else { return }
+            channel = status
+            if status.isCurrentDevice, credential != nil {
+                pendingChannelConsent = nil
+                await activateDailySync(owner: current.user.id, epoch: epoch)
+            } else {
+                pauseAutomaticSync(owner: current.user.id)
+                pendingChannelConsent = PendingNativeHealthChannelConsent(ownerID: current.user.id,
+                    expectedRevision: status.revision, currentLabel: status.label, candidate: nil)
+                syncMessage = "确认由这台 iPhone 的苹果健康负责日常同步后，即可自动更新。"
+            }
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
+    }
+
+    func cancelDailyChannelConsent() { if !configuringChannel { pendingChannelConsent = nil } }
+
+    func confirmDailyChannel(label: String) async {
+        guard let current = session, var pending = pendingChannelConsent,
+              pending.ownerID == current.user.id, !configuringChannel else { return }
+        let epoch = generation
+        channelRequestID = UUID()
+        configuringChannel = true
+        errorMessage = nil
+        defer { if generation == epoch { configuringChannel = false } }
+        do {
+            // Reconcile a lost acknowledgement before attempting another write.
+            // A candidate is saved before PUT and reused across uncertain retries.
+            let saved = try deviceStore(current.user.id).load()
+            let status = try await api.channel(token: current.accessToken, deviceToken: saved?.deviceToken)
+            guard isCurrent(current.user.id, epoch), pendingChannelConsent?.id == pending.id else { return }
+            channel = status
+            if status.isCurrentDevice, saved != nil {
+                pendingChannelConsent = nil
+                await activateDailySync(owner: current.user.id, epoch: epoch)
+                return
+            }
+            guard status.revision == pending.expectedRevision else {
+                pendingChannelConsent = PendingNativeHealthChannelConsent(ownerID: current.user.id,
+                    expectedRevision: status.revision, currentLabel: status.label, candidate: nil)
+                errorMessage = "日常同步来源已变化，请查看最新来源后再次确认。"
+                return
+            }
+            let credential = try pending.candidate ?? NativeHealthDeviceCredential.generate()
+            try deviceStore(current.user.id).save(credential)
+            pending.candidate = credential
+            pendingChannelConsent = pending
+            let selected: NativeHealthChannel
+            do {
+                selected = try await api.selectChannel(token: current.accessToken, deviceToken: credential.deviceToken,
+                    label: label, expectedRevision: pending.expectedRevision)
+            } catch {
+                let originalError = error
+                guard isCurrent(current.user.id, epoch) else { return }
+                // Never invent a new device key just because the response was lost.
+                if let reconciled = try? await api.channel(token: current.accessToken, deviceToken: credential.deviceToken),
+                   reconciled.isCurrentDevice {
+                    selected = reconciled
+                } else { throw originalError }
+            }
+            guard isCurrent(current.user.id, epoch), pendingChannelConsent?.id == pending.id else { return }
+            guard selected.isCurrentDevice else { throw NativeAPIError.invalidResponse }
+            channel = selected
+            pendingChannelConsent = nil
+            await activateDailySync(owner: current.user.id, epoch: epoch)
+        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
+    }
+
+    private func activateDailySync(owner: String, epoch: UUID) async {
+        guard isCurrent(owner, epoch) else { return }
+        autoSyncEnabled = true
+        UserDefaults.standard.set(true, forKey: syncKey(owner))
+        await observeHealth()
+        guard isCurrent(owner, epoch), autoSyncEnabled else { return }
+        await sync(background: false)
+    }
+
+    func refreshChannelStatus() async {
+        guard let current = session, !configuringChannel, !authorizingHealth else { return }
+        let epoch = generation
+        let requestID = UUID()
+        channelRequestID = requestID
+        do {
+            let credential = try deviceStore(current.user.id).load()
+            let status = try await api.channel(token: current.accessToken, deviceToken: credential?.deviceToken)
+            guard isCurrent(current.user.id, epoch), channelRequestID == requestID else { return }
+            channel = status
+            if autoSyncEnabled && (!status.isCurrentDevice || credential == nil) {
+                pauseAutomaticSync(owner: current.user.id)
+                syncMessage = "日常同步来源已变化，自动同步已暂停。可在设置中确认由这台 iPhone 同步。"
+            }
+        } catch {
+            guard channelRequestID == requestID else { return }
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
+        }
+    }
+
+    func releaseDailyChannel() async {
+        guard let current = session, !configuringChannel else { return }
+        let epoch = generation
+        channelRequestID = UUID()
+        configuringChannel = true
+        pauseAutomaticSync(owner: current.user.id)
+        defer { if generation == epoch { configuringChannel = false } }
+        do {
+            guard let credential = try deviceStore(current.user.id).load() else { throw NativeAPIError.invalidRequest }
+            let status = try await api.channel(token: current.accessToken, deviceToken: credential.deviceToken)
+            guard isCurrent(current.user.id, epoch) else { return }
+            let cleared: NativeHealthChannel
+            if !status.hasActiveChannel { cleared = status }
+            else {
+                guard status.isCurrentDevice else {
+                    channel = status
+                    throw NativeAPIError.server(status: 409, code: "NATIVE_HEALTH_CHANNEL_NOT_CURRENT",
+                        message: "日常来源已由其他设备接管，请刷新后核对。", retryAfter: nil)
+                }
+                do {
+                    cleared = try await api.clearChannel(token: current.accessToken,
+                        deviceToken: credential.deviceToken, expectedRevision: status.revision)
+                } catch {
+                    let originalError = error
+                    guard isCurrent(current.user.id, epoch) else { return }
+                    if let reconciled = try? await api.channel(token: current.accessToken, deviceToken: credential.deviceToken),
+                       !reconciled.hasActiveChannel { cleared = reconciled }
+                    else { throw originalError }
+                }
+            }
+            guard isCurrent(current.user.id, epoch) else { return }
+            guard !cleared.hasActiveChannel else { throw NativeAPIError.invalidResponse }
+            try deviceStore(current.user.id).clear()
+            channel = cleared
+            pendingChannelConsent = nil
+            syncMessage = "日常同步来源已解除，已有记录继续保留。"
         } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
     }
 
     func setAutomaticSync(_ enabled: Bool) async {
         guard let current = session else { return }
         if enabled { await connectHealth(); return }
+        pauseAutomaticSync(owner: current.user.id)
+        syncMessage = "自动同步已暂停，日常来源选择和已有记录继续保留。"
+    }
+
+    private func pauseAutomaticSync(owner: String) {
         autoSyncEnabled = false
-        authorizingHealth = false
         syncOperation?.cancel()
         observationStartID = nil
-        UserDefaults.standard.set(false, forKey: syncKey(current.user.id))
+        UserDefaults.standard.set(false, forKey: syncKey(owner))
         reader.stopObserving()
         observationsStarted = false
         observerMessage = nil
-        syncMessage = "自动同步已暂停，服务器已有记录继续保留。"
     }
 
     private func observeHealth() async {
@@ -201,21 +370,33 @@ final class NativeAppModel: ObservableObject {
     }
 
     func sync(background: Bool = false, days: Int = 30) async {
-        guard session != nil, autoSyncEnabled, pendingImport == nil else { return }
+        guard let current = session, autoSyncEnabled, pendingChannelConsent == nil else { return }
         if let running = syncOperation {
+            // A foreground backfill needs its own range and time budget after
+            // a short background reconciliation, including a just-cancelled one.
+            if running.isCancelled || (!background && (syncIsBackground || days > syncDays)) {
+                let epoch = generation, operationID = syncOperationID
+                await running.value
+                guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
+                if syncOperationID == operationID { syncOperation = nil; syncOperationID = nil }
+                await sync(background: background, days: days)
+                return
+            }
             syncAgain = true
             await running.value
             return
         }
         let operationID = UUID(), epoch = generation
         syncOperationID = operationID
+        syncIsBackground = background
+        syncDays = background ? 7 : days
         syncAgain = false
         let operation = Task { [weak self] in
             guard let self else { return }
             repeat {
                 self.syncAgain = false
                 await self.performSync(background: background, days: background ? 7 : days)
-            } while self.syncAgain && !Task.isCancelled && self.generation == epoch && self.autoSyncEnabled && self.pendingImport == nil
+            } while self.syncAgain && !Task.isCancelled && self.generation == epoch && self.autoSyncEnabled && self.pendingChannelConsent == nil
         }
         syncOperation = operation
         let backgroundID = UIApplication.shared.beginBackgroundTask(withName: "Jiashu Health Sync") { operation.cancel() }
@@ -230,7 +411,7 @@ final class NativeAppModel: ObservableObject {
     }
 
     private func performSync(background: Bool, days: Int) async {
-        guard !Task.isCancelled, let current = session, autoSyncEnabled, pendingImport == nil else { return }
+        guard !Task.isCancelled, let current = session, autoSyncEnabled, pendingChannelConsent == nil else { return }
         let epoch = generation
         syncing = true
         lastAutomaticAttempt = Date()
@@ -238,6 +419,11 @@ final class NativeAppModel: ObservableObject {
         if !background { errorMessage = nil }
         defer { if generation == epoch { syncing = false } }
         do {
+            guard let credential = try deviceStore(current.user.id).load() else {
+                pauseAutomaticSync(owner: current.user.id)
+                syncMessage = "请先确认这台 iPhone 为日常同步来源。"
+                return
+            }
             let snapshot = try await reader.read(days: days)
             try Task.checkCancellation()
             guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
@@ -247,14 +433,12 @@ final class NativeAppModel: ObservableObject {
             }
             let payload = try snapshot.encodePayload()
             syncMessage = "正在核对服务器记录…"
-            let preview = try await api.preview(token: current.accessToken, payload: payload)
+            let preview = try await api.preview(token: current.accessToken, payload: payload, deviceToken: credential.deviceToken)
             guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
-            if preview.sourceChanges > 0 {
-                pendingImport = PendingHealthImport(ownerID: current.user.id, payload: payload, preview: preview)
-                syncMessage = "检测到健康数据来源变化，请在 App 中核对后确认。"
-                return
-            }
-            let receipt = try await api.upload(token: current.accessToken, payload: payload, previewToken: preview.token, confirmSourceChanges: false)
+            // Source strings describe the underlying watch/scale; server policy
+            // grants this selected phone ongoing authority, never a blanket header.
+            let receipt = try await api.upload(token: current.accessToken, payload: payload,
+                previewToken: preview.token, confirmSourceChanges: false, deviceToken: credential.deviceToken)
             guard isCurrent(current.user.id, epoch) else { return }
             lastReceipt = receipt
             if autoSyncEnabled { syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。" }
@@ -275,30 +459,6 @@ final class NativeAppModel: ObservableObject {
         }
     }
 
-    func confirmSourceChange() async {
-        guard !syncing, let pending = pendingImport, let current = session, pending.ownerID == current.user.id else { return }
-        let epoch = generation
-        syncing = true
-        defer { if generation == epoch { syncing = false } }
-        do {
-            let receipt = try await api.upload(token: current.accessToken, payload: pending.payload, previewToken: pending.preview.token, confirmSourceChanges: true)
-            guard isCurrent(current.user.id, epoch) else { return }
-            lastReceipt = receipt
-            pendingImport = nil
-            syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。"
-            await reload()
-        } catch {
-            // A changed/stale preview needs a fresh explicit decision, never an automatic retry.
-            if case NativeAPIError.server(let status, _, _, _) = error, status == 409, isCurrent(current.user.id, epoch) {
-                do {
-                    let preview = try await api.preview(token: current.accessToken, payload: pending.payload)
-                    if isCurrent(current.user.id, epoch) { pendingImport = PendingHealthImport(ownerID: current.user.id, payload: pending.payload, preview: preview) }
-                } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
-            }
-            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
-        }
-    }
-
     func signOut() async {
         guard let current = session else { return }
         let epoch = generation
@@ -314,6 +474,7 @@ final class NativeAppModel: ObservableObject {
 
     private func clearDisplayedAccount() {
         generation = UUID()
+        channelRequestID = UUID()
         syncOperation?.cancel()
         syncOperation = nil
         syncOperationID = nil
@@ -326,7 +487,9 @@ final class NativeAppModel: ObservableObject {
         health = nil
         healthDays = 30
         authorizingHealth = false
-        pendingImport = nil
+        pendingChannelConsent = nil
+        channel = nil
+        configuringChannel = false
         lastReceipt = nil
         autoSyncEnabled = false
         syncing = false
@@ -343,6 +506,13 @@ final class NativeAppModel: ObservableObject {
             guard session?.accessToken == token else { return }
             clearDisplayedAccount()
             try? sessions.clear()
+        }
+        if let failure = error as? NativeAPIError,
+           ["HEALTH_SYNC_CHANNEL_REQUIRED", "HEALTH_SYNC_CHANNEL_CHANGED", "SYNC_DEVICE_INVALID",
+            "NATIVE_HEALTH_CHANNEL_DEVICE_INVALID", "NATIVE_HEALTH_CHANNEL_NOT_CURRENT"].contains(failure.code ?? "") {
+            pauseAutomaticSync(owner: owner)
+            pendingChannelConsent = nil
+            syncMessage = "日常同步来源已变化，自动同步已暂停。请在设置中核对后重新确认。"
         }
         errorMessage = error.localizedDescription
     }

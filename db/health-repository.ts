@@ -84,8 +84,12 @@ export async function importHealth(userId: string, payload: HealthSyncPayload, d
     throw error;
   }
 }
-export async function previewImport(userId: string, payload: HealthSyncPayload) {
-  return previewHealthImport(database(), userId, payload);
+export async function previewImport(userId: string, payload: HealthSyncPayload, deviceId: string | null = null) {
+  try { return await previewHealthImport(database(), userId, payload, deviceId); }
+  catch (error) {
+    if (error instanceof HealthImportConflictError && error.code === 'SYNC_DEVICE_INVALID') throw new SyncDeviceInvalidError();
+    throw error;
+  }
 }
 export async function readImportHistory(userId: string) { return listHealthImports(database(), userId); }
 export async function revertImport(userId: string, id: string, reason: string) { return revertHealthImport(database(), userId, id, reason); }

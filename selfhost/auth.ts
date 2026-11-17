@@ -173,7 +173,7 @@ export function sanitizedSelfhostHeaders(headers: IncomingHttpHeaders, config: S
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
     if (lower.startsWith('oai-') || lower.startsWith('x-auth') || lower.startsWith('x-forwarded-') || lower.startsWith('x-middleware-') || lower.startsWith('x-vinext-')
-      || ['forwarded', 'host', 'x-real-ip', 'proxy-authorization', 'proxy-authenticate'].includes(lower)) continue;
+      || ['forwarded', 'host', 'x-real-ip', 'proxy-authorization', 'proxy-authenticate', 'x-jso-native-client'].includes(lower)) continue;
     result[lower] = value;
   }
   result.host = config.host; result['x-forwarded-host'] = config.host; result['x-forwarded-proto'] = config.secure ? 'https' : 'http';

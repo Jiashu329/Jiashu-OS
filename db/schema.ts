@@ -80,6 +80,17 @@ export const healthGoalSettings = sqliteTable('health_goal_settings', {
   updatedAt: text('updated_at').notNull(),
 });
 
+// Server-owned ingestion authorization; excluded from portable business backups.
+// Clearing a choice keeps its revision and last connection to fence old requests.
+export const nativeHealthChannels = sqliteTable('native_health_channels', {
+  userId: text('user_id').primaryKey().notNull(),
+  deviceId: text('device_id'),
+  lastDeviceId: text('last_device_id').notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [check('native_health_channels_revision', sql`typeof(${table.revision})='integer' AND ${table.revision} BETWEEN 1 AND 9007199254740991`)]);
+
 export const healthGoalVersions = sqliteTable('health_goal_versions', {
   userId: text('user_id').notNull(),
   revision: integer('revision').notNull(),
