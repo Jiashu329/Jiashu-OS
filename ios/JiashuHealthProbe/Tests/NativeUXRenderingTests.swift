@@ -88,7 +88,10 @@ final class NativeUXRenderingTests: XCTestCase {
         // A newly mounted page must finish starting its own synthetic reads;
         // using a previous screen's count would hide a cancelled appearance.
         if let waitUntil {
-            let deadline = Date().addingTimeInterval(5)
+            // A cold simulator may prepare its first drawing pipeline before
+            // SwiftUI schedules page tasks. Still require completed reads;
+            // fast screens continue immediately without a fixed extra delay.
+            let deadline = Date().addingTimeInterval(30)
             while !waitUntil() && Date() < deadline {
                 hosting.view.setNeedsLayout()
                 hosting.view.layoutIfNeeded()
