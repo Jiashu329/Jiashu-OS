@@ -294,7 +294,9 @@ struct NativeHealthRangeWorkspace: View {
                 AxisGridLine()
                 AxisTick()
                 if let date = value.as(Date.self) {
-                    AxisValueLabel { Text(NativeActionDates.formatted(date, pattern: "M/d")) }
+                    AxisValueLabel(anchor: value.index == 0 ? .topLeading : value.index == value.count - 1 ? .topTrailing : .top) {
+                        Text(NativeActionDates.formatted(date, pattern: "M/d")).fixedSize()
+                    }
                 }
             }
         }
