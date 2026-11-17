@@ -38,11 +38,15 @@ export function createSelfhostUserManagement(config: SelfhostAuthConfig, db: Loc
       if (!user) { failure(res, 401, 'SIGN_IN_REQUIRED', '请重新登录。'); return; }
       if (user.id !== config.ownerId) { failure(res, 403, 'LOCAL_USER_FORBIDDEN', '只有管理员可以管理用户。'); return; }
       if (req.headers['x-page-owner'] !== user.id) { failure(res, 409, 'ACCOUNT_CHANGED', '账户已切换，请刷新页面。'); return; }
+      // The gateway strips caller-provided markers and only adds this after a
+      // revocable native bearer is verified. Browser traffic keeps double-CSRF.
+      const native = req.headers['x-jso-native-client'] === 'healthkit-v1';
       const url = new URL(req.url ?? '/', config.origin), base = url.pathname === '/api/admin/users';
       const match = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
       if (!base && !match) { failure(res, 404, 'NOT_FOUND', '找不到该接口。'); return; }
       const names = selfhostCookieNames(config), stored = readCookie(typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined, names.adminCsrf);
       if (req.method === 'GET' && base) {
+        if (native) { json(res, 200, { users: await listLocalUsers(db, config.ownerId), currentUserId: user.id }, { 'X-Account-Owner': user.id }); return; }
         const csrfToken = stored && verifySelfhostCsrf(config, stored, stored, user, 'admin', now()) ? stored : issueSelfhostCsrf(config, user, 'admin', now());
         json(res, 200, { users: await listLocalUsers(db, config.ownerId), currentUserId: user.id, csrfToken },
           { 'Set-Cookie': selfhostCookie(config, names.adminCsrf, csrfToken, 600), 'X-Account-Owner': user.id }); return;
@@ -50,7 +54,7 @@ export function createSelfhostUserManagement(config: SelfhostAuthConfig, db: Loc
       if (!(base && req.method === 'POST') && !(match && req.method === 'PATCH')) {
         failure(res, 405, 'METHOD_NOT_ALLOWED', '该操作不受支持。'); return;
       }
-      if (req.headers.origin !== config.origin || !verifySelfhostCsrf(config, req.headers['x-csrf-token'], stored, user, 'admin', now())) {
+      if (req.headers.origin !== config.origin || !native && !verifySelfhostCsrf(config, req.headers['x-csrf-token'], stored, user, 'admin', now())) {
         failure(res, 403, 'LOCAL_USER_CSRF_INVALID', '页面验证已过期，请刷新用户列表后重试。'); return;
       }
       const body = await readJson(req), at = new Date(now()).toISOString();

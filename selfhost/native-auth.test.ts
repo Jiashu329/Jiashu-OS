@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { once } from 'node:events';
@@ -9,6 +9,8 @@ import { bootstrapLocalOwner, createLocalUser, getLocalUserByEmail, getLocalUser
 import { isLocalSessionRevoked, revokeLocalSession } from '../db/local-session-revocations-store.ts';
 import { createSelfhostGateway, hashPassword, issueSelfhostSession, loadSelfhostAuthConfig, verifySelfhostSession } from './auth.ts';
 import type { SelfhostGatewayOptions } from './auth.ts';
+import { nativeAPIMethods } from './native-auth.ts';
+import { createSelfhostUserManagement } from './user-management.ts';
 
 const NOW = Date.parse('2026-11-16T10:00:00Z');
 const PASSWORD = 'native-synthetic-password-2026', HASH = await hashPassword(PASSWORD);
@@ -35,7 +37,8 @@ async function fixture(t: test.TestContext, overrides: { users?: SelfhostGateway
   }, { now: () => time, readiness: () => ({ schemaReady: true, applied: 2, total: 2, pending: 0 }), commitSha: 'a'.repeat(40),
     users: overrides.users ?? { getById: id => getLocalUserById(db, id), getByEmail: email => getLocalUserByEmail(db, email),
       touchLogin: (id, at) => touchLocalUserLogin(db, id, new Date(at).toISOString()) },
-    sessions: overrides.sessions ?? { isRevoked: (family, at) => isLocalSessionRevoked(db, family, at), revoke: (family, expires, at) => revokeLocalSession(db, family, expires, at) } });
+    sessions: overrides.sessions ?? { isRevoked: (family, at) => isLocalSessionRevoked(db, family, at), revoke: (family, expires, at) => revokeLocalSession(db, family, expires, at) },
+    manageUsers: createSelfhostUserManagement(config, db, { now: () => time }) });
   const server = createServer((req, res) => { void gateway(req, res); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); db.close(); });
@@ -118,7 +121,7 @@ void test('native API methods and paths are explicitly allowlisted and write req
       res.end(JSON.stringify({ path: req.url, body: Buffer.concat(chunks).toString(), operation: req.headers['x-request-id'], owner: req.headers['x-page-owner'] }));
     });
   } }), session = await f.login();
-  for (const path of ['/api/native/admin/users', '/api/native/finance/accounts', '/api/native/health/records/arbitrary', '/api/native/health/', '/api/native/auth/unknown']) {
+  for (const path of ['/api/native/admin/secrets', '/api/native/finance/unknown', '/api/native/health/records/arbitrary', '/api/native/health/', '/api/native/auth/unknown']) {
     assert.equal((await f.call(path, 'GET', bearer(session))).status, 404, path);
   }
   for (const path of ['/api/native/health/../overview', '/api/native/health%2fimport', '/api/native//overview', '/api/native/overview#fragment']) {
@@ -130,6 +133,67 @@ void test('native API methods and paths are explicitly allowlisted and write req
   const response = await f.call('/api/native/health/records', 'POST', { ...bearer(session), 'X-Request-ID': 'synthetic-operation' }, command);
   assert.equal(response.status, 200); assert.equal(response.data.path, '/api/health/records');
   assert.equal(response.data.body, command); assert.equal(response.data.operation, 'synthetic-operation'); assert.equal(response.data.owner, config.ownerId);
+});
+
+void test('every existing web API has an explicitly reviewed native method mapping without a wildcard proxy', () => {
+  const root = new URL('../app/api/', import.meta.url);
+  const walk = (directory: URL, relative = '') => {
+    for (const item of readdirSync(directory, { withFileTypes: true })) {
+      if (item.isDirectory()) { walk(new URL(item.name + '/', directory), relative + item.name + '/'); continue; }
+      if (item.name !== 'route.ts') continue;
+      const source = readFileSync(new URL(item.name, directory), 'utf8');
+      const methods = [...source.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|export\s+const\s+(GET|POST|PUT|PATCH|DELETE)\b/g)]
+        .map(match => match[1] ?? match[2]);
+      if (/export\s*\{\s*GET,\s*POST\s*\}/.test(source)) methods.push('GET', 'POST');
+      const path = '/api/native/' + relative.replace(/\/$/, '')
+        .replace('[key]', 'weight%3Asynthetic%2Fscale')
+        .replace(/\[(?:id|bookId|memberId|entryId)\]/g, relative.startsWith('health/import/') ? 'a'.repeat(64) : '10000000-0000-4000-8000-000000000001');
+      const expected = [...new Set(methods)].sort((left, right) => left.localeCompare(right));
+      assert.deepEqual([...(nativeAPIMethods(path) ?? [])].sort((left, right) => left.localeCompare(right)), expected, path);
+    }
+  };
+  walk(root);
+  for (const path of ['/api/native/finance/new-feature', '/api/native/settings/secrets', '/api/native/health/records/steps:2026-01-01/extra', '/api/native/admin/users/owner/delete']) {
+    assert.equal(nativeAPIMethods(path), null, path);
+  }
+});
+
+void test('native dynamic resources preserve encoded identity and family scope while refusing ambiguous traversal and double encodings', async t => {
+  const f = await fixture(t), session = await f.login();
+  for (const [path, method] of [
+    ['/api/native/finance/accounts/10000000%2D0000%2D4000%2D8000%2D000000000001?book=family-book&accessRevision=7', 'PATCH'],
+    ['/api/native/finance/accounts/10000000-0000-4000-8000-000000000001/balances/initial%3A10000000-0000-4000-8000-000000000002/preview', 'POST'],
+    ['/api/native/health/records/weight%3Ahealthkit%2Fscale/history', 'GET'],
+  ]) {
+    const response = await f.call(path, method, { ...bearer(session), 'Idempotency-Key': '10000000-0000-4000-8000-000000000001' }, method === 'GET' ? undefined : '{}');
+    assert.equal(response.status, 200, path); assert.equal(response.data.path, path.replace('/api/native/', '/api/'));
+    assert.equal(response.data.actor, config.ownerId);
+  }
+  for (const path of ['/api/native/finance/accounts/a%2Fb', '/api/native/finance/accounts/%252e%252e', '/api/native/finance/accounts/%00',
+    '/api/native/finance/accounts/%FF', '/api/native/finance/accounts/%2E%2E', '/api/native/health/records/weight%3Ascale%2F..%2Fother',
+    '/api/native/health/records/weight%253Ascales', '/api/native/finance/books/book/members/member%3Fadmin']) {
+    const response = await f.call(path, 'GET', bearer(session));
+    assert.ok(response.status === 400 || response.status === 404, path);
+  }
+});
+
+void test('native administrator users reuse role checks, credential revisions and owner protection without accepting browser marker spoofing', async t => {
+  const f = await fixture(t), owner = await f.login(), bob = await f.login('bob@synthetic.example');
+  assert.equal((await f.call('/api/native/admin/users', 'GET', bearer(bob))).status, 403);
+  const listing = await f.call('/api/native/admin/users', 'GET', bearer(owner));
+  assert.equal(listing.status, 200); assert.equal(listing.data.currentUserId, config.ownerId); assert.equal(listing.headers['set-cookie'], undefined);
+  assert.equal(listing.data.csrfToken, undefined); assert.doesNotMatch(listing.body, /passwordHash|scrypt/);
+  const created = await f.call('/api/native/admin/users', 'POST', bearer(owner), JSON.stringify({ email: 'native-created@synthetic.example', password: PASSWORD }));
+  assert.equal(created.status, 201); const user = created.data.user as { id: string; revision: number };
+  const protectedOwner = await f.call('/api/native/admin/users/' + config.ownerId, 'PATCH', bearer(owner), JSON.stringify({ expectedRevision: 1, status: 'disabled' }));
+  assert.equal(protectedOwner.status, 400); assert.equal(protectedOwner.data.code, 'LOCAL_USER_OWNER_PROTECTED');
+  const member = await f.login('native-created@synthetic.example');
+  const disabled = await f.call('/api/native/admin/users/' + user.id, 'PATCH', bearer(owner), JSON.stringify({ expectedRevision: user.revision, status: 'disabled' }));
+  assert.equal(disabled.status, 200);
+  assert.equal((await f.call('/api/native/session', 'GET', bearer(member))).status, 401);
+  const browserCookie = '__Host-jso-session=' + issueSelfhostSession(config, { id: config.ownerId, revision: 1 }, NOW);
+  const spoofed = await f.call('/api/admin/users', 'POST', { Cookie: browserCookie, Origin: config.origin, 'X-Page-Owner': config.ownerId, 'X-Jso-Native-Client': 'healthkit-v1' }, JSON.stringify({ email: 'forged@synthetic.example', password: PASSWORD }));
+  assert.equal(spoofed.status, 403); assert.equal(spoofed.data.code, 'LOCAL_USER_CSRF_INVALID');
 });
 
 void test('refresh preserves the revocable family, logout revokes both old and renewed tokens without affecting another device', async t => {

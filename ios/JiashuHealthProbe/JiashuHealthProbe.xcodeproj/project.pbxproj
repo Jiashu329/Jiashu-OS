@@ -28,6 +28,42 @@
         B2000000000000000000000A /* HealthSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A; };
         B2000000000000000000000B /* NativeAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B; };
         B20000000000000000000020 /* NativeAppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020; };
+        77632E805E243C7E476DA401 /* NativeAdministrationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F3097732A0375AB808EE18F; };
+        B57434AE1B931856F2AC2C8F /* NativeBackupCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1FFF12938530FAF2B038CE8; };
+        22217A318014C6AD18E80CE3 /* NativeBackupViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 645AD63C1EE51C5AFAA09853; };
+        EE88805CF29DE4B8ED7E0E5E /* NativeFinanceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4BCA0C995661264467DDA; };
+        7ECA82F7626B812C9BACCBEF /* NativeHealthWorkspaceAssistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085FBF7697728A5E1F0C536F; };
+        9836B6172738C65CAA2295EB /* NativeHealthWorkspaceGoals.swift in Sources */ = {isa = PBXBuildFile; fileRef = 210E5FC3EE2C6FEE6998D01B; };
+        D7BAD18E29703EB87EE75FA5 /* NativeHealthWorkspaceRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5B2EF7EC43E4ECF791A0E1; };
+        3F29004810CA1872E91A8584 /* NativeHealthWorkspaceSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46759129666A80AAE525C3B8; };
+        823EE3496698DAF8416A43D8 /* NativeHealthWorkspaceSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E51AD9CE06D46E819596E6; };
+        9D707D009C9B8102A310CF14 /* NativeHealthWorkspaceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC360D1B8681B3F923B2A3; };
+        03B9C7C94FAB6C592AB0AD37 /* NativeHealthWorkspaceWeight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E516B13620D33F33C68AE76; };
+        5235B0AC7904B429944735E4 /* NativeHomeWorkspaceCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8DA0854BFBF4AB970F11DFE; };
+        2091AD836E760326F5F0701D /* NativeLifeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D61B06E5D911B023EA963E7; };
+        64FD40EA712DD003AD1B148D /* NativeLifeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0115646614347455E03323DD; };
+        19C56106AD3844C1DD8D7E69 /* NativeNotificationsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C6D7A7919FD44F7036DB640; };
+        48E7E795783D17BA073A4DA1 /* NativeNutritionFoods.swift in Sources */ = {isa = PBXBuildFile; fileRef = A89914B385A13F0878EA9B9F; };
+        02AF4D812D7A70379E99A2E6 /* NativeNutritionInsights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85528E3FA5AA3F263BB98FA3; };
+        01EA0F3F7F2989F72DB236BA /* NativeNutritionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D013849D39636AC7BEAE91B4; };
+        954899F43163E2ADC7DA3FF2 /* NativeNutritionReuseTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7053CC46C7996DE32ECA08A; };
+        C4EBE5AFDF2870CDCFB8B8FB /* NativeNutritionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D350A761AEA0F370CF2754; };
+        28C01C4A1C4570DBE966D413 /* NativeSettingsWorkspaceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C65DBAE089A4E8842273344; };
+        B470E707542219E0257C2797 /* NativeSyncSettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2872DD15DAA3286E23955A8D; };
+        F6A74D551D78065AB2CC3881 /* NativeWorkspaceCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54B84345AD4BC9EE2CE8A1CB; };
+        67D5A4E75B0E9AF08100E78B /* NativeWorkspacePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE1B0D36AF29E2B082047E0; };
+        27FCCD1DB8F80EF1779434E6 /* NativeWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C3F5BEB1FB125BF1ABDE2A; };
+        5DB194E172B4DBDE5A86D51C /* NativeAdministrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 792C326D0EF561A3BAD8C621; };
+        7E9E72E7554B0763C15C8B96 /* NativeBackupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 003DC7026ACD759AED065C9A; };
+        8A1BEEA8FC3C888CFF4A8900 /* NativeFinanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1883197C56968EFA1D82B4; };
+        106B4A0276BAA8336D6C80D9 /* NativeHealthWorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AC6A646302D8D11C49F3658; };
+        618BD70DE395E90EC9725F15 /* NativeLifeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57DC3CA77F9023013C22E2E7; };
+        41F342E08FF656A7226A036A /* NativeNutritionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C69EBEB31C61FE29DA3D8AFD; };
+        6ECE569084B6250D3DCE11AA /* NativeWorkspaceCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7122A2440E079A3EF51107F; };
+        3C0B77DC8051BD885780CD47 /* NativeWorkspacePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FD381963258FC44FDE3534; };
+        C17D73D88A2C675A6C4D93DC /* NativePlatformTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9850257DB6624E7FEDA09BBC; };
+        67AD397AFD0C737E4558AD36 /* NativeNutritionCamera.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1A03EA636EEBD159F6F490; };
+        5F2C4AAC6F018F5E8046680D /* NativeQuickEntryDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = D463AA9999DC42C2511248A7; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +103,42 @@
         B1000000000000000000000A /* HealthSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSyncTests.swift; sourceTree = "<group>"; };
         B1000000000000000000000B /* NativeAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAPITests.swift; sourceTree = "<group>"; };
         B10000000000000000000020 /* NativeAppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppModelTests.swift; sourceTree = "<group>"; };
+        4F3097732A0375AB808EE18F /* NativeAdministrationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAdministrationViews.swift; sourceTree = "<group>"; };
+        F1FFF12938530FAF2B038CE8 /* NativeBackupCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeBackupCodec.swift; sourceTree = "<group>"; };
+        645AD63C1EE51C5AFAA09853 /* NativeBackupViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeBackupViews.swift; sourceTree = "<group>"; };
+        8EB4BCA0C995661264467DDA /* NativeFinanceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFinanceViews.swift; sourceTree = "<group>"; };
+        085FBF7697728A5E1F0C536F /* NativeHealthWorkspaceAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceAssistant.swift; sourceTree = "<group>"; };
+        210E5FC3EE2C6FEE6998D01B /* NativeHealthWorkspaceGoals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceGoals.swift; sourceTree = "<group>"; };
+        6C5B2EF7EC43E4ECF791A0E1 /* NativeHealthWorkspaceRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceRecords.swift; sourceTree = "<group>"; };
+        46759129666A80AAE525C3B8 /* NativeHealthWorkspaceSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceSupport.swift; sourceTree = "<group>"; };
+        55E51AD9CE06D46E819596E6 /* NativeHealthWorkspaceSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceSync.swift; sourceTree = "<group>"; };
+        A0AC360D1B8681B3F923B2A3 /* NativeHealthWorkspaceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceViews.swift; sourceTree = "<group>"; };
+        8E516B13620D33F33C68AE76 /* NativeHealthWorkspaceWeight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceWeight.swift; sourceTree = "<group>"; };
+        F8DA0854BFBF4AB970F11DFE /* NativeHomeWorkspaceCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHomeWorkspaceCards.swift; sourceTree = "<group>"; };
+        3D61B06E5D911B023EA963E7 /* NativeLifeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLifeModels.swift; sourceTree = "<group>"; };
+        0115646614347455E03323DD /* NativeLifeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLifeViews.swift; sourceTree = "<group>"; };
+        3C6D7A7919FD44F7036DB640 /* NativeNotificationsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNotificationsViews.swift; sourceTree = "<group>"; };
+        A89914B385A13F0878EA9B9F /* NativeNutritionFoods.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionFoods.swift; sourceTree = "<group>"; };
+        85528E3FA5AA3F263BB98FA3 /* NativeNutritionInsights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionInsights.swift; sourceTree = "<group>"; };
+        D013849D39636AC7BEAE91B4 /* NativeNutritionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionModels.swift; sourceTree = "<group>"; };
+        D7053CC46C7996DE32ECA08A /* NativeNutritionReuseTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionReuseTemplates.swift; sourceTree = "<group>"; };
+        D6D350A761AEA0F370CF2754 /* NativeNutritionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionViews.swift; sourceTree = "<group>"; };
+        0C65DBAE089A4E8842273344 /* NativeSettingsWorkspaceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSettingsWorkspaceViews.swift; sourceTree = "<group>"; };
+        2872DD15DAA3286E23955A8D /* NativeSyncSettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSyncSettingsViews.swift; sourceTree = "<group>"; };
+        54B84345AD4BC9EE2CE8A1CB /* NativeWorkspaceCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspaceCore.swift; sourceTree = "<group>"; };
+        6CE1B0D36AF29E2B082047E0 /* NativeWorkspacePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspacePersistence.swift; sourceTree = "<group>"; };
+        B1C3F5BEB1FB125BF1ABDE2A /* NativeWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspaceUI.swift; sourceTree = "<group>"; };
+        792C326D0EF561A3BAD8C621 /* NativeAdministrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAdministrationTests.swift; sourceTree = "<group>"; };
+        003DC7026ACD759AED065C9A /* NativeBackupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeBackupTests.swift; sourceTree = "<group>"; };
+        3A1883197C56968EFA1D82B4 /* NativeFinanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFinanceTests.swift; sourceTree = "<group>"; };
+        1AC6A646302D8D11C49F3658 /* NativeHealthWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHealthWorkspaceTests.swift; sourceTree = "<group>"; };
+        57DC3CA77F9023013C22E2E7 /* NativeLifeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLifeTests.swift; sourceTree = "<group>"; };
+        C69EBEB31C61FE29DA3D8AFD /* NativeNutritionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionTests.swift; sourceTree = "<group>"; };
+        D7122A2440E079A3EF51107F /* NativeWorkspaceCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspaceCoreTests.swift; sourceTree = "<group>"; };
+        42FD381963258FC44FDE3534 /* NativeWorkspacePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspacePersistenceTests.swift; sourceTree = "<group>"; };
+        9850257DB6624E7FEDA09BBC /* NativePlatformTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlatformTests.swift; sourceTree = "<group>"; };
+        6F1A03EA636EEBD159F6F490 /* NativeNutritionCamera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNutritionCamera.swift; sourceTree = "<group>"; };
+        D463AA9999DC42C2511248A7 /* NativeQuickEntryDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeQuickEntryDraft.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,11 +184,51 @@
                 B10000000000000000000006,
                 B10000000000000000000007,
                 B10000000000000000000008,
+
+                4F3097732A0375AB808EE18F /* NativeAdministrationViews.swift */,
+                F1FFF12938530FAF2B038CE8 /* NativeBackupCodec.swift */,
+                645AD63C1EE51C5AFAA09853 /* NativeBackupViews.swift */,
+                8EB4BCA0C995661264467DDA /* NativeFinanceViews.swift */,
+                085FBF7697728A5E1F0C536F /* NativeHealthWorkspaceAssistant.swift */,
+                210E5FC3EE2C6FEE6998D01B /* NativeHealthWorkspaceGoals.swift */,
+                6C5B2EF7EC43E4ECF791A0E1 /* NativeHealthWorkspaceRecords.swift */,
+                46759129666A80AAE525C3B8 /* NativeHealthWorkspaceSupport.swift */,
+                55E51AD9CE06D46E819596E6 /* NativeHealthWorkspaceSync.swift */,
+                A0AC360D1B8681B3F923B2A3 /* NativeHealthWorkspaceViews.swift */,
+                8E516B13620D33F33C68AE76 /* NativeHealthWorkspaceWeight.swift */,
+                F8DA0854BFBF4AB970F11DFE /* NativeHomeWorkspaceCards.swift */,
+                3D61B06E5D911B023EA963E7 /* NativeLifeModels.swift */,
+                0115646614347455E03323DD /* NativeLifeViews.swift */,
+                3C6D7A7919FD44F7036DB640 /* NativeNotificationsViews.swift */,
+                A89914B385A13F0878EA9B9F /* NativeNutritionFoods.swift */,
+                85528E3FA5AA3F263BB98FA3 /* NativeNutritionInsights.swift */,
+                D013849D39636AC7BEAE91B4 /* NativeNutritionModels.swift */,
+                D7053CC46C7996DE32ECA08A /* NativeNutritionReuseTemplates.swift */,
+                D6D350A761AEA0F370CF2754 /* NativeNutritionViews.swift */,
+                0C65DBAE089A4E8842273344 /* NativeSettingsWorkspaceViews.swift */,
+                2872DD15DAA3286E23955A8D /* NativeSyncSettingsViews.swift */,
+                54B84345AD4BC9EE2CE8A1CB /* NativeWorkspaceCore.swift */,
+                6CE1B0D36AF29E2B082047E0 /* NativeWorkspacePersistence.swift */,
+                B1C3F5BEB1FB125BF1ABDE2A /* NativeWorkspaceUI.swift */,
+
+                6F1A03EA636EEBD159F6F490 /* NativeNutritionCamera.swift */,
+                D463AA9999DC42C2511248A7 /* NativeQuickEntryDraft.swift */,
             );
             path = Sources;
             sourceTree = "<group>";
         };
-        A50000000000000000000003 /* Tests */ = {isa = PBXGroup; children = (B10000000000000000000020, A20000000000000000000008 /* StepCoreTests.swift */, B10000000000000000000009, B1000000000000000000000A, B1000000000000000000000B,); path = Tests; sourceTree = "<group>"; };
+        A50000000000000000000003 /* Tests */ = {isa = PBXGroup; children = (B10000000000000000000020, A20000000000000000000008 /* StepCoreTests.swift */, B10000000000000000000009, B1000000000000000000000A, B1000000000000000000000B,
+                792C326D0EF561A3BAD8C621 /* NativeAdministrationTests.swift */,
+                003DC7026ACD759AED065C9A /* NativeBackupTests.swift */,
+                3A1883197C56968EFA1D82B4 /* NativeFinanceTests.swift */,
+                1AC6A646302D8D11C49F3658 /* NativeHealthWorkspaceTests.swift */,
+                57DC3CA77F9023013C22E2E7 /* NativeLifeTests.swift */,
+                C69EBEB31C61FE29DA3D8AFD /* NativeNutritionTests.swift */,
+                D7122A2440E079A3EF51107F /* NativeWorkspaceCoreTests.swift */,
+                42FD381963258FC44FDE3534 /* NativeWorkspacePersistenceTests.swift */,
+
+                9850257DB6624E7FEDA09BBC /* NativePlatformTests.swift */,
+            ); path = Tests; sourceTree = "<group>"; };
         A50000000000000000000004 /* Config */ = {isa = PBXGroup; children = (A2000000000000000000000B /* Info.plist */, A2000000000000000000000C /* JiashuHealthProbe.entitlements */,); path = Config; sourceTree = "<group>"; };
         A50000000000000000000005 /* Resources */ = {isa = PBXGroup; children = (A20000000000000000000007 /* Assets.xcassets */,); path = Resources; sourceTree = "<group>"; };
         A50000000000000000000006 /* Frameworks */ = {isa = PBXGroup; children = (A20000000000000000000009 /* HealthKit.framework */, A2000000000000000000000A /* SwiftUI.framework */,); name = Frameworks; sourceTree = "<group>"; };
@@ -179,8 +291,8 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-        A60000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B20000000000000000000001, B20000000000000000000002, B20000000000000000000003, B20000000000000000000004, B20000000000000000000005, B20000000000000000000006, B20000000000000000000007, B20000000000000000000008, A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006,); runOnlyForDeploymentPostprocessing = 0; };
-        A60000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B20000000000000000000020, B20000000000000000000009, B2000000000000000000000A, B2000000000000000000000B, A10000000000000000000008 /* StepCoreTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+        A60000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B20000000000000000000001, B20000000000000000000002, B20000000000000000000003, B20000000000000000000004, B20000000000000000000005, B20000000000000000000006, B20000000000000000000007, B20000000000000000000008, A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006, 77632E805E243C7E476DA401 /* NativeAdministrationViews.swift in Sources */, B57434AE1B931856F2AC2C8F /* NativeBackupCodec.swift in Sources */, 22217A318014C6AD18E80CE3 /* NativeBackupViews.swift in Sources */, EE88805CF29DE4B8ED7E0E5E /* NativeFinanceViews.swift in Sources */, 7ECA82F7626B812C9BACCBEF /* NativeHealthWorkspaceAssistant.swift in Sources */, 9836B6172738C65CAA2295EB /* NativeHealthWorkspaceGoals.swift in Sources */, D7BAD18E29703EB87EE75FA5 /* NativeHealthWorkspaceRecords.swift in Sources */, 3F29004810CA1872E91A8584 /* NativeHealthWorkspaceSupport.swift in Sources */, 823EE3496698DAF8416A43D8 /* NativeHealthWorkspaceSync.swift in Sources */, 9D707D009C9B8102A310CF14 /* NativeHealthWorkspaceViews.swift in Sources */, 03B9C7C94FAB6C592AB0AD37 /* NativeHealthWorkspaceWeight.swift in Sources */, 5235B0AC7904B429944735E4 /* NativeHomeWorkspaceCards.swift in Sources */, 2091AD836E760326F5F0701D /* NativeLifeModels.swift in Sources */, 64FD40EA712DD003AD1B148D /* NativeLifeViews.swift in Sources */, 19C56106AD3844C1DD8D7E69 /* NativeNotificationsViews.swift in Sources */, 48E7E795783D17BA073A4DA1 /* NativeNutritionFoods.swift in Sources */, 02AF4D812D7A70379E99A2E6 /* NativeNutritionInsights.swift in Sources */, 01EA0F3F7F2989F72DB236BA /* NativeNutritionModels.swift in Sources */, 954899F43163E2ADC7DA3FF2 /* NativeNutritionReuseTemplates.swift in Sources */, C4EBE5AFDF2870CDCFB8B8FB /* NativeNutritionViews.swift in Sources */, 28C01C4A1C4570DBE966D413 /* NativeSettingsWorkspaceViews.swift in Sources */, B470E707542219E0257C2797 /* NativeSyncSettingsViews.swift in Sources */, F6A74D551D78065AB2CC3881 /* NativeWorkspaceCore.swift in Sources */, 67D5A4E75B0E9AF08100E78B /* NativeWorkspacePersistence.swift in Sources */, 27FCCD1DB8F80EF1779434E6 /* NativeWorkspaceUI.swift in Sources */, 67AD397AFD0C737E4558AD36 /* NativeNutritionCamera.swift in Sources */, 5F2C4AAC6F018F5E8046680D /* NativeQuickEntryDraft.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+        A60000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B20000000000000000000020, B20000000000000000000009, B2000000000000000000000A, B2000000000000000000000B, A10000000000000000000008 /* StepCoreTests.swift in Sources */, 5DB194E172B4DBDE5A86D51C /* NativeAdministrationTests.swift in Sources */, 7E9E72E7554B0763C15C8B96 /* NativeBackupTests.swift in Sources */, 8A1BEEA8FC3C888CFF4A8900 /* NativeFinanceTests.swift in Sources */, 106B4A0276BAA8336D6C80D9 /* NativeHealthWorkspaceTests.swift in Sources */, 618BD70DE395E90EC9725F15 /* NativeLifeTests.swift in Sources */, 41F342E08FF656A7226A036A /* NativeNutritionTests.swift in Sources */, 6ECE569084B6250D3DCE11AA /* NativeWorkspaceCoreTests.swift in Sources */, 3C0B77DC8051BD885780CD47 /* NativeWorkspacePersistenceTests.swift in Sources */, C17D73D88A2C675A6C4D93DC /* NativePlatformTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */

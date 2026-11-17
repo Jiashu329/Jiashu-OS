@@ -8,21 +8,118 @@ import { verifyPassword } from './password-hash.ts';
 
 const MAX_LOGIN_BYTES = 16384;
 const MAX_SESSION_SECONDS = 30 * 24 * 60 * 60;
-const ROUTES: Readonly<Record<string, readonly string[]>> = {
-  '/api/native/overview': ['GET'],
+// Explicit method allowlist: each route retains its existing business authorization.
+export const NATIVE_API_ROUTES: Readonly<Record<string, readonly string[]>> = {
+  '/api/native/access': ['GET', 'POST'],
+  '/api/native/admin/users': ['GET', 'POST'],
+  '/api/native/ai/settings': ['DELETE', 'GET', 'PUT'],
+  '/api/native/ai/settings/test': ['POST'],
+  '/api/native/backup': ['GET', 'POST'],
+  '/api/native/data/backup': ['GET', 'POST'],
+  '/api/native/finance': ['GET'],
+  '/api/native/finance/accounts': ['POST'],
+  '/api/native/finance/books': ['GET'],
+  '/api/native/finance/export': ['GET'],
+  '/api/native/finance/goals': ['GET', 'POST'],
+  '/api/native/finance/review': ['GET'],
+  '/api/native/finance/review/close': ['POST'],
+  '/api/native/finance/runway': ['GET', 'PUT'],
   '/api/native/health': ['GET'],
-  '/api/native/health/import': ['GET', 'POST'],
-  '/api/native/health/import/preview': ['POST'],
+  '/api/native/health/actions': ['GET', 'PUT'],
+  '/api/native/health/assistant': ['GET', 'POST'],
+  '/api/native/health/export': ['GET'],
+  '/api/native/health/foods': ['GET'],
+  '/api/native/health/foods/manage': ['GET', 'POST'],
   '/api/native/health/goals': ['GET', 'PUT'],
   '/api/native/health/goals/progress': ['GET'],
-  '/api/native/health/records': ['GET', 'POST'],
+  '/api/native/health/import': ['GET', 'POST'],
+  '/api/native/health/import/preview': ['POST'],
   '/api/native/health/nutrition': ['GET', 'POST'],
-  '/api/native/health/actions': ['GET', 'PUT'],
+  '/api/native/health/nutrition/batch': ['POST'],
+  '/api/native/health/nutrition/copy': ['POST'],
+  '/api/native/health/nutrition/favorites': ['DELETE', 'GET', 'POST'],
+  '/api/native/health/nutrition/foods': ['GET'],
+  '/api/native/health/nutrition/goals': ['GET', 'PUT'],
+  '/api/native/health/nutrition/needs': ['POST'],
+  '/api/native/health/nutrition/parse': ['POST'],
+  '/api/native/health/nutrition/photo': ['POST'],
+  '/api/native/health/nutrition/reuse': ['GET', 'POST'],
+  '/api/native/health/nutrition/review': ['GET'],
+  '/api/native/health/nutrition/status': ['GET', 'PATCH'],
+  '/api/native/health/nutrition/templates': ['GET', 'POST'],
+  '/api/native/health/records': ['GET', 'POST'],
   '/api/native/health/review': ['GET'],
-  '/api/native/health/weight-plan': ['GET'],
-  '/api/native/sync/channel': ['GET', 'PUT', 'DELETE'],
+  '/api/native/health/weight-plan': ['GET', 'PUT'],
+  '/api/native/health/weight-plan/cycles': ['GET', 'POST'],
+  '/api/native/life/douban': ['GET'],
+  '/api/native/life/douban/classification': ['PUT'],
+  '/api/native/life/douban/connection': ['PUT'],
+  '/api/native/life/douban/cover': ['GET'],
+  '/api/native/life/douban/cover-selection': ['PUT'],
+  '/api/native/life/douban/imdb-ratings': ['POST'],
+  '/api/native/life/douban/import': ['POST'],
+  '/api/native/life/douban/library': ['POST', 'PUT'],
+  '/api/native/life/douban/metadata': ['POST', 'PUT'],
+  '/api/native/life/douban/reset': ['POST'],
+  '/api/native/life/douban/sync': ['POST'],
+  '/api/native/life/douban/tmdb': ['POST'],
+  '/api/native/media/tmdb/settings': ['DELETE', 'GET', 'PUT'],
+  '/api/native/media/tmdb/settings/test': ['POST'],
+  '/api/native/notifications': ['GET', 'POST'],
+  '/api/native/overview': ['GET'],
+  '/api/native/session': ['GET'],
+  '/api/native/sync/channel': ['DELETE', 'GET', 'PUT'],
+  '/api/native/sync/config': ['GET'],
+  '/api/native/sync/devices': ['GET', 'POST'],
+  '/api/native/sync/status': ['GET'],
+  '/api/native/sync/template': ['GET'],
 };
 const AUTH_PATHS = ['/api/native/auth/login', '/api/native/auth/refresh', '/api/native/auth/logout'];
+type NativeParameter = 'id' | 'record' | 'hash';
+const DYNAMIC_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly string[]; parameters: readonly NativeParameter[] }> = [
+  { pattern: /^\/api\/native\/access\/([^/]+)$/, methods: ['PATCH'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/admin\/users\/([^/]+)$/, methods: ['PATCH'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/accounts\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/accounts\/([^/]+)\/balances$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/accounts\/([^/]+)\/balances\/([^/]+)$/, methods: ['POST'], parameters: ['id', 'id'] },
+  { pattern: /^\/api\/native\/finance\/accounts\/([^/]+)\/balances\/([^/]+)\/preview$/, methods: ['POST'], parameters: ['id', 'id'] },
+  { pattern: /^\/api\/native\/finance\/books\/([^/]+)\/activity$/, methods: ['GET'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/books\/([^/]+)\/invitations$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/books\/([^/]+)\/members$/, methods: ['GET'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/books\/([^/]+)\/members\/([^/]+)$/, methods: ['POST'], parameters: ['id', 'id'] },
+  { pattern: /^\/api\/native\/finance\/books\/invitations\/([^/]+)\/respond$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/finance\/goals\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/import\/([^/]+)\/revert$/, methods: ['POST'], parameters: ['hash'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)\/history$/, methods: ['GET'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)\/restore$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/templates\/([^/]+)$/, methods: ['GET', 'PUT', 'DELETE'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/templates\/([^/]+)\/preview$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/records\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['record'] },
+  { pattern: /^\/api\/native\/health\/records\/([^/]+)\/history$/, methods: ['GET'], parameters: ['record'] },
+  { pattern: /^\/api\/native\/sync\/devices\/([^/]+)$/, methods: ['DELETE'], parameters: ['id'] },
+];
+
+function validParameter(raw: string, kind: NativeParameter): boolean {
+  let value: string;
+  try { value = decodeURIComponent(raw); } catch { return false; }
+  if (!value || value.length > 512 || /[\u0000-\u001f\u007f%\\?#]/.test(value)
+    || value.split('/').some(part => part === '.' || part === '..')) return false;
+  if (kind === 'hash') return /^[a-f0-9]{64}$/.test(value);
+  if (kind === 'record') return /^(steps|sleep|active_energy):\d{4}-\d{2}-\d{2}$/.test(value)
+    || /^(weight|lean_body_mass):[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,159}$/.test(value);
+  return !value.includes('/') && value === value.trim();
+}
+
+/** No wildcard proxy: new server routes require an explicit native review. */
+export function nativeAPIMethods(path: string): readonly string[] | null {
+  if (Object.hasOwn(NATIVE_API_ROUTES, path)) return NATIVE_API_ROUTES[path];
+  for (const route of DYNAMIC_ROUTES) {
+    const match = route.pattern.exec(path);
+    if (match && route.parameters.every((kind, index) => validParameter(match[index + 1], kind))) return route.methods;
+  }
+  return null;
+}
 interface NativeClaims { sub: string; revision: number; issuedAt: number; expiresAt: number; nonce: string }
 interface LoginLimiter { consume(peer: string, now: number): boolean; successful(peer: string, attemptedAt?: number): void }
 type SanitizeHeaders = (headers: IncomingHttpHeaders, config: SelfhostAuthConfig, user: LocalUser) => IncomingHttpHeaders;
@@ -112,10 +209,11 @@ export function createNativeGateway(config: SelfhostAuthConfig, downstream: (req
     if (req.headers.origin !== undefined || req.headers.cookie !== undefined) {
       json(res, 403, { error: '请从原生 App 登录并访问。', code: 'NATIVE_REQUEST_REQUIRED' }); return;
     }
-    if (rawPath !== url.pathname || /%|\/\/|\\/.test(rawPath) || url.hash || !rawPath.startsWith('/api/native/')) {
+    if (rawPath !== url.pathname || /\/\/|\\/.test(rawPath) || url.hash || !rawPath.startsWith('/api/native/')) {
       json(res, 400, { error: 'App 请求地址无效。', code: 'NATIVE_INVALID_PATH' }); return;
     }
-    const auth = AUTH_PATHS.includes(url.pathname), methods = auth ? ['POST'] : ROUTES[url.pathname];
+    const auth = AUTH_PATHS.includes(url.pathname), methods = auth ? ['POST'] : nativeAPIMethods(url.pathname);
+    if (rawPath.includes('%') && !methods) { json(res, 400, { error: 'App 请求地址无效。', code: 'NATIVE_INVALID_PATH' }); return; }
     if (!methods) { json(res, 404, { error: '找不到这个 App 接口。', code: 'NATIVE_NOT_FOUND' }); return; }
     if (!methods.includes(req.method ?? 'GET')) { json(res, 405, { error: '请求方法不受支持。', code: 'NATIVE_METHOD_NOT_ALLOWED' }, { Allow: methods.join(', ') }); return; }
     if (auth && url.search) { json(res, 400, { error: '登录请求地址无效。', code: 'NATIVE_INVALID_PATH' }); return; }
@@ -176,6 +274,10 @@ export function createNativeGateway(config: SelfhostAuthConfig, downstream: (req
     req.headers = headers;
     req.rawHeaders = Object.entries(headers).flatMap(([name, value]) => Array.isArray(value) ? value.flatMap(item => [name, item]) : value === undefined ? [] : [name, value]);
     req.url = url.pathname.replace('/api/native/', '/api/') + url.search;
+    if (url.pathname === '/api/native/admin/users' || url.pathname.startsWith('/api/native/admin/users/')) {
+      if (!options.manageUsers) { unavailable(res); return; }
+      await options.manageUsers(req, res, user); return;
+    }
     await downstream(req, res);
   };
 }

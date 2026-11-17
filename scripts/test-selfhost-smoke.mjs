@@ -107,7 +107,17 @@ class Browser {
 }
 
 async function json(response, status, label) {
-  assert.equal(response.status, status, label + ' status');
+  let code = '';
+  if (response.status !== status) {
+    // Log only fixed error-code families, never response bodies, credentials,
+    // filled form values or underlying provider/storage exception messages.
+    try {
+      const failure = await response.clone().json();
+      if (typeof failure?.code === 'string' && failure.code.length <= 96
+        && /^(?:(?:NATIVE|HEALTH|SYNC|DOUBAN|FINANCE|BACKUP|AI|TMDB|LOCAL|ACCOUNT)_[A-Z0-9_]+|INVALID_DOUBAN_INPUT|SIGN_IN_REQUIRED)$/.test(failure.code)) code = ' (' + failure.code + ')';
+    } catch { /* Non-JSON failures retain the safe status-only assertion. */ }
+  }
+  assert.equal(response.status, status, label + ' status' + code);
   assert.match(response.headers.get('content-type') ?? '', /application\/json/, label + ' content type');
   return response.json();
 }
@@ -344,7 +354,7 @@ async function nativeAcceptance(browser) {
       { id: 'native-smoke-sleep', metric: 'sleep', value: 7.5, unit: 'hours', startDate: '2026-01-01T22:30:00+08:00', endDate: nativeDate + 'T06:00:00+08:00', source: 'native-synthetic-watch', aggregation: 'daily',
         sleepStages: { unspecified: 0.5, core: 4, deep: 1, rem: 2, awake: 0, inBed: 0 },
         sleepTiming: { onset: '2026-01-01T22:30:00+08:00', wake: nativeDate + 'T06:00:00+08:00', clipped: false, method: 'longest-sleep-group-v1' } },
-      { id: 'native-smoke-weight', metric: 'weight', value: 73.4, unit: 'kg', startDate: nativeDate + 'T08:00:00+08:00', source: 'native-synthetic-scale', aggregation: 'sample' },
+      { id: 'native-smoke/weight', metric: 'weight', value: 73.4, unit: 'kg', startDate: nativeDate + 'T08:00:00+08:00', source: 'native-synthetic-scale', aggregation: 'sample' },
       { id: 'native-smoke-lean', metric: 'lean_body_mass', value: 54.3, unit: 'kg', startDate: nativeDate + 'T08:00:00+08:00', source: 'native-synthetic-scale', aggregation: 'sample' },
     ],
   };
@@ -461,6 +471,8 @@ async function nativeAcceptance(browser) {
   const browserFoods = await json(await browser.request('/api/health/nutrition?date=' + nativeDate), 200, 'Native and browser share the existing account');
   assert.equal(browserFoods.entries[0].id, nutrition.entry.id);
 
+  await nativeWorkspaceAcceptance(request, write, token, nativeDate, nutrition.entry.id);
+
   const refreshed = await json(await request('/auth/refresh', token, { method: 'POST' }), 200, 'Native session refresh');
   assert.deepEqual(refreshed.user, session.user);
   await json(await request('/auth/logout', token, { method: 'POST' }), 200, 'Native durable logout');
@@ -470,6 +482,82 @@ async function nativeAcceptance(browser) {
   }
   assert.equal((await browser.request('/api/session')).status, 200, 'Native logout preserves the independent browser session');
   return [token, refreshed.accessToken];
+}
+
+async function nativeWorkspaceAcceptance(request, write, token, nativeDate, nutritionId) {
+  const identity = await json(await request('/session', token), 200, 'Full native current-account identity');
+  assert.equal(identity.userId, ownerId); assert.equal(identity.isOwner, true);
+  const users = await json(await request('/admin/users', token), 200, 'Native administrator user management');
+  assert.equal(users.currentUserId, ownerId); assert.ok(Array.isArray(users.users)); assert.equal(users.csrfToken, undefined);
+  const notifications = await json(await request('/notifications', token), 200, 'Native notifications');
+  assert.ok(Number.isInteger(notifications.unreadCount));
+  const sync = await json(await request('/sync/devices', token), 200, 'Native sync devices');
+  assert.ok(Array.isArray(sync.devices));
+  await json(await request('/sync/status', token), 200, 'Native sync diagnostics');
+  const ai = await json(await request('/ai/settings', token), 200, 'Native AI service configuration');
+  assert.equal(ai.canManage, true); assert.equal(ai.settings.configured, false);
+  const media = await json(await request('/media/tmdb/settings', token), 200, 'Native media service configuration');
+  assert.equal(media.canManage, true);
+  const foods = await json(await request('/health/foods?limit=2', token), 200, 'Native unified food library');
+  assert.ok(Array.isArray(foods.foods));
+  await json(await request('/health/nutrition/reuse', token), 200, 'Native nutrition reuse');
+  const nutritionHistory = await json(await request('/health/nutrition/' + encodeURIComponent(nutritionId) + '/history', token), 200, 'Native nutrition record history');
+  assert.ok(nutritionHistory);
+  const nativeRecords = await json(await request('/health/records?from=' + nativeDate + '&to=' + nativeDate, token), 200, 'Native health record workspace');
+  const recordKey = (nativeRecords.records.find(row => row.recordKey.includes('/')) ?? nativeRecords.records[0]).recordKey;
+  const detail = await json(await request('/health/records/' + encodeURIComponent(recordKey), token), 200, 'Native encoded health resource detail');
+  assert.equal(detail.record.recordKey, recordKey);
+  await json(await request('/health/records/' + encodeURIComponent(recordKey) + '/history', token), 200, 'Native health resource history');
+
+  const operation = randomUUID();
+  const account = await json(await write('/finance/accounts', token, {
+    ledger: 'personal', name: 'Native synthetic account', type: 'bank', currency: 'CNY', amount: '90071992547409.93', asOfDate: nativeDate, note: '',
+  }, { 'Idempotency-Key': operation }), 201, 'Native finance account create');
+  assert.equal(account.account.balanceMinor, '9007199254740993', 'Native finance preserves exact integer money strings');
+  const id = encodeURIComponent(account.account.id);
+  const details = await json(await request('/finance/accounts/' + id + '?ledger=personal', token), 200, 'Native finance dynamic account detail');
+  assert.equal(details.account.id, account.account.id);
+  const updated = await json(await write('/finance/accounts/' + id, token, { name: 'Native account updated', expectedRevision: details.account.metadataRevision }, {}, 'PATCH'), 200, 'Native finance metadata revision');
+  assert.equal(updated.account.name, 'Native account updated');
+  const balance = await json(await write('/finance/accounts/' + id + '/balances', token, { amount: '90071992547409.94', asOfDate: nativeDate, note: 'synthetic balance' }, { 'Idempotency-Key': randomUUID() }), 201, 'Native balance append');
+  assert.equal(balance.account.balanceMinor, '9007199254740994');
+  const overview = await json(await request('/finance?ledger=personal', token), 200, 'Native finance overview');
+  assert.ok(overview.accounts.some(row => row.id === account.account.id));
+  await json(await request('/finance/books', token), 200, 'Native family book selector');
+  await json(await request('/finance/books/own/members', token), 200, 'Native family members');
+  await json(await request('/finance/goals?ledger=personal', token), 200, 'Native finance goals');
+  await json(await request('/finance/runway?ledger=personal&currency=CNY', token), 200, 'Native emergency fund');
+  const review = await json(await request('/finance/review?ledger=personal&currency=CNY&month=2026-01', token), 200, 'Native finance monthly review');
+  assert.ok(typeof review.close.previewHash === 'string');
+  const closed = await json(await write('/finance/review/close', token, { ledger: 'personal', currency: 'CNY', month: '2026-01',
+    expectedVersion: 0, previewHash: review.close.previewHash, reason: 'Native synthetic close' }, { 'Idempotency-Key': randomUUID() }), 201, 'Native finance close with exact report preview');
+  assert.equal(closed.version, 1);
+  const financeExport = await request('/finance/export?ledger=personal', token);
+  assert.match(financeExport.headers.get('content-disposition') ?? '', /attachment/);
+  assert.equal((await json(financeExport, 200, 'Native finance export')).accounts.length, 1);
+
+  const connection = await json(await write('/life/douban/connection', token, { profile: 'native-smoke', expectedRevision: 0 }, {}, 'PUT'), 200, 'Native media source configuration');
+  assert.equal(connection.connection.profileId, 'native-smoke');
+  const item = { domain: 'book', subjectId: '1234567', title: 'Native synthetic book', url: 'https://book.douban.com/subject/1234567/',
+    kind: 'book', coverUrl: null, rating: 4, markedDate: nativeDate, comment: 'Synthetic completed reading', publishedAt: null, source: 'import' };
+  const preview = await json(await write('/life/douban/import', token, { action: 'preview', profile: 'native-smoke', items: [item] }), 200, 'Native media import preview');
+  const imported = await json(await write('/life/douban/import', token, { action: 'commit', profile: 'native-smoke', items: [item],
+    expectedSnapshotHash: preview.preview.snapshotHash, expectedDataEpoch: preview.preview.dataEpoch, requestId: randomUUID(), confirmed: true }), 200, 'Native explicitly confirmed media import');
+  assert.equal(imported.receipt.added, 1);
+  const library = await json(await request('/life/douban?kind=book', token), 200, 'Native media library');
+  assert.equal(library.items[0].title, item.title);
+  const saved = await json(await write('/life/douban/library', token, { profileId: 'native-smoke', domain: 'book', subjectId: item.subjectId,
+    expectedDataEpoch: library.dataEpoch, expectedLocalRevision: library.items[0].local.revision, note: 'Native personal note', tags: ['synthetic'], hidden: false }, {}, 'PUT'), 200, 'Native media local organization');
+  assert.equal(saved.item.local.note, 'Native personal note');
+
+  const backupResponse = await request('/data/backup', token);
+  assert.match(backupResponse.headers.get('content-disposition') ?? '', /attachment/);
+  const backup = await json(backupResponse, 200, 'Native complete backup download');
+  assert.equal(backup.version, 2);
+  const restorePreview = await json(await write('/data/backup', token, { action: 'preview', backup }), 200, 'Native complete backup restore preview');
+  assert.equal(restorePreview.total.conflicts, 0);
+  const restored = await json(await write('/data/backup', token, { action: 'restore', backup, previewHash: restorePreview.previewHash }), 200, 'Native explicitly confirmed backup restore');
+  assert.equal(restored.added, 0);
 }
 
 async function main() {

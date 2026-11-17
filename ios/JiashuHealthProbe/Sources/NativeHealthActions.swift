@@ -250,7 +250,7 @@ struct NativeWeeklyActionEnvelope: Decodable {
 
 /// Captures both the execution week and its revision when editing starts.
 /// Submission and retries use this snapshot even if the calendar week changes.
-struct NativeWeeklyActionCommand: Encodable, Equatable {
+struct NativeWeeklyActionCommand: Codable, Equatable {
     let weekStart: String
     let text: String
     let status: NativeWeeklyActionStatus
@@ -259,12 +259,60 @@ struct NativeWeeklyActionCommand: Encodable, Equatable {
 
     func encodedBody() throws -> Data {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 200, feedback.count <= 500 else {
+        guard NativeWeeklyReviewWeek.isMonday(weekStart), (0...9_007_199_254_740_991).contains(expectedRevision),
+              !trimmed.isEmpty, trimmed.utf16.count <= 200, feedback.utf16.count <= 500,
+              !text.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+              !feedback.unicodeScalars.contains(where: { ($0.value < 32 && $0.value != 9 && $0.value != 10 && $0.value != 13) || $0.value == 127 }) else {
             throw NativeActionInputError.invalid("请填写一项200字以内的行动，反馈最多500字。")
         }
         let object: [String: Any] = ["weekStart": weekStart, "text": trimmed,
             "status": status.rawValue, "feedback": feedback, "expectedRevision": expectedRevision]
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    /// PUT uses compare-and-swap rather than an operation receipt. A lost
+    /// response is acknowledged only when the next revision matches all fields.
+    func matchesSaved(_ action: NativeWeeklyActionEntry?) -> Bool {
+        guard let action,(0...9_007_199_254_740_991).contains(expectedRevision) else { return false }
+        return action.weekStart == weekStart && action.revision == expectedRevision + 1 && action.status == status &&
+            action.text == text.trimmingCharacters(in:.whitespacesAndNewlines) &&
+            action.feedback == feedback.trimmingCharacters(in:.whitespacesAndNewlines)
+    }
+}
+
+enum NativeWeeklyReviewWeek {
+    static func date(_ value: String) -> Date? {
+        guard value.count == 10,value >= "1969-12-29",value <= "2100-12-31" else { return nil }
+        let formatter = DateFormatter(); formatter.calendar = NativeActionDates.calendar
+        formatter.timeZone = NativeActionDates.timeZone; formatter.locale = Locale(identifier:"en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"; formatter.isLenient = false
+        guard let date = formatter.date(from:value),NativeActionDates.day(date) == value else { return nil }; return date
+    }
+    static func isMonday(_ value: String) -> Bool {
+        guard let date = date(value) else { return false }
+        return NativeActionDates.day(NativeActionDates.monday(date)) == value
+    }
+    static func initial(_ value: String?,now: Date = Date()) -> String {
+        let current = NativeActionDates.day(NativeActionDates.monday(now))
+        guard let value,isMonday(value),value <= current else { return current }; return value
+    }
+}
+
+/// An unfinished draft and a submitted request are distinct recovery states.
+/// Neither loading nor restoring this value performs a network mutation.
+struct NativeWeeklyActionRecovery: Codable, Equatable {
+    let ownerID: String
+    let command: NativeWeeklyActionCommand
+    let baseline: NativeWeeklyActionCommand?
+    let submitted: Bool
+
+    func validated(ownerID: String) throws -> NativeWeeklyActionRecovery {
+        guard !ownerID.isEmpty,self.ownerID == ownerID,NativeWeeklyReviewWeek.isMonday(command.weekStart),(0...9_007_199_254_740_991).contains(command.expectedRevision),
+              baseline.map({ $0.weekStart == command.weekStart && $0.expectedRevision == command.expectedRevision }) ?? true else {
+            throw NativeActionInputError.invalid("本机行动不属于当前账号或原周版本已损坏，未恢复也未提交。")
+        }
+        if submitted { _ = try command.encodedBody() }
+        return self
     }
 }
 

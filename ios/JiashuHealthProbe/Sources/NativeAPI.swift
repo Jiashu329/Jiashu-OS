@@ -7,6 +7,7 @@ final class NativeAPI: @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
     private let redirectGuard: NativeRedirectGuard
+    @MainActor var workspaceAuthenticationFailure: ((String) -> Void)?
 
     init(baseURL: URL = NativeAPI.websiteURL, configuration: URLSessionConfiguration? = nil) {
         self.baseURL = baseURL
@@ -136,16 +137,66 @@ final class NativeAPI: @unchecked Sendable {
     /// caller-supplied identity, cookie and origin headers are never accepted.
     func request<Response: Decodable>(path: String, method: String = "GET", token: String? = nil,
                                       body: Data? = nil, headers: [String: String] = [:]) async throws -> Response {
+        let result = try await transport(path: path, method: method, token: token, body: body,
+                                         contentType: "application/json", headers: headers)
+        guard result.mimeType == "application/json" else { throw NativeAPIError.invalidResponse }
+        do { return try JSONDecoder().decode(Response.self, from: result.data) }
+        catch { throw NativeAPIError.invalidResponse }
+    }
+
+    func json(path: String, method: String = "GET", token: String, body: NativeJSON? = nil,
+              headers: [String: String] = [:]) async throws -> NativeJSON {
+        do { return try await request(path: path, method: method, token: token, body: body?.encodedData(), headers: headers) }
+        catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+    }
+
+    /// Downloads stay on the authenticated origin; the caller shares a local
+    /// file rather than exposing a bearer token in an export URL.
+    func download(path: String, token: String, headers: [String: String] = [:]) async throws -> NativeDownload {
+        do { return try await transport(path: path, method: "GET", token: token, body: nil,
+                                        contentType: "application/json", headers: headers) }
+        catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+    }
+
+    func upload(path: String, method: String = "POST", token: String, data: Data,
+                contentType: String = "application/json", headers: [String: String] = [:]) async throws -> NativeJSON {
+        do {
+            let result = try await transport(path: path, method: method, token: token, body: data,
+                                             contentType: contentType, headers: headers)
+            guard result.mimeType == "application/json" else { throw NativeAPIError.invalidResponse }
+            do { return try JSONDecoder().decode(NativeJSON.self, from: result.data) }
+            catch { throw NativeAPIError.invalidResponse }
+        } catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+    }
+
+    private func reportWorkspaceAuthentication(_ error: Error, token: String) async {
+        guard let error = error as? NativeAPIError, error.isAuthenticationFailure,
+              error.code == "NATIVE_SIGN_IN_REQUIRED" else { return }
+        await MainActor.run { workspaceAuthenticationFailure?(token) }
+    }
+
+    private func transport(path: String, method: String, token: String?, body: Data?,
+                           contentType: String, headers: [String: String]) async throws -> NativeDownload {
         try Task.checkCancellation()
         let url = try requestURL(path: path)
+        let route = url.path.removingPercentEncoding ?? url.path
+        let bodyLimit: Int
+        switch route {
+        case "/api/native/data/backup", "/api/native/backup": bodyLimit = 16 * 1024 * 1024 + 128 * 1024
+        case "/api/native/health/nutrition/photo": bodyLimit = 3 * 1024 * 1024
+        case "/api/native/life/douban/import": bodyLimit = 4 * 1024 * 1024
+        default: bodyLimit = 512 * 1024
+        }
         guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
-              body.map({ $0.count <= 512 * 1024 }) ?? true else { throw NativeAPIError.invalidRequest }
+              contentType == "application/json", body.map({ $0.count <= bodyLimit }) ?? true else {
+            throw NativeAPIError.invalidRequest
+        }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 30)
         request.httpMethod = method
         request.httpShouldHandleCookies = false
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if body != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if let token {
             guard !token.isEmpty, token.utf8.count <= 2048, token.utf8.allSatisfy({ (33...126).contains($0) }) else {
                 throw NativeAPIError.invalidRequest
@@ -154,8 +205,9 @@ final class NativeAPI: @unchecked Sendable {
         }
         for (key, value) in headers {
             let lower = key.lowercased()
-            guard !["authorization", "cookie", "origin", "host", "x-page-owner"].contains(lower),
-                  !lower.hasPrefix("oai-"), !lower.hasPrefix("x-auth"),
+            guard !["authorization", "cookie", "origin", "host", "x-page-owner", "content-type", "content-length",
+                    "x-jso-native-client", "forwarded", "proxy-authorization", "proxy-authenticate"].contains(lower),
+                  !lower.hasPrefix("oai-"), !lower.hasPrefix("x-auth"), !lower.hasPrefix("x-forwarded-"),
                   !key.contains(where: { $0.isNewline }), !value.contains(where: { $0.isNewline }) else {
                 throw NativeAPIError.invalidRequest
             }
@@ -171,19 +223,32 @@ final class NativeAPI: @unchecked Sendable {
         guard let response = rawResponse as? HTTPURLResponse, response.url == request.url else {
             throw NativeAPIError.invalidResponse
         }
-        guard data.count <= 4 * 1024 * 1024 else { throw NativeAPIError.responseTooLarge }
+        let responseLimit = ["/api/native/data/backup", "/api/native/backup"].contains(route)
+            ? 18 * 1024 * 1024 : route.hasPrefix("/api/native/life/douban") ? 8 * 1024 * 1024 : 4 * 1024 * 1024
+        guard data.count <= responseLimit else { throw NativeAPIError.responseTooLarge }
         guard (200..<300).contains(response.statusCode) else {
             let failure = try? JSONDecoder().decode(NativeServerFailure.self, from: data)
             let retryAfter = response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
             throw NativeAPIError.server(status: response.statusCode, code: failure?.code,
                 message: failure?.error ?? NativeAPIError.message(for: response.statusCode), retryAfter: retryAfter)
         }
-        guard response.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first?
-            .trimmingCharacters(in: .whitespaces).lowercased() == "application/json" else {
-            throw NativeAPIError.invalidResponse
-        }
-        do { return try JSONDecoder().decode(Response.self, from: data) }
-        catch { throw NativeAPIError.invalidResponse }
+        let mime = response.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? "application/octet-stream"
+        let filename = Self.downloadFilename(response.value(forHTTPHeaderField: "Content-Disposition"))
+        return NativeDownload(data: data, filename: filename, mimeType: mime)
+    }
+
+    private static func downloadFilename(_ disposition: String?) -> String? {
+        guard let disposition else { return nil }
+        let parts = disposition.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        let encoded = parts.first(where: { $0.lowercased().hasPrefix("filename*=utf-8''") })
+            .flatMap { String($0.dropFirst("filename*=UTF-8''".count)).removingPercentEncoding }
+        let plain = parts.first(where: { $0.lowercased().hasPrefix("filename=") })
+            .map { String($0.dropFirst("filename=".count)).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+        guard let value = encoded ?? plain, !value.isEmpty, value.utf8.count <= 200,
+              !value.contains("/"), !value.contains("\\"), ![".", ".."].contains(value),
+              !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { return nil }
+        return value
     }
 
     private func validatedSession(_ response: NativeSession) throws -> NativeSession {
@@ -194,19 +259,33 @@ final class NativeAPI: @unchecked Sendable {
     }
 
     private func requestURL(path: String) throws -> URL {
+        let route = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? ""
+        let segments = route.split(separator: "/", omittingEmptySubsequences: false)
+        let recordKey = segments.count > 2 ? String(segments[2]).removingPercentEncoding ?? "" : ""
+        let encodedRecord = segments.count >= 3 && segments.count <= 4 && segments[0] == "health"
+            && segments[1] == "records" && !segments[2].isEmpty
+            && (segments.count == 3 || segments[3] == "history")
+            && ["steps:", "active_energy:", "sleep:", "weight:", "lean_body_mass:"].contains(where: recordKey.hasPrefix)
         guard baseURL.scheme == "https", baseURL.host != nil, baseURL.user == nil, baseURL.password == nil,
               baseURL.query == nil, baseURL.fragment == nil, ["", "/"].contains(baseURL.path),
               !path.isEmpty, path.utf8.count <= 4096, !path.hasPrefix("/"),
               !path.contains("#"), !path.contains("\\"), !path.contains(where: { $0.isNewline }),
               let parts = URLComponents(string: path), parts.scheme == nil, parts.host == nil,
               let decoded = parts.percentEncodedPath.removingPercentEncoding,
-              !decoded.contains("\\"), !decoded.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
-              !parts.percentEncodedPath.lowercased().contains("%2f"),
+              !decoded.contains("\\"), encodedRecord || !decoded.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
+              encodedRecord || !parts.percentEncodedPath.lowercased().contains("%2f"),
+              !parts.percentEncodedPath.lowercased().contains("%25"),
               let url = URL(string: "/api/native/" + path, relativeTo: baseURL)?.absoluteURL,
               url.scheme == baseURL.scheme, url.host == baseURL.host, url.port == baseURL.port,
               url.path.hasPrefix("/api/native/") else { throw NativeAPIError.invalidRequest }
         return url
     }
+}
+
+struct NativeDownload: Sendable {
+    let data: Data
+    let filename: String?
+    let mimeType: String
 }
 
 private struct NativeAcknowledgement: Decodable { let ok: Bool }
