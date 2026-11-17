@@ -99,6 +99,21 @@ struct NativeHealthPeriodStatistics: Equatable {
     }
 }
 
+enum NativeHealthChartCalendar {
+    static func domain(_ range: NativeHealthWorkspaceRange) -> ClosedRange<Date> {
+        let first = NativeHealthWorkspaceFormat.date(range.from)!
+        let last = NativeHealthWorkspaceFormat.date(range.to)!
+        let end = NativeActionDates.calendar.date(byAdding: .day, value: 1, to: last)!
+        return first...end
+    }
+    static func ticks(_ range: NativeHealthWorkspaceRange) -> [Date] {
+        let start = domain(range).lowerBound
+        let last = range.days - 1
+        let offsets = Set([0, last / 3, last * 2 / 3, last]).sorted()
+        return offsets.compactMap { NativeActionDates.calendar.date(byAdding: .day, value: $0, to: start) }
+    }
+}
+
 enum NativeHealthPeriodComparison {
     static func previousRange(for current: NativeHealthWorkspaceRange,now: Date = Date()) throws -> NativeHealthWorkspaceRange {
         guard let start = NativeHealthWorkspaceFormat.date(current.from),
@@ -252,12 +267,12 @@ struct NativeHealthRangeWorkspace: View {
                     if metric == "sleep" {
                         if NativeWorkspaceSleepSummary.validStages(point) {
                             ForEach(NativeWorkspaceSleepSummary.stageKeys,id:\.self) { key in
-                                BarMark(x:.value("日期",date),y:.value("小时",point.stages[key].doubleValue ?? 0))
+                                BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("小时",point.stages[key].doubleValue ?? 0))
                                     .foregroundStyle(by:.value("睡眠分期",stageLabel(key)))
                             }
-                        } else { BarMark(x:.value("日期",date),y:.value("小时",point.value)).foregroundStyle(by:.value("睡眠分期","未分期")) }
+                        } else { BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("小时",point.value)).foregroundStyle(by:.value("睡眠分期","未分期")) }
                     } else if metric == "steps" || metric == "active_energy" {
-                        BarMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
+                        BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("数值",point.value)).foregroundStyle(.teal)
                     } else {
                         LineMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
                         PointMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
@@ -273,8 +288,23 @@ struct NativeHealthRangeWorkspace: View {
                     .foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth:1))
             }
         }
+        .chartXScale(domain: chartDomain)
+        .chartXAxis {
+            AxisMarks(values: loadedRange.map(NativeHealthChartCalendar.ticks) ?? []) { value in
+                AxisGridLine()
+                AxisTick()
+                if let date = value.as(Date.self) {
+                    AxisValueLabel { Text(NativeActionDates.formatted(date, pattern: "M/d")) }
+                }
+            }
+        }
         .chartXSelection(value:$inspectedDate)
         .accessibilityLabel("所选范围的" + NativeHealthWorkspaceFormat.metric(metric) + "，缺失日期留空")
+    }
+    private var chartDomain: ClosedRange<Date> {
+        if let loadedRange { return NativeHealthChartCalendar.domain(loadedRange) }
+        let start = NativeActionDates.calendar.startOfDay(for: Date())
+        return start...start.addingTimeInterval(86_400)
     }
     @ViewBuilder private var inspectedDayReadout: some View {
         if let inspectedDate {

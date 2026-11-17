@@ -90,4 +90,26 @@ final class NativeHealthUXTests: XCTestCase {
         XCTAssertEqual(repeatedDay.recordedDays,1)
         XCTAssertEqual(repeatedDay.recordedDayMean,8)
     }
+    func testChartDomainKeepsEveryRequestedDayIncludingEmptyDates() throws {
+        let from = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-10-19"))
+        let to = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-17"))
+        let range = try NativeHealthWorkspaceRange(from: from, to: to, now: to.addingTimeInterval(3600))
+        let domain = NativeHealthChartCalendar.domain(range)
+        XCTAssertEqual(domain.lowerBound, from)
+        XCTAssertEqual(NativeActionDates.day(domain.upperBound), "2026-11-18")
+        XCTAssertEqual(NativeActionDates.calendar.dateComponents([.day], from: domain.lowerBound, to: domain.upperBound).day, 30)
+        let ticks = NativeHealthChartCalendar.ticks(range)
+        XCTAssertEqual(ticks.first, from)
+        XCTAssertEqual(ticks.last, to)
+        XCTAssertLessThanOrEqual(ticks.count, 4)
+        XCTAssertTrue(ticks.allSatisfy { NativeActionDates.calendar.startOfDay(for: $0) == $0 })
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        XCTAssertEqual(utc.component(.hour, from: domain.lowerBound), 16, "Calendar boundaries remain in Shanghai, not the runner timezone")
+    }
+    func testSingleDayChartHasOneDailyTickAndPositiveWidth() throws {
+        let date = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-17"))
+        let range = try NativeHealthWorkspaceRange(from: date, to: date, now: date.addingTimeInterval(3600))
+        XCTAssertEqual(NativeHealthChartCalendar.ticks(range), [date])
+        XCTAssertEqual(NativeHealthChartCalendar.domain(range).upperBound.timeIntervalSince(date), 86400)
+    }
 }
