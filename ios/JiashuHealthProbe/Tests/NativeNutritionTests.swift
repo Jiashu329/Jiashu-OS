@@ -212,14 +212,17 @@ final class NativeNutritionTests: XCTestCase {
         }
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [NutritionTestProtocol.self]
         let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
-        let context = NativeNutritionContext(api: api, token: "synthetic-token", userID: user)
         let command = NativeNutritionCommand(path: "health/nutrition/batch", title: "保存明细", body: .object(["entries": .array([input()])]))
-        _ = await context.write(command)
-        XCTAssertEqual(context.pending?.requestID, command.requestID)
+        do {
+            let context = NativeNutritionContext(api: api, token: "synthetic-token", userID: user)
+            _ = await context.write(command)
+            XCTAssertEqual(context.pending?.requestID, command.requestID)
+        }
         let reopened = NativeNutritionContext(api: api, token: "synthetic-token", userID: user)
         reopened.restorePending()
         XCTAssertEqual(reopened.pending, command)
-        await reopened.retry()
+        XCTAssertEqual(requests, 1, "Reopening must wait for an explicit retry")
+        await reopened.retry(command)
         XCTAssertNil(reopened.pending)
         XCTAssertEqual(saved.count, 1)
         XCTAssertEqual(requests, 2)
@@ -243,11 +246,63 @@ final class NativeNutritionTests: XCTestCase {
         let command = NativeNutritionCommand(path: "health/nutrition/goals", method: "PUT", title: "修改目标",
             body: .object(["expectedRevision": .number(1), "calories": .string("1800"), "carbs": .null, "protein": .null, "fat": .null]))
         _ = await context.write(command); XCTAssertNotNil(context.pending)
-        await context.retry()
+        await context.retry(command)
         XCTAssertNil(context.pending)
         XCTAssertEqual(writes, 1)
         XCTAssertEqual(revision, 2)
         XCTAssertEqual(context.changes, 1)
+    }
+
+    @MainActor
+    func testConcurrentNutritionContextsPreserveAndRetryTheOriginalBatch() async throws {
+        let host = "nutrition-overlap-" + UUID().uuidString.lowercased() + ".example"
+        let owner = "nutrition-overlap-" + UUID().uuidString
+        let persistence = NativeWorkspacePersistence(userID: owner, scope: "nutrition-pending-command")
+        let gate = PendingSubmissionReplyGate()
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? persistence.clear() }
+        PendingSubmissionURLProtocol.register(host: host, gate: gate) { request in
+            if requests.record(request) == 1 { return (503, Data(#"{"error":"synthetic unavailable"}"#.utf8)) }
+            return (200, Data(#"{"replayed":true}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
+        let first = NativeNutritionContext(api: api, token: "synthetic-token", userID: owner)
+        let second = NativeNutritionContext(api: api, token: "synthetic-token", userID: owner)
+        first.restorePending()
+        second.restorePending()
+        XCTAssertNil(first.pending)
+        XCTAssertNil(second.pending)
+        let original = NativeNutritionCommand(path: "health/nutrition/batch", title: "保存明细", body: .object(["entries": .array([input()])]))
+        let competitor = NativeNutritionCommand(path: "health/nutrition/goals", method: "PUT", title: "修改目标",
+                                                body: .object(["expectedRevision": .integer(3), "calories": .string("1500")]))
+
+        let sending = Task { await first.write(original) }
+        defer { gate.release(); sending.cancel() }
+        try await gate.waitUntilHeld()
+        XCTAssertTrue(second.busy)
+        XCTAssertEqual(second.pending, original)
+        let competed = await second.write(competitor)
+        XCTAssertNil(competed)
+        await second.retry(original)
+        XCTAssertEqual(requests.values.count, 1)
+        XCTAssertEqual(try persistence.load(NativeNutritionCommand.self), original)
+
+        gate.release()
+        let uncertain = await sending.value
+        XCTAssertNil(uncertain)
+        XCTAssertFalse(second.busy)
+        XCTAssertEqual(second.pending, original)
+        await second.retry(original)
+        let replay = requests.values
+        XCTAssertEqual(replay.count, 2)
+        XCTAssertEqual(replay.first, replay.last)
+        XCTAssertEqual(replay.last?.operationID, original.requestID)
+        XCTAssertEqual(replay.last?.body, try original.body.encodedData())
+        XCTAssertNil(first.pending)
+        XCTAssertNil(second.pending)
+        XCTAssertNil(try persistence.load(NativeNutritionCommand.self))
     }
 }
 

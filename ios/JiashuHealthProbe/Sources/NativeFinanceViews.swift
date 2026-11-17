@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Security
 import SwiftUI
@@ -119,7 +120,7 @@ enum NativeFinanceContract {
 
 struct NativeFinanceInputError: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
 
-struct NativeFinancePending: Codable {
+struct NativeFinancePending: Codable, Hashable, Identifiable {
     let owner: String
     let title: String
     let path: String
@@ -130,6 +131,7 @@ struct NativeFinancePending: Codable {
     var scopeLabel: String? = nil
     var targetName: String? = nil
     var currency: String? = nil
+    var id: Self { self }
     var requestBody: NativeJSON { (try? JSONDecoder().decode(NativeJSON.self, from: body)) ?? .null }
     var summaryLines: [String] {
         let data = requestBody
@@ -225,20 +227,24 @@ final class NativeFinanceContext: ObservableObject {
     @Published var bookLoading = true
     @Published var bookError: String?
     @Published var invitations: [NativeJSON] = []
-    @Published var pending: NativeFinancePending?
-    @Published var busy = false
     @Published var error: String?
     @Published var notice: String?
-    @Published var blocked = false
+    @Published private var accessBlocked = false
     var initialReviewMonth: String?
     @Published var change = 0
     private var valid = true
     private var generation = UUID()
-    private var storageReady = true
-    private let store: NativeFinancePendingStore
+    private static let submissions = NativePendingSubmissions<NativeFinancePending>()
+    private let submission: NativePendingSubmission<NativeFinancePending>
+    private var submissionObservation: AnyCancellable?
     init(api: NativeAPI, token: String, userID: String) {
-        self.api = api; self.token = token; self.userID = userID; self.store = NativeFinancePendingStore(owner: userID)
-        do { pending = try store.load() } catch { self.error = error.localizedDescription; blocked = true; storageReady = false }
+        self.api = api; self.token = token; self.userID = userID
+        submission = Self.submissions.forOwner(userID) {
+            let store = NativeFinancePendingStore(owner: userID)
+            return NativePendingSubmission(load: store.load, save: store.save, clear: store.clear)
+        }
+        submission.restore()
+        submissionObservation = submission.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         do {
             if let selection = try selectionStore.load(NativeFinanceSelection.self), selection.isValid {
                 ledger = selection.ledger; bookID = selection.book; currency = selection.currency
@@ -247,7 +253,10 @@ final class NativeFinanceContext: ObservableObject {
             }
         } catch { self.notice = "未恢复上次账本" }
     }
-    var canWrite: Bool { role != "viewer" && scopeReady && !blocked && storageReady && pending == nil && !busy }
+    var pending: NativeFinancePending? { submission.pending }
+    var busy: Bool { submission.busy }
+    var blocked: Bool { accessBlocked || storageUnavailable }
+    var canWrite: Bool { role != "viewer" && scopeReady && !blocked && pending == nil && !busy }
     private var selectionStore: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: userID, scope: "finance-selection") }
     var scopeLabel: String { ownerName.isEmpty ? bookName : bookName + " · " + ownerName }
     var scopeSummary: String { scopeLabel + " · " + currency }
@@ -265,7 +274,7 @@ final class NativeFinanceContext: ObservableObject {
         guard !scopeReady, requested.ledger == ledger, requested.book == bookID, requested.currency == currency else { return }
         books = data["books"].arrayValue; invitations = data["invitations"].arrayValue
         let selected = NativeFinanceSelection(ledger: ledger, book: bookID, currency: currency)
-        guard let book = selected.membership(in: books) else { blocked = true; throw NativeFinanceInputError("请重新选择账本") }
+        guard let book = selected.membership(in: books) else { accessBlocked = true; throw NativeFinanceInputError("请重新选择账本") }
         bookName = book["name"].stringValue ?? "家庭账本"; ownerName = book["ownerName"].stringValue ?? ""
         accessRevision = book["accessRevision"].intValue ?? 0; role = book["role"].stringValue ?? "viewer"
         scopeReady = true
@@ -273,9 +282,12 @@ final class NativeFinanceContext: ObservableObject {
     var scopeID: String { ledger + ":" + bookID + ":" + String(accessRevision) + ":" + currency }
     func path(_ path: String, extra: [String: String] = [:]) -> String { NativeFinanceContract.scoped(path, ledger: ledger, book: bookID, revision: accessRevision, extra: extra) }
     func draftScope(_ form: String) -> String { "finance:" + scopeID + ":" + form }
-    var storageUnavailable: Bool { !storageReady }
+    var storageError: String? { submission.storageError?.localizedDescription }
+    var storageUnavailable: Bool { submission.storageError != nil }
     func retryPendingStorage() {
-        do { pending = try store.load(); storageReady = true; blocked = false; error = nil; change += 1 } catch { storageReady = false; blocked = true; fail(error) }
+        guard !busy else { return }
+        submission.restore()
+        if !storageUnavailable { error = nil; change += 1 }
     }
     func deactivate() { valid = false; generation = UUID() }
     func activate() { valid = true }
@@ -304,7 +316,7 @@ final class NativeFinanceContext: ObservableObject {
     func fail(_ failure: Error) {
         guard valid, !(failure is CancellationError) else { return }
         error = failure.localizedDescription
-        if let failure = failure as? NativeAPIError, ["FINANCE_BOOK_ACCESS_REVOKED", "FINANCE_BOOK_ACCESS_CHANGED", "ACCOUNT_CHANGED"].contains(failure.code ?? "") { blocked = true; books = []; notice = "账本授权已变化，请重新选择；原请求仍保留在原账本。" }
+        if let failure = failure as? NativeAPIError, ["FINANCE_BOOK_ACCESS_REVOKED", "FINANCE_BOOK_ACCESS_CHANGED", "ACCOUNT_CHANGED"].contains(failure.code ?? "") { accessBlocked = true; books = []; notice = "账本授权已变化，请重新选择；原请求仍保留在原账本。" }
     }
     func loadBooks() async {
         bookLoading = true; defer { bookLoading = false }
@@ -319,44 +331,58 @@ final class NativeFinanceContext: ObservableObject {
     }
     func select(ledger: String, book: NativeJSON? = nil) {
         self.ledger = ledger; bookID = book?["id"].stringValue ?? "own"; accessRevision = book?["accessRevision"].intValue ?? 0
-        role = book?["role"].stringValue ?? "owner"; blocked = !storageReady; error = nil
+        role = book?["role"].stringValue ?? "owner"; accessBlocked = false; error = nil
         bookName = ledger == "personal" ? "个人账本" : book?["name"].stringValue ?? "我的家庭账本"
         ownerName = ledger == "family" ? book?["ownerName"].stringValue ?? "" : ""
         scopeReady = true; persistSelection(); change += 1
     }
     @discardableResult func write(title: String, path: String, method: String, body: NativeJSON, idempotent: Bool = false, targetName: String? = nil) async throws -> NativeJSON {
-        guard valid, !busy, pending == nil, !blocked, storageReady, scopeReady else { throw NativeFinanceInputError("请先核对待确认的原操作或重新选择账本。") }
+        guard valid, !busy, pending == nil, !blocked, scopeReady else { throw NativeFinanceInputError("请先核对待确认的原操作或重新选择账本。") }
         let command = NativeFinancePending(owner: userID, title: title, path: path, method: method, body: try body.encodedData(), operationID: idempotent ? UUID().uuidString.lowercased() : nil, createdAt: Date(), scopeLabel: path.hasPrefix("finance/books/own/") ? "我的家庭账本" : scopeLabel, targetName: targetName ?? body["name"].stringValue, currency: currency)
-        try store.save(command); pending = command
-        return try await send(command)
+        guard let response = try await send(command, retrying: false) else {
+            throw NativeFinanceInputError("请先核对待确认的原操作。")
+        }
+        return response
     }
-    @discardableResult private func send(_ command: NativeFinancePending) async throws -> NativeJSON {
-        guard valid, !busy, command.owner == userID else { throw NativeFinanceInputError("当前无法确认此操作。") }
+    private func send(_ command: NativeFinancePending, retrying: Bool) async throws -> NativeJSON? {
+        guard valid, command.owner == userID else { return nil }
         let epoch = generation
-        busy = true; defer { busy = false }
         do {
-            let body = try JSONDecoder().decode(NativeJSON.self, from: command.body)
-            let response = try await api.json(path: command.path, method: command.method, token: token, body: body, headers: command.operationID.map { ["Idempotency-Key": $0] } ?? [:])
-            // Clear receipt even if its screen disappeared; the command is scoped
-            // to this immutable context and cannot be delivered to another user.
-            try store.clear(); pending = nil
+            let response = try await submission.attempt(command, retrying: retrying) {
+                do {
+                    let headers = command.operationID.map { ["Idempotency-Key": $0] } ?? [:]
+                    let result = try await api.upload(path: command.path, method: command.method, token: token, data: command.body, headers: headers)
+                    return Result<NativeJSON, Error>.success(result)
+                } catch let failure as NativeAPIError {
+                    // Validation rejection permits editing. Network ambiguity and
+                    // changed book grants retain the original body and operation key.
+                    if case .server(let status, let code, _, _) = failure,
+                       [400, 404, 409, 413, 415, 422].contains(status), code != "FINANCE_BOOK_ACCESS_CHANGED" {
+                        return .failure(failure)
+                    }
+                    throw failure
+                }
+            }
+            guard let response else { return nil }
+            // A receipt can finish the operation after its screen disappears.
             guard valid, epoch == generation else { throw CancellationError() }; notice = command.title + "已确认。"; change += 1
             return response
         } catch {
-            // Definitive validation/permission rejection permits editing. Network,
-            // timeout, cancellation and 5xx retain the original bytes and UUID.
-            if let server = error as? NativeAPIError, case .server(let status, let code, _, _) = server, [400, 404, 409, 413, 415, 422].contains(status), code != "FINANCE_BOOK_ACCESS_CHANGED" {
-                do { try store.clear(); pending = nil } catch { storageReady = false; blocked = true }
-            }
             if valid, epoch == generation { fail(error) }; throw error
         }
     }
-    func retryPending() async {
-        guard let pending, pending.operationID != nil else { return }
-        do { _ = try await send(pending) } catch { fail(error) }
+    func retryPending(_ command: NativeFinancePending) async {
+        guard command.operationID != nil else { return }
+        do { _ = try await send(command, retrying: true) } catch { fail(error) }
     }
-    func reconcilePending() {
-        do { try store.clear(); pending = nil; notice = "已结束原操作核对；请读取最新资料。"; change += 1 } catch { fail(error) }
+    @discardableResult func reconcilePending(_ command: NativeFinancePending) -> Bool {
+        guard valid else { return false }
+        do {
+            guard try submission.finishRecovery(of: command) else { return false }
+            notice = "已结束原操作核对；请读取最新资料。"
+            change += 1
+            return true
+        } catch { fail(error); return false }
     }
 }
 
@@ -435,11 +461,11 @@ struct NativeFinanceNavigation {
 private struct NativeFinanceStatus: View {
     @ObservedObject var context: NativeFinanceContext
     var scopeOverride: String? = nil
-    @State private var recovery = false
+    @State private var recovery: NativeFinancePending?
     var body: some View {
         Text(scopeOverride ?? context.scopeSummary).font(.caption.weight(.medium)).foregroundStyle(NativePalette.muted)
         if context.busy { ProgressView("正在保存…") }
-        if let error = context.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+        if let error = context.storageError ?? context.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
         if context.storageUnavailable { Button("解锁后重试") { context.retryPendingStorage() } }
         if let notice = context.notice { Text(notice).font(.caption).foregroundStyle(NativePalette.muted) }
         if let pending = context.pending { pendingCard(pending) }
@@ -449,9 +475,11 @@ private struct NativeFinanceStatus: View {
             Text(pending.title).font(.headline)
             ForEach(Array(pending.summaryLines.enumerated()), id: \.offset) { _, line in Text(line).font(.callout) }
             Text(pending.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(NativePalette.muted)
-            if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending() } }.disabled(context.busy) }
-            Button("查看最新结果") { recovery = true }.disabled(context.busy)
-        }.listRowBackground(NativePalette.surface).sheet(isPresented: $recovery) { NavigationStack { NativeFinancePendingRecovery(context: context, pending: pending) } }
+            if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending(pending) } }.disabled(context.busy) }
+            Button("查看最新结果") { recovery = pending }.disabled(context.busy)
+        }.listRowBackground(NativePalette.surface).sheet(item: $recovery) { command in
+            NavigationStack { NativeFinancePendingRecovery(context: context, pending: command) }
+        }
     }
 }
 
@@ -463,6 +491,7 @@ private struct NativeFinancePendingRecovery: View {
     @State private var state: NativeFinanceReadState = .loading
     @State private var finish = false
     private var currency: String { pending.currency ?? pending.requestBody["currency"].stringValue ?? "CNY" }
+    private var canResolve: Bool { !context.busy && context.pending == pending }
     var body: some View {
         List {
             Section("原保存内容") {
@@ -472,10 +501,10 @@ private struct NativeFinancePendingRecovery: View {
             NativeFinanceReadFeedback(state: state) { Task { await load() } }
             if state == .ready { currentResult }
             Section {
-                if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending(); if context.pending == nil { dismiss() } } }.disabled(context.busy) }
+                if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending(pending); if context.pending != pending { dismiss() } } }.disabled(!canResolve) }
                 DisclosureGroup("已自行核对") {
                     Text("结束核对不会撤销已保存的记录").font(.caption).foregroundStyle(NativePalette.muted)
-                    Button("结束此项待确认") { finish = true }.disabled(context.busy || state != .ready)
+                    Button("结束此项待确认") { finish = true }.disabled(!canResolve || state != .ready)
                 }
             }.listRowBackground(NativePalette.surface)
         }
@@ -483,7 +512,9 @@ private struct NativeFinancePendingRecovery: View {
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         .task { await load() }
         .confirmationDialog("已核对原保存结果？", isPresented: $finish, titleVisibility: .visible) {
-            Button("已核对，结束待确认") { context.reconcilePending(); dismiss() }
+            Button("已核对，结束待确认") {
+                if context.reconcilePending(pending) || context.pending != pending { dismiss() }
+            }
         }
     }
     @ViewBuilder private var currentResult: some View {

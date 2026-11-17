@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import Security
 
@@ -356,7 +357,7 @@ private struct NativeNutritionFoodDetail: View {
     }
 }
 
-private struct NativeFoodAdminOperation: Codable {
+private struct NativeFoodAdminOperation: Codable, Equatable {
     let id: String
     let body: Data
 }
@@ -385,16 +386,34 @@ private struct NativeFoodAdminPendingStore {
 private final class NativeFoodAdminModel: ObservableObject {
     let api: NativeAPI; let token: String; let userID: String
     @Published var items: [NativeJSON] = []
-    @Published var pending: NativeFoodAdminOperation?
-    @Published var error: String?
-    @Published var busy = false
+    @Published private var operationError: String?
+    @Published private var loading = false
     @Published var loaded = false
     @Published var lastSaved: NativeJSON = .null
-    init(api: NativeAPI, token: String, userID: String) { self.api = api; self.token = token; self.userID = userID }
+    private static let submissions = NativePendingSubmissions<NativeFoodAdminOperation>()
+    private let submission: NativePendingSubmission<NativeFoodAdminOperation>
+    private var submissionObservation: AnyCancellable?
+
+    init(api: NativeAPI, token: String, userID: String) {
+        self.api = api; self.token = token; self.userID = userID
+        submission = Self.submissions.forOwner(userID) {
+            let store = NativeFoodAdminPendingStore(userID: userID)
+            return NativePendingSubmission(load: store.load, save: store.save, clear: store.clear)
+        }
+        submissionObservation = submission.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+    var pending: NativeFoodAdminOperation? { submission.pending }
+    var busy: Bool { loading || submission.busy }
+    var error: String? {
+        get { submission.storageError?.localizedDescription ?? operationError }
+        set { operationError = newValue }
+    }
     func load() async {
-        guard !busy else { return }; busy = true; error = nil; defer { busy = false }
+        guard !busy else { return }
+        submission.restore()
+        guard submission.storageError == nil else { return }
+        loading = true; error = nil; defer { loading = false }
         do {
-            pending = try NativeFoodAdminPendingStore(userID: userID).load()
             let result = try await api.json(path: "health/foods/manage", token: token)
             guard !Task.isCancelled else { return }; items = result["items"].arrayValue; loaded = true
         } catch { self.error = error.localizedDescription }
@@ -403,25 +422,38 @@ private final class NativeFoodAdminModel: ObservableObject {
         guard pending == nil, !busy else { error = "请先核对待确认的原食品操作。"; return false }
         do {
             let operation = NativeFoodAdminOperation(id: UUID().uuidString.lowercased(), body: try command.encodedData())
-            try NativeFoodAdminPendingStore(userID: userID).save(operation); pending = operation
-            return await retry()
+            return await send(operation, retrying: false)
         } catch { self.error = error.localizedDescription; return false }
     }
-    func retry() async -> Bool {
-        guard let pending, !busy else { return false }; busy = true; error = nil; defer { busy = false }
+    func retry(_ operation: NativeFoodAdminOperation) async -> Bool { await send(operation, retrying: true) }
+
+    private func send(_ operation: NativeFoodAdminOperation, retrying: Bool) async -> Bool {
+        guard !busy else { return false }
+        error = nil
         do {
-            let body = try JSONDecoder().decode(NativeJSON.self, from: pending.body)
-            let result = try await api.json(path: "health/foods/manage", method: "POST", token: token, body: body, headers: ["Idempotency-Key": pending.id])
-            guard !Task.isCancelled else { return false }
-            try NativeFoodAdminPendingStore(userID: userID).clear(); self.pending = nil; lastSaved = result["item"]
+            let outcome = try await submission.attempt(operation, retrying: retrying) {
+                do {
+                    let result = try await api.upload(path: "health/foods/manage", token: token, data: operation.body,
+                                                      headers: ["Idempotency-Key": operation.id])
+                    try Task.checkCancellation()
+                    return Result<NativeJSON, Error>.success(result)
+                } catch let failure as NativeAPIError {
+                    if case .server(let status, _, _, _) = failure, [400, 403, 404, 409, 413, 415, 422].contains(status) {
+                        return .failure(failure)
+                    }
+                    throw failure
+                }
+            }
+            guard let outcome else {
+                if !retrying && pending != nil { error = "请先核对待确认的原食品操作。" }
+                return false
+            }
+            lastSaved = outcome["item"]
             if let id = lastSaved["id"].stringValue { items.removeAll { $0["id"].stringValue == id }; items.insert(lastSaved, at: 0) }
             return true
         } catch {
-            if case NativeAPIError.server(let status, _, _, _) = error, [400,403,404,409,413,415,422].contains(status) {
-                do { try NativeFoodAdminPendingStore(userID: userID).clear(); self.pending = nil }
-                catch { self.error = error.localizedDescription; return false }
-            }
-            self.error = error.localizedDescription + (self.pending == nil ? "" : " 原操作已安全保留，请继续核对。"); return false
+            self.error = error.localizedDescription + (pending == operation ? " 原操作已安全保留，请继续核对。" : "")
+            return false
         }
     }
 }
@@ -440,7 +472,12 @@ struct NativeNutritionManagedFoodsView: View {
                 NavigationLink("新增公共食品草稿") { NativeNutritionManagedFoodEditor(api: api, token: token, userID: userID) }
                 Text("草稿仅管理员可见；审核发布后才供所有成员查找。已发布版本不会改写历史饮食。").font(.footnote).foregroundStyle(NativePalette.muted)
             }.listRowBackground(NativePalette.surface)
-            if model.pending != nil { Section("待确认操作") { Button("继续核对原食品操作") { Task { _ = await model.retry() } }; Text("处理前不能提交其他维护操作。").font(.footnote).foregroundStyle(NativePalette.muted) }.listRowBackground(NativePalette.surface) }
+            if let pending = model.pending {
+                Section("待确认操作") {
+                    Button("继续核对原食品操作") { Task { _ = await model.retry(pending) } }.disabled(model.busy)
+                    Text("处理前不能提交其他维护操作。").font(.footnote).foregroundStyle(NativePalette.muted)
+                }.listRowBackground(NativePalette.surface)
+            }
             if model.busy { ProgressView() }
             if let error = model.error { Text(error).foregroundStyle(.red) }
             if model.loaded {
@@ -554,8 +591,12 @@ private struct NativeNutritionManagedFoodEditor: View {
                 }.listRowBackground(NativePalette.surface)
             }
             Section {
-                if model.pending != nil {
-                    Button("继续核对原食品操作") { Task { if await model.retry() { adoptSaved() } } }
+                if let pending = model.pending {
+                    Button("继续核对原食品操作") {
+                        Task {
+                            if await model.retry(pending) { notice = "原操作已确认，请读取最新食品资料核对本页填写。" }
+                        }
+                    }.disabled(model.busy)
                 } else {
                     Button("保存草稿") { Task { await saveDraft() } }.disabled(model.busy || recoverableDraft != nil || name.trimmingCharacters(in: .whitespaces).isEmpty)
                     if item["id"].stringValue != nil {

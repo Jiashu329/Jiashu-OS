@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Security
 import SwiftUI
@@ -180,48 +181,55 @@ private struct NativeNutritionPendingStore {
 @MainActor
 final class NativeNutritionContext: ObservableObject {
     let api: NativeAPI; let token: String; let userID: String
-    @Published private(set) var pending: NativeNutritionCommand?
-    @Published private(set) var busy = false
-    @Published private(set) var persistenceReady = false
-    @Published var error: String?
+    private static let submissions = NativePendingSubmissions<NativeNutritionCommand>()
+    private let submission: NativePendingSubmission<NativeNutritionCommand>
+    private var submissionObservation: AnyCancellable?
+    @Published private var writeError: String?
     @Published private(set) var changes = 0
-    init(api: NativeAPI, token: String, userID: String) { self.api = api; self.token = token; self.userID = userID }
-    func restorePending() {
-        do { pending = try NativeNutritionPendingStore(userID: userID).load(); persistenceReady = true }
-        catch { self.error = error.localizedDescription }
+    init(api: NativeAPI, token: String, userID: String) {
+        self.api = api; self.token = token; self.userID = userID
+        submission = Self.submissions.forOwner(userID) {
+            let store = NativeNutritionPendingStore(userID: userID)
+            return NativePendingSubmission(load: store.load, save: store.save, clear: store.clear)
+        }
+        submissionObservation = submission.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
+    var pending: NativeNutritionCommand? { submission.pending }
+    var busy: Bool { submission.busy }
+    var error: String? { submission.storageError?.localizedDescription ?? writeError }
+    func restorePending() { submission.restore() }
+
     @discardableResult func write(_ command: NativeNutritionCommand) async -> NativeJSON? {
+        await send(command, retrying: false)
+    }
+    func retry(_ command: NativeNutritionCommand) async { _ = await send(command, retrying: true) }
+
+    private func send(_ command: NativeNutritionCommand, retrying: Bool) async -> NativeJSON? {
         guard !busy else { return nil }
-        if !persistenceReady { restorePending() }
-        guard persistenceReady else { return nil }
-        if pending != nil && pending != command { error = "请先在饮食首页核对待确认的原操作。"; return nil }
-        let retrying = pending != nil
-        busy = true; error = nil
-        defer { busy = false }
+        writeError = nil
         do {
-            try NativeNutritionPendingStore(userID: userID).save(command); pending = command
-            let result = try await api.json(path: command.path, method: command.method, token: token, body: command.body,
-                headers: ["Idempotency-Key": command.requestID])
-            try NativeNutritionPendingStore(userID: userID).clear(); pending = nil; changes += 1
-            return result
-        } catch let failure as NativeAPIError {
-            if retrying, case .server(let status, _, _, _) = failure, status == 409 {
+            let result = try await submission.attempt(command, retrying: retrying) {
                 do {
-                    if let result = try await reconcile(command) {
-                        try NativeNutritionPendingStore(userID: userID).clear(); pending = nil; changes += 1
-                        return result
+                    let value = try await api.json(path: command.path, method: command.method, token: token, body: command.body,
+                                                   headers: ["Idempotency-Key": command.requestID])
+                    return Result<NativeJSON, Error>.success(value)
+                } catch let failure as NativeAPIError {
+                    if retrying, case .server(let status, _, _, _) = failure, status == 409,
+                       let current = try await reconcile(command) { return .success(current) }
+                    if case .server(let status, _, _, _) = failure, [400, 404, 409, 413, 415, 422].contains(status) {
+                        return .failure(failure)
                     }
-                } catch { self.error = error.localizedDescription + " 原操作仍待核对。"; return nil }
+                    throw failure
+                }
             }
-            if case .server(let status, _, _, _) = failure, [400, 404, 409, 413, 415, 422].contains(status) {
-                do { try NativeNutritionPendingStore(userID: userID).clear(); pending = nil }
-                catch { self.error = error.localizedDescription; return nil }
-            }
-            error = failure.localizedDescription + (pending == nil ? "" : " 原提交已保留，可在饮食首页继续核对。")
-        } catch { self.error = error.localizedDescription + " 原提交已保留，请继续核对同一操作。" }
+            if result != nil { changes += 1 }
+            else if !retrying && pending != nil { writeError = "请先在饮食首页核对待确认的原操作。" }
+            return result
+        } catch {
+            writeError = error.localizedDescription + (pending == command ? " 原提交已保留，可在饮食首页继续核对。" : "")
+        }
         return nil
     }
-    func retry() async { if let pending { _ = await write(pending) } }
 
     private func reconcile(_ command: NativeNutritionCommand) async throws -> NativeJSON? {
         guard let expected = command.body["expectedRevision"].intValue else { return nil }

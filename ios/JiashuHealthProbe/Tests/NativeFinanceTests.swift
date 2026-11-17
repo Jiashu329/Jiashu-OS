@@ -131,12 +131,12 @@ final class NativeFinanceTests: XCTestCase {
         defer { try? preference.clear(); try? NativeFinancePendingStore(owner: owner).clear() }
         try preference.save(NativeFinanceSelection(ledger: "family", book: "12345678-1234-4123-8123-123456789abc", currency: "CNY"))
         let host = "finance-removed-" + UUID().uuidString.lowercased() + ".example"
-        FinanceURLProtocol.register(host: host) { request in
+        PendingSubmissionURLProtocol.register(host: host) { request in
             XCTAssertTrue(request.url!.path.hasSuffix("/books"), "A removed scope must not read a different ledger")
             return (200, Data("{\"books\":[{\"id\":\"own\",\"name\":\"我的家庭账本\",\"role\":\"owner\",\"accessRevision\":0}],\"invitations\":[]}".utf8))
         }
-        defer { FinanceURLProtocol.remove(host: host) }
-        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FinanceURLProtocol.self]
+        defer { PendingSubmissionURLProtocol.remove(host: host) }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [PendingSubmissionURLProtocol.self]
         let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: configuration), token: "synthetic-token", userID: owner)
         do { _ = try await context.read(context.path("finance")); XCTFail("Removed membership was accepted") } catch {}
         XCTAssertTrue(context.blocked); XCTAssertFalse(context.canWrite)
@@ -153,7 +153,7 @@ final class NativeFinanceTests: XCTestCase {
         defer { try? preference.clear(); try? NativeFinancePendingStore(owner: owner).clear() }
         try preference.save(NativeFinanceSelection(ledger: "family", book: book, currency: "JPY"))
         let host = "finance-scope-" + UUID().uuidString.lowercased() + ".example"
-        FinanceURLProtocol.register(host: host) { request in
+        PendingSubmissionURLProtocol.register(host: host) { request in
             if request.url?.path.hasSuffix("/books") == true {
                 return (200, Data(("{\"books\":[{\"id\":\"" + book + "\",\"name\":\"家用\",\"ownerName\":\"家人\",\"role\":\"viewer\",\"accessRevision\":8}],\"invitations\":[]}").utf8))
             }
@@ -162,8 +162,8 @@ final class NativeFinanceTests: XCTestCase {
             XCTAssertEqual(query.first { $0.name == "book" }?.value, book)
             return (200, Data("{\"accounts\":[],\"summary\":{\"byCurrency\":{}}}".utf8))
         }
-        defer { FinanceURLProtocol.remove(host: host) }
-        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FinanceURLProtocol.self]
+        defer { PendingSubmissionURLProtocol.remove(host: host) }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [PendingSubmissionURLProtocol.self]
         let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: configuration), token: "synthetic-token", userID: owner)
         XCTAssertFalse(context.canWrite)
         _ = try await context.read(context.path("finance"))
@@ -180,64 +180,234 @@ final class NativeFinanceTests: XCTestCase {
         let pending = NativeFinancePendingStore(owner: owner)
         defer { try? pending.clear(); try? NativeWorkspacePersistence(userID: owner, scope: "finance-selection").clear() }
         let host = "finance-" + UUID().uuidString.lowercased() + ".example"
-        let recorder = FinanceRecordedRequests()
-        FinanceURLProtocol.register(host: host) { request in
-            let body = FinanceURLProtocol.body(request)
-            recorder.append((request.url!.absoluteString, request.value(forHTTPHeaderField: "Idempotency-Key"), body))
-            if recorder.count == 1 { return (503, Data("{\"error\":\"synthetic unavailable\"}".utf8)) }
+        let recorder = RecordedPendingSubmissionRequests()
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            if recorder.record(request) == 1 { return (503, Data("{\"error\":\"synthetic unavailable\"}".utf8)) }
             return (201, Data("{\"account\":{\"id\":\"synthetic\"}}".utf8))
         }
-        defer { FinanceURLProtocol.remove(host: host) }
-        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FinanceURLProtocol.self]
+        defer { PendingSubmissionURLProtocol.remove(host: host) }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
         let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
         let context = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
         context.select(ledger: "family", book: .object(["id": .string("old-book"), "accessRevision": .number(7), "role": .string("editor")]))
         let path = context.path("finance/accounts/synthetic/balances")
         let body = try NativeFinanceContract.balanceBody(amount: "9007199254740993.12", currency: "CNY", date: "2026-01-01", note: "synthetic")
         do { _ = try await context.write(title: "记录余额", path: path, method: "POST", body: body, idempotent: true); XCTFail("503 unexpectedly succeeded") } catch {}
-        XCTAssertNotNil(context.pending)
+        let original = try XCTUnwrap(context.pending)
         XCTAssertNotNil(try pending.load())
         context.select(ledger: "personal")
-        await context.retryPending()
+        await context.retryPending(original)
         XCTAssertNil(context.pending)
         XCTAssertNil(try pending.load())
         let requests = recorder.values
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[0].0, requests[1].0)
-        XCTAssertTrue(requests[1].0.contains("book=old-book"))
-        XCTAssertTrue(requests[1].0.contains("bookRevision=7"))
-        XCTAssertEqual(requests[0].1, requests[1].1)
-        XCTAssertNotNil(requests[0].1)
-        XCTAssertEqual(requests[0].2, requests[1].2)
+        XCTAssertEqual(requests.first, requests.last)
+        let retry = try XCTUnwrap(requests.last)
+        XCTAssertTrue(retry.url.contains("book=old-book"))
+        XCTAssertTrue(retry.url.contains("bookRevision=7"))
+        XCTAssertNotNil(retry.operationID)
+    }
+
+    @MainActor
+    func testConcurrentFinanceContextsProtectTheCurrentPendingOperation() async throws {
+        let owner = "synthetic-finance-overlap-" + UUID().uuidString
+        let store = NativeFinancePendingStore(owner: owner)
+        let selection = NativeWorkspacePersistence(userID: owner, scope: "finance-selection")
+        let host = "finance-overlap-" + UUID().uuidString.lowercased() + ".example"
+        let gate = PendingSubmissionReplyGate()
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? store.clear(); try? selection.clear() }
+        PendingSubmissionURLProtocol.register(host: host, gate: gate) { request in
+            if requests.record(request) == 2 { return (201, Data(#"{"account":{"id":"synthetic"}}"#.utf8)) }
+            return (503, Data(#"{"error":"synthetic unavailable"}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
+        let first = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
+        let second = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
+        first.select(ledger: "family", book: .object([
+            "id": .string("12345678-1234-4123-8123-123456789abc"), "accessRevision": .integer(7), "role": .string("editor")
+        ]))
+        let originalPath = first.path("finance/accounts/synthetic/balances")
+        let originalBody = try NativeFinanceContract.balanceBody(amount: "9007199254740993.12", currency: "CNY", date: "2026-01-01", note: "")
+        let secondPath = second.path("finance/accounts/synthetic")
+        let secondBody: NativeJSON = .object(["name": .string("another"), "expectedRevision": .integer(3)])
+        XCTAssertTrue(first.canWrite)
+        XCTAssertTrue(second.canWrite)
+
+        let sending = Task { try await first.write(title: "记录余额", path: originalPath, method: "POST", body: originalBody, idempotent: true) }
+        defer { gate.release(); sending.cancel() }
+        try await gate.waitUntilHeld()
+        let original = try XCTUnwrap(first.pending)
+        XCTAssertTrue(second.busy)
+        XCTAssertFalse(second.canWrite)
+        XCTAssertEqual(second.pending?.operationID, original.operationID)
+
+        do {
+            _ = try await second.write(title: "更新账户", path: secondPath, method: "PATCH", body: secondBody)
+            XCTFail("Second context sent a competing save")
+        } catch is NativeFinanceInputError {}
+        await second.retryPending(original)
+        XCTAssertFalse(second.reconcilePending(original))
+        XCTAssertEqual(requests.values.count, 1)
+        XCTAssertEqual(try store.load()?.operationID, original.operationID)
+
+        gate.release()
+        do {
+            _ = try await sending.value
+            XCTFail("Expected uncertain original response")
+        } catch NativeAPIError.server(let status, _, _, _) { XCTAssertEqual(status, 503) }
+        XCTAssertFalse(first.busy)
+        XCTAssertFalse(second.busy)
+        XCTAssertEqual(second.pending?.operationID, original.operationID)
+        await second.retryPending(original)
+        XCTAssertNil(first.pending)
+        XCTAssertNil(second.pending)
+        XCTAssertNil(try store.load())
+        let replay = requests.values
+        XCTAssertEqual(replay.count, 2)
+        XCTAssertEqual(replay.first, replay.last)
+        XCTAssertEqual(replay.last?.url, "https://" + host + "/api/native/" + originalPath)
+        XCTAssertEqual(replay.last?.method, "POST")
+        XCTAssertEqual(replay.last?.operationID, original.operationID)
+        XCTAssertEqual(replay.last?.body, original.body)
+
+        do {
+            _ = try await second.write(title: "更新账户", path: secondPath, method: "PATCH", body: secondBody)
+            XCTFail("Expected uncertain second response")
+        } catch NativeAPIError.server(let status, _, _, _) { XCTAssertEqual(status, 503) }
+        let replacement = try XCTUnwrap(second.pending)
+        XCTAssertNil(replacement.operationID)
+        XCTAssertFalse(first.reconcilePending(original), "A stale recovery screen cannot retire a different save")
+        await first.retryPending(original)
+        await first.retryPending(replacement)
+        XCTAssertEqual(requests.values.count, 3)
+        XCTAssertEqual(try store.load()?.path, secondPath)
+        XCTAssertEqual(try store.load()?.body, replacement.body)
+        XCTAssertTrue(first.reconcilePending(replacement))
+        XCTAssertNil(try store.load())
+        XCTAssertNil(second.pending)
+    }
+
+    @MainActor
+    func testPreviouslyStoredFinanceOperationSendsItsExactBodyFromAnotherContext() async throws {
+        let owner = "synthetic-finance-stored-" + UUID().uuidString
+        let store = NativeFinancePendingStore(owner: owner)
+        let host = "finance-stored-" + UUID().uuidString.lowercased() + ".example"
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? store.clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            _ = requests.record(request)
+            return (200, Data(#"{"ok":true}"#.utf8))
+        }
+        let body = Data(#"{ "note" : "before renewal", "amount" : "12.30" }"#.utf8)
+        let operation = NativeFinancePending(owner: owner, title: "记录余额", path: "finance/accounts/synthetic/balances?ledger=personal",
+                                             method: "POST", body: body, operationID: UUID().uuidString.lowercased(), createdAt: Date())
+        try store.save(operation)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
+        let first = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
+        let second = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
+        XCTAssertEqual(first.pending?.body, body)
+        XCTAssertTrue(requests.values.isEmpty, "Loading an old save must wait for explicit recovery")
+        await second.retryPending(try XCTUnwrap(first.pending))
+        XCTAssertEqual(requests.values.count, 1)
+        XCTAssertEqual(requests.values.first?.body, body)
+        XCTAssertEqual(requests.values.first?.operationID, operation.operationID)
+        XCTAssertNil(try store.load())
     }
 }
 
-private final class FinanceRecordedRequests: @unchecked Sendable {
+final class RecordedPendingSubmissionRequests: @unchecked Sendable {
+    struct Request: Equatable {
+        let url: String
+        let method: String?
+        let operationID: String?
+        let body: Data
+    }
+
     private let lock = NSLock()
-    private var storage: [(String, String?, Data)] = []
-    func append(_ request: (String, String?, Data)) { lock.lock(); defer { lock.unlock() }; storage.append(request) }
-    var values: [(String, String?, Data)] { lock.lock(); defer { lock.unlock() }; return storage }
-    var count: Int { lock.lock(); defer { lock.unlock() }; return storage.count }
+    private var storage: [Request] = []
+    func record(_ request: URLRequest) -> Int {
+        let entry = Request(url: request.url!.absoluteString, method: request.httpMethod,
+                            operationID: request.value(forHTTPHeaderField: "Idempotency-Key"),
+                            body: PendingSubmissionURLProtocol.body(request))
+        lock.lock(); defer { lock.unlock() }
+        storage.append(entry)
+        return storage.count
+    }
+    var values: [Request] { lock.lock(); defer { lock.unlock() }; return storage }
 }
 
-private final class FinanceURLProtocol: URLProtocol, @unchecked Sendable {
+final class PendingSubmissionReplyGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let requested = XCTestExpectation(description: "First pending submission reached transport")
+    private var heldReply: (() -> Void)?
+    private var released = false
+
+    func waitUntilHeld() async throws {
+        let result = await XCTWaiter.fulfillment(of: [requested], timeout: 10)
+        _ = try XCTUnwrap(result == .completed ? true : nil, "Expected a held pending-submission reply")
+    }
+
+    func holdFirstReply(_ reply: @escaping () -> Void) {
+        lock.lock()
+        guard !released, heldReply == nil else { lock.unlock(); reply(); return }
+        heldReply = reply
+        lock.unlock()
+        requested.fulfill()
+    }
+
+    func release() {
+        lock.lock()
+        released = true
+        let reply = heldReply
+        heldReply = nil
+        lock.unlock()
+        reply?()
+    }
+}
+
+final class PendingSubmissionURLProtocol: URLProtocol, @unchecked Sendable {
+    private struct Stub {
+        let gate: PendingSubmissionReplyGate?
+        let respond: (URLRequest) throws -> (Int, Data)
+    }
+
     private static let lock = NSLock()
-    private static var handlers: [String: (URLRequest) throws -> (Int, Data)] = [:]
-    static func register(host: String, handler: @escaping (URLRequest) throws -> (Int, Data)) { lock.lock(); defer { lock.unlock() }; handlers[host] = handler }
+    private static var handlers: [String: Stub] = [:]
+    private let stateLock = NSLock()
+    private var stopped = false
+
+    static func register(host: String, gate: PendingSubmissionReplyGate? = nil, handler: @escaping (URLRequest) throws -> (Int, Data)) {
+        lock.lock(); defer { lock.unlock() }
+        handlers[host] = Stub(gate: gate, respond: handler)
+    }
     static func remove(host: String) { lock.lock(); defer { lock.unlock() }; handlers.removeValue(forKey: host) }
-    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".example") == true }
+    override class func canInit(with request: URLRequest) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return handlers[request.url?.host ?? ""] != nil
+    }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); let handler = Self.handlers[request.url?.host ?? ""]; Self.lock.unlock()
+        Self.lock.lock(); let stub = Self.handlers[request.url?.host ?? ""]; Self.lock.unlock()
         do {
-            guard let handler, let url = request.url else { throw URLError(.badURL) }
-            let (status, data) = try handler(request)
-            let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+            guard let stub, let url = request.url else { throw URLError(.badURL) }
+            let (status, data) = try stub.respond(request)
+            let deliver: () -> Void = { [weak self] in self?.deliver(url: url, status: status, data: data) }
+            if let gate = stub.gate { gate.holdFirstReply(deliver) } else { deliver() }
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
-    override func stopLoading() {}
+    private func deliver(url: URL, status: Int, data: Data) {
+        stateLock.lock(); let shouldDeliver = !stopped; stateLock.unlock()
+        guard shouldDeliver else { return }
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() { stateLock.lock(); stopped = true; stateLock.unlock() }
     static func body(_ request: URLRequest) -> Data {
         if let data = request.httpBody { return data }
         guard let stream = request.httpBodyStream else { return Data() }; stream.open(); defer { stream.close() }
