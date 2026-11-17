@@ -286,6 +286,36 @@ void test('old v1 backups without nutrition extensions normalize to null sources
   const repeat=await previewDataRestore(target.db,'legacy-owner',legacy);assert.equal(repeat.total.added,0);assert.equal(repeat.total.conflicts,0);
 });
 
+void test('merging legacy entries reopens only their existing day and counts every new entry once', async t => {
+  const date = '2026-11-09';
+  const target = fixture(t);
+  await seedCatalogNutrition(target.db, 'target');
+  const untouched = await writeNutritionDayStatus(target.db, 'target', {
+    date: '2026-11-08', complete: true, expectedRevision: 0,
+    meals: { breakfast: 'skipped', lunch: 'skipped', dinner: 'skipped', snack: 'unrecorded' },
+  }, NOW);
+  const before = await readNutritionDayStatus(target.db, 'target', date);
+  assert.equal(before.complete, true);
+
+  const source = fixture(t);
+  for (const [id, name] of [[B, 'legacy rice'], [C, 'legacy eggs']]) {
+    const input = parseNutritionCreate({ date, meal: 'breakfast', name, calories: null }, Date.parse(NOW));
+    await createNutritionEntry(source.db, 'source', input, id, NOW);
+  }
+  const input = legacyV1(await exportDataBackup(source.db, 'source', NOW));
+  const preview = await previewDataRestore(target.db, 'target', input);
+  assert.equal(preview.canRestore, true);
+  assert.deepEqual(await readNutritionDayStatus(target.db, 'target', date), before);
+  await restoreDataBackup(target.db, 'target', input, preview.previewHash);
+
+  const reopened = { ...before, complete: false, revision: before.revision + 2 };
+  assert.deepEqual(await readNutritionDayStatus(target.db, 'target', date), reopened);
+  assert.deepEqual(await readNutritionDayStatus(target.db, 'target', untouched.date), untouched);
+  const repeat = await previewDataRestore(target.db, 'target', input);
+  assert.equal((await restoreDataBackup(target.db, 'target', input, repeat.previewHash)).added, 0);
+  assert.deepEqual(await readNutritionDayStatus(target.db, 'target', date), reopened);
+});
+
 void test('published nutrition v1 backups retain sourced food, canonical favorites and completed days',async(t)=>{
   const source=fixture(t);const item=await seedCatalogNutrition(source.db);const backup=await exportDataBackup(source.db,'alice',NOW);
   const legacy=legacyV1(backup) as {kind:string;version:number;exportedAt:string;tables:Record<string,Array<Record<string,unknown>>>};
