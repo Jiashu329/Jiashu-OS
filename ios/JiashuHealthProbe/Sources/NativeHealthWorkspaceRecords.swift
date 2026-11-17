@@ -147,7 +147,7 @@ struct NativeHealthRecordsWorkspace: View {
                 detailSummary
                 if let pending { pendingDetail(pending) }
                 if let message {
-                    Section { Text(message).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled).accessibilityLiveRegion(.polite) }
+                    Section { Text(message).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled).accessibilityAddTraits(.updatesFrequently) }
                 }
                 if busy { Section { ProgressView("正在确认…") } }
                 editSection

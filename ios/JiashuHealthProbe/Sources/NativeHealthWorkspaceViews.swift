@@ -84,6 +84,48 @@ struct NativeWorkspaceSleepSummary {
     }
 }
 
+struct NativeHealthPeriodStatistics: Equatable {
+    let recordedDays: Int
+    let totalDays: Int
+    let recordedDayMean: Double?
+
+    init(points: [NativeWorkspaceHealthPoint],range: NativeHealthWorkspaceRange) {
+        var daily: [String:Double] = [:]
+        for point in points where point.day >= range.from && point.day <= range.to && point.value.isFinite {
+            daily[point.day] = point.value
+        }
+        recordedDays = daily.count; totalDays = range.days
+        recordedDayMean = daily.isEmpty ? nil:daily.values.reduce(0,+) / Double(daily.count)
+    }
+}
+
+enum NativeHealthPeriodComparison {
+    static func previousRange(for current: NativeHealthWorkspaceRange,now: Date = Date()) throws -> NativeHealthWorkspaceRange {
+        guard let start = NativeHealthWorkspaceFormat.date(current.from),
+              let previousStart = NativeActionDates.calendar.date(byAdding:.day,value:-current.days,to:start),
+              let previousEnd = NativeActionDates.calendar.date(byAdding:.day,value:-1,to:start) else {
+            throw NativeHealthWorkspaceError.invalid("无法读取上一时段，请调整日期。")
+        }
+        return try NativeHealthWorkspaceRange(from:previousStart,to:previousEnd,now:now)
+    }
+    static func points(in response: NativeJSON,metric: String) -> [NativeWorkspaceHealthPoint] {
+        let rows: NativeJSON = metric == "body_fat" ? response["bodyComposition"]["points"]:response["summary"]["metrics"][metric]["points"]
+        return rows.arrayValue.compactMap(NativeWorkspaceHealthPoint.init).sorted { $0.day < $1.day }
+    }
+}
+
+private struct NativeHealthPeriodComparisonSnapshot {
+    let metric: String
+    let currentRange: NativeHealthWorkspaceRange
+    let previousRange: NativeHealthWorkspaceRange
+    let current: NativeHealthPeriodStatistics
+    let previous: NativeHealthPeriodStatistics
+    var meanDifference: Double? {
+        guard let current = current.recordedDayMean,let previous = previous.recordedDayMean else { return nil }
+        return current - previous
+    }
+}
+
 struct NativeHealthRangeWorkspace: View {
     let api: NativeAPI
     let token: String
@@ -100,6 +142,16 @@ struct NativeHealthRangeWorkspace: View {
     @State private var editingRange = false
     @State private var entryMetric: QuickEntryMetric?
     @State private var choosingEntryMetric = false
+    @State private var inspectedDate: Date?
+    @State private var goalSettings: NativeGoalSettings?
+    @State private var goalMessage: String?
+    @State private var comparison: NativeHealthPeriodComparisonSnapshot?
+    @State private var comparisonMessage: String?
+    @State private var comparisonExpanded = false
+    @State private var comparing = false
+    @State private var readGeneration = UUID()
+    @State private var comparisonGeneration = UUID()
+    @State private var goalGeneration = UUID()
     init(api: NativeAPI,token: String,userID: String,initialMetric: String? = nil,initialFrom: String? = nil,initialTo: String? = nil) {
         self.api = api; self.token = token; self.userID = userID
         let end: Date = initialTo.flatMap(NativeHealthWorkspaceFormat.date) ?? Date()
@@ -109,15 +161,14 @@ struct NativeHealthRangeWorkspace: View {
         _metric = State(initialValue:initialMetric.flatMap { allowed.contains($0) ? $0:nil } ?? "steps")
     }
     private var points: [NativeWorkspaceHealthPoint] {
-        let rows = metric == "body_fat" ? data["bodyComposition"]["points"] : data["summary"]["metrics"][metric]["points"]
-        return rows.arrayValue.compactMap(NativeWorkspaceHealthPoint.init).sorted { $0.day < $1.day }
+        NativeHealthPeriodComparison.points(in:data,metric:metric)
     }
     var body: some View {
         List {
             Section {
                 Picker("指标",selection:$metric) {
                     ForEach(NativeHealthWorkspaceFormat.metricKeys + ["body_fat"],id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) }
-                }
+                }.disabled(busy)
                 Menu {
                     ForEach([7,30,90,180,360],id:\.self) { days in Button("最近\(days)天") { selectRecentDays(days) } }
                     Button("自定日期…") { editingRange = true }
@@ -131,6 +182,8 @@ struct NativeHealthRangeWorkspace: View {
                     Text("\(Set(points.map(\.day)).count) / \(loadedRange.days) 天有记录，缺失不补零。")
                     if let last = points.last { LabeledContent("最新值",value:NativeHealthWorkspaceFormat.number(last.value) + " " + NativeHealthWorkspaceFormat.unit(metric)) }
                     if !points.isEmpty { chart.frame(height:230) }
+                    inspectedDayReadout
+                    goalReference
                     if metric != "body_fat" {
                         NavigationLink("查看这段记录") {
                             NativeHealthRecordsWorkspace(api:api,token:token,userID:userID,initialMetric:metric,initialFrom:loadedRange.from,initialTo:loadedRange.to)
@@ -144,6 +197,7 @@ struct NativeHealthRangeWorkspace: View {
                         Text("导出包含相同日期内的健康记录，未知值保持未知。").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                comparisonSection
                 if metric == "sleep" { sleepSections }
                 if metric == "body_fat" {
                     Section("配对依据") {
@@ -174,7 +228,8 @@ struct NativeHealthRangeWorkspace: View {
                         .accessibilityLabel("补记健康数据").disabled(busy)
                 }
             }
-            .task { if loadedRange == nil { await load() } }
+            .task { if loadedRange == nil { await load() }; await loadCurrentGoals() }
+            .onChange(of:metric) { _,_ in inspectedDate = nil; invalidateComparison() }
             .sheet(isPresented:$editingRange) {
                 NativeHealthDateRangeEditor(from:from,to:to) { first,last in from = first; to = last; Task { await load() } }
             }
@@ -201,10 +256,104 @@ struct NativeHealthRangeWorkspace: View {
                                     .foregroundStyle(by:.value("睡眠分期",stageLabel(key)))
                             }
                         } else { BarMark(x:.value("日期",date),y:.value("小时",point.value)).foregroundStyle(by:.value("睡眠分期","未分期")) }
-                    } else { PointMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal) }
+                    } else if metric == "steps" || metric == "active_energy" {
+                        BarMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
+                    } else {
+                        LineMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
+                        PointMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
+                    }
                 }
             }
-        }.accessibilityLabel("所选范围的" + NativeHealthWorkspaceFormat.metric(metric) + "，缺失日期留空")
+            if let target = currentGoal {
+                RuleMark(y:.value("当前目标（参考）",target))
+                    .foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth:1,dash:[5,4]))
+            }
+            if let inspectedDate {
+                RuleMark(x:.value("选中日期",NativeActionDates.calendar.startOfDay(for:inspectedDate)))
+                    .foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth:1))
+            }
+        }
+        .chartXSelection(value:$inspectedDate)
+        .accessibilityLabel("所选范围的" + NativeHealthWorkspaceFormat.metric(metric) + "，缺失日期留空")
+    }
+    @ViewBuilder private var inspectedDayReadout: some View {
+        if let inspectedDate {
+            let day: String = NativeActionDates.day(inspectedDate)
+            let point: NativeWorkspaceHealthPoint? = points.first { $0.day == day }
+            let unit: String = NativeHealthWorkspaceFormat.unit(metric)
+            let value: String = point.map { NativeHealthWorkspaceFormat.number($0.value) + " " + unit } ?? "暂无记录"
+            let announcement: String = "选中 \(day)，\(value)"
+            LabeledContent(day,value:value).font(.subheadline)
+                .accessibilityElement(children:.combine).accessibilityLabel(announcement).accessibilityAddTraits(.updatesFrequently)
+        }
+    }
+    private var supportsGoalReference: Bool { ["steps","sleep","active_energy"].contains(metric) }
+    private var currentGoal: Double? {
+        let value: Double?
+        switch metric {
+        case "steps": value = goalSettings?.targets.steps
+        case "sleep": value = goalSettings?.targets.sleep
+        case "active_energy": value = goalSettings?.targets.activeEnergy
+        default: value = nil
+        }
+        guard let value,value.isFinite,value > 0 else { return nil }; return value
+    }
+    @ViewBuilder private var goalReference: some View {
+        if supportsGoalReference {
+            if let target = currentGoal {
+                let unit: String = NativeHealthWorkspaceFormat.unit(metric)
+                let value: String = NativeHealthWorkspaceFormat.number(target) + " " + unit
+                LabeledContent("当前目标（参考）",value:value).font(.footnote)
+                DisclosureGroup("目标说明") { Text("虚线是当前目标，不代表历史达标情况。").font(.caption).foregroundStyle(.secondary) }
+            } else if goalSettings != nil { Text("尚未设置此指标的每日目标。").font(.caption).foregroundStyle(.secondary) }
+            if let goalMessage { Text(goalMessage).font(.caption).foregroundStyle(.secondary) }
+            NavigationLink("目标与生效历史") { NativeHealthGoalsWorkspace(api:api,token:token,userID:userID) }
+        }
+    }
+    @ViewBuilder private var comparisonSection: some View {
+        if let loadedRange {
+            Section {
+                DisclosureGroup("对比上一时段",isExpanded:$comparisonExpanded) {
+                    if let comparison,comparison.currentRange == loadedRange,comparison.metric == metric {
+                        comparisonContents(comparison)
+                    }
+                    if comparing { ProgressView("读取上一时段…") }
+                    if let comparisonMessage { Text(comparisonMessage).font(.footnote).foregroundStyle(.secondary) }
+                    Button(comparison == nil ? "读取并对比":"重新对比") { Task { await comparePreviousPeriod() } }
+                        .disabled(busy || comparing)
+                }
+            }
+        }
+    }
+    private func comparisonContents(_ snapshot: NativeHealthPeriodComparisonSnapshot) -> some View {
+        let unit: String = NativeHealthWorkspaceFormat.unit(snapshot.metric)
+        let difference: String
+        if let delta = snapshot.meanDifference {
+            let sign: String = delta > 0 ? "+":""
+            let number: String = NativeHealthWorkspaceFormat.number(delta)
+            difference = "\(sign)\(number) \(unit)"
+        } else { difference = "暂无可比日均" }
+        return VStack(alignment:.leading,spacing:12) {
+            comparisonPeriodRow("当前时段",range:snapshot.currentRange,stats:snapshot.current,unit:unit)
+            comparisonPeriodRow("上一时段",range:snapshot.previousRange,stats:snapshot.previous,unit:unit)
+            LabeledContent("记录日均差值",value:difference)
+            Text("均值只用有记录的日期，缺失不补0。两期覆盖不同，差值不能直接代表改善或下降，也不说明变化原因。")
+                .font(.caption).foregroundStyle(.secondary)
+            if snapshot.currentRange.to == NativeActionDates.day(Date()) {
+                Text("今天尚未结束，今日记录仍可能更新。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    private func comparisonPeriodRow(_ title: String,range: NativeHealthWorkspaceRange,stats: NativeHealthPeriodStatistics,unit: String) -> some View {
+        let mean: String = NativeHealthWorkspaceFormat.number(stats.recordedDayMean)
+        let amount: String = "\(mean) \(unit)"
+        let coverage: String = "有记录 \(stats.recordedDays) / \(stats.totalDays) 天"
+        return VStack(alignment:.leading,spacing:4) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(range.label).font(.caption).foregroundStyle(.secondary)
+            LabeledContent("有记录日均",value:amount)
+            Text(coverage).font(.caption).foregroundStyle(.secondary)
+        }
     }
     @ViewBuilder private var sleepSections: some View {
         sleepSummarySection
@@ -304,13 +453,51 @@ struct NativeHealthRangeWorkspace: View {
         else { choosingEntryMetric = true }
     }
     private func stageLabel(_ key: String) -> String { ["deep":"深度","core":"核心","rem":"REM","unspecified":"未分类"][key] ?? key }
+    private func invalidateComparison() {
+        comparisonGeneration = UUID(); comparison = nil; comparisonMessage = nil; comparing = false
+    }
     private func load() async {
-        guard !busy else { return }; busy = true; message = nil; defer { busy = false }
+        guard !busy else { return }
+        let generation = UUID(),requestedMetric = metric
+        readGeneration = generation; busy = true; message = nil; invalidateComparison()
+        defer { if readGeneration == generation { busy = false } }
         do {
             let range = try NativeHealthWorkspaceRange(from:from,to:to)
             let result = try await api.json(path:NativeHealthWorkspaceFormat.path("health",query:range.query),token:token)
-            data = result; loadedRange = range
-        } catch { message = error.localizedDescription }
+            guard !Task.isCancelled,readGeneration == generation,metric == requestedMetric,
+                  NativeActionDates.day(from) == range.from,NativeActionDates.day(to) == range.to else { return }
+            guard result["range"]["from"].stringValue == range.from, result["range"]["to"].stringValue == range.to else { throw NativeAPIError.invalidResponse }
+            data = result; loadedRange = range; inspectedDate = nil
+        } catch { if readGeneration == generation,!Task.isCancelled { message = error.localizedDescription } }
+    }
+    private func loadCurrentGoals() async {
+        guard !Task.isCancelled else { return }
+        let generation = UUID(); goalGeneration = generation
+        do {
+            let result = try await api.goals(token:token)
+            guard !Task.isCancelled,goalGeneration == generation else { return }
+            goalSettings = result; goalMessage = nil
+        } catch {
+            if goalGeneration == generation,!Task.isCancelled { goalSettings = nil; goalMessage = "目标参考暂时无法读取。" }
+        }
+    }
+    private func comparePreviousPeriod() async {
+        guard !busy,!comparing,let range = loadedRange else { return }
+        let requestedMetric = metric,generation = UUID()
+        let currentPoints: [NativeWorkspaceHealthPoint] = points
+        comparisonGeneration = generation; comparing = true; comparisonMessage = nil
+        defer { if comparisonGeneration == generation { comparing = false } }
+        do {
+            let previous = try NativeHealthPeriodComparison.previousRange(for:range)
+            let response = try await api.json(path:NativeHealthWorkspaceFormat.path("health",query:previous.query),token:token)
+            guard !Task.isCancelled,comparisonGeneration == generation,metric == requestedMetric,loadedRange == range else { return }
+            guard response["range"]["from"].stringValue == previous.from,response["range"]["to"].stringValue == previous.to else { throw NativeAPIError.invalidResponse }
+            let previousPoints: [NativeWorkspaceHealthPoint] = NativeHealthPeriodComparison.points(in:response,metric:requestedMetric)
+            comparison = NativeHealthPeriodComparisonSnapshot(metric:requestedMetric,currentRange:range,previousRange:previous,
+                current:NativeHealthPeriodStatistics(points:currentPoints,range:range),previous:NativeHealthPeriodStatistics(points:previousPoints,range:previous))
+        } catch {
+            if comparisonGeneration == generation,!Task.isCancelled { comparisonMessage = error.localizedDescription }
+        }
     }
     private func export(_ range: NativeHealthWorkspaceRange) async {
         guard !busy else { return }; busy = true; defer { busy = false }

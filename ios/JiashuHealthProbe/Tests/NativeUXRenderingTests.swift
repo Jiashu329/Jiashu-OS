@@ -30,6 +30,7 @@ final class NativeUXRenderingTests: XCTestCase {
         let token = try XCTUnwrap(model.session?.accessToken)
 
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-light")
+        try await capture(NavigationStack { NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID) }, name: "SYNTHETIC-health-light")
         try await capture(NativeSettingsView(model: model), name: "SYNTHETIC-my-light")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light")
         try await capture(NavigationStack {
@@ -40,6 +41,7 @@ final class NativeUXRenderingTests: XCTestCase {
 
         XCTAssertGreaterThan(scenario.count("/api/native/notifications"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/health/actions"), 0)
+        XCTAssertGreaterThan(scenario.count("/api/native/health/goals"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/health/nutrition"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/sync/channel"), 0)
     }
@@ -126,8 +128,19 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                 "priorities": [], "finance": ["personal": finance, "family": finance],
                 "nutrition": ["status": "ready", "entryCount": 1, "complete": false]]
         case "/api/native/health":
-            result = ["summary": ["metrics": [:], "measurementCount": 0, "lastMeasurementAt": null],
-                      "measurements": [], "lastSync": null]
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let from = query.first(where: { $0.name == "from" })?.value ?? NativeActionDates.day(NativeActionDates.calendar.date(byAdding: .day, value: -29, to: Date())!)
+            let to = query.first(where: { $0.name == "to" })?.value ?? day
+            let points: [[String: Any]] = (0..<3).map { offset in
+                let date = NativeActionDates.calendar.date(byAdding: .day, value: -offset, to: Date())!
+                let recordedDay = NativeActionDates.day(date)
+                return ["day": recordedDay, "value": 6240 - offset * 700, "source": "manual", "measuredAt": recordedDay + "T00:00:00Z"]
+            }
+            let steps: [String: Any] = ["metric": "steps", "label": "步数", "unit": "步", "latestValue": 6240, "latestDate": day, "points": points]
+            result = ["summary": ["metrics": ["steps": steps], "measurementCount": 3, "lastMeasurementAt": now],
+                      "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
+        case "/api/native/health/goals":
+            result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
         case "/api/native/health/actions":
             let week = NativeActionDates.day(NativeActionDates.monday(Date()))
             result = ["action": ["weekStart": week, "text": "晚饭后散步15分钟", "status": "planned", "feedback": "", "revision": 1]]

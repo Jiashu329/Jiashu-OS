@@ -263,7 +263,7 @@ struct NativeSettingsView: View {
                     Section { Label(session.user.email, systemImage: "person.crop.circle").textSelection(.enabled) }
                     Section {
                         NavigationLink { NativeSyncCenter(model: model) } label: { Label("同步中心", systemImage: "arrow.triangle.2.circlepath") }
-                        NavigationLink { NativeFinanceRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialPath: "/finance/books", embedded: true) } label: { Label("家庭与账本", systemImage: "person.2") }
+                        NavigationLink { NativeFinanceRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialPath: "/finance?ledger=family", embedded: true) } label: { Label("家庭与账本", systemImage: "person.2") }
                         NavigationLink { NativeNotificationsView(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("消息与提醒", systemImage: "bell") }
                     }
                     Section {

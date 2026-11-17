@@ -254,7 +254,9 @@ final class NativeAppModelTests: XCTestCase {
 
         XCTAssertEqual(fixture.model.session?.user.id, fixture.context.b.user.id)
         XCTAssertNil(fixture.model.overview)
-        XCTAssertNil(fixture.model.health)
+        let healthWhileOverviewWaits = fixture.model.health?.summary.metrics["steps"]?.latestValue
+        XCTAssertTrue(healthWhileOverviewWaits == nil || healthWhileOverviewWaits == 200,
+                      "Independent reads may show B's data, never A's previous data")
         newAccountOverview.release()
         await newLogin.value
         XCTAssertEqual(fixture.model.overview?.health.metrics.first?.value, 200)

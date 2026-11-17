@@ -53,4 +53,41 @@ final class NativeHealthUXTests: XCTestCase {
         XCTAssertFalse(NativeWeeklySuggestionDraft.needsReplacementConfirmation(current:proposal.text,proposal:" " + proposal.text + " "))
         XCTAssertThrowsError(try NativeWeeklySuggestionDraft.applying("",to:original))
     }
+
+    func testPreviousComparisonPeriodHasEqualCalendarLengthWithoutOverlapAcrossLeapDay() throws {
+        let from = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2024-03-01"))
+        let to = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2024-03-07"))
+        let current = try NativeHealthWorkspaceRange(from:from,to:to,now:now)
+        let previous = try NativeHealthPeriodComparison.previousRange(for:current,now:now)
+        XCTAssertEqual(previous.from,"2024-02-23")
+        XCTAssertEqual(previous.to,"2024-02-29")
+        XCTAssertEqual(previous.days,current.days)
+        XCTAssertLessThan(previous.to,current.from)
+        let firstSupported = try XCTUnwrap(NativeHealthWorkspaceFormat.date("1970-01-01"))
+        let earliest = try NativeHealthWorkspaceRange(from:firstSupported,to:firstSupported,now:now)
+        XCTAssertThrowsError(try NativeHealthPeriodComparison.previousRange(for:earliest,now:now))
+    }
+
+    func testPeriodMeansUseObservedDaysAndKeepMissingDistinctFromRecordedZero() throws {
+        let from = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-01"))
+        let to = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-03"))
+        let range = try NativeHealthWorkspaceRange(from:from,to:to,now:now)
+        func point(_ day: String,_ value: Double) throws -> NativeWorkspaceHealthPoint {
+            try XCTUnwrap(NativeWorkspaceHealthPoint(.object(["day":.string(day),"value":.number(value)])))
+        }
+        let points = try [point("2026-11-01",0),point("2026-11-03",12),point("2026-10-31",900),point("2026-11-04",9000)]
+        let partial = NativeHealthPeriodStatistics(points:points,range:range)
+        XCTAssertEqual(partial.recordedDays,2)
+        XCTAssertEqual(partial.totalDays,3)
+        XCTAssertEqual(partial.recordedDayMean,6)
+        let missing = NativeHealthPeriodStatistics(points:[],range:range)
+        XCTAssertEqual(missing.recordedDays,0)
+        XCTAssertNil(missing.recordedDayMean)
+        let zero = NativeHealthPeriodStatistics(points:try [point("2026-11-01",0)],range:range)
+        XCTAssertEqual(zero.recordedDays,1)
+        XCTAssertEqual(zero.recordedDayMean,0)
+        let repeatedDay = NativeHealthPeriodStatistics(points:try [point("2026-11-01",4),point("2026-11-01",8)],range:range)
+        XCTAssertEqual(repeatedDay.recordedDays,1)
+        XCTAssertEqual(repeatedDay.recordedDayMean,8)
+    }
 }
