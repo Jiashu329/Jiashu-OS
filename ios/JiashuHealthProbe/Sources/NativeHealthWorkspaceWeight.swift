@@ -99,7 +99,7 @@ struct NativeWeightPlanWorkspace: View {
             }
             Section("历史周期") {
                 ForEach(Array(cycles.enumerated()),id:\.offset) { _,cycle in
-                    DisclosureGroup((cycle["settings"]["startDate"].stringValue ?? "") + " — " + (cycle["settings"]["deadline"].stringValue ?? "")) {
+                    DisclosureGroup(cycleTitle(cycle)) {
                         LabeledContent("起点",value:NativeHealthWorkspaceFormat.text(cycle["settings"]["baselineWeight"]) + " kg")
                         LabeledContent("目标",value:NativeHealthWorkspaceFormat.text(cycle["settings"]["targetWeight"]) + " kg")
                         LabeledContent("归档时日均",value:NativeHealthWorkspaceFormat.text(cycle["summary"]["average7"]) + " kg")
@@ -135,21 +135,48 @@ struct NativeWeightPlanWorkspace: View {
             .confirmationDialog(operationKind == "archive" ? "归档当前体重周期？":"保存已核对的体重计划？",isPresented:$confirming,titleVisibility:.visible) {
                 Button(operationKind == "archive" ? "确认归档":"确认保存",role:operationKind == "archive" ? .destructive:nil) { Task { await prepare() } }
                 Button("取消",role:.cancel) { }
-            } message: { Text(operationKind == "archive" ? "冻结当前周期的计划与总结，停用周期并保留实测记录。":"起始 " + baseline + " kg → 目标 " + target + " kg；" + NativeActionDates.day(start) + " — " + NativeActionDates.day(deadline) + "。目标与实测分开显示。") }
+            } message: { Text(confirmationMessage) }
     }
     @ViewBuilder private func rate(_ value: NativeJSON,label: String) -> some View {
-        LabeledContent(label + "变化速度",value:NativeHealthWorkspaceFormat.text(value["kgPerWeek"]) + " kg/周")
-        Text("记录 " + NativeHealthWorkspaceFormat.text(value["recordedDays"]) + " 天，跨度 " + NativeHealthWorkspaceFormat.text(value["daysBetween"]) + " 天；" + (value["from"].stringValue ?? "未知") + " — " + (value["to"].stringValue ?? "未知")).font(.caption).foregroundStyle(.secondary)
+        let title: String = label + "变化速度"
+        let speed: String = NativeHealthWorkspaceFormat.text(value["kgPerWeek"])
+        let recordedDays: String = NativeHealthWorkspaceFormat.text(value["recordedDays"])
+        let daysBetween: String = NativeHealthWorkspaceFormat.text(value["daysBetween"])
+        let from: String = value["from"].stringValue ?? "未知"
+        let to: String = value["to"].stringValue ?? "未知"
+        let speedLabel: String = "\(speed) kg/周"
+        let coverage: String = "记录 \(recordedDays) 天，跨度 \(daysBetween) 天；\(from) — \(to)"
+        LabeledContent(title,value:speedLabel)
+        Text(coverage).font(.caption).foregroundStyle(.secondary)
     }
     @ViewBuilder private func progress(_ value: NativeJSON) -> some View {
-        LabeledContent("当前状态",value:["active":"进行中","achieved":"近7天日均达成","ended":"已到期","missing":"缺少实测"][value["status"].stringValue ?? ""] ?? "未知")
+        let statusKey: String = value["status"].stringValue ?? ""
+        let statuses: [String:String] = ["active":"进行中","achieved":"近7天日均达成","ended":"已到期","missing":"缺少实测"]
+        let status: String = statuses[statusKey] ?? "未知"
+        let sustained: NativeJSON = value["sustained"]
+        let sustainedLabel: String = sustained["achieved"].boolValue == true ? "最近7天逐日达成":"尚不满足逐日条件"
+        let recordedDays: String = NativeHealthWorkspaceFormat.text(sustained["recordedDays"])
+        let qualifyingDays: String = NativeHealthWorkspaceFormat.text(sustained["qualifyingDays"])
+        let coverage: String = "7天内有记录 \(recordedDays) 天，达成本人目标 \(qualifyingDays) 天。维持目标不使用持续达成判定。"
+        LabeledContent("当前状态",value:status)
         LabeledContent("距目标",value:NativeHealthWorkspaceFormat.text(value["gapKg"]) + " kg")
         LabeledContent("目标进度",value:NativeHealthWorkspaceFormat.text(value["progressPercent"]) + "%")
         LabeledContent("日历参考体重",value:NativeHealthWorkspaceFormat.text(value["referenceWeight"]) + " kg")
         LabeledContent("剩余日期",value:NativeHealthWorkspaceFormat.text(value["remainingDays"]))
-        LabeledContent("持续达成",value:value["sustained"]["achieved"].boolValue == true ? "最近7天逐日达成":"尚不满足逐日条件")
-        Text("7天内有记录 " + NativeHealthWorkspaceFormat.text(value["sustained"]["recordedDays"]) + " 天，达成本人目标 " + NativeHealthWorkspaceFormat.text(value["sustained"]["qualifyingDays"]) + " 天。维持目标不使用持续达成判定。")
+        LabeledContent("持续达成",value:sustainedLabel)
+        Text(coverage)
             .font(.caption).foregroundStyle(.secondary)
+    }
+    private func cycleTitle(_ cycle: NativeJSON) -> String {
+        let from: String = cycle["settings"]["startDate"].stringValue ?? ""
+        let to: String = cycle["settings"]["deadline"].stringValue ?? ""
+        return "\(from) — \(to)"
+    }
+    private var confirmationMessage: String {
+        if operationKind == "archive" { return "冻结当前周期的计划与总结，停用周期并保留实测记录。" }
+        let from: String = NativeActionDates.day(start)
+        let to: String = NativeActionDates.day(deadline)
+        return "起始 \(baseline) kg → 目标 \(target) kg；\(from) — \(to)。目标与实测分开显示。"
     }
     private func load(populate: Bool) async {
         guard !busy else { return }; busy = true; defer { busy = false }
