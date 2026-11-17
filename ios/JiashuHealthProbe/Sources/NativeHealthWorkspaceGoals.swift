@@ -32,13 +32,15 @@ struct NativeHealthGoalsWorkspace: View {
     @State private var progress: NativeJSON = .null
     @State private var fields: [String:String] = [:]
     @State private var effective = Date()
+    @State private var baselineEffective = NativeActionDates.day(Date())
     @State private var pending: NativeHealthWorkspaceMutation?
     @State private var busy = false
     @State private var loaded = false
     @State private var formRevision = 0
     @State private var draftReady = false
     @State private var conflict = false
-    @State private var confirming = false
+    @State private var isEditing = false
+    @FocusState private var focusedGoal: String?
     @State private var message: String?
     private var store: NativeHealthWorkspaceMutationStore { .init(userID:userID,scope:"goals") }
     private var draftStore: NativeWorkspacePersistence { .init(userID:userID,scope:"health-goals-form") }
@@ -46,12 +48,12 @@ struct NativeHealthGoalsWorkspace: View {
     var body: some View {
         List {
             pendingSection
-            goalFormSection
+            currentTargetsSection
             progressSection
             historySection
             if busy { ProgressView("正在核对目标…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("健康目标与历史")
+        }.navigationTitle("健康目标")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .task {
                 do {
@@ -60,36 +62,72 @@ struct NativeHealthGoalsWorkspace: View {
                     if let draft {
                         fields = draft.fields; effective = draft.dates["effective"] ?? effective
                         formRevision = draft.snapshot["revision"].intValue ?? 0; conflict = true
-                        message = "已恢复本机目标填写。请读取最新目标版本，再核对保存。"
+                        message = "未保存的填写已恢复，可点“继续核对填写”查看最新目标。"
                     }
                     draftReady = true
                 } catch { message = error.localizedDescription }
             }
             .onChange(of:draftSignature) { _,_ in saveDraft() }
             .onDisappear { saveDraft() }
-            .confirmationDialog("保存这些每日目标？",isPresented:$confirming,titleVisibility:.visible) {
-                Button("确认保存") { Task { await prepare() } }
-                Button("取消",role:.cancel) { }
-            } message: { Text("目标从 " + NativeActionDates.day(effective) + " 生效。留空的指标将取消目标，不改写原始健康记录。") }
+            .sheet(isPresented:$isEditing) { editorSheet }
+
     }
     @ViewBuilder private var pendingSection: some View {
         if let pending {
-            Section("待确认的原目标") {
+            Section("保存结果待确认") {
                 Text(pending.label)
-                Button("继续核对原目标") { Task { await submit(pending,recovering:true) } }.disabled(busy)
+                Button("继续确认保存") { Task { await submit(pending,recovering:true) } }.disabled(busy)
             }
+        }
+    }
+    private var currentTargetsSection: some View {
+        Section("当前每日目标") {
+            if loaded {
+                ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in goalVersionTarget(settings,key:key) }
+                Text(currentEffectiveDate).font(.caption).foregroundStyle(.secondary)
+                Button(conflict ? "继续核对填写":"编辑目标") { isEditing = true }
+                    .disabled(busy || pending != nil || !draftReady)
+            } else {
+                Text("尚未读取目标").foregroundStyle(.secondary)
+                Button("读取目标") { Task { await load(populate:true) } }.disabled(busy)
+            }
+        }
+    }
+    private var currentEffectiveDate: String {
+        guard let date = settings["effectiveFrom"].stringValue else { return "尚未设置生效日期" }
+        return date == "1970-01-01" ? "早期设置，实际生效日期未知":"生效日期：" + date
+    }
+    private var hasUnsentDraft: Bool {
+        NativeHealthGoalRequest.keys.contains { Double(fields[$0] ?? "") != settings["targets"][$0].doubleValue } || NativeActionDates.day(effective) != baselineEffective
+    }
+    private var editorSheet: some View {
+        NavigationStack {
+            Form {
+                pendingSection
+                goalFormSection
+                NativeHealthWorkspaceMessage(message:message)
+                Text("关闭后会保留未保存的填写；保存后才更新目标。").font(.footnote).foregroundStyle(.secondary)
+            }
+            .navigationTitle("编辑目标").navigationBarTitleDisplayMode(.inline)
+            .environment(\.timeZone,NativeActionDates.timeZone)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItem(placement:.confirmationAction) { Button("完成") { focusedGoal = nil; if saveDraft() { isEditing = false } }.disabled(busy) }
+                ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("完成输入") { focusedGoal = nil } }
+            }
+            .interactiveDismissDisabled(busy || hasUnsentDraft)
+            .onDisappear { saveDraft() }
         }
     }
     private var goalFormSection: some View {
         Section("本人每日目标") {
             ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in goalField(key) }
             DatePicker("生效日期",selection:$effective,in:...Date(),displayedComponents:.date)
-            Text("每一天按当日生效版本评价；修改目标不会把此前的日历重新套用今天的目标。")
+            Text("从所选日期生效，不改变更早的目标；留空可取消该指标目标。")
                 .font(.footnote).foregroundStyle(.secondary)
-            if conflict { Text("版本已变化。保留填写，先读取最新目标再核对保存。") }
-            Button("核对并保存目标") { confirming = true }.disabled(!loaded || !draftReady || busy || pending != nil || conflict)
-            Button("读取最新目标，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
-            Button("载入已存目标到表单") { Task { await load(populate:true) } }.disabled(busy || pending != nil)
+            if conflict { Text("目标已更新。先查看最新内容，再核对保留的填写。") }
+            Button("保存目标") { focusedGoal = nil; Task { await prepare() } }.buttonStyle(.borderedProminent).disabled(!loaded || !draftReady || busy || pending != nil || conflict)
+            Button("查看最新目标，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
         }.disabled(busy || pending != nil)
     }
     private func goalField(_ key: String) -> some View {
@@ -97,7 +135,7 @@ struct NativeHealthGoalsWorkspace: View {
         let unit: String = NativeHealthWorkspaceFormat.unit(key)
         let title: String = "\(name)（\(unit)，取消目标留空）"
         let field: Binding<String> = Binding(get:{ fields[key] ?? "" },set:{ fields[key] = $0 })
-        return TextField(title,text:field).keyboardType(.decimalPad)
+        return TextField(title,text:field).keyboardType(.decimalPad).focused($focusedGoal,equals:key)
     }
     private var progressSection: some View {
         Section("近30天达成日历") {
@@ -132,8 +170,10 @@ struct NativeHealthGoalsWorkspace: View {
         }
     }
     private var historySection: some View {
-        Section("目标生效历史") {
-            ForEach(Array(settings["history"].arrayValue.reversed().enumerated()),id:\.offset) { _,version in goalVersionGroup(version) }
+        Section {
+            DisclosureGroup("目标历史") {
+                ForEach(Array(settings["history"].arrayValue.reversed().enumerated()),id:\.offset) { _,version in goalVersionGroup(version) }
+            }
         }
     }
     private func goalVersionGroup(_ version: NativeJSON) -> some View {
@@ -147,9 +187,9 @@ struct NativeHealthGoalsWorkspace: View {
     }
     private func goalVersionTarget(_ version: NativeJSON,key: String) -> some View {
         let label: String = NativeHealthWorkspaceFormat.metric(key)
-        let value: String = NativeHealthWorkspaceFormat.text(version["targets"][key])
+        let value: String = version["targets"][key].isNull ? "未设置":NativeHealthWorkspaceFormat.text(version["targets"][key])
         let unit: String = NativeHealthWorkspaceFormat.unit(key)
-        let detail: String = "\(value) \(unit)"
+        let detail: String = version["targets"][key].isNull ? "未设置":"\(value) \(unit)"
         return LabeledContent(label,value:detail)
     }
     private func status(_ key: String?) -> String { ["unset":"未设置目标","missing":"缺少记录","in-progress":"今日进行中","achieved":"已达成","missed":"未达成"][key ?? ""] ?? "未知" }
@@ -160,7 +200,7 @@ struct NativeHealthGoalsWorkspace: View {
             formRevision = settings["revision"].intValue ?? 0
             if populate {
                 fields = Dictionary(uniqueKeysWithValues:NativeHealthGoalRequest.keys.map { key in (key,settings["targets"][key].doubleValue.map { String($0) } ?? "") })
-                effective = Date()
+                effective = Date(); baselineEffective = NativeActionDates.day(effective)
             }
         } catch { message = error.localizedDescription }
     }
@@ -169,19 +209,21 @@ struct NativeHealthGoalsWorkspace: View {
         do { progress = try await api.json(path:"health/goals/progress",token:token) } catch { message = error.localizedDescription }
     }
     private func prepare() async {
+        guard !busy,pending == nil,loaded,draftReady,!conflict else { return }
         do {
             let body = try NativeHealthGoalRequest.body(fields:fields,effectiveFrom:effective,revision:formRevision)
             let operation = NativeHealthWorkspaceMutation(path:"health/goals",method:"PUT",body:body,label:"每日目标 · " + NativeActionDates.day(effective))
             try store.save(operation); pending = operation; await submit(operation,recovering:false)
         } catch { message = error.localizedDescription }
     }
-    private func saveDraft() {
-        guard draftReady,pending == nil else { return }
-        let edited = NativeHealthGoalRequest.keys.contains { Double(fields[$0] ?? "") != settings["targets"][$0].doubleValue } || NativeActionDates.day(effective) != NativeActionDates.day(Date())
+    @discardableResult private func saveDraft() -> Bool {
+        guard draftReady,pending == nil else { return pending != nil }
+        let edited = NativeHealthGoalRequest.keys.contains { Double(fields[$0] ?? "") != settings["targets"][$0].doubleValue } || NativeActionDates.day(effective) != baselineEffective
         do {
             if edited { try draftStore.save(NativeHealthWorkspaceFormDraft(fields:fields,dates:["effective":effective],snapshot:.object(["revision":.number(Double(formRevision))]))) }
             else { try draftStore.clear() }
-        } catch { message = error.localizedDescription }
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     private func submit(_ operation: NativeHealthWorkspaceMutation,recovering: Bool) async {
         guard !busy else { return }; busy = true; message = nil
@@ -193,12 +235,12 @@ struct NativeHealthGoalsWorkspace: View {
                 else { result = try await operation.send(api:api,token:token) }
             } else { result = try await operation.send(api:api,token:token) }
             guard result["revision"].intValue != nil else { throw NativeAPIError.invalidResponse }
-            try store.clear(); try draftStore.clear(); pending = nil; settings = result; formRevision = result["revision"].intValue ?? formRevision; busy = false; await loadProgress(); message = "目标已核对保存。"
+            try store.clear(); try draftStore.clear(); pending = nil; settings = result; formRevision = result["revision"].intValue ?? formRevision; baselineEffective = operation.body["effectiveFrom"].stringValue ?? NativeActionDates.day(effective); busy = false; await loadProgress(); message = "目标已保存。"; isEditing = false
         } catch {
             message = error.localizedDescription
             if NativeHealthWorkspaceFormat.definiteRejection(error) {
                 do { try store.clear(); pending = nil; conflict = true } catch { message = error.localizedDescription }
-            } else { message = (message ?? "") + " 原目标仍待确认，请继续核对原请求。" }
+            } else { message = (message ?? "") + " 填写已保留，请继续确认保存。" }
         }
         busy = false
     }

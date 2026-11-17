@@ -83,6 +83,79 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertEqual(restored.body["calories"], .null)
     }
 
+    func testCreationSelectionOverridesOldReuseDateAndMealWithoutChangingNutrients() throws {
+        let source = input(calories: .string("0"))
+        let selection = NativeNutritionEntrySelection(date: "2026-11-09", meal: "dinner")
+        let adopted = selection.applying(to: source)
+        let payload = try NativeNutritionDraft(adopted).payload()
+        XCTAssertEqual(payload["date"], .string("2026-11-09"))
+        XCTAssertEqual(payload["meal"], .string("dinner"))
+        XCTAssertEqual(payload["calories"], .string("0"))
+        XCTAssertEqual(payload["carbs"], .null)
+        XCTAssertEqual(source["date"], .string(today), "Choosing another meal must not mutate the source record")
+    }
+
+    func testCatalogAndReuseKeepHistoricalBreakfastContext() throws {
+        let date = "2026-11-09", meal = "breakfast"
+        let food: NativeJSON = .object(["id": .string("catalog:synthetic"), "name": .string("合成早餐"), "basis": .string("perServing"),
+            "catalogRelease": .string("historical-release"), "serving": .object(["label": .string("一份"), "kcal": .number(100), "protein": .null, "carbs": .null, "fat": .null])])
+        let row = try NativeFoodSelectionDraft.make(food: food, amount: "1", unit: "份", date: date, meal: meal)
+        let repeated = try NativeNutritionReuseDraft.make(row, date: date, meal: meal)
+        XCTAssertEqual(repeated["date"], .string(date))
+        XCTAssertEqual(repeated["meal"], .string(meal))
+        XCTAssertEqual(repeated["food"]["catalogRelease"], .string("historical-release"))
+        XCTAssertEqual(repeated["protein"], .null)
+    }
+
+    func testSuggestedMealUsesShanghaiTimeInsteadOfHostTimezone() throws {
+        func instant(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+        XCTAssertEqual(NativeNutritionEntrySelection.suggestedMeal(at: instant("2026-11-16T00:30:00Z")), "breakfast")
+        XCTAssertEqual(NativeNutritionEntrySelection.suggestedMeal(at: instant("2026-11-16T04:30:00Z")), "lunch")
+        XCTAssertEqual(NativeNutritionEntrySelection.suggestedMeal(at: instant("2026-11-16T10:30:00Z")), "dinner")
+        XCTAssertEqual(NativeNutritionEntrySelection.suggestedMeal(at: instant("2026-11-16T15:30:00Z")), "snack")
+    }
+
+    func testInputIssuesIdentifyFirstFieldAndStableScrollAnchor() throws {
+        var draft = NativeNutritionDraft(input())
+        draft.name = "  "
+        draft.nutrients["calories"] = "1.23"
+        let issues = draft.validationIssues()
+        XCTAssertEqual(issues.map(\.field), ["name", "calories"])
+        XCTAssertEqual(issues.first?.id, draft.id.uuidString + ":name")
+        XCTAssertFalse(issues.contains { $0.field == "protein" || $0.field == "carbs" })
+        draft.name = "米饭"; draft.setNutrient("calories", text: "0")
+        XCTAssertTrue(draft.validationIssues().isEmpty)
+        XCTAssertEqual(try draft.payload()["calories"], .string("0"))
+    }
+
+    func testNoOpIdentityKeepsReferenceAndChangeExplainsOnlyInvalidatedValues() throws {
+        var source = input(calories: .string("100")).objectValue
+        source["food"] = .object(["id": .string("catalog:synthetic"), "amount": .number(1), "unit": .string("份"), "catalogRelease": .string("captured-release")])
+        source["provenance"] = .object(["calories": .object(["source": .string("ai"), "basis": .string("原参考")]),
+            "protein": .object(["source": .string("manual"), "basis": .string("已核对为零")])])
+        var draft = NativeNutritionDraft(.object(source))
+        draft.changeIdentity(name: draft.name, portion: draft.portion)
+        XCTAssertNotEqual(draft.food, .null)
+        XCTAssertEqual(draft.nutrients["calories"], "100")
+        XCTAssertTrue(draft.warnings.isEmpty)
+        draft.changeIdentity(portion: "另一份量")
+        XCTAssertEqual(draft.food, .null)
+        XCTAssertEqual(draft.nutrients["calories"], "")
+        XCTAssertEqual(draft.nutrients["protein"], "0")
+        XCTAssertTrue(draft.warnings.contains { $0.contains("热量") && $0.contains("已清空") })
+        XCTAssertEqual(try draft.payload()["calories"], .null)
+        XCTAssertEqual(try draft.payload()["protein"], .string("0"))
+    }
+
+    func testNumericZeroFromCandidateDoesNotBecomeUnknown() throws {
+        var source = input().objectValue
+        source["calories"] = .number(0)
+        let payload = try NativeNutritionDraft(.object(source)).payload()
+        XCTAssertNotEqual(payload["calories"], .null)
+        XCTAssertEqual(payload["calories"].stringValue.flatMap(Double.init), 0)
+        XCTAssertEqual(payload["carbs"], .null)
+    }
+
     @MainActor
     func testPhotoIsResizedAndConvertedToMetadataFreeJPEG() throws {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2000, height: 1000))

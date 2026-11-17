@@ -7,15 +7,14 @@ struct NativeHealthWorkspaceRoot: View {
     let userID: String
     var body: some View {
         List {
-            Section("健康工作区") {
-                NavigationLink("自选日期、来源与睡眠分析") { NativeHealthRangeWorkspace(api: api, token: token, userID: userID) }
-                NavigationLink("健康记录与修改历史") { NativeHealthRecordsWorkspace(api: api, token: token, userID: userID) }
-                NavigationLink("目标、生效历史与达成日历") { NativeHealthGoalsWorkspace(api: api, token: token, userID: userID) }
-                NavigationLink("体重计划与历史周期") { NativeWeightPlanWorkspace(api: api, token: token, userID: userID) }
+            Section("了解自己的变化") {
+                NavigationLink("健康趋势与睡眠") { NativeHealthRangeWorkspace(api: api, token: token, userID: userID) }
+                NavigationLink("查看与更正记录") { NativeHealthRecordsWorkspace(api: api, token: token, userID: userID) }
+                NavigationLink("每日目标") { NativeHealthGoalsWorkspace(api: api, token: token, userID: userID) }
+                NavigationLink("体重计划") { NativeWeightPlanWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("健康助手") { NativeHealthAssistantWorkspace(api: api, token: token, userID: userID) }
-                NavigationLink("同步诊断、文件导入与批次回退") { NativeHealthSyncWorkspace(api: api, token: token, userID: userID) }
             }
-        }.navigationTitle("健康工作区")
+        }.navigationTitle("健康")
     }
 }
 
@@ -98,24 +97,52 @@ struct NativeHealthRangeWorkspace: View {
     @State private var message: String?
     @State private var exportDocument: NativeHealthJSONDocument?
     @State private var exporting = false
+    @State private var editingRange = false
+    @State private var entryMetric: QuickEntryMetric?
+    @State private var choosingEntryMetric = false
+    init(api: NativeAPI,token: String,userID: String,initialMetric: String? = nil,initialFrom: String? = nil,initialTo: String? = nil) {
+        self.api = api; self.token = token; self.userID = userID
+        let end: Date = initialTo.flatMap(NativeHealthWorkspaceFormat.date) ?? Date()
+        let start: Date = initialFrom.flatMap(NativeHealthWorkspaceFormat.date) ?? NativeActionDates.calendar.date(byAdding:.day,value:-29,to:end)!
+        _from = State(initialValue:start); _to = State(initialValue:end)
+        let allowed: [String] = NativeHealthWorkspaceFormat.metricKeys + ["body_fat"]
+        _metric = State(initialValue:initialMetric.flatMap { allowed.contains($0) ? $0:nil } ?? "steps")
+    }
     private var points: [NativeWorkspaceHealthPoint] {
         let rows = metric == "body_fat" ? data["bodyComposition"]["points"] : data["summary"]["metrics"][metric]["points"]
         return rows.arrayValue.compactMap(NativeWorkspaceHealthPoint.init).sorted { $0.day < $1.day }
     }
     var body: some View {
         List {
-            Section("日期（北京时间）") {
-                DatePicker("开始",selection:$from,in:...Date(),displayedComponents:.date)
-                DatePicker("结束",selection:$to,in:...Date(),displayedComponents:.date)
-                Button("读取此范围") { Task { await load() } }.disabled(busy)
-                Picker("指标",selection:$metric) { ForEach(NativeHealthWorkspaceFormat.metricKeys + ["body_fat"],id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) } }
+            Section {
+                Picker("指标",selection:$metric) {
+                    ForEach(NativeHealthWorkspaceFormat.metricKeys + ["body_fat"],id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) }
+                }
+                Menu {
+                    ForEach([7,30,90,180,360],id:\.self) { days in Button("最近\(days)天") { selectRecentDays(days) } }
+                    Button("自定日期…") { editingRange = true }
+                } label: { Label(rangeSelectionLabel,systemImage:"calendar") }
+                .disabled(busy)
             }
+            if busy { Section { ProgressView("正在读取所选范围…") } }
+            NativeHealthWorkspaceMessage(message:message)
             if let loadedRange {
                 Section(loadedRange.label) {
                     Text("\(Set(points.map(\.day)).count) / \(loadedRange.days) 天有记录，缺失不补零。")
                     if let last = points.last { LabeledContent("最新值",value:NativeHealthWorkspaceFormat.number(last.value) + " " + NativeHealthWorkspaceFormat.unit(metric)) }
                     if !points.isEmpty { chart.frame(height:230) }
-                    Button("导出相同日期的健康 JSON 文件") { Task { await export(loadedRange) } }.disabled(busy)
+                    if metric != "body_fat" {
+                        NavigationLink("查看这段记录") {
+                            NativeHealthRecordsWorkspace(api:api,token:token,userID:userID,initialMetric:metric,initialFrom:loadedRange.from,initialTo:loadedRange.to)
+                        }
+                        NavigationLink {
+                            NativeHealthAssistantWorkspace(api:api,token:token,userID:userID,initialMetric:metric,initialFrom:loadedRange.from,initialTo:loadedRange.to,initialQuestion:"这段记录有哪些值得关注的变化？")
+                        } label: { Label("问问这段记录",systemImage:"sparkles") }
+                    } else { Text("估算体脂暂不支持助手分析。").font(.caption).foregroundStyle(.secondary) }
+                    DisclosureGroup("导出与数据说明") {
+                        Button("导出此范围的健康记录") { Task { await export(loadedRange) } }.disabled(busy)
+                        Text("导出包含相同日期内的健康记录，未知值保持未知。").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if metric == "sleep" { sleepSections }
                 if metric == "body_fat" {
@@ -126,7 +153,8 @@ struct NativeHealthRangeWorkspace: View {
                         LabeledContent("无效配对",value:NativeHealthWorkspaceFormat.text(data["bodyComposition"]["invalidPairCount"]))
                     }
                 }
-                Section("每日值与真实来源") {
+                Section {
+                    DisclosureGroup("每日记录与来源") {
                     ForEach(points.reversed()) { point in
                         VStack(alignment:.leading,spacing:5) {
                             LabeledContent(point.day,value:NativeHealthWorkspaceFormat.number(point.value) + " " + NativeHealthWorkspaceFormat.unit(metric))
@@ -135,13 +163,29 @@ struct NativeHealthRangeWorkspace: View {
                         }
                     }
                     if points.isEmpty { Text("所选指标在此范围没有记录。") }
+                    }
                 }
             }
-            if busy { ProgressView("读取中…") }
-            NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("健康范围与来源")
+        }.navigationTitle("健康趋势")
             .environment(\.timeZone,NativeActionDates.timeZone)
+            .toolbar {
+                ToolbarItem(placement:.topBarTrailing) {
+                    Button { beginQuickEntry() } label: { Image(systemName:"plus") }
+                        .accessibilityLabel("补记健康数据").disabled(busy)
+                }
+            }
             .task { if loadedRange == nil { await load() } }
+            .sheet(isPresented:$editingRange) {
+                NativeHealthDateRangeEditor(from:from,to:to) { first,last in from = first; to = last; Task { await load() } }
+            }
+            .sheet(item:$entryMetric) { selected in
+                HealthQuickEntryView(api:api,token:token,userID:userID,initialMetric:selected) { await load() }
+            }
+            .confirmationDialog("选择要补记的原始指标",isPresented:$choosingEntryMetric,titleVisibility:.visible) {
+                Button("体重") { entryMetric = .weight }
+                Button("去脂体重") { entryMetric = .leanBodyMass }
+                Button("取消",role:.cancel) { }
+            } message: { Text("估算体脂由体重和去脂体重计算，不能直接补记。请选择实际测量的指标。") }
             .fileExporter(isPresented:$exporting,document:exportDocument,contentType:.json,defaultFilename:"jiashu-health-\(loadedRange?.from ?? "")_\(loadedRange?.to ?? "")") { result in
                 if case .failure(let error) = result { message = error.localizedDescription }
             }
@@ -184,8 +228,8 @@ struct NativeHealthRangeWorkspace: View {
         }
     }
     private var sleepTimingSection: some View {
-        Section("真实时刻明细") {
-            ForEach(points.reversed()) { point in sleepTimingRow(point) }
+        Section {
+            DisclosureGroup("真实睡眠时刻") { ForEach(points.reversed()) { point in sleepTimingRow(point) } }
         }
     }
     private func sleepTimingRow(_ point: NativeWorkspaceHealthPoint) -> some View {
@@ -221,8 +265,8 @@ struct NativeHealthRangeWorkspace: View {
         }
     }
     private var sleepWeeklySection: some View {
-        Section("分周规律与分期") {
-            ForEach(sleepWeeks) { week in sleepWeekRow(week) }
+        Section {
+            DisclosureGroup("分周作息与分期") { ForEach(sleepWeeks) { week in sleepWeekRow(week) } }
         }
     }
     private func sleepWeekRow(_ week: SleepWeek) -> some View {
@@ -240,6 +284,25 @@ struct NativeHealthRangeWorkspace: View {
         let percent: String = NativeHealthWorkspaceFormat.number(summary.stages[key]) + "%"
         return LabeledContent(title,value:percent)
     }
+    private var rangeSelectionLabel: String {
+        let calendar = NativeActionDates.calendar
+        let end = calendar.startOfDay(for:to)
+        let today = calendar.startOfDay(for:Date())
+        let count = (calendar.dateComponents([.day],from:calendar.startOfDay(for:from),to:end).day ?? -1) + 1
+        if end == today && [7,30,90,180,360].contains(count) { return "最近\(count)天" }
+        return "自定日期"
+    }
+    private func selectRecentDays(_ days: Int) {
+        let end = Date()
+        from = NativeActionDates.calendar.date(byAdding:.day,value:1-days,to:end)!
+        to = end
+        Task { await load() }
+    }
+    private func beginQuickEntry() {
+        guard !busy else { return }
+        if let selected = QuickEntryMetric(rawValue:metric) { entryMetric = selected }
+        else { choosingEntryMetric = true }
+    }
     private func stageLabel(_ key: String) -> String { ["deep":"深度","core":"核心","rem":"REM","unspecified":"未分类"][key] ?? key }
     private func load() async {
         guard !busy else { return }; busy = true; message = nil; defer { busy = false }
@@ -255,5 +318,37 @@ struct NativeHealthRangeWorkspace: View {
             let result = try await api.json(path:NativeHealthWorkspaceFormat.path("health/export",query:range.query),token:token)
             exportDocument = NativeHealthJSONDocument(data:try result.encodedData()); exporting = true
         } catch { message = error.localizedDescription }
+    }
+}
+
+private struct NativeHealthDateRangeEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var from: Date
+    @State private var to: Date
+    @State private var message: String?
+    let onApply: (Date,Date) -> Void
+    init(from: Date,to: Date,onApply: @escaping (Date,Date) -> Void) {
+        _from = State(initialValue:from); _to = State(initialValue:to); self.onApply = onApply
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                DatePicker("开始日期",selection:$from,in:...Date(),displayedComponents:.date)
+                DatePicker("结束日期",selection:$to,in:...Date(),displayedComponents:.date)
+                Text("最多选择360天，包含开始与结束当天。日期按北京时间统计。").font(.footnote).foregroundStyle(.secondary)
+                if let message { Text(message).foregroundStyle(.red) }
+            }.navigationTitle("查看哪段时间")
+                .navigationBarTitleDisplayMode(.inline)
+                .environment(\.timeZone,NativeActionDates.timeZone)
+                .toolbar {
+                    ToolbarItem(placement:.cancellationAction) { Button("取消") { dismiss() } }
+                    ToolbarItem(placement:.confirmationAction) {
+                        Button("查看") {
+                            do { _ = try NativeHealthWorkspaceRange(from:from,to:to); onApply(from,to); dismiss() }
+                            catch { message = error.localizedDescription }
+                        }
+                    }
+                }
+        }
     }
 }

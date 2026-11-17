@@ -35,6 +35,32 @@ enum NativeNutritionFields {
     }
 }
 
+struct NativeNutritionEntrySelection: Equatable, Sendable {
+    let date: String
+    let meal: String
+    init(date: String, meal: String) { self.date = date; self.meal = meal }
+    static func suggestedMeal(at date: Date = Date()) -> String {
+        switch NativeActionDates.calendar.component(.hour, from: date) {
+        case 5..<10: return "breakfast"
+        case 10..<15: return "lunch"
+        case 15..<21: return "dinner"
+        default: return "snack"
+        }
+    }
+    func applying(to row: NativeJSON = .null) -> NativeJSON {
+        var fields = row.objectValue
+        fields["date"] = .string(date); fields["meal"] = .string(meal)
+        return .object(fields)
+    }
+}
+
+struct NativeNutritionInputIssue: Identifiable, Equatable {
+    let rowID: UUID
+    let field: String
+    let message: String
+    var id: String { rowID.uuidString + ":" + field }
+}
+
 struct NativeNutritionDraft: Identifiable, Codable, Equatable {
     let id: UUID
     var date: String
@@ -56,7 +82,7 @@ struct NativeNutritionDraft: Identifiable, Codable, Equatable {
         portion = raw["portion"].stringValue ?? ""
         note = raw["note"].stringValue ?? ""
         nutrients = Dictionary(uniqueKeysWithValues: NativeNutritionFields.keys.map { key in
-            (key, raw[key].stringValue ?? "")
+            (key, raw[key].stringValue ?? raw[key].doubleValue.map { String($0) } ?? "")
         })
         provenance = raw["provenance"].objectValue
         food = NativeNutritionFields.selection(raw["food"])
@@ -65,6 +91,8 @@ struct NativeNutritionDraft: Identifiable, Codable, Equatable {
     }
 
     mutating func changeIdentity(name: String? = nil, portion: String? = nil) {
+        guard name.map({ $0 != self.name }) == true || portion.map({ $0 != self.portion }) == true else { return }
+        let cleared = NativeNutritionFields.keys.filter { ["ai", "catalog"].contains(provenance[$0]?["source"].stringValue ?? "") }
         if let name { self.name = name }
         if let portion { self.portion = portion }
         food = .null
@@ -72,6 +100,27 @@ struct NativeNutritionDraft: Identifiable, Codable, Equatable {
             nutrients[key] = ""
             provenance[key] = .object(["source": .string("unknown")])
         }
+        if !cleared.isEmpty {
+            let notice = "名称或份量已更改，原参考" + cleared.map(NativeNutritionFields.title).joined(separator: "、") + "已清空，请重新核对。"
+            if !warnings.contains(notice) { warnings.append(notice) }
+        }
+    }
+
+    func validationIssues(now: Date = Date()) -> [NativeNutritionInputIssue] {
+        var issues: [NativeNutritionInputIssue] = []
+        func add(_ field: String, _ text: String) { issues.append(NativeNutritionInputIssue(rowID: id, field: field, message: text)) }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.utf16.count > 100 { add("name", "请填写食物名称，最多100字。") }
+        if let parsed = NativeChartDates.parse(date), NativeActionDates.day(parsed) == date,
+           date >= "1970-01-01", date <= NativeActionDates.day(now) {} else { add("date", "请选择不晚于今天的有效日期。") }
+        if !QuickEntryMeal.allCases.contains(where: { $0.rawValue == meal }) { add("meal", "请选择餐次。") }
+        if portion.utf16.count > 100 { add("portion", "份量说明最多100字。") }
+        for key in NativeNutritionFields.keys {
+            do { _ = try NativeNutritionFields.nullable(nutrients[key] ?? "") }
+            catch { add(key, NativeNutritionFields.title(key) + "需为0–20000，最多一位小数；未知可留空。") }
+        }
+        if note.utf16.count > 500 { add("note", "备注最多500字。") }
+        return issues
     }
 
     mutating func setNutrient(_ key: String, text: String) {
@@ -82,6 +131,7 @@ struct NativeNutritionDraft: Identifiable, Codable, Equatable {
     }
 
     func payload() throws -> NativeJSON {
+        if let issue = validationIssues().first { throw NativeActionInputError.invalid(issue.message) }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, trimmedName.utf16.count <= 100, portion.utf16.count <= 100, note.utf16.count <= 500,
               QuickEntryMeal.allCases.contains(where: { $0.rawValue == meal }),

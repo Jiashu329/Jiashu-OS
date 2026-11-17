@@ -32,6 +32,11 @@ struct NativeNutritionReuseView: View {
     @State private var error: String?
     @State private var deleting: String?
     @State private var requestID = UUID()
+    init(context: NativeNutritionContext, date: String, initialMeal: String = NativeNutritionEntrySelection.suggestedMeal(),
+         onDraft: @escaping ([NativeJSON]) -> Void) {
+        self.context = context; self.date = date; self.onDraft = onDraft
+        _meal = State(initialValue: initialMeal)
+    }
     var body: some View {
         List {
             Section("带入记录的位置") {
@@ -39,8 +44,8 @@ struct NativeNutritionReuseView: View {
                 Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
             }
             Section {
-                NavigationLink("复制某天的一餐") { NativeNutritionMealCopyView(context: context, targetDate: date, onDraft: onDraft) }
-                NavigationLink("自建食物、食谱和整餐模板") { NativeNutritionTemplatesView(context: context, onDraft: onDraft) }
+                NavigationLink("复制某天的一餐") { NativeNutritionMealCopyView(context: context, targetDate: date, initialMeal: meal, onDraft: onDraft) }
+                NavigationLink("自建食物、食谱和整餐模板") { NativeNutritionTemplatesView(context: context, initialDate: date, initialMeal: meal, onDraft: onDraft) }
             }
             if loading { ProgressView("正在读取常吃食物…") }
             NativeNutritionErrorRow(text: error ?? context.error)
@@ -111,6 +116,12 @@ private struct NativeNutritionMealCopyView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var resultMessage: String?
+    init(context: NativeNutritionContext, targetDate: String, initialMeal: String, onDraft: @escaping ([NativeJSON]) -> Void) {
+        self.context = context; self.targetDate = targetDate; self.onDraft = onDraft
+        let selected = NativeChartDates.parse(targetDate) ?? Date()
+        _fromDate = State(initialValue: NativeActionDates.calendar.date(byAdding: .day, value: -1, to: selected) ?? selected)
+        _fromMeal = State(initialValue: initialMeal); _toMeal = State(initialValue: initialMeal)
+    }
     private var selection: [String: NativeJSON] { ["fromDate": .string(NativeActionDates.day(fromDate)), "fromMeal": .string(fromMeal), "toDate": .string(targetDate), "toMeal": .string(toMeal)] }
     var body: some View {
         Form {
@@ -167,23 +178,29 @@ private struct NativeNutritionMealCopyView: View {
 struct NativeNutritionTemplatesView: View {
     @ObservedObject var context: NativeNutritionContext
     let onDraft: ([NativeJSON]) -> Void
+    let initialDate: String
+    let initialMeal: String
     @State private var includeArchived = false
     @State private var templates: [NativeJSON] = []
     @State private var busy = false
     @State private var loaded = false
     @State private var error: String?
     @State private var requestID = UUID()
+    init(context: NativeNutritionContext, initialDate: String = NativeActionDates.day(Date()),
+         initialMeal: String = NativeNutritionEntrySelection.suggestedMeal(), onDraft: @escaping ([NativeJSON]) -> Void) {
+        self.context = context; self.initialDate = initialDate; self.initialMeal = initialMeal; self.onDraft = onDraft
+    }
     var body: some View {
         List {
             Section {
                 NavigationLink("新建自建食物／食谱／整餐") { NativeNutritionTemplateEditor(context: context) }
-                NavigationLink("从已有餐次整理模板") { NativeNutritionTemplateFromMeal(context: context) }
+                NavigationLink("从已有餐次整理模板") { NativeNutritionTemplateFromMeal(context: context, initialDate: initialDate, initialMeal: initialMeal) }
                 Toggle("显示已归档模板", isOn: $includeArchived)
             }
             if busy { ProgressView("正在读取模板…") }
             NativeNutritionErrorRow(text: error ?? context.error)
             ForEach(Array(templates.enumerated()), id: \.offset) { _, template in
-                NavigationLink { NativeNutritionTemplateDetail(context: context, initial: template, onDraft: onDraft) } label: {
+                NavigationLink { NativeNutritionTemplateDetail(context: context, initial: template, initialDate: initialDate, initialMeal: initialMeal, onDraft: onDraft) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(template["name"].stringValue ?? "模板")
                         Text(kindTitle(template["kind"].stringValue) + " · \(template["components"].arrayValue.count)项 · 版本\(template["revision"].intValue ?? 0)" + (template["archivedAt"].isNull ? "" : " · 已归档"))
@@ -222,6 +239,11 @@ private struct NativeNutritionTemplateDetail: View {
     @State private var busy = false
     @State private var error: String?
     @State private var confirmArchive = false
+    init(context: NativeNutritionContext, initial: NativeJSON, initialDate: String, initialMeal: String,
+         onDraft: @escaping ([NativeJSON]) -> Void) {
+        self.context = context; self.initial = initial; self.onDraft = onDraft
+        _date = State(initialValue: NativeChartDates.parse(initialDate) ?? Date()); _meal = State(initialValue: initialMeal)
+    }
     private var current: NativeJSON { template == .null ? initial : template }
     var body: some View {
         Form {
@@ -471,6 +493,10 @@ private struct NativeNutritionTemplateFromMeal: View {
     @State private var busy = false
     @State private var loaded = false
     @State private var error: String?
+    init(context: NativeNutritionContext, initialDate: String, initialMeal: String) {
+        self.context = context
+        _date = State(initialValue: NativeChartDates.parse(initialDate) ?? Date()); _meal = State(initialValue: initialMeal)
+    }
     var body: some View {
         Form {
             Section("选择已有餐次") {

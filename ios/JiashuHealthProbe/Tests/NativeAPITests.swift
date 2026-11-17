@@ -505,6 +505,73 @@ final class NativeAPITests: XCTestCase {
         XCTAssertEqual(notified.count, 3)
     }
 
+    @MainActor
+    func testSameSessionRenewalUpdatesOldFeatureCredentialsWithoutChangingNavigationIdentity() async throws {
+        let first = try JSONDecoder().decode(NativeSession.self, from: Data(sessionJSON.utf8))
+        let next = NativeSession(accessToken: "synthetic-renewed-token", expiresAt: first.expiresAt, user: first.user)
+        let body = Data(#"{"requestID":"synthetic-original-write","amount":"12.30"}"#.utf8)
+        var methods: [String] = []
+        let client = api { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + next.accessToken)
+            methods.append(request.httpMethod ?? "")
+            if request.httpMethod == "PUT" {
+                XCTAssertEqual(self.requestBody(request), body)
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "synthetic-original-write")
+            }
+            return .json("{\"ok\":true}")
+        }
+        client.beginSession(first)
+        XCTAssertTrue(client.renewSession(next, replacing: first.accessToken))
+        XCTAssertEqual(first.viewIdentity, next.viewIdentity)
+        _ = try await client.json(path: "finance", token: first.accessToken)
+        _ = try await client.upload(path: "finance/accounts", method: "PUT", token: first.accessToken,
+                                    data: body, headers: ["Idempotency-Key": "synthetic-original-write"])
+        _ = try await client.download(path: "data/backup", token: first.accessToken)
+        XCTAssertEqual(methods, ["GET", "PUT", "GET"], "Renewal must not replay a write")
+    }
+
+    func testOldAndUnknownTokensCannotAdoptAnotherAccountOrAnotherLoginLease() async throws {
+        let first = try JSONDecoder().decode(NativeSession.self, from: Data(sessionJSON.utf8))
+        let other = NativeSession(accessToken: "synthetic-other-token", expiresAt: first.expiresAt,
+                                  user: NativeUser(id: "synthetic-user-b", email: "b@example.test"))
+        let newLogin = NativeSession(accessToken: "synthetic-new-login-token", expiresAt: first.expiresAt, user: first.user)
+        let client = api { _ in XCTFail("An inactive credential reached transport"); return .json("{}") }
+        client.beginSession(first)
+        XCTAssertFalse(client.renewSession(other, replacing: first.accessToken))
+        client.beginSession(other)
+        for token in [first.accessToken, "synthetic-unregistered-token"] {
+            do { _ = try await client.json(path: "finance", token: token); XCTFail("Inactive token accepted") }
+            catch is CancellationError { }
+        }
+        client.endSession()
+        do { _ = try await client.json(path: "finance", token: other.accessToken); XCTFail("Signed-out token accepted") }
+        catch is CancellationError { }
+        client.beginSession(newLogin)
+        do { _ = try await client.json(path: "finance", token: first.accessToken); XCTFail("Previous login adopted new session") }
+        catch is CancellationError { }
+        XCTAssertNotEqual(first.viewIdentity, other.viewIdentity)
+    }
+
+    @MainActor
+    func testWorkspace401ReportsTheActualRenewedCredentialWithoutReplayingTheRequest() async throws {
+        let first = try JSONDecoder().decode(NativeSession.self, from: Data(sessionJSON.utf8))
+        let next = NativeSession(accessToken: "synthetic-renewed-token", expiresAt: first.expiresAt, user: first.user)
+        var requests = 0
+        let client = api { request in
+            requests += 1
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + next.accessToken)
+            return .json("{\"error\":\"请重新登录\",\"code\":\"NATIVE_SIGN_IN_REQUIRED\"}", status: 401)
+        }
+        client.beginSession(first)
+        XCTAssertTrue(client.renewSession(next, replacing: first.accessToken))
+        var notified: [String] = []
+        client.workspaceAuthenticationFailure = { notified.append($0) }
+        do { _ = try await client.json(path: "finance", method: "POST", token: first.accessToken); XCTFail("Expected 401") }
+        catch let error as NativeAPIError { XCTAssertTrue(error.isAuthenticationFailure) }
+        XCTAssertEqual(notified, [next.accessToken])
+        XCTAssertEqual(requests, 1)
+    }
+
     func testKeychainStoresOnlySessionAndSupportsReplacementAndClear() throws {
         let service = "synthetic.native-tests." + UUID().uuidString
         keychainServices.append(service)

@@ -43,6 +43,13 @@ final class NativeLifeStore: ObservableObject {
     func activate(token: String, userID: String) {
         guard self.userID == userID else { deactivate(); return }
         self.token = token; active = true
+        if !busy {
+            do {
+                let restored = try pendingStorage.load(NativeLifePending.self)
+                if let restored, restored.owner != userID { throw NativeAPIError.invalidResponse }
+                pending = restored
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func deactivate() {
         active = false; loadID = UUID(); syncTask?.cancel(); syncTask = nil; syncing = false; completing = false
@@ -192,91 +199,173 @@ struct NativeLifeRoot: View {
     let token: String
     let userID: String
     @StateObject private var store: NativeLifeStore
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @AppStorage("jiashu.life.listLayout") private var listLayout = false
     @State private var filtersVisible = false
-    @State private var managementVisible = false
+    @State private var importVisible = false
+    @State private var resetVisible = false
+    @State private var organizing = false
     @State private var selected = Set<String>()
     @State private var bulkKind = "movie"
     init(api: NativeAPI, token: String, userID: String) {
         self.api = api; self.token = token; self.userID = userID
         _store = StateObject(wrappedValue: NativeLifeStore(api: api, token: token, userID: userID))
     }
+    private var contentPending: NativeLifePending? {
+        guard let pending = store.pending, !["life/douban/sync", "life/douban/connection"].contains(pending.path) else { return nil }
+        return pending
+    }
     var body: some View {
-        List {
-            Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack {
-                        ForEach(NativeLifeContract.kinds, id: \.self) { kind in
-                            Button {
-                                store.filters.kind = kind; selected.removeAll(); Task { await store.load() }
-                            } label: { Text((NativeLifeContract.kindLabels[kind] ?? kind) + " " + String(store.response["counts"][kind].intValue ?? 0)).font(.subheadline).padding(.horizontal, 12).padding(.vertical, 8).background(store.filters.kind == kind ? Color.indigo.opacity(0.18) : Color.secondary.opacity(0.08), in: Capsule()) }
-                                .buttonStyle(.plain)
-                        }
-                    }
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                categoryBar
+                if !store.filters.activeChips.isEmpty { filterChips }
                 HStack {
-                    Label("已保存 \(store.total) 部作品", systemImage: "books.vertical")
+                    Text("\(store.total) 部收藏").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
-                    Button("筛选", systemImage: "line.3.horizontal.decrease.circle") { filtersVisible = true }.labelStyle(.iconOnly)
+                    Button { filtersVisible = true } label: { Label("筛选", systemImage: "line.3.horizontal.decrease.circle") }
+                        .font(.subheadline)
                 }
-                Text("我的完成收藏 · 个人整理仅保存在本站").font(.caption).foregroundStyle(.secondary)
-            }
-            if let pending = store.pending {
-                Section("待确认的原操作") {
-                    Text(pending.label)
-                    Text("保留原提交内容与标识，重试会核对这次操作。").font(.caption).foregroundStyle(.secondary)
-                    Button("重试并核对原操作") { Task { await store.retryPending() } }.disabled(store.busy)
+                if let pending = contentPending {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("保存结果待确认", systemImage: "clock.arrow.circlepath").font(.headline)
+                        Text(pending.label).font(.subheadline).foregroundStyle(.secondary)
+                        Button("继续确认") { Task { await store.retryPending() } }.disabled(store.busy)
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                 }
-            }
-            if let error = store.error { Section { Text(error).foregroundStyle(.red); Button("重新读取收藏") { Task { await store.load() } } } }
-            if let notice = store.notice { Section { Text(notice).font(.footnote).foregroundStyle(.secondary) } }
-            if store.loading && store.items.isEmpty { ProgressView("正在读取收藏…") }
-            if !store.loading && store.items.isEmpty {
-                ContentUnavailableView("暂无符合条件的收藏", systemImage: "books.vertical", description: Text("调整筛选，或从同步与导入接入本人已完成收藏。"))
-            }
-            Section {
-                ForEach(store.items) { item in
-                    HStack(alignment: .top, spacing: 12) {
-                        if item.domain == "screen" {
-                            Button { if !selected.insert(item.id).inserted { selected.remove(item.id) } } label: { Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(selected.contains(item.id) ? Color.indigo : Color.secondary) }.buttonStyle(.borderless).accessibilityLabel("选择" + item.title)
-                        }
-                        NavigationLink {
-                            NativeLifeDetail(store: store, initial: item)
-                        } label: { NativeLifeRow(store: store, item: item) }
+                if let error = store.error {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(error, systemImage: "exclamationmark.circle").font(.subheadline).foregroundStyle(.red)
+                        Button("重试读取") { Task { await store.load() } }
                     }
                 }
-                if store.response["hasMore"].boolValue == true { Button("加载更多") { Task { await store.load(more: true) } }.disabled(store.loading) }
-            } header: { Text("收藏库") }
-            if !selected.isEmpty {
-                Section("整理已选 \(selected.count) 部影视") {
-                    Picker("归类为", selection: $bulkKind) { Text("电影").tag("movie"); Text("电视剧").tag("series") }
-                    Button("确认批量分类") { bulkClassify() }.disabled(store.busy || store.pending != nil || selected.count > 24)
-                    Button("取消选择") { selected.removeAll() }
+                if store.loading && store.items.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(40) }
+                else if store.items.isEmpty {
+                    ContentUnavailableView {
+                        Label(store.filters.activeChips.isEmpty && store.filters.query.isEmpty ? "收藏从这里开始" : "没有找到作品", systemImage: "books.vertical")
+                    } description: { Text(store.filters.activeChips.isEmpty ? "导入看过、读过和听过的作品。" : "试试调整筛选条件。") } actions: {
+                        if store.filters.activeChips.isEmpty { Button("导入收藏") { importVisible = true } }
+                        else { Button("清除筛选") { store.filters = NativeLifeFilters(); Task { await store.load() } } }
+                    }
+                } else if listLayout || typeSize.isAccessibilitySize {
+                    LazyVStack(spacing: 0) {
+                        ForEach(store.items) { item in
+                            HStack(spacing: 12) {
+                                if organizing && item.domain == "screen" { selectionButton(item) }
+                                NavigationLink { NativeLifeDetail(store: store, initial: item) } label: { NativeLifeRow(store: store, item: item) }.buttonStyle(.plain)
+                            }.padding(.vertical, 10)
+                            Divider()
+                        }
+                    }
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 136, maximum: 240), spacing: 16)], alignment: .leading, spacing: 24) {
+                        ForEach(store.items) { item in
+                            NavigationLink { NativeLifeDetail(store: store, initial: item) } label: { NativeLifePoster(store: store, item: item) }
+                                .buttonStyle(.plain)
+                                .overlay(alignment: .topTrailing) {
+                                    if organizing && item.domain == "screen" { selectionButton(item).padding(8).background(.regularMaterial, in: Circle()).padding(5) }
+                                }
+                        }
+                    }
                 }
-            }
-            Section("更新当前页") {
-                Button("增量补全作品资料") { store.completePage(full: false) }.disabled(store.busy || store.completing || store.pending != nil)
-                Button("完整刷新当前页作品资料") { store.completePage(full: true) }.disabled(store.busy || store.completing || store.pending != nil)
-                Button("更新当前页 IMDb 评分") { refreshRatings() }.disabled(store.busy || store.pending != nil || !store.items.contains(where: { $0.domain == "screen" && $0.raw["details"]["imdbId"].stringValue != nil }))
-                if store.completing { Button("暂停资料补全") { store.pause() }; ProgressView("按作品逐条补全…") }
-            }
+                if store.response["hasMore"].boolValue == true { Button { Task { await store.load(more: true) } } label: { if store.loading { ProgressView() } else { Text("加载更多") } }.frame(maxWidth: .infinity).padding(.vertical, 8).disabled(store.loading) }
+                if store.completing { HStack { ProgressView(); Text("正在更新作品资料").font(.subheadline); Spacer(); Button("暂停") { store.pause() } } }
+            }.padding(16)
         }
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("书影音")
-        .searchable(text: $store.filters.query, prompt: "作品、创作者、短评或标签")
+        .searchable(text: $store.filters.query, prompt: "搜索作品、创作者或标签")
         .onSubmit(of: .search) { selected.removeAll(); Task { await store.load() } }
         .onChange(of: store.filters.query) { _, value in if value.isEmpty { Task { await store.load() } } }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("同步与导入", systemImage: "arrow.triangle.2.circlepath") { managementVisible = true } } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("导入收藏", systemImage: "square.and.arrow.down") { importVisible = true }
+                    Button(organizing ? "结束整理" : "整理收藏", systemImage: "checkmark.circle") { organizing.toggle(); selected.removeAll() }
+                    Button(listLayout ? "封面网格" : "列表显示", systemImage: listLayout ? "square.grid.2x2" : "list.bullet") { listLayout.toggle() }
+                    Divider()
+                    Menu("作品资料", systemImage: "info.circle") {
+                        Button("补全当前作品资料") { store.completePage(full: false) }
+                        Button("重新读取当前作品资料") { store.completePage(full: true) }
+                        Button("更新 IMDb 评分") { refreshRatings() }.disabled(!store.items.contains { $0.domain == "screen" && $0.raw["details"]["imdbId"].stringValue != nil })
+                    }.disabled(store.busy || store.pending != nil || store.completing)
+                    Divider()
+                    Button("清空收藏", systemImage: "trash", role: .destructive) { resetVisible = true }
+                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("收藏工具")
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if organizing {
+                VStack(spacing: 10) {
+                    HStack { Text("已选 \(selected.count) 部影视").font(.subheadline); Spacer(); Button("完成") { organizing = false; selected.removeAll() } }
+                    if !selected.isEmpty {
+                        HStack {
+                            Picker("分类", selection: $bulkKind) { Text("电影").tag("movie"); Text("电视剧").tag("series") }.pickerStyle(.segmented)
+                            Button("分类") { bulkClassify() }.buttonStyle(.borderedProminent).disabled(store.busy || store.pending != nil || selected.count > 24)
+                        }
+                    }
+                }.padding().background(.regularMaterial)
+            }
+        }
         .refreshable { await store.load() }
         .sheet(isPresented: $filtersVisible) { NavigationStack { NativeLifeFilterSheet(store: store) } }
-        .sheet(isPresented: $managementVisible) { NavigationStack { NativeLifeManagement(store: store) } }
+        .sheet(isPresented: $importVisible, onDismiss: { Task { await store.load() } }) { NavigationStack { NativeLifeImportForm(store: store) } }
+        .sheet(isPresented: $resetVisible) { NavigationStack { NativeLifeResetView(store: store) } }
         .task(id: userID + ":" + token) { store.activate(token: token, userID: userID); await store.load() }
         .onDisappear { store.pause() }
+    }
+    private var categoryBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(NativeLifeContract.kinds, id: \.self) { kind in
+                    Button { store.filters.kind = kind; selected.removeAll(); Task { await store.load() } } label: {
+                        Text(NativeLifeContract.kindLabels[kind] ?? kind).font(.subheadline.weight(store.filters.kind == kind ? .semibold : .regular))
+                            .padding(.horizontal, 15).padding(.vertical, 10)
+                            .background(store.filters.kind == kind ? Color.indigo : Color(.secondarySystemGroupedBackground), in: Capsule())
+                            .foregroundStyle(store.filters.kind == kind ? Color.white : Color.primary)
+                    }.buttonStyle(.plain).accessibilityAddTraits(store.filters.kind == kind ? .isSelected : [])
+                }
+            }
+        }
+    }
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.filters.activeChips, id: \.key) { chip in
+                    Button { store.filters.removeChip(chip.key); Task { await store.load() } } label: { HStack(spacing: 6) { Text(chip.title); Image(systemName: "xmark").font(.caption2) }.font(.caption).padding(.horizontal, 10).padding(.vertical, 8).background(.indigo.opacity(0.08), in: Capsule()) }
+                        .buttonStyle(.plain).accessibilityLabel("移除筛选：" + chip.title)
+                }
+            }
+        }
+    }
+    private func selectionButton(_ item: NativeLifeItem) -> some View {
+        Button { if !selected.insert(item.id).inserted { selected.remove(item.id) } } label: { Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle").font(.title2).foregroundStyle(selected.contains(item.id) ? Color.indigo : Color.secondary).frame(minWidth: 44, minHeight: 44) }
+            .buttonStyle(.borderless).accessibilityLabel((selected.contains(item.id) ? "取消选择" : "选择") + item.title)
     }
     private func bulkClassify() {
         let values = store.items.filter { selected.contains($0.id) }.map { item -> NativeJSON in var key = item.key; key["expectedUpdatedAt"] = .string(item.updatedAt); return .object(key) }
         let body = NativeJSON.object(["action": .string("classify"), "kind": .string(bulkKind), "expectedDataEpoch": .number(Double(store.epoch)), "items": .array(values)])
-        Task { if await store.mutate(label: "批量影视分类", path: "life/douban/library", body: body) { selected.removeAll() } }
+        Task { if await store.mutate(label: "整理影视分类", path: "life/douban/library", body: body) { selected.removeAll() } }
     }
-    private func refreshRatings() { let body = NativeLifeContract.ratingsBody(items: store.items, epoch: store.epoch); Task { await store.mutate(label: "更新当前页评分", path: "life/douban/imdb-ratings", body: body) } }
+    private func refreshRatings() { let body = NativeLifeContract.ratingsBody(items: store.items, epoch: store.epoch); Task { await store.mutate(label: "更新作品评分", path: "life/douban/imdb-ratings", body: body) } }
+}
+
+private struct NativeLifePoster: View {
+    @ObservedObject var store: NativeLifeStore
+    let item: NativeLifeItem
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            NativeLifeCover(api: store.api, token: store.token, item: item).aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(.primary.opacity(0.06), lineWidth: 1))
+            Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(2).frame(minHeight: 38, alignment: .topLeading)
+            HStack(spacing: 2) {
+                if let rating = item.raw["rating"].intValue { ForEach(0..<5, id: \.self) { index in Image(systemName: index < rating ? "star.fill" : "star").font(.caption2).foregroundStyle(.orange) } }
+                else { Text("未评分").font(.caption).foregroundStyle(.secondary) }
+            }.accessibilityLabel(item.raw["rating"].intValue.map { "我的评分\($0)星" } ?? "未评分")
+            Text(item.raw["markedDate"].stringValue ?? item.kindLabel).font(.caption).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .topLeading).accessibilityElement(children: .combine)
+    }
 }
 
 private struct NativeLifeFilterSheet: View {
@@ -360,274 +449,325 @@ private struct NativeLifeCover: View {
 private struct NativeLifeDetail: View {
     @ObservedObject var store: NativeLifeStore
     let initial: NativeLifeItem
-    @State private var section = "work"
-    @State private var note = ""
-    @State private var tags = ""
-    @State private var hidden = false
-    @State private var kind = "movie"
-    @State private var coverURL = ""
-    @State private var previewedCover: String?
-    @State private var previewVisible = false
-    @State private var dirty = false
-    @State private var loaded = false
-    @State private var confirmRestore = false
-    private var draftStorage: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: store.userID, scope: "life-item-" + initial.id) }
-    private var item: NativeLifeItem { store.detailItems[initial.id] ?? store.items.first(where: { $0.id == initial.id }) ?? initial }
-    private var writable: Bool { !store.busy && store.pending == nil && !store.syncing && !store.completing }
+    @State private var editing = false
+    @State private var artwork = false
+    private var item: NativeLifeItem { store.detailItems[initial.id] ?? initial }
     var body: some View {
         Form {
             Section {
-                NativeLifeCover(api: store.api, token: store.token, item: item).frame(maxWidth: .infinity).frame(height: 240)
-                Text(item.title).font(.title2.bold()).textSelection(.enabled)
-                Text(item.kindLabel).foregroundStyle(.secondary)
-                Picker("作品区域", selection: $section) { Text("作品资料").tag("work"); Text("我的记录").tag("mine"); Text("资料管理").tag("manage") }.pickerStyle(.segmented)
+                HStack(alignment: .top, spacing: 18) {
+                    NativeLifeCover(api: store.api, token: store.token, item: item).frame(width: 112, height: 168).clipShape(RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(item.title).font(.title3.bold()).textSelection(.enabled)
+                        Text(item.kindLabel).font(.subheadline).foregroundStyle(.secondary)
+                        if let rating = item.raw["rating"].intValue { Text(String(repeating: "★", count: max(0, min(rating, 5)))).foregroundStyle(.orange).accessibilityLabel("我的评分\(rating)星") }
+                        if let day = item.raw["markedDate"].stringValue { Text(day).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }.padding(.vertical, 8)
             }
-            if section == "work" { workDetails }
-            if section == "mine" { personalDetails }
-            if section == "manage" { management }
-            if let pending = store.pending { Section("待确认") { Text(pending.label); Button("核对原操作") { Task { await store.retryPending() } }.disabled(store.busy) } }
-            if let error = store.error { Text(error).foregroundStyle(.red) }
-            if let notice = store.notice { Text(notice).foregroundStyle(.secondary).font(.footnote) }
-        }
-        .navigationTitle(item.title).navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            guard !loaded else { return }; loaded = true
-            note = item.note; tags = item.tags.joined(separator: ", "); hidden = item.hidden
-            kind = item.kind == "series" ? "series" : "movie"; coverURL = item.raw["cover"]["url"].stringValue ?? ""
-            do {
-                if let draft = try draftStorage.load(NativeLifeLocalDraft.self) {
-                    note = draft.note; tags = draft.tags; hidden = draft.hidden; kind = draft.kind; coverURL = draft.coverURL
-                    dirty = note != item.note || tags != item.tags.joined(separator: ", ") || hidden != item.hidden
-                    store.notice = "已恢复此账号在本机未完成的整理。"
-                }
-            } catch { store.fail(error) }
-        }
-        .onChange(of: note) { _, _ in saveDraft() }
-        .onChange(of: tags) { _, _ in saveDraft() }
-        .onChange(of: hidden) { _, _ in saveDraft() }
-        .onChange(of: kind) { _, _ in saveDraft() }
-        .onChange(of: coverURL) { _, _ in saveDraft() }
-        .confirmationDialog("恢复豆瓣原封面？", isPresented: $confirmRestore) { Button("确认恢复原封面") { saveCover(original: true) }; Button("取消", role: .cancel) {} } message: { Text("只修改这部作品在本站使用的封面，不影响其他资料。") }
-    }
-    private var workDetails: some View {
-        Group {
-            Section("作品评分") {
-                if let rating = item.raw["details"]["doubanRating"].doubleValue { LabeledContent("豆瓣", value: String(format: "%.1f / 10", rating)) }
-                if let rating = item.raw["imdb"]["rating"].doubleValue { LabeledContent("IMDb", value: String(format: "%.1f / 10", rating)); if let count = item.raw["imdb"]["ratingCount"].intValue { LabeledContent("IMDb 评分人数", value: String(count)) } }
-                if item.raw["details"]["doubanRating"].doubleValue == nil && item.raw["imdb"]["rating"].doubleValue == nil { Text("尚无来源评分").foregroundStyle(.secondary) }
+            if let summary = item.raw["details"]["summary"].stringValue, !summary.isEmpty {
+                Section("简介") { Text(summary).font(.body).lineSpacing(5).textSelection(.enabled) }
             }
-            Section("简介") { Text(item.raw["details"]["summary"].stringValue ?? "暂无简介，可在资料管理中主动补全。").textSelection(.enabled) }
-            Section("完整资料") {
-                ForEach(detailFields, id: \.0) { key, label in
-                    let value = display(item.raw["details"][key])
-                    if !value.isEmpty { LabeledContent(label) { Text(value).multilineTextAlignment(.trailing).textSelection(.enabled) } }
+            Section("我的记录") {
+                if let comment = item.raw["comment"].stringValue, !comment.isEmpty { Text(comment).textSelection(.enabled) }
+                if !item.note.isEmpty { Text(item.note).lineSpacing(4).textSelection(.enabled) }
+                if !item.tags.isEmpty { Text(item.tags.map { "#" + $0 }.joined(separator: "  ")).font(.subheadline).foregroundStyle(.indigo) }
+                if item.hidden { Label("已隐藏", systemImage: "eye.slash").font(.caption).foregroundStyle(.secondary) }
+                if item.note.isEmpty && item.tags.isEmpty && item.raw["comment"].stringValue == nil { Text("记下一点自己的感受。").foregroundStyle(.secondary) }
+                Button("编辑备注与标签", systemImage: "square.and.pencil") { editing = true }
+            }
+            if item.raw["details"]["doubanRating"].doubleValue != nil || item.raw["imdb"]["rating"].doubleValue != nil {
+                Section("来源评分") {
+                    if let score = item.raw["details"]["doubanRating"].doubleValue { LabeledContent("豆瓣", value: String(format: "%.1f / 10", score)) }
+                    if let score = item.raw["imdb"]["rating"].doubleValue { LabeledContent("IMDb", value: String(format: "%.1f / 10", score)) }
                 }
             }
-        }
-    }
-    private var personalDetails: some View {
-        Group {
-            Section("豆瓣原始记录") {
-                LabeledContent("我的评分", value: item.raw["rating"].intValue.map { String(repeating: "★", count: max(0, min($0, 5))) } ?? "未评分")
-                LabeledContent("标记日期", value: item.raw["markedDate"].stringValue ?? "未知")
-                Text(item.raw["comment"].stringValue ?? "没有个人短评").textSelection(.enabled)
-                Text("评分、标记日期和短评来自本人导入或同步，更新这些原始内容请重新预览并导入。本站备注和标签独立保存。").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("我的整理") {
-                TextField("独立备注（最多4000字）", text: $note, axis: .vertical).lineLimit(4...12).onChange(of: note) { _, _ in dirty = true }
-                TextField("标签，以逗号分隔", text: $tags).onChange(of: tags) { _, _ in dirty = true }
-                Toggle("隐藏这部作品", isOn: $hidden).onChange(of: hidden) { _, _ in dirty = true }
-                Text("隐藏的作品可从收藏筛选中的“已隐藏”找回，资料不会删除。").font(.caption).foregroundStyle(.secondary)
-                Button("保存我的整理") { saveLocal() }.disabled(!writable)
-                if dirty { Text("填写尚未保存，切换作品区域会保留当前填写。").font(.caption).foregroundStyle(.orange) }
-            }
-        }
-    }
-    private var management: some View {
-        Group {
-            Section("作品资料") {
-                Button("补全这部作品") { metadata() }.disabled(!writable || dirty)
-                if item.domain == "screen" {
-                    Button("查找 TMDB 海报") { tmdb() }.disabled(!writable || dirty)
-                    Button("更新 IMDb 评分") { imdb() }.disabled(!writable || dirty || item.raw["details"]["imdbId"].stringValue == nil)
-                    Picker("影视分类", selection: $kind) { Text("电影").tag("movie"); Text("电视剧").tag("series") }
-                    Button("确认影视分类") { classify() }.disabled(!writable || dirty)
-                }
-                Text("仅在点击时读取公开作品资料；遇验证、拒绝或限流会停止并保留原资料。").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("备用封面") {
-                TextField("公开HTTPS图片链接", text: $coverURL).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    .onChange(of: coverURL) { _, _ in previewVisible = false; previewedCover = nil }
-                Button("预览封面") { previewedCover = nil; previewVisible = NativeLifeContract.publicImageURL(coverURL) != nil; if !previewVisible { store.error = "请填写不含账户、本机地址或非标准端口的公开HTTPS图片链接。" } }
-                if previewVisible, let url = NativeLifeContract.publicImageURL(coverURL) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image { image.resizable().scaledToFit().frame(height: 200).onAppear { previewedCover = coverURL } }
-                        else if phase.error != nil { Text("图片加载失败，请更换可访问的图片链接。").foregroundStyle(.red) }
-                        else { ProgressView() }
+            Section {
+                DisclosureGroup("全部作品资料") {
+                    ForEach(NativeLifePresentation.detailFields, id: \.0) { key, label in
+                        let value = NativeLifePresentation.text(item.raw["details"][key])
+                        if !value.isEmpty { LabeledContent(label) { Text(value).multilineTextAlignment(.trailing).textSelection(.enabled) } }
                     }
                 }
-                Button("确认保存备用封面") { saveCover(original: false) }.disabled(!writable || dirty || previewedCover != coverURL)
-                Button("恢复豆瓣原封面") { confirmRestore = true }.disabled(!writable || dirty || item.raw["cover"]["mode"].stringValue != "url")
-                Text("预览会由手机直接读取填写的图片来源，不携带本站登录凭据。图片本身不上传本站。").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("来源") {
+                    LabeledContent("豆瓣主页", value: item.profile)
+                    LabeledContent("资料来源", value: ["browser": "本人浏览器", "import": "本人导入", "collection": "公开收藏", "rss": "近期动态"][item.raw["source"].stringValue ?? ""] ?? "未知")
+                    if let id = item.raw["details"]["imdbId"].stringValue { LabeledContent("IMDb", value: id) }
+                    if let url = item.raw["url"].stringValue.flatMap(URL.init(string:)), ["movie.douban.com", "book.douban.com", "music.douban.com"].contains(url.host ?? "") { Link("查看豆瓣作品", destination: url) }
+                }
             }
-            Section("来源核对") {
-                LabeledContent("来源主页", value: item.profile)
-                LabeledContent("来源方式", value: ["browser": "本人浏览器同步", "import": "文件导入", "collection": "公开收藏", "rss": "近期公开动态"][item.raw["source"].stringValue ?? ""] ?? "未知")
-                if let date = item.raw["observedAt"].stringValue { LabeledContent("最近观察", value: date) }
-                if let imdb = item.raw["details"]["imdbId"].stringValue { LabeledContent("IMDb 编号", value: imdb) }
-                if let url = item.raw["url"].stringValue.flatMap(URL.init(string:)), ["movie.douban.com", "book.douban.com", "music.douban.com"].contains(url.host ?? "") { Link("在豆瓣查看原始作品", destination: url) }
+            if let error = store.error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
+        }
+        .navigationTitle("作品详情").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("编辑备注与标签", systemImage: "square.and.pencil") { editing = true }
+                    Button("封面与分类", systemImage: "photo") { artwork = true }
+                    Divider()
+                    Button("补全作品资料") { let body = NativeLifeContract.metadataBody(item: item, epoch: store.epoch, includeCheck: true); Task { await store.mutate(label: "更新作品资料", path: "life/douban/metadata", body: body) } }
+                    if item.domain == "screen" {
+                        Button("查找 TMDB 海报") { let body = NativeLifeContract.metadataBody(item: item, epoch: store.epoch); Task { await store.mutate(label: "查找作品海报", path: "life/douban/tmdb", body: body) } }
+                        Button("更新 IMDb 评分") { let body = NativeLifeContract.ratingsBody(items: [item], epoch: store.epoch); Task { await store.mutate(label: "更新作品评分", path: "life/douban/imdb-ratings", body: body) } }.disabled(item.raw["details"]["imdbId"].stringValue == nil)
+                    }
+                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("作品工具").disabled(store.busy || store.pending != nil)
             }
         }
+        .sheet(isPresented: $editing) { NavigationStack { NativeLifeRecordEditor(store: store, item: item) } }
+        .sheet(isPresented: $artwork) { NavigationStack { NativeLifeArtworkEditor(store: store, initial: item) } }
     }
-    private var detailFields: [(String, String)] {
-        [("alternateTitles", "别名"), ("year", "年份"), ("genres", "类型"), ("countries", "国家／地区"), ("languages", "语言"), ("directors", "导演"), ("writers", "编剧"), ("cast", "演员"), ("releaseDates", "上映／首播"), ("duration", "片长"), ("episodes", "集数"), ("seasons", "季数"), ("episodeDuration", "单集片长"), ("authors", "作者"), ("translators", "译者"), ("publisher", "出版社"), ("publicationDate", "出版日期"), ("pages", "页数"), ("isbn", "ISBN"), ("binding", "装帧"), ("price", "定价"), ("seriesTitle", "丛书"), ("artists", "表演者"), ("albumType", "专辑类型"), ("medium", "介质"), ("releaseDate", "发行日期"), ("label", "唱片公司"), ("tracks", "曲目")]
-    }
-    private func display(_ value: NativeJSON) -> String {
-        if let string = value.stringValue { return string }
+}
+
+private enum NativeLifePresentation {
+    static let detailFields: [(String, String)] = [("alternateTitles", "别名"), ("year", "年份"), ("genres", "类型"), ("countries", "国家／地区"), ("languages", "语言"), ("directors", "导演"), ("writers", "编剧"), ("cast", "演员"), ("releaseDates", "上映／首播"), ("duration", "片长"), ("episodes", "集数"), ("seasons", "季数"), ("episodeDuration", "单集片长"), ("authors", "作者"), ("translators", "译者"), ("publisher", "出版社"), ("publicationDate", "出版日期"), ("pages", "页数"), ("isbn", "ISBN"), ("binding", "装帧"), ("price", "定价"), ("seriesTitle", "丛书"), ("artists", "表演者"), ("albumType", "专辑类型"), ("medium", "介质"), ("releaseDate", "发行日期"), ("label", "唱片公司"), ("tracks", "曲目")]
+    static func text(_ value: NativeJSON) -> String {
+        if let text = value.stringValue { return text }
         if let number = value.doubleValue { return number.rounded() == number ? String(format: "%.0f", number) : String(number) }
         return value.arrayValue.compactMap(\.stringValue).joined(separator: " / ")
     }
-    private func saveLocal() {
+    static func status(_ value: String?) -> String {
+        ["pending": "等待中", "complete": "已完成", "completed": "已完成", "running": "进行中", "partial": "部分完成", "failed": "未完成", "blocked": "访问受限", "limited": "等待继续"][value ?? ""] ?? "尚未开始"
+    }
+}
+
+private struct NativeLifeRecordEditor: View {
+    @ObservedObject var store: NativeLifeStore
+    let item: NativeLifeItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var note = ""
+    @State private var tags = ""
+    @State private var hidden = false
+    @State private var loaded = false
+    @State private var confirmClose = false
+    @State private var saving = false
+    private var persistence: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: store.userID, scope: "life-item-" + item.id) }
+    private var dirty: Bool { note != item.note || tags != item.tags.joined(separator: ", ") || hidden != item.hidden }
+    var body: some View {
+        Form {
+            Section { Text(item.title).font(.headline) }
+            Section("备注") { TextField("记下自己的感受", text: $note, axis: .vertical).lineLimit(6...15) }.disabled(saving || store.busy || store.pending != nil)
+            Section("标签") { TextField("逗号分隔，如：喜欢，重读", text: $tags) }.disabled(saving || store.busy || store.pending != nil)
+            Section { Toggle("隐藏这部作品", isOn: $hidden) } footer: { Text("可以从“已隐藏”筛选中找回。") }.disabled(saving || store.busy || store.pending != nil)
+            if let pending = store.pending { Section("保存结果待确认") { Text(pending.label).font(.subheadline); Button("继续确认") { retrySave() }.disabled(saving || store.busy) } }
+            if let error = store.error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+        }
+        .navigationTitle("编辑我的记录").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("取消") { if dirty { confirmClose = true } else { dismiss() } }.disabled(saving || store.busy || store.pending != nil) }
+            ToolbarItem(placement: .confirmationAction) { Button("保存") { save() }.disabled(!dirty || saving || store.busy || store.pending != nil) }
+        }
+        .interactiveDismissDisabled(dirty || saving || store.busy || store.pending != nil)
+        .confirmationDialog("保留这次填写？", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("保留草稿") { saveDraft(); dismiss() }
+            Button("放弃填写", role: .destructive) { try? persistence.clear(); dismiss() }
+            Button("继续编辑", role: .cancel) {}
+        }
+        .onAppear {
+            guard !loaded else { return }
+            note = item.note; tags = item.tags.joined(separator: ", "); hidden = item.hidden
+            do { if let draft = try persistence.load(NativeLifeLocalDraft.self) { note = draft.note; tags = draft.tags; hidden = draft.hidden } } catch { store.fail(error) }
+            loaded = true
+        }
+        .onChange(of: note) { _, _ in saveDraft() }.onChange(of: tags) { _, _ in saveDraft() }.onChange(of: hidden) { _, _ in saveDraft() }
+    }
+    private func saveDraft() {
+        guard loaded else { return }
+        do { try persistence.save(NativeLifeLocalDraft(note: note, tags: tags, hidden: hidden, kind: item.kind, coverURL: item.raw["cover"]["url"].stringValue ?? "")) } catch { store.fail(error) }
+    }
+    private func save() {
+        guard !saving, !store.busy, store.pending == nil else { return }
         do {
             let values = tags.components(separatedBy: CharacterSet(charactersIn: ",，\n")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             let body = try NativeLifeContract.localBody(item: item, epoch: store.epoch, note: note, tags: values, hidden: hidden)
-            Task { if await store.mutate(label: "保存个人整理", path: "life/douban/library", method: "PUT", body: body) { dirty = false; try? draftStorage.clear() } }
+            saving = true
+            Task { defer { saving = false }; if await store.mutate(label: "保存备注与标签", path: "life/douban/library", method: "PUT", body: body) { try? persistence.clear(); dismiss() } }
         } catch { store.fail(error) }
     }
-    private func metadata() { let body = NativeLifeContract.metadataBody(item: item, epoch: store.epoch, includeCheck: true); Task { await store.mutate(label: "补全作品资料", path: "life/douban/metadata", body: body) } }
-    private func tmdb() { let body = NativeLifeContract.metadataBody(item: item, epoch: store.epoch); Task { await store.mutate(label: "查找TMDB海报", path: "life/douban/tmdb", body: body) } }
-    private func imdb() { let body = NativeLifeContract.ratingsBody(items: [item], epoch: store.epoch); Task { await store.mutate(label: "更新IMDb评分", path: "life/douban/imdb-ratings", body: body) } }
-    private func classify() {
-        var body = item.key; body["kind"] = .string(kind); body["expectedUpdatedAt"] = .string(item.updatedAt)
-        Task { await store.mutate(label: "确认影视分类", path: "life/douban/classification", method: "PUT", body: .object(body)) }
+    private func retrySave() {
+        guard !saving, !store.busy else { return }
+        saving = true
+        Task { defer { saving = false }; await store.retryPending(); if store.pending == nil && store.error == nil { try? persistence.clear(); dismiss() } }
+    }
+}
+
+private struct NativeLifeArtworkEditor: View {
+    @ObservedObject var store: NativeLifeStore
+    let initial: NativeLifeItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind = "movie"
+    @State private var coverURL = ""
+    @State private var previewedCover: String?
+    @State private var showPreview = false
+    @State private var restore = false
+    private var item: NativeLifeItem { store.detailItems[initial.id] ?? initial }
+    var body: some View {
+        Form {
+            if item.domain == "screen" {
+                Section("分类") {
+                    Picker("作品类型", selection: $kind) { Text("电影").tag("movie"); Text("电视剧").tag("series") }.pickerStyle(.segmented)
+                    Button("保存分类") { var body = item.key; body["kind"] = .string(kind); body["expectedUpdatedAt"] = .string(item.updatedAt); Task { await store.mutate(label: "更新影视分类", path: "life/douban/classification", method: "PUT", body: .object(body)) } }
+                }
+            }
+            Section("封面") {
+                TextField("公开 HTTPS 图片链接", text: $coverURL).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    .onChange(of: coverURL) { _, _ in showPreview = false; previewedCover = nil }
+                Button("预览图片") { showPreview = NativeLifeContract.publicImageURL(coverURL) != nil; if !showPreview { store.error = "请填写公开 HTTPS 图片链接。" } }
+                if showPreview, let url = NativeLifeContract.publicImageURL(coverURL) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image { image.resizable().scaledToFit().frame(height: 200).onAppear { previewedCover = coverURL } }
+                        else if phase.error != nil { Text("图片暂时无法打开，请换一个链接。").font(.footnote).foregroundStyle(.red) }
+                        else { ProgressView() }
+                    }
+                }
+                Button("保存这张封面") { saveCover(original: false) }.disabled(previewedCover != coverURL)
+                if item.raw["cover"]["mode"].stringValue == "url" { Button("恢复原封面") { restore = true } }
+            }
+            if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let notice = store.notice { Text(notice).font(.footnote).foregroundStyle(.secondary) }
+        }.disabled(store.busy || store.pending != nil)
+        .navigationTitle("封面与分类").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        .safeAreaInset(edge: .bottom) {
+            if let pending = store.pending {
+                HStack { Text(pending.label).font(.footnote); Spacer(); Button("继续确认") { Task { await store.retryPending() } }.disabled(store.busy) }.padding().background(.regularMaterial)
+            }
+        }
+        .onAppear { kind = item.kind == "series" ? "series" : "movie"; coverURL = item.raw["cover"]["url"].stringValue ?? "" }
+        .confirmationDialog("恢复原封面？", isPresented: $restore) { Button("恢复") { saveCover(original: true) } }
     }
     private func saveCover(original: Bool) {
         guard original || previewedCover == coverURL else { return }
         var body = item.key; body["expectedDataEpoch"] = .number(Double(store.epoch)); body["expectedLocalRevision"] = .number(Double(item.revision)); body["mode"] = .string(original ? "original" : "url")
         if !original { body["url"] = .string(coverURL) }
-        Task { await store.mutate(label: original ? "恢复原封面" : "保存备用封面", path: "life/douban/cover-selection", method: "PUT", body: .object(body)) }
-    }
-    private func saveDraft() {
-        guard loaded else { return }
-        do { try draftStorage.save(NativeLifeLocalDraft(note: note, tags: tags, hidden: hidden, kind: kind, coverURL: coverURL)) }
-        catch { store.fail(error) }
+        Task { await store.mutate(label: "更新作品封面", path: "life/douban/cover-selection", method: "PUT", body: .object(body)) }
     }
 }
 
-private struct NativeLifeManagement: View {
-    @ObservedObject var store: NativeLifeStore
-    @Environment(\.dismiss) private var dismiss
+/// The only native surface for Douban connection and public synchronization.
+/// The containing app links here from 我的 → 同步中心.
+struct NativeLifeSyncCenter: View {
+    let api: NativeAPI
+    let token: String
+    let userID: String
+    @StateObject private var store: NativeLifeStore
     @State private var profile = ""
-    @State private var initialized = false
-    @State private var resetPreview: NativeJSON = .null
-    @State private var confirmReset = false
-    @State private var confirmDisconnect = false
-    @State private var tab = "sync"
+    @State private var disconnect = false
+    init(api: NativeAPI, token: String, userID: String) {
+        self.api = api; self.token = token; self.userID = userID
+        _store = StateObject(wrappedValue: NativeLifeStore(api: api, token: token, userID: userID))
+    }
+    private var connected: Bool { store.connection["profileId"].stringValue != nil }
     var body: some View {
         Form {
-            Picker("操作区域", selection: $tab) { Text("同步").tag("sync"); Text("导入").tag("import"); Text("连接与数据").tag("connection") }.pickerStyle(.segmented)
-            if tab == "sync" { syncControls }
-            if tab == "import" { NativeLifeImportForm(store: store) }
-            if tab == "connection" { connectionControls }
-            if let pending = store.pending { Section("原操作待核对") { Text(pending.label); Button("重试原提交") { Task { await store.retryPending() } }.disabled(store.busy) } }
-            if let error = store.error { Text(error).foregroundStyle(.red) }
-            if let notice = store.notice { Text(notice).foregroundStyle(.secondary).font(.footnote) }
-        }
-        .navigationTitle("同步与导入").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-        .onAppear { if !initialized { profile = store.connection["profileId"].stringValue ?? ""; initialized = true } }
-        .confirmationDialog("清空我的全部书影音记录？", isPresented: $confirmReset, titleVisibility: .visible) {
-            Button("确认清空 \(resetPreview["total"].intValue ?? 0) 条记录", role: .destructive) { reset() }
-            Button("取消", role: .cancel) {}
-        } message: { Text("会删除本站此账号全部来源的书影音、作品资料、备注、标签与封面选择。保留绑定主页，不修改豆瓣原站，旧同步和导入预览将失效。") }
-        .confirmationDialog("断开豆瓣主页？", isPresented: $confirmDisconnect) { Button("确认断开") { saveConnection(disconnect: true) }; Button("取消", role: .cancel) {} } message: { Text("已有收藏保留；正在处理的旧同步将停止。") }
-    }
-    private var syncControls: some View {
-        Group {
-            Section("公开记录同步") {
-                if let profile = store.connection["profileId"].stringValue { LabeledContent("当前豆瓣主页", value: profile) }
-                else { Text("请先在“连接与数据”保存本人豆瓣主页。").foregroundStyle(.secondary) }
-                Text("从服务器读取已完成的公开收藏；私密内容、登录要求、验证或访问限制需要使用本人导出文件。不会读取豆瓣密码或Cookie。").font(.footnote).foregroundStyle(.secondary)
-                if store.syncing { Button("暂停同步") { store.pause() }; ProgressView("正在推进同步…") }
-                else { Button(store.run["status"].stringValue == "running" ? "继续公开同步" : "开始公开同步") { store.startSync() }.disabled(store.connection["profileId"].stringValue == nil || store.busy || store.pending != nil) }
-                Button("重新读取同步状态") { Task { await store.load() } }.disabled(store.loading)
-                if store.run["status"].stringValue == "running", !store.syncing { Text("每次最多推进20步；不会在打开页面或App时自动续传。").font(.caption).foregroundStyle(.secondary) }
+            Section {
+                LabeledContent("豆瓣", value: connected ? (store.connection["profileId"].stringValue ?? "已连接") : "未连接")
+                if let date = store.run["updatedAt"].stringValue { LabeledContent("最近更新", value: NativeWorkspaceFormat.timestamp(date)) }
+                if connected {
+                    if store.syncing { Button("暂停同步") { store.pause() }; ProgressView() }
+                    else { Button(store.run["status"].stringValue == "running" ? "继续同步" : "同步公开收藏") { store.startSync() }.disabled(store.busy || store.pending != nil) }
+                } else {
+                    TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("连接豆瓣") { saveConnection(disconnect: false) }.disabled(profile.isEmpty || store.busy || store.pending != nil)
+                }
+            }
+            if let pending = store.pending {
+                Section("结果待确认") { Text(pending.label).font(.subheadline); Button("继续确认") { Task { await store.retryPending() } }.disabled(store.busy) }
             }
             if !store.run.objectValue.isEmpty {
-                Section("最近同步进度") {
-                    LabeledContent("状态", value: ["running": "进行中", "completed": "本次公开范围已完成", "partial": "部分完成", "failed": "失败"][store.run["status"].stringValue ?? ""] ?? "未知")
-                    Text(store.run["message"].stringValue ?? "")
-                    HStack { Text("新增 \(store.run["added"].intValue ?? 0)"); Text("更新 \(store.run["updated"].intValue ?? 0)"); Text("未变 \(store.run["unchanged"].intValue ?? 0)") }.font(.caption)
-                    ForEach(["screen", "book", "music"], id: \.self) { domain in
-                        let source = store.run["sources"][domain]
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text((domain == "screen" ? "影视" : NativeLifeContract.kindLabels[domain] ?? domain) + " · " + (source["status"].stringValue ?? "待处理"))
-                            if let total = source["total"].intValue, total > 0 { ProgressView(value: Double(source["received"].intValue ?? 0), total: Double(total)) }
-                            Text("已接收 \(source["received"].intValue ?? 0) 条 · \(source["pages"].intValue ?? 0) 页").font(.caption).foregroundStyle(.secondary)
-                            if let error = source["errorCode"].stringValue { Text(sourceError(error)).font(.caption).foregroundStyle(.orange) }
+                Section("同步进度") {
+                    LabeledContent("状态", value: NativeLifePresentation.status(store.run["status"].stringValue))
+                    HStack { Text("新增 \(store.run["added"].intValue ?? 0)"); Text("更新 \(store.run["updated"].intValue ?? 0)"); Text("未变 \(store.run["unchanged"].intValue ?? 0)") }.font(.subheadline)
+                    DisclosureGroup("查看详情") {
+                        ForEach(["screen", "book", "music"], id: \.self) { domain in
+                            let source = store.run["sources"][domain]
+                            VStack(alignment: .leading, spacing: 6) {
+                                LabeledContent(domain == "screen" ? "影视" : NativeLifeContract.kindLabels[domain] ?? domain, value: NativeLifePresentation.status(source["status"].stringValue))
+                                if let total = source["total"].intValue, total > 0 { ProgressView(value: Double(min(source["received"].intValue ?? 0, total)), total: Double(total)) }
+                                Text("\(source["received"].intValue ?? 0) 条 · \(source["pages"].intValue ?? 0) 页").font(.caption).foregroundStyle(.secondary)
+                                if let code = source["errorCode"].stringValue { Text(sourceError(code)).font(.footnote).foregroundStyle(.orange) }
+                            }.padding(.vertical, 4)
                         }
+                        Text(store.run["message"].stringValue ?? "").font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("公开读取完成不保证私密历史全量。未读到的条目不会作为删除处理。").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("本人浏览器资料") {
-                Text("豆瓣本机同步扩展需要桌面Chrome或Edge，iPhone不能运行该扩展。你可在本人浏览器登录豆瓣并导出文件，再在“导入”中从文件或剪贴板解析、预览及确认保存。").font(.footnote)
-                Button("选择导入资料") { tab = "import" }
+            if connected {
+                Section {
+                    DisclosureGroup("连接设置") {
+                        TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button("保存主页") { saveConnection(disconnect: false) }.disabled(store.busy || store.pending != nil || store.syncing)
+                        Button("断开连接", role: .destructive) { disconnect = true }.disabled(store.busy || store.pending != nil || store.syncing)
+                    }
+                }
             }
-        }
-    }
-    private var connectionControls: some View {
-        Group {
-            Section("豆瓣来源主页") {
-                TextField("主页链接或主页ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("保存连接") { saveConnection(disconnect: false) }.disabled(store.busy || store.pending != nil || store.syncing)
-                Button("断开连接") { confirmDisconnect = true }.disabled(store.busy || store.pending != nil || store.connection["profileId"].stringValue == nil || store.syncing)
-                Text("保存只更新来源归属，不会自动联网或删除已有收藏。声明主页不代表本站已验证豆瓣账号所有权。").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("清空全部书影音") {
-                Text("范围包含当前本站账号全部已保存来源，不受收藏筛选影响。此操作不可撤销，请先保存完整业务备份。").font(.footnote).foregroundStyle(.secondary)
-                Button("查看清空范围") { previewReset() }.disabled(store.busy || store.pending != nil || store.syncing)
-                if !resetPreview.objectValue.isEmpty {
-                    LabeledContent("全部记录", value: String(resetPreview["total"].intValue ?? 0))
-                    ForEach(NativeLifeContract.kinds.filter { $0 != "all" }, id: \.self) { kind in LabeledContent(NativeLifeContract.kindLabels[kind] ?? kind, value: String(resetPreview["counts"][kind].intValue ?? 0)) }
-                    Button("核对后清空全部书影音记录", role: .destructive) { confirmReset = true }.disabled(store.busy || store.pending != nil || store.syncing)
+            if let error = store.error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
+            Section {
+                DisclosureGroup("关于豆瓣同步") {
+                    Text("公开同步只读取可访问的完成收藏。私密或受限内容请导入本人导出的文件；不会读取豆瓣密码或 Cookie。桌面扩展不能在 iPhone 运行。").font(.footnote).foregroundStyle(.secondary)
+                    Text("每次最多推进20步，暂停后可继续。更换或断开主页会保留已有收藏。").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         }
+        .navigationTitle("豆瓣同步").navigationBarTitleDisplayMode(.inline)
+        .toolbar { Button { Task { await store.load() } } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("刷新状态").disabled(store.busy || store.syncing) }
+        .task(id: userID + ":" + token) { store.activate(token: token, userID: userID); await store.load(); profile = store.connection["profileId"].stringValue ?? "" }
+        .refreshable { await store.load() }.onDisappear { store.pause() }
+        .confirmationDialog("断开豆瓣连接？", isPresented: $disconnect) { Button("断开连接", role: .destructive) { saveConnection(disconnect: true) } } message: { Text("已有收藏保留。") }
     }
     private func saveConnection(disconnect: Bool) {
-        do {
-            let value: NativeJSON = disconnect ? .null : .string(try NativeLifeContract.profileID(profile))
-            let body = NativeJSON.object(["profile": value, "expectedRevision": store.connection["revision"]])
-            Task { await store.mutate(label: disconnect ? "断开豆瓣连接" : "保存豆瓣连接", path: "life/douban/connection", method: "PUT", body: body) }
-        } catch { store.fail(error) }
+        do { let value: NativeJSON = disconnect ? .null : .string(try NativeLifeContract.profileID(profile)); let body = NativeJSON.object(["profile": value, "expectedRevision": store.connection["revision"]]); Task { await store.mutate(label: disconnect ? "断开豆瓣连接" : "保存豆瓣主页", path: "life/douban/connection", method: "PUT", body: body) } }
+        catch { store.fail(error) }
     }
-    private func previewReset() {
-        Task {
-            do { resetPreview = try await store.api.json(path: "life/douban/reset", method: "POST", token: store.token, body: .object(["action": .string("preview")]))["preview"] }
-            catch { store.fail(error) }
-        }
-    }
-    private func reset() { let body = NativeLifeContract.resetBody(preview: resetPreview); Task { if await store.mutate(label: "清空全部书影音", path: "life/douban/reset", body: body) { resetPreview = .null } } }
     private func sourceError(_ code: String) -> String {
-        if code.contains("RATE_LIMITED") { return "豆瓣暂时限制频率，请至少一分钟后手动重试。" }
-        if code.contains("LOGIN") { return "此来源要求登录，请使用本人导出资料导入。" }
-        if code.contains("CHALLENGE") || code.contains("BLOCKED") { return "豆瓣要求验证或拒绝读取，可使用本人导出文件。" }
-        if code.contains("TIMEOUT") || code.contains("NETWORK") { return "来源连接超时或网络失败，已保存的记录保留。" }
-        return "本来源未完整完成，请稍后继续或导入本人文件。"
+        if code.contains("RATE_LIMITED") { return "请求较多，至少一分钟后再试。" }
+        if code.contains("LOGIN") || code.contains("CHALLENGE") || code.contains("BLOCKED") { return "来源受限，可导入本人导出的文件。" }
+        return "暂时未完成，请稍后重试。"
+    }
+}
+
+private struct NativeLifeResetView: View {
+    @ObservedObject var store: NativeLifeStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var preview: NativeJSON = .null
+    @State private var confirmed = false
+    var body: some View {
+        Form {
+            Section { Text("清空此账号在本站保存的全部书影音、备注、标签与封面选择。此操作不可撤销。").foregroundStyle(.secondary) }
+            Section {
+                Button("查看清空范围") { Task { do { preview = try await store.api.json(path: "life/douban/reset", method: "POST", token: store.token, body: .object(["action": .string("preview")]))["preview"] } catch { store.fail(error) } } }.disabled(store.busy || store.pending != nil)
+                if !preview.objectValue.isEmpty {
+                    LabeledContent("全部收藏", value: String(preview["total"].intValue ?? 0))
+                    DisclosureGroup("分类数量") { ForEach(NativeLifeContract.kinds.filter { $0 != "all" }, id: \.self) { kind in LabeledContent(NativeLifeContract.kindLabels[kind] ?? kind, value: String(preview["counts"][kind].intValue ?? 0)) } }
+                    Button("清空全部收藏", role: .destructive) { confirmed = true }.disabled(store.busy || store.pending != nil)
+                }
+            }
+            if let pending = store.pending { Section("结果待确认") { Text(pending.label); Button("继续确认") { Task { await store.retryPending() } }.disabled(store.busy) } }
+            if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red) }
+        }.navigationTitle("清空收藏").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        .confirmationDialog("确认清空 \(preview["total"].intValue ?? 0) 条收藏？", isPresented: $confirmed, titleVisibility: .visible) {
+            Button("确认清空", role: .destructive) { let body = NativeLifeContract.resetBody(preview: preview); Task { if await store.mutate(label: "清空收藏", path: "life/douban/reset", body: body) { dismiss() } } }
+        } message: { Text("不会修改豆瓣原站或其他账号。") }
     }
 }
 
 private struct NativeLifeImportForm: View {
     @ObservedObject var store: NativeLifeStore
+    @Environment(\.dismiss) private var dismiss
     @State private var profile = ""
     @State private var showFiles = false
     @State private var files: [(name: String, data: Data)] = []
     @State private var parsed: NativeLifeImportResult?
     @State private var preview: NativeJSON = .null
     @State private var confirmMissingStatus = false
+    @State private var needsCompletionConfirmation = false
     @State private var confirmed = false
     @State private var reading = false
+    @State private var committing = false
+    @State private var previewGate = NativeLifePreviewGate()
+    @State private var visible = false
+    @State private var step = 0
+    @State private var completedCount = 0
     @State private var showManual = false
     @State private var manualTitle = ""
     @State private var manualURL = ""
@@ -639,72 +779,62 @@ private struct NativeLifeImportForm: View {
     @State private var previewProfile = ""
     private var draftStorage: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: store.userID, scope: "life-import-draft") }
     var body: some View {
-        Group {
-            Section("导入本人已完成收藏") {
-                TextField("这批资料的豆瓣主页ID或链接", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled().onChange(of: profile) { _, value in if value != previewProfile { invalidate() } }
-                Text("支持UTF-8 JSON、CSV、Obsidian Markdown与本人保存的豆瓣完成收藏HTML。解析在手机完成，原始文件、文件名和额外元数据不会发送给本站、豆瓣或AI。").font(.footnote).foregroundStyle(.secondary)
-                Button("从文件选择资料", systemImage: "doc.badge.plus") { showFiles = true }.disabled(reading || store.pending != nil)
-                PasteButton(payloadType: String.self) { values in
-                    guard let value = values.first else { return }
-                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let name = trimmed.hasPrefix("[") || trimmed.hasPrefix("{") ? "剪贴板.json" : trimmed.hasPrefix("---") ? "剪贴板.md" : trimmed.hasPrefix("<") ? "剪贴板.html" : "剪贴板.csv"
-                    files = [(name, Data(value.utf8))]; invalidate()
-                }.disabled(reading || store.pending != nil)
-                ForEach(Array(files.enumerated()), id: \.offset) { _, file in HStack { Image(systemName: "doc.text"); Text(file.name).lineLimit(1); Spacer(); Text(ByteCountFormatter.string(fromByteCount: Int64(file.data.count), countStyle: .file)).font(.caption).foregroundStyle(.secondary) } }
-                Toggle("已核对：没有状态字段的条目均已完成", isOn: $confirmMissingStatus).onChange(of: confirmMissingStatus) { _, _ in invalidate() }
-                Text("已注明想看、在看、想读、在读等未完成状态的记录仍会跳过，不能用此确认改为完成。").font(.caption).foregroundStyle(.secondary)
-                Button("本机解析并预览导入") { parseAndPreview() }.disabled(reading || files.isEmpty || profile.isEmpty || store.pending != nil || store.busy)
-                if reading { ProgressView("正在核对导入资料…") }
-                if let error = fileError { Text(error).foregroundStyle(.red) }
+        Form {
+            Section {
+                HStack {
+                    stepLabel("资料", index: 0); Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary); Spacer()
+                    stepLabel("核对", index: 1); Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary); Spacer()
+                    stepLabel("完成", index: 2)
+                }.padding(.vertical, 4)
             }
-            if let parsed {
-                Section("已解析的资料") {
-                    LabeledContent("有效条目", value: String(parsed.items.count))
-                    LabeledContent("跳过未完成状态", value: String(parsed.skipped))
-                    LabeledContent("合并相同重复项", value: String(parsed.duplicates))
-                    ForEach(Array(parsed.items.prefix(30).enumerated()), id: \.offset) { _, item in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item["title"].stringValue ?? "")
-                            Text((NativeLifeContract.kindLabels[item["kind"].stringValue ?? ""] ?? "") + " · " + (item["markedDate"].stringValue ?? "标记日期未知")).font(.caption).foregroundStyle(.secondary)
-                        }
+            if step == 0 { sourceStep }
+            if step == 1, let parsed { reviewStep(parsed) }
+            if step == 2 {
+                Section {
+                    VStack(spacing: 14) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.green)
+                        Text("收藏已导入").font(.title3.bold())
+                        Text("已核对 \(completedCount) 部作品").foregroundStyle(.secondary)
+                        Button("返回收藏") { dismiss() }.buttonStyle(.borderedProminent)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 28)
+                }
+            }
+            if let pending = store.pending, pending.path == "life/douban/import" {
+                Section("保存结果待确认") {
+                    Button("继续确认") { retryImport() }.disabled(committing || store.busy)
+                }
+            }
+            if let error = fileError ?? store.error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+        }
+        .navigationTitle("导入收藏").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(reading || committing || store.busy) } }
+        .interactiveDismissDisabled(reading || committing || store.busy)
+        .safeAreaInset(edge: .bottom) {
+            if step < 2 {
+                VStack(spacing: 8) {
+                    if reading || committing || store.busy { ProgressView("正在核对…") }
+                    else if step == 0 {
+                        Button("预览导入") { parseAndPreview() }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+                            .disabled(files.isEmpty || profile.isEmpty || store.pending != nil)
+                    } else if let parsed {
+                        Button("确认导入 \(parsed.items.count) 部作品") { commitImport(parsed) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+                            .disabled(!confirmed || store.pending != nil)
                     }
-                    if parsed.items.count > 30 { Text("以上展示前30条，其余条目一并纳入预览核对。").font(.caption).foregroundStyle(.secondary) }
-                }
+                }.padding().frame(maxWidth: .infinity).background(.regularMaterial)
             }
-            if !preview.objectValue.isEmpty, let parsed {
-                Section("本站核对结果（尚未保存）") {
-                    LabeledContent("新增", value: String(preview["added"].intValue ?? 0))
-                    LabeledContent("更新", value: String(preview["updated"].intValue ?? 0))
-                    LabeledContent("未变化", value: String(preview["unchanged"].intValue ?? 0))
-                    Toggle("确认来源、条目与更新范围正确", isOn: $confirmed)
-                    Button("确认导入 \(parsed.items.count) 条收藏") { commitImport(parsed) }.disabled(!confirmed || store.busy || store.pending != nil || reading)
-                    Text("更新不会覆盖本站独立备注、标签、隐藏和人工封面。预览后收藏发生变化时需重新核对。").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section("手动整理导入条目") {
-                DisclosureGroup("填写一部已完成作品", isExpanded: $showManual) {
-                    TextField("作品名称", text: $manualTitle)
-                    TextField("豆瓣作品链接", text: $manualURL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Picker("作品类型", selection: $manualKind) { ForEach(NativeLifeContract.kinds.filter { $0 != "all" }, id: \.self) { Text(NativeLifeContract.kindLabels[$0] ?? $0).tag($0) } }
-                    Picker("我的评分", selection: $manualRating) { Text("未评分").tag(""); ForEach(1...5, id: \.self) { Text("\($0) 星").tag(String($0)) } }
-                    TextField("标记日期 YYYY-MM-DD（可留空）", text: $manualDate).keyboardType(.numbersAndPunctuation)
-                    TextField("个人短评（可留空）", text: $manualComment, axis: .vertical).lineLimit(2...6)
-                    Button("将此作品加入本次导入") { appendManual() }.disabled(store.pending != nil || reading)
-                    Text("同样先预览再确认。这里填写的是本人已完成收藏，不会反向修改豆瓣原站。").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if !files.isEmpty || parsed != nil { Section { Button("清空本次导入资料", role: .destructive) { files = []; invalidate(); fileError = nil }.disabled(store.pending != nil || reading) } }
         }
         .onAppear {
+            visible = true
             if profile.isEmpty { profile = store.connection["profileId"].stringValue ?? "" }
             guard parsed == nil, files.isEmpty else { return }
             do {
                 if let draft = try draftStorage.load(NativeLifeImportDraft.self) {
                     previewProfile = draft.profile; profile = draft.profile; parsed = NativeLifeImportResult(items: draft.items, skipped: draft.skipped, duplicates: draft.duplicates); preview = draft.preview
-                    store.notice = "已恢复本机导入预览，请再次核对后确认。"
+                    if !preview.objectValue.isEmpty { step = 1 }
                 }
             } catch { fileError = error.localizedDescription }
         }
+        .onDisappear { visible = false; previewGate.invalidate(); reading = false }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.json, .commaSeparatedText, .plainText, .html, .text, .data], allowsMultipleSelection: true) { result in
             do {
                 let urls = try result.get()
@@ -722,8 +852,65 @@ private struct NativeLifeImportForm: View {
             } catch { fileError = error.localizedDescription }
         }
     }
-    private func invalidate() { parsed = nil; preview = .null; confirmed = false; try? draftStorage.clear() }
+    private func stepLabel(_ title: String, index: Int) -> some View {
+        HStack(spacing: 6) { Image(systemName: step > index ? "checkmark.circle.fill" : "\(index + 1).circle\(step == index ? ".fill" : "")"); Text(title) }.font(.subheadline.weight(step == index ? .semibold : .regular)).foregroundStyle(step == index ? Color.indigo : Color.secondary)
+    }
+    private var sourceStep: some View {
+        Group {
+            Section("选择资料") {
+                Button("从文件选择", systemImage: "doc.badge.plus") { showFiles = true }.disabled(reading || store.pending != nil)
+                PasteButton(payloadType: String.self) { values in
+                    guard let value = values.first else { return }
+                    let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let name = text.hasPrefix("[") || text.hasPrefix("{") ? "剪贴板.json" : text.hasPrefix("---") ? "剪贴板.md" : text.hasPrefix("<") ? "剪贴板.html" : "剪贴板.csv"
+                    files = [(name, Data(value.utf8))]; invalidate()
+                }.disabled(reading || store.pending != nil)
+                ForEach(Array(files.enumerated()), id: \.offset) { _, file in Label(file.name, systemImage: "doc.text").font(.subheadline).lineLimit(1) }
+            }
+            Section("资料来源") {
+                TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled().onChange(of: profile) { _, value in if value != previewProfile { invalidate() } }
+                if needsCompletionConfirmation {
+                    Toggle("这些条目均已完成", isOn: $confirmMissingStatus).onChange(of: confirmMissingStatus) { _, _ in invalidate() }
+                    Text("文件缺少状态字段，请核对后确认。").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                DisclosureGroup("支持的文件与隐私") { Text("JSON、CSV、Markdown 或本人保存的完成收藏 HTML。每批最多500条、合计8MiB；原始文件留在手机，仅上传核对后的作品资料。").font(.footnote).foregroundStyle(.secondary) }
+                DisclosureGroup("填写一部已完成作品", isExpanded: $showManual) {
+                    TextField("作品名称", text: $manualTitle)
+                    TextField("豆瓣作品链接", text: $manualURL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Picker("类型", selection: $manualKind) { ForEach(NativeLifeContract.kinds.filter { $0 != "all" }, id: \.self) { Text(NativeLifeContract.kindLabels[$0] ?? $0).tag($0) } }
+                    Picker("我的评分", selection: $manualRating) { Text("未评分").tag(""); ForEach(1...5, id: \.self) { Text("\($0) 星").tag(String($0)) } }
+                    TextField("标记日期 YYYY-MM-DD（可留空）", text: $manualDate).keyboardType(.numbersAndPunctuation)
+                    TextField("短评（可留空）", text: $manualComment, axis: .vertical).lineLimit(2...6)
+                    Button("加入本次导入") { appendManual() }.disabled(store.pending != nil || reading)
+                }
+            }
+        }.disabled(reading || committing || store.busy || store.pending != nil)
+    }
+    private func reviewStep(_ parsed: NativeLifeImportResult) -> some View {
+        Group {
+            Section("将保存到你的收藏") {
+                HStack { summaryCount("新增", value: preview["added"].intValue ?? 0); Spacer(); summaryCount("更新", value: preview["updated"].intValue ?? 0); Spacer(); summaryCount("未变", value: preview["unchanged"].intValue ?? 0) }.padding(.vertical, 8)
+                LabeledContent("来源主页", value: previewProfile)
+                if parsed.skipped > 0 { LabeledContent("跳过未完成", value: String(parsed.skipped)) }
+                if parsed.duplicates > 0 { LabeledContent("合并重复", value: String(parsed.duplicates)) }
+                Toggle("已核对来源与作品", isOn: $confirmed).disabled(committing || reading || store.busy || store.pending != nil)
+            }
+            Section {
+                DisclosureGroup("查看 \(parsed.items.count) 部作品") {
+                    ForEach(Array(parsed.items.prefix(30).enumerated()), id: \.offset) { _, item in VStack(alignment: .leading, spacing: 4) { Text(item["title"].stringValue ?? ""); Text(item["markedDate"].stringValue ?? "标记日期未知").font(.caption).foregroundStyle(.secondary) } }
+                    if parsed.items.count > 30 { Text("显示前30部，其余作品已一并核对。").font(.footnote).foregroundStyle(.secondary) }
+                }
+                Button("更换资料") { files = []; invalidate(); step = 0 }.disabled(committing || store.pending != nil || store.busy)
+            }
+        }
+    }
+    private func summaryCount(_ title: String, value: Int) -> some View { VStack(alignment: .leading, spacing: 5) { Text(String(value)).font(.title2.bold()).monospacedDigit(); Text(title).font(.caption).foregroundStyle(.secondary) } }
+    private func invalidate() { previewGate.invalidate(); reading = false; parsed = nil; preview = .null; confirmed = false; step = 0; try? draftStorage.clear() }
     private func parseAndPreview() {
+        guard !reading, !committing, !store.busy, store.pending == nil, visible else { return }
+        let ticket = previewGate.begin(owner: store.userID, profile: profile)
         reading = true; fileError = nil; preview = .null; confirmed = false
         do {
             let profile = try NativeLifeContract.profileID(profile)
@@ -739,7 +926,6 @@ private struct NativeLifeImportForm: View {
                 }
             }
             guard combined.items.count <= 500, !combined.items.isEmpty else { throw NativeLifeError.invalid("每批需为1–500条完成收藏。") }
-            parsed = combined
             previewProfile = self.profile
             let body = NativeLifeContract.importBody(profile: profile, items: combined.items, epoch: store.epoch)
             Task {
@@ -748,24 +934,38 @@ private struct NativeLifeImportForm: View {
                     let result: NativeJSON
                     if data.count > 512 * 1024 { result = try await store.api.upload(path: "life/douban/import", token: store.token, data: data) }
                     else { result = try await store.api.json(path: "life/douban/import", method: "POST", token: store.token, body: body) }
-                    guard !Task.isCancelled else { reading = false; return }
-                    preview = result["preview"]; reading = false
+                    guard !Task.isCancelled, previewGate.accepts(ticket, owner: store.userID, profile: self.profile, visible: visible) else { return }
+                    parsed = combined; preview = result["preview"]; reading = false; step = 1
                     try draftStorage.save(NativeLifeImportDraft(profile: profile, items: combined.items, preview: preview, skipped: combined.skipped, duplicates: combined.duplicates))
-                } catch { fileError = error.localizedDescription; reading = false }
+                } catch { if previewGate.accepts(ticket, owner: store.userID, profile: self.profile, visible: visible) { fileError = error.localizedDescription; reading = false } }
             }
-        } catch { fileError = error.localizedDescription; reading = false }
+        } catch { if error.localizedDescription.contains("没有完成状态") { needsCompletionConfirmation = true; fileError = nil } else { fileError = error.localizedDescription }; reading = false }
     }
     private func commitImport(_ parsed: NativeLifeImportResult) {
-        guard confirmed, let epoch = preview["dataEpoch"].intValue, !preview["snapshotHash"].stringValue.orEmpty.isEmpty else { return }
+        guard !committing, !reading, !store.busy, store.pending == nil, confirmed, let epoch = preview["dataEpoch"].intValue, !preview["snapshotHash"].stringValue.orEmpty.isEmpty else { return }
         do {
             let profile = try NativeLifeContract.profileID(profile)
             let body = NativeLifeContract.importBody(profile: profile, items: parsed.items, epoch: epoch, preview: preview)
+            committing = true
             Task {
+                defer { committing = false }
                 if await store.mutate(label: "导入本人完成收藏", path: "life/douban/import", body: body) {
-                    self.parsed = nil; preview = .null; confirmed = false; files = []; fileError = nil; try? draftStorage.clear()
+                    completedCount = parsed.items.count; step = 2; self.parsed = nil; preview = .null; confirmed = false; files = []; fileError = nil; try? draftStorage.clear()
                 }
             }
         } catch { fileError = error.localizedDescription }
+    }
+    private func retryImport() {
+        guard !committing, !store.busy else { return }
+        committing = true
+        Task {
+            defer { committing = false }
+            await store.retryPending()
+            if store.pending == nil && store.error == nil {
+                completedCount = store.lastMutation["receipt"]["total"].intValue ?? parsed?.items.count ?? 0
+                step = 2; try? draftStorage.clear()
+            }
+        }
     }
     private func appendManual() {
         let row = NativeJSON.object(["title": .string(manualTitle), "url": .string(manualURL), "type": .string(manualKind), "state": .string("collect"), "myRating": .string(manualRating), "collectionDate": .string(manualDate), "myComment": .string(manualComment)])

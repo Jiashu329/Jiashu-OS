@@ -79,6 +79,8 @@ struct NativeNutritionFoodsView: View {
     let token: String
     let userID: String
     let onDraft: ([NativeJSON]) -> Void
+    let initialDate: String
+    let initialMeal: String
     @State private var query = ""
     @State private var scope = "all"
     @State private var brand = ""
@@ -90,8 +92,11 @@ struct NativeNutritionFoodsView: View {
     @State private var error: String?
     @State private var requestID = UUID()
 
-    init(api: NativeAPI, token: String, userID: String, initialQuery: String = "", onDraft: @escaping ([NativeJSON]) -> Void) {
+    init(api: NativeAPI, token: String, userID: String, initialQuery: String = "",
+         initialDate: String = NativeActionDates.day(Date()), initialMeal: String = NativeNutritionEntrySelection.suggestedMeal(),
+         onDraft: @escaping ([NativeJSON]) -> Void) {
         self.api = api; self.token = token; self.userID = userID; self.onDraft = onDraft
+        self.initialDate = initialDate; self.initialMeal = initialMeal
         _query = State(initialValue: initialQuery)
     }
 
@@ -119,7 +124,7 @@ struct NativeNutritionFoodsView: View {
                     ForEach(Array(response["foods"].arrayValue.enumerated()), id: \.offset) { _, food in
                         NavigationLink {
                             NativeNutritionFoodDetail(api: api, token: token, userID: userID, food: food,
-                                canManage: response["canManage"].boolValue == true, onDraft: onDraft)
+                                canManage: response["canManage"].boolValue == true, initialDate: initialDate, initialMeal: initialMeal, onDraft: onDraft)
                         } label: {
                             HStack(spacing: 12) {
                                 if let path = response["images"][food["id"].stringValue ?? ""]["src"].stringValue,
@@ -198,6 +203,13 @@ private struct NativeNutritionFoodDetail: View {
     @State private var busy = false
     @State private var error: String?
     @State private var initialized = false
+    init(api: NativeAPI, token: String, userID: String, food: NativeJSON, canManage: Bool,
+         initialDate: String, initialMeal: String, onDraft: @escaping ([NativeJSON]) -> Void) {
+        self.api = api; self.token = token; self.userID = userID; self.food = food
+        self.canManage = canManage; self.onDraft = onDraft
+        _date = State(initialValue: NativeChartDates.parse(initialDate) ?? Date())
+        _meal = State(initialValue: initialMeal)
+    }
     private var basis: String { food["basis"].stringValue ?? "weight" }
     private var isDrink: Bool { food["id"].stringValue?.hasPrefix("luckin-cn:") == true }
     private var referenceLabel: String { food["serving"]["label"].stringValue ?? food["reference"]["label"].stringValue ?? "" }
@@ -225,9 +237,11 @@ private struct NativeNutritionFoodDetail: View {
                     LabeledContent(["calories":"热量","carbs":"碳水","protein":"蛋白质","fat":"脂肪"][key] ?? key,
                         value: displayedNutrient(key))
                 }
-                Text("来源：" + (food["source"]["name"].stringValue ?? "未注明"))
-                Text("版本：" + (food["source"]["version"].stringValue ?? "未注明")).font(.footnote).foregroundStyle(.secondary)
-                if let urlString = food["source"]["url"].stringValue, let url = URL(string: urlString), url.scheme == "https" { Link("查看来源资料", destination: url) }
+                DisclosureGroup("营养资料来源") {
+                    Text(food["source"]["name"].stringValue ?? "来源未注明")
+                    Text("版本：" + (food["source"]["version"].stringValue ?? "未注明")).font(.footnote).foregroundStyle(.secondary)
+                    if let urlString = food["source"]["url"].stringValue, let url = URL(string: urlString), url.scheme == "https" { Link("查看原始资料", destination: url) }
+                }
             }
             if isDrink {
                 Section("核对饮品配置") {

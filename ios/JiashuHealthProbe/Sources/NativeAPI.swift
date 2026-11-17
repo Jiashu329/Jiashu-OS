@@ -7,7 +7,67 @@ final class NativeAPI: @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
     private let redirectGuard: NativeRedirectGuard
+    private let credentialLock = NSLock()
+    private var managedCredentials = false
+    private var credentialEpoch = UUID()
+    private var credentialOwner: String?
+    private var currentCredential: String?
+    private var credentialAliases = Set<String>()
     @MainActor var workspaceAuthenticationFailure: ((String) -> Void)?
+
+    /// A login starts a new lease even when the same person signs in again.
+    /// Only tokens explicitly registered in this lease may follow its renewal.
+    func beginSession(_ value: NativeSession) {
+        credentialLock.lock(); defer { credentialLock.unlock() }
+        managedCredentials = true
+        credentialEpoch = UUID()
+        credentialOwner = value.user.id
+        currentCredential = value.accessToken
+        credentialAliases = [value.accessToken]
+    }
+
+    @discardableResult
+    func renewSession(_ value: NativeSession, replacing previousToken: String) -> Bool {
+        credentialLock.lock(); defer { credentialLock.unlock() }
+        guard managedCredentials, credentialOwner == value.user.id,
+              currentCredential == previousToken else { return false }
+        currentCredential = value.accessToken
+        credentialAliases.insert(value.accessToken)
+        return true
+    }
+
+    func endSession() {
+        credentialLock.lock(); defer { credentialLock.unlock() }
+        managedCredentials = true
+        credentialEpoch = UUID()
+        credentialOwner = nil
+        currentCredential = nil
+        credentialAliases.removeAll()
+    }
+
+    private struct RequestCredential {
+        let token: String
+        let epoch: UUID?
+    }
+
+    private func requestCredential(_ token: String?) throws -> RequestCredential? {
+        guard let token else { return nil }
+        credentialLock.lock(); defer { credentialLock.unlock() }
+        guard managedCredentials else { return RequestCredential(token: token, epoch: nil) }
+        guard credentialAliases.contains(token), let currentCredential, credentialOwner != nil else {
+            throw CancellationError()
+        }
+        return RequestCredential(token: currentCredential, epoch: credentialEpoch)
+    }
+
+    private func credentialIsCurrent(_ value: RequestCredential, requireLatestToken: Bool = false) -> Bool {
+        credentialLock.lock(); defer { credentialLock.unlock() }
+        if let epoch = value.epoch {
+            return managedCredentials && epoch == credentialEpoch && credentialOwner != nil
+                && (!requireLatestToken || value.token == currentCredential)
+        }
+        return !managedCredentials
+    }
 
     init(baseURL: URL = NativeAPI.websiteURL, configuration: URLSessionConfiguration? = nil) {
         self.baseURL = baseURL
@@ -136,9 +196,11 @@ final class NativeAPI: @unchecked Sendable {
     /// Shared by native feature extensions. The path is relative to /api/native/;
     /// caller-supplied identity, cookie and origin headers are never accepted.
     func request<Response: Decodable>(path: String, method: String = "GET", token: String? = nil,
-                                      body: Data? = nil, headers: [String: String] = [:]) async throws -> Response {
+                                      body: Data? = nil, headers: [String: String] = [:],
+                                      reportWorkspaceFailure: Bool = false) async throws -> Response {
         let result = try await transport(path: path, method: method, token: token, body: body,
-                                         contentType: "application/json", headers: headers)
+                                         contentType: "application/json", headers: headers,
+                                         reportWorkspaceFailure: reportWorkspaceFailure)
         guard result.mimeType == "application/json" else { throw NativeAPIError.invalidResponse }
         do { return try JSONDecoder().decode(Response.self, from: result.data) }
         catch { throw NativeAPIError.invalidResponse }
@@ -146,38 +208,40 @@ final class NativeAPI: @unchecked Sendable {
 
     func json(path: String, method: String = "GET", token: String, body: NativeJSON? = nil,
               headers: [String: String] = [:]) async throws -> NativeJSON {
-        do { return try await request(path: path, method: method, token: token, body: body?.encodedData(), headers: headers) }
-        catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+        try await request(path: path, method: method, token: token, body: body?.encodedData(), headers: headers,
+                          reportWorkspaceFailure: true)
     }
 
     /// Downloads stay on the authenticated origin; the caller shares a local
     /// file rather than exposing a bearer token in an export URL.
     func download(path: String, token: String, headers: [String: String] = [:]) async throws -> NativeDownload {
-        do { return try await transport(path: path, method: "GET", token: token, body: nil,
-                                        contentType: "application/json", headers: headers) }
-        catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+        try await transport(path: path, method: "GET", token: token, body: nil,
+                            contentType: "application/json", headers: headers, reportWorkspaceFailure: true)
     }
 
     func upload(path: String, method: String = "POST", token: String, data: Data,
                 contentType: String = "application/json", headers: [String: String] = [:]) async throws -> NativeJSON {
-        do {
-            let result = try await transport(path: path, method: method, token: token, body: data,
-                                             contentType: contentType, headers: headers)
-            guard result.mimeType == "application/json" else { throw NativeAPIError.invalidResponse }
-            do { return try JSONDecoder().decode(NativeJSON.self, from: result.data) }
-            catch { throw NativeAPIError.invalidResponse }
-        } catch { await reportWorkspaceAuthentication(error, token: token); throw error }
+        let result = try await transport(path: path, method: method, token: token, body: data,
+                                         contentType: contentType, headers: headers, reportWorkspaceFailure: true)
+        guard result.mimeType == "application/json" else { throw NativeAPIError.invalidResponse }
+        do { return try JSONDecoder().decode(NativeJSON.self, from: result.data) }
+        catch { throw NativeAPIError.invalidResponse }
     }
 
-    private func reportWorkspaceAuthentication(_ error: Error, token: String) async {
-        guard let error = error as? NativeAPIError, error.isAuthenticationFailure,
-              error.code == "NATIVE_SIGN_IN_REQUIRED" else { return }
-        await MainActor.run { workspaceAuthenticationFailure?(token) }
+    private func reportWorkspaceAuthentication(_ error: NativeAPIError, credential: RequestCredential?) async {
+        guard error.isAuthenticationFailure, error.code == "NATIVE_SIGN_IN_REQUIRED", let credential else { return }
+        await MainActor.run {
+            // A delayed 401 for a superseded token must not sign out its renewal.
+            guard credentialIsCurrent(credential, requireLatestToken: true) else { return }
+            workspaceAuthenticationFailure?(credential.token)
+        }
     }
 
     private func transport(path: String, method: String, token: String?, body: Data?,
-                           contentType: String, headers: [String: String]) async throws -> NativeDownload {
+                           contentType: String, headers: [String: String],
+                           reportWorkspaceFailure: Bool = false) async throws -> NativeDownload {
         try Task.checkCancellation()
+        let credential = try requestCredential(token)
         let url = try requestURL(path: path)
         let route = url.path.removingPercentEncoding ?? url.path
         let bodyLimit: Int
@@ -197,7 +261,7 @@ final class NativeAPI: @unchecked Sendable {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        if let token {
+        if let token = credential?.token {
             guard !token.isEmpty, token.utf8.count <= 2048, token.utf8.allSatisfy({ (33...126).contains($0) }) else {
                 throw NativeAPIError.invalidRequest
             }
@@ -220,6 +284,7 @@ final class NativeAPI: @unchecked Sendable {
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch { throw NativeAPIError.connection }
         try Task.checkCancellation()
+        if let credential, !credentialIsCurrent(credential) { throw CancellationError() }
         guard let response = rawResponse as? HTTPURLResponse, response.url == request.url else {
             throw NativeAPIError.invalidResponse
         }
@@ -227,10 +292,14 @@ final class NativeAPI: @unchecked Sendable {
             ? 18 * 1024 * 1024 : route.hasPrefix("/api/native/life/douban") ? 8 * 1024 * 1024 : 4 * 1024 * 1024
         guard data.count <= responseLimit else { throw NativeAPIError.responseTooLarge }
         guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 401, let credential,
+               !credentialIsCurrent(credential, requireLatestToken: true) { throw CancellationError() }
             let failure = try? JSONDecoder().decode(NativeServerFailure.self, from: data)
             let retryAfter = response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
-            throw NativeAPIError.server(status: response.statusCode, code: failure?.code,
+            let error = NativeAPIError.server(status: response.statusCode, code: failure?.code,
                 message: failure?.error ?? NativeAPIError.message(for: response.statusCode), retryAfter: retryAfter)
+            if reportWorkspaceFailure { await reportWorkspaceAuthentication(error, credential: credential) }
+            throw error
         }
         let mime = response.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first?
             .trimmingCharacters(in: .whitespaces).lowercased() ?? "application/octet-stream"

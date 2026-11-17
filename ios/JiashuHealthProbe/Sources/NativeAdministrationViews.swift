@@ -5,7 +5,7 @@ import SwiftUI
 enum NativeProviderKind: String, CaseIterable, Identifiable, Sendable {
     case ai, media
     var id: String { rawValue }
-    var title: String { self == .ai ? "AI 服务" : "影视封面服务" }
+    var title: String { self == .ai ? "AI 服务" : "封面服务" }
     var path: String { self == .ai ? "ai/settings" : "media/tmdb/settings" }
 }
 
@@ -163,10 +163,10 @@ final class NativeAdministrationContext: ObservableObject {
             try store.clear(); pending = nil
             if result["reauthRequired"].boolValue == true {
                 locked = true; ready = false; data = .null
-                notice = "当前账号的登录资料已更新。请返回账户页重新登录，原有业务数据保留。"
+                notice = "登录资料已更新，请重新登录。"
                 return
             }
-            notice = result["message"].stringValue ?? "操作已确认保存。"
+            notice = result["message"].stringValue ?? "已保存"
             do {
                 let current = try await api.json(path: path, token: token)
                 guard valid, epoch == generation else { return }; data = current; ready = true
@@ -178,13 +178,13 @@ final class NativeAdministrationContext: ObservableObject {
                 catch { self.error = error.localizedDescription }
                 return
             }
-            self.error = error.localizedDescription + " 原操作保留在本机，请核对后继续确认。"
+            self.error = error.localizedDescription + " 本次修改已保留。"
             if case NativeAPIError.server(let status, _, _, _) = error, status == 401 || status == 403 { locked = true; ready = false; data = .null }
         }
     }
     func discard() {
         guard !busy else { return }
-        do { try store.clear(); pending = nil; notice = "已移除本机待确认操作；服务器可能已完成的修改不会被撤销。" }
+        do { try store.clear(); pending = nil; notice = "已移除本机记录，服务器修改未撤销。" }
         catch { self.error = error.localizedDescription }
     }
 }
@@ -198,21 +198,23 @@ private struct NativeAdministrationStatus: View {
         NativeFeatureFeedback(busy: model.busy, error: model.error)
         if let notice = model.notice { Section { Text(notice).foregroundStyle(.secondary) } }
         if let pending = model.pending {
-            Section("待确认的原操作") {
+            Section("结果待确认") {
                 Label(pending.label, systemImage: "clock.arrow.circlepath")
-                Text("内容和提交标识已安全保存在本机。请先核对服务器现状，再继续原操作；版本冲突不会覆盖新设置。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Button("继续确认原操作") {
+                Button("继续确认") {
                     if pending.path.hasSuffix("/test") { retryTest = true } else { Task { await model.resume() } }
                 }.disabled(model.busy || model.locked)
-                Button("移除本机待确认操作", role: .destructive) { discard = true }.disabled(model.busy)
+                DisclosureGroup("更多选项") {
+                    Text("本次修改已安全保留。继续确认不会覆盖其他设备的新设置。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("移除本机记录", role: .destructive) { discard = true }.disabled(model.busy)
+                }
             }
-            .confirmationDialog("移除本机待确认操作？", isPresented: $discard, titleVisibility: .visible) {
+            .confirmationDialog("移除本机记录？", isPresented: $discard, titleVisibility: .visible) {
                 Button("移除本机记录", role: .destructive) { model.discard() }
-            } message: { Text("这不会撤销服务器可能已经完成的修改。请先读取最新状态。") }
+            } message: { Text("这不会撤销服务器可能已完成的修改。") }
             .confirmationDialog("重新测试服务连接？", isPresented: $retryTest, titleVisibility: .visible) {
                 Button("确认再次测试") { Task { await model.resume() } }
-            } message: { Text("测试会再次发送请求，可能消耗服务调用额度。") }
+            } message: { Text("可能消耗服务调用额度。") }
         }
     }
 }
@@ -244,28 +246,32 @@ struct NativeProviderSettingsView: View {
             if canManage {
                 Section("服务设置") {
                     if kind == .ai {
-                        TextField("模型，例如 MiniMax-M3", text: $modelName).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        Picker("区域", selection: $region) { Text("中国区").tag("cn"); Text("国际区").tag("global") }
+                        DisclosureGroup("模型与区域") {
+                            TextField("模型，例如 MiniMax-M3", text: $modelName).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            Picker("区域", selection: $region) { Text("中国区").tag("cn"); Text("国际区").tag("global") }
+                        }
                     }
                     SecureField(kind == .ai ? "MiniMax API 密钥" : "TMDB API Read Access Token", text: $secret)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Text("留空保留当前密钥。已保存的密钥不会回显；修改只影响后续请求。")
+                    Text("留空保留当前密钥。")
                         .font(.footnote).foregroundStyle(.secondary)
                     Button("保存配置") { Task { await save() } }
                         .disabled(!model.canMutate || model.data["storageReady"].boolValue == false)
                 }.disabled(model.busy || model.pending != nil || model.locked)
                 Section {
                     Button("测试连接") { test = true }.disabled(!model.canMutate || settings["configured"].boolValue != true)
-                    Button("删除服务密钥", role: .destructive) { remove = true }.disabled(!model.canMutate || settings["configured"].boolValue != true)
+                    DisclosureGroup("管理密钥") {
+                        Button("删除服务密钥", role: .destructive) { remove = true }.disabled(!model.canMutate || settings["configured"].boolValue != true)
+                    }
                 }
-            } else if model.ready { Section { Text("此服务由管理员统一配置。个人健康、饮食和财务数据继续各自隔离。") } }
+            } else if model.ready { Section { Text("由管理员统一配置。") } }
             NativeAdministrationStatus(model: model)
         }
         .navigationTitle(kind.title)
         .toolbar { Button("刷新") { Task { await model.load() } }.disabled(model.busy) }
         .confirmationDialog("测试服务连接？", isPresented: $test, titleVisibility: .visible) {
             Button("确认测试") { Task { await model.begin(path: kind.path + "/test", method: "POST", body: NativeAdministrationContract.providerTest(kind: kind, revision: revision), label: "测试" + kind.title) } }
-        } message: { Text(kind == .ai ? "将发送固定测试文本，可能消耗 API 调用额度，不发送个人健康记录。" : "将向 TMDB 发送一次连接测试请求。") }
+        } message: { Text(kind == .ai ? "使用固定测试文本，可能消耗额度。" : "将向 TMDB 发送一次测试请求。") }
         .confirmationDialog("删除已保存的服务密钥？", isPresented: $remove, titleVisibility: .visible) {
             Button("确认删除", role: .destructive) { Task { await model.begin(path: kind.path, method: "DELETE", body: .object(["expectedRevision": .integer(revision)]), label: "删除" + kind.title + "密钥") } }
         } message: { Text("删除后全站成员的后续相关请求将停止使用该密钥。") }
@@ -296,27 +302,32 @@ struct NativeAccessManagementView: View {
     var body: some View {
         Form {
             if model.ready {
-                Section("允许访问的成员") {
+                Section("网站访问名单") {
                     ForEach(Array(model.data["grants"].arrayValue.enumerated()), id: \.offset) { _, grant in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(grant["email"].stringValue ?? "成员")
-                            Text(grant["status"].stringValue == "active" ? "已启用" : "已停用").font(.caption).foregroundStyle(.secondary)
-                            Button(grant["status"].stringValue == "active" ? "停用访问" : "恢复访问", role: grant["status"].stringValue == "active" ? .destructive : nil) { selected = grant; confirm = true }
-                                .disabled(!model.canMutate)
+                            HStack {
+                                Text(grant["status"].stringValue == "active" ? "已允许" : "已停用").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button(grant["status"].stringValue == "active" ? "停用" : "恢复", role: grant["status"].stringValue == "active" ? .destructive : nil) { selected = grant; confirm = true }
+                                    .disabled(!model.canMutate)
+                            }
                         }
                     }
                     if model.data["grants"].arrayValue.isEmpty { Text("尚未添加成员。") }
                 }
-                Section("添加允许访问的邮箱") {
-                    TextField("登录邮箱", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("添加成员") { Task { await invite() } }.disabled(!model.canMutate || email.isEmpty)
-                    Text("网站不会发送邮件。请自行将网站链接提供给已获准的成员。")
+                Section {
+                    DisclosureGroup("添加允许访问的邮箱") {
+                        TextField("登录邮箱", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button("添加") { Task { await invite() } }.disabled(!model.canMutate || email.isEmpty)
+                    }
+                    Text("仅管理网站访问，与家庭账本成员分开。不会发送邀请邮件。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.disabled(model.busy || model.pending != nil || model.locked)
             }
             NativeAdministrationStatus(model: model)
         }
-        .navigationTitle("使用名单")
+        .navigationTitle("网站访问名单")
         .toolbar { Button("刷新") { Task { await model.load() } }.disabled(model.busy) }
         .confirmationDialog("修改此成员的访问权限？", isPresented: $confirm, titleVisibility: .visible) {
             Button("确认修改", role: selected?["status"].stringValue == "active" ? .destructive : nil) { Task { await changeStatus() } }
@@ -361,12 +372,14 @@ struct NativeUsersManagementView: View {
                         }
                     }
                 }
-                Section("添加账号") {
-                    TextField("邮箱", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("初始密码（12–256个字符）", text: $password).textContentType(.newPassword)
-                    Button("创建账号") { Task { await create() } }.disabled(!model.canMutate || email.isEmpty || password.isEmpty)
-                    Text("请通过你信任的方式将初始密码告知本人。修改邮箱、密码或停用账号会使该账号的旧登录失效。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                Section {
+                    DisclosureGroup("添加账号") {
+                        TextField("邮箱", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        SecureField("初始密码（至少12个字符）", text: $password).textContentType(.newPassword)
+                        Button("创建账号") { Task { await create() } }.disabled(!model.canMutate || email.isEmpty || password.isEmpty)
+                        Text("请自行将初始密码安全告知本人。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }.disabled(model.busy || model.pending != nil || model.locked)
             }
             NativeAdministrationStatus(model: model)
@@ -416,7 +429,7 @@ private struct NativeUserEditor: View {
                     TextField("邮箱", text: $email).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("新密码（留空保留）", text: $password).textContentType(.newPassword)
                     Toggle("允许登录", isOn: $active).disabled(user["isAdmin"].boolValue == true)
-                    Text("修改登录资料后，此账号的旧会话会失效。修改自己的资料后需要重新登录。")
+                    Text("修改邮箱、密码或停用后，旧登录会失效。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
