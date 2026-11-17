@@ -350,6 +350,7 @@ async function nativeAcceptance(browser) {
   };
   const preview = (await json(await write('/health/import/preview', token, payload), 200, 'Native five-metric import preview')).preview;
   assert.equal(preview.total, 5); assert.equal(preview.added, 5); assert.equal(preview.sourceChanges, 0);
+  assert.equal(preview.sourceChangesAuthorized, false, 'Ordinary imports do not inherit automatic channel consent.');
   assert.match(preview.token, /^[a-f0-9]{64}$/);
   const receipt = await json(await write('/health/import', token, payload, { 'X-Import-Preview': preview.token }), 200, 'Native five-metric import');
   assert.equal(receipt.ok, true); assert.equal(receipt.imported, 5);
@@ -368,6 +369,79 @@ async function nativeAcceptance(browser) {
   assert.equal(missingConfirmation.code, 'HEALTH_IMPORT_SOURCE_CONFIRMATION');
   const confirmed = await json(await write('/health/import', token, changedSource, { 'X-Import-Preview': changedPreview.token, 'X-Confirm-Source-Changes': 'true' }), 200, 'Native explicitly confirmed source change');
   assert.equal(confirmed.imported, 1);
+
+  const emptyChannel = await json(await request('/sync/channel', token), 200, 'Native initial daily channel');
+  assert.equal(emptyChannel.revision, 0); assert.equal(emptyChannel.deviceId, null); assert.equal(emptyChannel.isCurrentDevice, false);
+  const deviceToken = 'jso_sync_' + randomBytes(32).toString('base64url');
+  const consent = { deviceToken, label: 'Synthetic daily iPhone', expectedRevision: emptyChannel.revision };
+  const forgedConsent = await browser.request('/api/sync/channel', {
+    method: 'PUT', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId, 'X-Jso-Native-Client': 'healthkit-v1' },
+    body: JSON.stringify(consent),
+  });
+  await json(forgedConsent, 403, 'Browser cannot spoof native daily-channel consent');
+  const selected = await json(await write('/sync/channel', token, consent, {}, 'PUT'), 200, 'Native explicit daily-channel consent');
+  assert.equal(selected.revision, 1); assert.equal(selected.isCurrentDevice, true); assert.ok(selected.deviceId);
+  assert.equal((await json(await write('/sync/channel', token, consent, {}, 'PUT'), 200, 'Native consent lost-response retry')).revision, 1);
+  assert.equal((await json(await request('/sync/channel', token), 200, 'Channel without local credential')).isCurrentDevice, false);
+  const channelHeaders = { 'X-Sync-Device': deviceToken };
+  assert.equal((await json(await request('/sync/channel', token, { headers: channelHeaders }), 200, 'Current local channel credential')).isCurrentDevice, true);
+  const shortcut = await json(await browser.request('/api/sync/devices', {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId },
+    body: JSON.stringify({ label: 'Synthetic older shortcut' }),
+  }), 201, 'Independent old shortcut remains a valid connection');
+  const blockedShortcut = await json(await write('/health/import/preview', token, changedSource, { 'X-Sync-Device': shortcut.deviceToken }), 409, 'Old shortcut cannot preview through the selected native channel');
+  assert.equal(blockedShortcut.code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
+  assert.equal((await json(await write('/health/import', token, changedSource, {
+    'X-Sync-Device': shortcut.deviceToken, 'X-Confirm-Source-Changes': 'true',
+  }), 409, 'An old shortcut cannot override channel selection by confirming a physical source change')).code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
+  const blockedManual = await json(await write('/health/import', token, changedSource, { 'X-Confirm-Source-Changes': 'true' }), 409, 'Explicit per-batch source confirmation cannot bypass the selected channel');
+  assert.equal(blockedManual.code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
+
+  const sourceSnapshot = (exportedAt, suffix, stepValue) => ({ ...payload, exportedAt,
+    measurements: payload.measurements.map(row => ({ ...row, source: 'native-daily-' + suffix + '-' + row.metric,
+      ...(row.metric === 'steps' ? { value: stepValue } : {}) })),
+  });
+  const dailyFirst = sourceSnapshot('2026-01-05T01:00:00Z', 'first', 7001);
+  const firstDailyPreview = (await json(await write('/health/import/preview', token, dailyFirst, channelHeaders), 200, 'Selected channel previews changed physical sources')).preview;
+  assert.ok(firstDailyPreview.sourceChanges > 0);
+  assert.equal(firstDailyPreview.sourceChangesAuthorized, true);
+  assert.equal((await json(await write('/health/import', token, dailyFirst, { ...channelHeaders, 'X-Import-Preview': firstDailyPreview.token }), 200, 'Selected daily channel automatically accepts its physical source changes')).ok, true);
+
+  const stepRecords = await json(await browser.request('/api/health/records?from=' + nativeDate + '&to=' + nativeDate + '&metric=steps'), 200, 'Current imported step record for manual correction');
+  const stepRecord = stepRecords.records.find(row => row.recordKey === 'steps:' + nativeDate);
+  assert.ok(stepRecord?.base);
+  const correctedStep = await json(await browser.request('/api/health/records/' + encodeURIComponent(stepRecord.recordKey), {
+    method: 'PATCH', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId, 'Idempotency-Key': randomUUID() },
+    body: JSON.stringify({ action: 'correct', value: 7777, expectedRevision: stepRecord.revision,
+      expectedBaseExportedAt: stepRecord.base.exportedAt, reason: 'Synthetic correction must survive automatic channel imports' }),
+  }), 200, 'Manual step correction before daily resync');
+  assert.equal(correctedStep.record.effective.value, 7777);
+  const dailySecond = sourceSnapshot('2026-01-06T01:00:00Z', 'second', 8888);
+  const secondDailyPreview = (await json(await write('/health/import/preview', token, dailySecond, channelHeaders), 200, 'Selected channel previews another physical source change')).preview;
+  assert.ok(secondDailyPreview.sourceChanges > 0); assert.ok(secondDailyPreview.manualOverrides > 0);
+  assert.equal(secondDailyPreview.sourceChangesAuthorized, true);
+  await json(await write('/health/import', token, dailySecond, { ...channelHeaders, 'X-Import-Preview': secondDailyPreview.token }), 200, 'Repeated physical source change needs no repeated consent');
+  const correctedHealth = await json(await request('/health?from=' + nativeDate + '&to=' + nativeDate, token), 200, 'Daily sync keeps manual overlays');
+  assert.equal(correctedHealth.summary.metrics.steps.points[0].value, 7777);
+
+  const inFlight = sourceSnapshot('2026-01-07T01:00:00Z', 'before-takeover', 9000);
+  const inFlightPreview = (await json(await write('/health/import/preview', token, inFlight, channelHeaders), 200, 'Preview obtained before explicit device takeover')).preview;
+  const replacementToken = 'jso_sync_' + randomBytes(32).toString('base64url');
+  const staleConsent = await json(await write('/sync/channel', token, { deviceToken: replacementToken, label: 'Replacement iPhone', expectedRevision: 0 }, {}, 'PUT'), 409, 'Device takeover rejects stale observed revision');
+  assert.equal(staleConsent.code, 'NATIVE_HEALTH_CHANNEL_STALE');
+  const replacement = await json(await write('/sync/channel', token, { deviceToken: replacementToken, label: 'Replacement iPhone', expectedRevision: selected.revision }, {}, 'PUT'), 200, 'Explicit replacement-device takeover');
+  assert.equal(replacement.revision, 2); assert.notEqual(replacement.deviceId, selected.deviceId);
+  const oldInFlight = await json(await write('/health/import', token, inFlight, { ...channelHeaders, 'X-Import-Preview': inFlightPreview.token, 'X-Confirm-Source-Changes': 'true' }), 403, 'Revoked former daily device cannot finish an in-flight import');
+  assert.equal(oldInFlight.code, 'SYNC_DEVICE_INVALID');
+  const wrongRelease = await json(await write('/sync/channel', token, { expectedRevision: replacement.revision }, { 'X-Sync-Device': shortcut.deviceToken }, 'DELETE'), 409, 'An independent connection cannot clear the selected channel');
+  assert.equal(wrongRelease.code, 'NATIVE_HEALTH_CHANNEL_NOT_CURRENT');
+  const replacementHeaders = { 'X-Sync-Device': replacementToken };
+  const cleared = await json(await write('/sync/channel', token, { expectedRevision: replacement.revision }, replacementHeaders, 'DELETE'), 200, 'Current daily device can release its channel');
+  assert.equal(cleared.deviceId, null); assert.equal(cleared.revision, 3);
+  assert.equal((await json(await write('/sync/channel', token, { expectedRevision: replacement.revision }, replacementHeaders, 'DELETE'), 200, 'Daily-channel release lost-response retry')).revision, 3);
+  const finalToken = 'jso_sync_' + randomBytes(32).toString('base64url');
+  const finalChannel = await json(await write('/sync/channel', token, { deviceToken: finalToken, label: 'Persistent daily iPhone', expectedRevision: cleared.revision }, {}, 'PUT'), 200, 'A newly consented connection replaces the released device');
+  assert.equal(finalChannel.revision, 4);
 
   const recordId = randomUUID(), recordInput = { metric: 'weight', value: 72.9, date: nativeDate, time: '09:00', capturedAt: new Date().toISOString(), reason: 'Synthetic native manual record' };
   const record = await json(await write('/health/records', token, recordInput, { 'Idempotency-Key': recordId }), 201, 'Native manual weight persistence');
@@ -475,10 +549,14 @@ async function main() {
   assert.equal(replayed.replayed, true); assert.equal(replayed.entry.id, created.entry.id);
 
   const revokedNativeSessions = await nativeAcceptance(authenticated);
+  const channelBeforeRestart = await json(await authenticated.request('/api/sync/channel'), 200, 'Browser reads persistent channel status without selection authority');
+  assert.equal(channelBeforeRestart.revision, 4); assert.equal(channelBeforeRestart.label, 'Persistent daily iPhone');
+  assert.equal(channelBeforeRestart.isCurrentDevice, false);
 
   await stop();
   migrate(); // Existing migration ledger is safe to re-check on every deployment.
   await start();
+  assert.deepEqual(await json(await authenticated.request('/api/sync/channel'), 200, 'Daily channel survives a process and database restart'), channelBeforeRestart);
   for (const oldCookie of revokedPersistentSessions) {
     const replay = new Browser(); replay.cookies.set('jso-test-session', oldCookie);
     assert.equal((await replay.request('/api/session')).status, 401, 'Logout remains revoked after the production server and database restart');
@@ -501,7 +579,7 @@ async function main() {
   await json(await authenticated.request('/api/session'), 401, 'Logged out session');
   await json(await authenticated.request('/api/health/goals'), 401, 'Logged out business data');
   await multiuserAcceptance();
-  process.stdout.write('Self-hosted production smoke passed: migrations, persistent rolling authentication, SSR identity bootstrap, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, native bearer login/overview/five-metric import/source confirmation/manual records/nutrition, and durable independent session revocation.\n');
+  process.stdout.write('Self-hosted production smoke passed: migrations, persistent rolling authentication, SSR identity bootstrap, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, native bearer login/overview/five-metric import/source confirmation/manual records/nutrition, persistent daily HealthKit channel consent/source changes/takeover/manual overlays, and durable independent session revocation.\n');
 }
 
 try { await main(); }

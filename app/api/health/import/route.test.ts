@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
+import { compileFunction } from 'node:vm';
 import test from 'node:test';
 import { HealthValidationError, MAX_SYNC_BYTES, measurementDay, type HealthSyncPayload } from '../../../../lib/health.ts';
 import { parseMobileSyncPayload } from '../../../../lib/mobile-sync.ts';
@@ -11,6 +12,7 @@ import type { SyncAttemptInput } from '../../../../db/sync-attempts-store.ts';
 
 const ORIGIN = 'https://synthetic-health.example';
 const EXPORTED_AT = '2026-11-09T14:00:00+08:00';
+class SyncDeviceInvalidError extends Error {}
 
 interface ImportResult {
   ok: boolean;
@@ -39,7 +41,7 @@ function loadExports(path: URL, bindings: Record<string, unknown>, names: string
   const source = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '')
     .replace(/^export /gm, '');
-  return new Function(...Object.keys(bindings), source + '\nreturn {' + names.join(',') + '};')(...Object.values(bindings));
+  return compileFunction(source + '\nreturn {' + names.join(',') + '};', Object.keys(bindings))(...Object.values(bindings));
 }
 
 function fixture(options: { signedIn?: boolean } = {}) {
@@ -51,7 +53,6 @@ function fixture(options: { signedIn?: boolean } = {}) {
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
     getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => options.signedIn === false ? null : ({ userId: 'synthetic-owner' }),
   }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
-  class SyncDeviceInvalidError extends Error {}
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, HealthValidationError, MAX_SYNC_BYTES, measurementDay,
     parseMobileSyncPayload, hashSyncToken, isSyncToken, SyncDeviceInvalidError,
@@ -84,7 +85,7 @@ function fixture(options: { signedIn?: boolean } = {}) {
   };
 }
 
-test('diagnostic history returns a server verification timestamp and does not read data before authentication', async () => {
+void test('diagnostic history returns a server verification timestamp and does not read data before authentication', async () => {
   const f = fixture(); const response = await f.get();
   assert.equal(response.status, 200);
   const data = await response.json() as { checkedAt: string; attempts: unknown[]; batches: unknown[] };
@@ -106,7 +107,7 @@ function upload(segments: unknown[], days?: unknown) {
   };
 }
 
-test('multi-day sleep is recorded when earlier nights have data and the final day has none', async () => {
+void test('multi-day sleep is recorded when earlier nights have data and the final day has none', async () => {
   const f = fixture();
   const response = await f.post(upload([segment('2026-11-07'), segment('2026-11-08'), segment('2026-11-09', 2)], 3));
   assert.equal(response.status, 200);
@@ -117,7 +118,7 @@ test('multi-day sleep is recorded when earlier nights have data and the final da
   assert.deepEqual(f.writes[0].measurements.map(measurementDay), ['2026-11-07', '2026-11-08']);
 });
 
-test('a report with no asleep data across its range returns zero days without fabricating or deleting records', async () => {
+void test('a report with no asleep data across its range returns zero days without fabricating or deleting records', async () => {
   const f = fixture();
   const response = await f.post(upload([segment('2026-11-07', 0), segment('2026-11-08', 2)], 3));
   assert.equal(response.status, 200);
@@ -134,7 +135,7 @@ test('a report with no asleep data across its range returns zero days without fa
   assert.deepEqual(f.attempts[0].summary?.metrics.map((row) => [row.metric, row.received, row.from, row.to]), [['sleep', 0, '2026-11-07', '2026-11-09']]);
 });
 
-test('invalid payload diagnostics retain only a fixed code and unknown scope', async () => {
+void test('invalid payload diagnostics retain only a fixed code and unknown scope', async () => {
   const f = fixture(); const response = await f.post({ secret: 'synthetic-invalid-body', measurements: 'bad' });
   assert.equal(response.status, 400); assert.equal(f.writes.length, 0);
   assert.equal(f.attempts[0].errorCode, 'SYNC_INVALID_FORMAT');
@@ -142,7 +143,7 @@ test('invalid payload diagnostics retain only a fixed code and unknown scope', a
   assert.doesNotMatch(JSON.stringify(f.attempts), /synthetic-invalid-body|secret/);
 });
 
-test('source conflict produces a safe persisted result while preserving the 409 confirmation boundary', async () => {
+void test('source conflict produces a safe persisted result while preserving the 409 confirmation boundary', async () => {
   const f = fixture(); f.reject(new HealthImportConflictError('HEALTH_IMPORT_SOURCE_CONFIRMATION', '请确认来源变化'));
   const response = await f.post(upload([segment('2026-11-09')]));
   assert.equal(response.status, 409); assert.equal(f.writes.length, 0);
@@ -151,10 +152,11 @@ test('source conflict produces a safe persisted result while preserving the 409 
   assert.equal(f.attempts[0].summary?.metrics[0].updated, 0);
 });
 
-test('failed server previews retain safe diagnostics while valid previews make no diagnostic or health writes', async () => {
+void test('failed server previews retain safe diagnostics while valid previews make no diagnostic or health writes', async () => {
   const attempts: SyncAttemptInput[] = []; let previews = 0;
   const shared = loadExports(new URL('../../_shared.ts', import.meta.url), { getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => ({ userId: 'synthetic-owner' }) }, ['apiUser','json','unauthenticated','unavailable','isSameOrigin','invalidOrigin']);
   const route = loadExports(new URL('./preview/route.ts', import.meta.url), { ...shared, HealthValidationError, MAX_SYNC_BYTES, parseMobileSyncPayload, emptySyncSummary, syncPayloadSummary,
+    SyncDeviceInvalidError, HealthImportConflictError, hashSyncToken, isSyncToken, SYNC_FAILURES, findSyncDevice: async () => 'synthetic-device',
     saveSyncAttempt: async (owner: string, input: SyncAttemptInput) => { assert.equal(owner,'synthetic-owner'); attempts.push(input); },
     previewImport: async (_owner: string, _payload: HealthSyncPayload) => { previews++; return { token: 'a'.repeat(64) }; },
   }, ['POST']) as { POST(request: Request): Promise<Response> };
@@ -164,7 +166,53 @@ test('failed server previews retain safe diagnostics while valid previews make n
   assert.equal(attempts[0].errorCode,'SYNC_INVALID_FORMAT'); assert.equal(attempts[0].summary?.known,false); assert.doesNotMatch(JSON.stringify(attempts),/synthetic-invalid-preview|secret/);
 });
 
-test('sleep outside the requested range cannot make an empty report look recorded', async () => {
+void test('import preview resolves device credentials within the authenticated owner and preserves channel conflicts', async () => {
+  const attempts: SyncAttemptInput[] = [];
+  const resolved: { owner: string; hash: string }[] = [];
+  const previewed: { owner: string; deviceId: string | null }[] = [];
+  const token = 'jso_sync_' + 'a'.repeat(43);
+  let activeDevice: string | null = 'synthetic-native-device';
+  let conflict: Error | null = null;
+  const shared = loadExports(new URL('../../_shared.ts', import.meta.url), {
+    getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }),
+    getChatGPTUser: async () => ({ userId: 'synthetic-owner' }),
+  }, ['apiUser', 'json', 'unauthenticated', 'unavailable', 'isSameOrigin', 'invalidOrigin']);
+  const route = loadExports(new URL('./preview/route.ts', import.meta.url), {
+    ...shared, HealthValidationError, MAX_SYNC_BYTES, parseMobileSyncPayload, emptySyncSummary, syncPayloadSummary,
+    SyncDeviceInvalidError, HealthImportConflictError, hashSyncToken, isSyncToken, SYNC_FAILURES,
+    saveSyncAttempt: async (_owner: string, input: SyncAttemptInput) => { attempts.push(input); },
+    findSyncDevice: async (owner: string, hash: string) => { resolved.push({ owner, hash }); return activeDevice; },
+    previewImport: async (owner: string, _payload: HealthSyncPayload, deviceId: string | null) => {
+      if (conflict) throw conflict;
+      previewed.push({ owner, deviceId }); return { token: 'a'.repeat(64) };
+    },
+  }, ['POST']) as { POST(request: Request): Promise<Response> };
+  const post = (deviceToken?: string) => route.POST(new Request(ORIGIN + '/api/health/import/preview', {
+    method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json', ...(deviceToken === undefined ? {} : { 'X-Sync-Device': deviceToken }) },
+    body: JSON.stringify(upload([segment('2026-11-09')])),
+  }));
+  assert.equal((await post()).status, 200);
+  assert.deepEqual(previewed[0], { owner: 'synthetic-owner', deviceId: null });
+  assert.equal((await post(token)).status, 200);
+  assert.deepEqual(resolved[0], { owner: 'synthetic-owner', hash: await hashSyncToken(token) });
+  assert.deepEqual(previewed[1], { owner: 'synthetic-owner', deviceId: 'synthetic-native-device' });
+  assert.equal(attempts.length, 0);
+  activeDevice = null;
+  assert.equal((await post(token)).status, 403);
+  assert.equal(attempts.at(-1)?.channel, 'device');
+  assert.equal(attempts.at(-1)?.errorCode, 'SYNC_DEVICE_INVALID');
+  const beforeMalformed = resolved.length;
+  assert.equal((await post('invalid-device-secret')).status, 403);
+  assert.equal(resolved.length, beforeMalformed);
+  activeDevice = 'synthetic-native-device';
+  conflict = new HealthImportConflictError('HEALTH_SYNC_CHANNEL_REQUIRED', '请使用当前选定的健康同步设备。');
+  const response = await post(token);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json() as { code: string }).code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
+  assert.doesNotMatch(JSON.stringify(attempts), /jso_sync_|invalid-device-secret/);
+});
+
+void test('sleep outside the requested range cannot make an empty report look recorded', async () => {
   const f = fixture();
   const payload = upload([], 7);
   payload.measurements.push({ id: 'outside-sleep', metric: 'sleep', value: 6,
@@ -180,7 +228,7 @@ test('sleep outside the requested range cannot make an empty report look recorde
   assert.deepEqual(f.attempts[0].summary?.emptySleepWindow, { from: '2026-11-03', to: '2026-11-09' });
 });
 
-test('the earliest requested day is counted and unchanged reuploads retain their recorded status', async () => {
+void test('the earliest requested day is counted and unchanged reuploads retain their recorded status', async () => {
   const f = fixture();
   const payload = upload([segment('2026-11-03')], 7);
   const first = await f.post(payload);
@@ -197,7 +245,7 @@ test('the earliest requested day is counted and unchanged reuploads retain their
   assert.deepEqual(f.writes[0], f.writes[1]);
 });
 
-test('omitted range remains a single-day report and ordinary health uploads omit sleep status', async () => {
+void test('omitted range remains a single-day report and ordinary health uploads omit sleep status', async () => {
   const f = fixture();
   const single = await f.post(upload([segment('2026-11-08'), segment('2026-11-09')]));
   assert.equal(single.status, 200);
@@ -213,7 +261,7 @@ test('omitted range remains a single-day report and ordinary health uploads omit
   assert.equal(Object.hasOwn(result, 'sleepDays'), false);
 });
 
-test('invalid sleep range types and bounds fail before writing to the repository', async () => {
+void test('invalid sleep range types and bounds fail before writing to the repository', async () => {
   const f = fixture();
   for (const days of [null, '7', true, 0, -1, 31, 1.5]) {
     const response = await f.post(upload([segment('2026-11-09')], days));
@@ -226,7 +274,7 @@ test('invalid sleep range types and bounds fail before writing to the repository
   assert.deepEqual(f.writes, []);
 });
 
-test('an unknown sleep state identifies its one-based segment without echoing health values', async () => {
+void test('an unknown sleep state identifies its one-based segment without echoing health values', async () => {
   const f = fixture();
   const unknown = { ...segment('2026-11-09'), state: 'synthetic-unknown-state' };
   const response = await f.post(upload([segment('2026-11-08'), unknown], 30));
@@ -241,7 +289,7 @@ test('an unknown sleep state identifies its one-based segment without echoing he
   assert.deepEqual(f.writes, []);
 });
 
-test('a 30-day iPhone upload accepts Chinese sleep labels and excludes awake time', async () => {
+void test('a 30-day iPhone upload accepts Chinese sleep labels and excludes awake time', async () => {
   const f = fixture();
   const payload = upload([
     { state: '核心睡眠', startDate: '2026-10-12T00:00:00+08:00', endDate: '2026-10-12T01:00:00+08:00' },

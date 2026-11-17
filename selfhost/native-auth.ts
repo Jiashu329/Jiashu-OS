@@ -20,6 +20,7 @@ const ROUTES: Readonly<Record<string, readonly string[]>> = {
   '/api/native/health/actions': ['GET', 'PUT'],
   '/api/native/health/review': ['GET'],
   '/api/native/health/weight-plan': ['GET'],
+  '/api/native/sync/channel': ['GET', 'PUT', 'DELETE'],
 };
 const AUTH_PATHS = ['/api/native/auth/login', '/api/native/auth/refresh', '/api/native/auth/logout'];
 interface NativeClaims { sub: string; revision: number; issuedAt: number; expiresAt: number; nonce: string }
@@ -171,6 +172,7 @@ export function createNativeGateway(config: SelfhostAuthConfig, downstream: (req
     delete headers.authorization; delete headers.cookie; delete headers.referer;
     headers.origin = config.origin;
     headers['x-page-owner'] = user.id;
+    headers['x-jso-native-client'] = 'healthkit-v1';
     req.headers = headers;
     req.rawHeaders = Object.entries(headers).flatMap(([name, value]) => Array.isArray(value) ? value.flatMap(item => [name, item]) : value === undefined ? [] : [name, value]);
     req.url = url.pathname.replace('/api/native/', '/api/') + url.search;

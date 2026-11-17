@@ -27,6 +27,9 @@ struct ContentView: View {
         .tint(.indigo)
         .task { await model.restore() }
         .onChange(of: scenePhase) { _, phase in if phase == .active && !model.restoring { Task { await model.becameActive() } } }
+        .sheet(item: $model.pendingChannelConsent) { _ in
+            NativeDailyChannelConsent(model: model)
+        }
         .alert("操作未完成", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("知道了") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
@@ -165,7 +168,6 @@ private struct NativeTodayView: View {
 
 private struct NativeSyncCard: View {
     @ObservedObject var model: NativeAppModel
-    @State private var showingConfirmation = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -177,50 +179,60 @@ private struct NativeSyncCard: View {
             if let note = model.observerMessage { Text(note).font(.footnote).foregroundStyle(.orange) }
             if !model.autoSyncEnabled {
                 Text("读取步数、活动能量、睡眠、体重和去脂体重，仅同步授权后实际可读的记录。").font(.footnote).foregroundStyle(.secondary)
-                Button(model.authorizingHealth ? "等待系统授权…" : "授权并开启自动同步") { Task { await model.connectHealth() } }.buttonStyle(.borderedProminent).disabled(model.syncing || model.authorizingHealth)
-            } else if model.pendingImport != nil {
-                Button("核对来源变化") { showingConfirmation = true }.buttonStyle(.borderedProminent)
+                Button(model.authorizingHealth ? "等待系统授权…" : "确认日常来源并同步") {
+                    Task { await model.connectHealth() }
+                }.buttonStyle(.borderedProminent)
+                    .disabled(model.syncing || model.authorizingHealth || model.configuringChannel)
             } else {
                 Button(model.syncing ? "正在同步…" : "立即同步最近 30 天") { Task { await model.sync() } }.buttonStyle(.bordered).disabled(model.syncing)
             }
         }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
-            .sheet(isPresented: $showingConfirmation) { NativeSourceConfirmation(model: model) }
     }
 }
 
-private struct NativeSourceConfirmation: View {
+private struct NativeDailyChannelConsent: View {
     @ObservedObject var model: NativeAppModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var confirmed = false
+    @State private var label = "这台 iPhone"
+    private var trimmedLabel: String { label.trimmingCharacters(in: .whitespacesAndNewlines) }
     var body: some View {
         NavigationStack {
             Form {
-                if let pending = model.pendingImport {
-                    Section("同步预览") {
-                        LabeledContent("新增", value: "\(pending.preview.added) 条")
-                        LabeledContent("更新", value: "\(pending.preview.updated) 条")
-                        LabeledContent("来源变化", value: "\(pending.preview.sourceChanges) 条")
-                        LabeledContent("保留手工更正／屏蔽", value: "\(pending.preview.manualOverrides) 条")
-                    }
-                    Section("核对变化") {
-                        ForEach(pending.preview.examples) { row in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(row.day + " · " + row.metric).font(.headline)
-                                Text(MetricDisplay.source(row.oldSource) + " → " + MetricDisplay.source(row.newSource)).font(.subheadline)
-                                Text("\(row.before.map { $0.formatted() } ?? "无原记录") → \(row.after.formatted())").monospacedDigit()
-                                Text(row.reason).font(.footnote).foregroundStyle(.secondary)
-                            }.padding(.vertical, 4)
+                if let pending = model.pendingChannelConsent {
+                    Section("选择日常健康同步设备") {
+                        TextField("设备名称", text: $label)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        if let currentLabel = pending.currentLabel {
+                            LabeledContent("将替换的日常来源", value: currentLabel)
                         }
                     }
-                    Section {
-                        Toggle("我已核对，确认使用本次来源", isOn: $confirmed)
-                        Button("确认同步") { Task { await model.confirmSourceChange(); if model.pendingImport == nil { dismiss() } else { confirmed = false } } }.disabled(!confirmed || model.syncing)
+                    Section("确认后会怎样") {
+                        Label("这台 iPhone 成为此账户的日常健康同步来源。", systemImage: "iphone")
+                        Text("读取你授权的步数、活动能量、睡眠、体重和去脂体重。手机或手表提供的苹果健康记录变化后，App 会自动尝试同步，无需逐批确认来源。")
+                        Text("旧快捷指令和其他同步设备将不能继续向这个日常通道写入；已有人工更正和屏蔽记录继续保留。")
+                        Text("后台同步时机由 iOS 决定；你仍可在 App 内手动同步。暂停自动同步会保留这次设备选择。")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                } else { Text("来源核对已完成。") }
-            }.navigationTitle("核对同步来源").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("稍后处理") { dismiss() }.disabled(model.syncing) } }
-                .interactiveDismissDisabled(model.syncing)
+                    Section {
+                        Button("确认并开启自动同步") {
+                            Task { await model.confirmDailyChannel(label: trimmedLabel) }
+                        }
+                        .disabled(trimmedLabel.isEmpty || trimmedLabel.utf16.count > 40 || model.configuringChannel)
+                        if model.configuringChannel { ProgressView("正在确认日常同步来源…") }
+                        if let error = model.errorMessage { Text(error).foregroundStyle(.red) }
+                    }
+                }
+            }
+            .disabled(model.configuringChannel)
+            .navigationTitle("确认日常健康来源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { model.cancelDailyChannelConsent() }.disabled(model.configuringChannel)
+                }
+            }
+            .interactiveDismissDisabled(model.configuringChannel)
         }
     }
 }
@@ -301,16 +313,44 @@ enum NativeChartDates {
 private struct NativeSettingsView: View {
     @ObservedObject var model: NativeAppModel
     @State private var signingOut = false
+    @State private var releasingChannel = false
     @State private var syncDays = 30
     var body: some View {
         NavigationStack {
             Form {
                 Section("当前账户") { LabeledContent("邮箱", value: model.session?.user.email ?? ""); LabeledContent("服务", value: "www.treefund.asia") }
                 Section("苹果健康") {
-                    Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { enabled in Task { await model.setAutomaticSync(enabled) } })).disabled(model.authorizingHealth)
+                    Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { enabled in Task { await model.setAutomaticSync(enabled) } }))
+                        .disabled(model.authorizingHealth || model.configuringChannel)
+                    if let channel = model.channel {
+                        if channel.deviceId != nil {
+                            LabeledContent("日常同步来源", value: channel.label ?? "已选择的设备")
+                            Text(channel.isCurrentDevice ? "当前选定的是这台 iPhone。" : "当前选定的是另一台设备。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if let updatedAt = channel.updatedAt, let date = NativeDates.parse(updatedAt) {
+                                LabeledContent("选择时间", value: date.formatted(date: .abbreviated, time: .shortened))
+                            }
+                            if channel.isCurrentDevice {
+                                Button("解除日常同步来源", role: .destructive) { releasingChannel = true }
+                                    .disabled(model.syncing || model.configuringChannel || model.authorizingHealth)
+                            } else {
+                                Button("设为这台 iPhone") { Task { await model.connectHealth() } }
+                                    .disabled(model.syncing || model.configuringChannel || model.authorizingHealth)
+                            }
+                        } else {
+                            Text("尚未选择日常同步来源。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Button("设为这台 iPhone") { Task { await model.connectHealth() } }
+                                .disabled(model.syncing || model.configuringChannel || model.authorizingHealth)
+                        }
+                    } else {
+                        Button("读取日常同步来源") { Task { await model.refreshChannelStatus() } }
+                            .disabled(model.configuringChannel)
+                    }
                     Picker("补同步范围", selection: $syncDays) { Text("最近 7 天").tag(7); Text("最近 30 天").tag(30); Text("最近 90 天").tag(90) }
-                    Button("同步所选范围") { Task { await model.sync(days: syncDays) } }.disabled(!model.autoSyncEnabled || model.syncing)
+                    Button("同步所选范围") { Task { await model.sync(days: syncDays) } }.disabled(!model.autoSyncEnabled || model.syncing || model.configuringChannel)
                     Text("打开 App 和健康数据变化时尝试同步，后台唤醒时机由 iOS 决定。只读取健康记录，不写入苹果健康。").font(.footnote).foregroundStyle(.secondary)
+                    Text("关闭自动同步只暂停上传，保留当前日常来源；再次开启时无需重复选择这台设备。").font(.footnote).foregroundStyle(.secondary)
                     Text("同步保留人工更正。苹果健康中删除的样本不会自动删除服务器记录，需要在记录管理中核对。").font(.footnote).foregroundStyle(.secondary)
                 }
                 if let session = model.session {
@@ -321,8 +361,17 @@ private struct NativeSettingsView: View {
                 }
                 Section { Link("打开桌面与管理网页版", destination: NativeAPI.websiteURL); Button("退出登录", role: .destructive) { signingOut = true } }
             }.navigationTitle("我的")
-                .confirmationDialog("退出后暂停此账户的 App 同步。", isPresented: $signingOut, titleVisibility: .visible) {
-                    Button("退出登录", role: .destructive) { Task { await model.signOut() } }
+                .task { await model.refreshChannelStatus() }
+                .confirmationDialog(
+                    releasingChannel ? "解除后，这台设备将停止日常健康同步。服务器已有记录和人工更正继续保留。" : "退出后暂停此账户的 App 同步。",
+                    isPresented: Binding(get: { releasingChannel || signingOut }, set: { if !$0 { releasingChannel = false; signingOut = false } }),
+                    titleVisibility: .visible
+                ) {
+                    if releasingChannel {
+                        Button("解除日常同步来源", role: .destructive) { Task { await model.releaseDailyChannel() } }
+                    } else {
+                        Button("退出登录", role: .destructive) { Task { await model.signOut() } }
+                    }
                 }
         }
     }

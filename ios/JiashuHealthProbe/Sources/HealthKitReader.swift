@@ -2,11 +2,19 @@ import Foundation
 import HealthKit
 import CryptoKit
 
+@MainActor
+protocol NativeHealthReading {
+    func authorize() async throws
+    func read(days: Int) async throws -> NativeHealthSnapshot
+    func startObserving(onChange: @escaping @Sendable () async -> Void) async throws
+    func stopObserving()
+}
+
 /// Reads only the types supported by the existing Jiashu OS health schema.
 /// HealthKit intentionally does not reveal whether read permission was denied:
 /// an empty result is left unknown and never turned into a zero measurement.
 @MainActor
-final class HealthKitReader {
+final class HealthKitReader: NativeHealthReading {
     private let store: HKHealthStore
     private var observers: [HKObserverQuery] = []
     private var observationGeneration = 0

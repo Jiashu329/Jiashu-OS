@@ -116,6 +116,17 @@ struct NativeStoredMeasurement: Codable, Identifiable, Sendable {
     let sleepStages: NativeSleepStages?
 }
 
+/// Server-authoritative daily health source selection. A configured channel
+/// may belong to a different phone; it must never be assumed to be this one.
+struct NativeHealthChannel: Codable, Equatable, Sendable {
+    let revision: Int
+    let deviceId: String?
+    let label: String?
+    let updatedAt: String?
+    let isCurrentDevice: Bool
+    var hasActiveChannel: Bool { deviceId != nil }
+}
+
 struct NativeImportPreview: Codable, Sendable {
     let token: String
     let total: Int

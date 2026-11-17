@@ -1,6 +1,7 @@
 import { measurementDay, measurementKey, METRIC_INFO, type HealthMeasurement, type HealthMetric, type HealthSyncPayload } from '../lib/health.ts';
 import { countSyncOutcome, syncPayloadSummary, type SyncAttemptSummary } from '../lib/sync-diagnostics.ts';
 import { syncDiagnosticStatements } from './sync-diagnostics-store.ts';
+import { readNativeHealthChannelPolicy, type NativeHealthChannelPolicy } from './native-health-channel-store.ts';
 
 export type HealthImportDatabase = Pick<D1Database, 'prepare' | 'batch'>;
 export interface ImportBase { recordKey: string; metric: HealthMetric; day: string; measurementJson: string; exportedAt: string; receivedAt: string }
@@ -9,6 +10,7 @@ interface BatchRow { batchId: string; payloadHash: string; operationId: string; 
 export interface HealthImportPreview {
   token: string; payloadHash: string; total: number; added: number; updated: number; skipped: number;
   sourceChanges: number; manualOverrides: number; from: string | null; to: string | null;
+  sourceChangesAuthorized: boolean;
   metrics: string[]; examples: Array<{ recordKey: string; day: string; metric: string; action: string; before: number | null; after: number; oldSource: string | null; newSource: string | null; reason: string; manualOverride: boolean }>;
 }
 export class HealthImportConflictError extends Error {
@@ -33,7 +35,24 @@ async function snapshots(db: HealthImportDatabase, userId: string, keys: string[
     base: row.measurementJson === null ? null : { recordKey: row.recordKey, metric: row.metric, day: row.day, measurementJson: row.measurementJson, exportedAt: row.exportedAt, receivedAt: row.receivedAt },
     revision: row.revision, overrideJson: row.overrideJson, deleted: row.deleted }));
 }
-async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload) {
+function channelRequired(): never {
+  throw new HealthImportConflictError('HEALTH_SYNC_CHANNEL_REQUIRED', '此账号已选择 Apple 健康同步通道，请使用选定设备同步；其他导入通道已暂停。');
+}
+function channelChanged(): never {
+  throw new HealthImportConflictError('HEALTH_SYNC_CHANNEL_CHANGED', '同步通道已变化，本次数据未写入，请读取最新通道设置后重试。');
+}
+function authorizeChannel(channel: NativeHealthChannelPolicy, deviceId: string | null) {
+  if (channel.deviceId !== null && (channel.deviceId !== deviceId || !channel.live)) channelRequired();
+}
+async function unchangedChannel(db: HealthImportDatabase, userId: string, expected: NativeHealthChannelPolicy, deviceId: string | null) {
+  const current = await readNativeHealthChannelPolicy(db, userId);
+  if (current.revision !== expected.revision || current.deviceId !== expected.deviceId || current.live !== expected.live) channelChanged();
+  authorizeChannel(current, deviceId);
+}
+async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload, deviceId: string | null) {
+  const channel = await readNativeHealthChannelPolicy(db, userId);
+  authorizeChannel(channel, deviceId);
+  const sourceChangesAuthorized = channel.deviceId !== null && channel.deviceId === deviceId && channel.live;
   let hash = await digest(payload);
   // The mobile adapter now retains source sleep timing. Retrying a report that
   // was already acknowledged before that additive metadata existed must keep
@@ -45,8 +64,10 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
   const state = await snapshots(db, userId, payload.measurements.map(measurementKey));
   const byKey = new Map(state.map((row) => [row.recordKey, row]));
   const days = payload.measurements.map(measurementDay).sort();
-  const preview: HealthImportPreview = { token: await digest([userId, hash, state]), payloadHash: hash,
+  const previewTokenInput = channel.revision === 0 ? [userId, hash, state] : [userId, hash, state, channel.revision, channel.deviceId];
+  const preview: HealthImportPreview = { token: await digest(previewTokenInput), payloadHash: hash,
     total: payload.measurements.length, added: 0, updated: 0, skipped: 0, sourceChanges: 0, manualOverrides: 0,
+    sourceChangesAuthorized,
     from: days[0] ?? null, to: days.at(-1) ?? null, metrics: [...new Set(payload.measurements.map((row) => METRIC_INFO[row.metric].label))], examples: [] };
   const writes: Array<Omit<ImportBase, 'receivedAt'>> = [];
   const changes: Array<{ before: ImportBase | null; after: Omit<ImportBase, 'receivedAt'> }> = [];
@@ -75,17 +96,19 @@ async function plan(db: HealthImportDatabase, userId: string, payload: HealthSyn
     // Prefer source changes, then regular examples; keep the response bounded.
     const example = { recordKey: key, day: measurementDay(measurement), metric: METRIC_INFO[measurement.metric].label, action,
       before: prior?.value ?? null, after: measurement.value, oldSource: prior?.source ?? null, newSource: measurement.source ?? null,
-      reason: sourceChange ? '来源变化，需确认' : !newer ? '导出时间不晚于已保存批次' : same ? '数值与内容未变化，仅更新接收版本' : manual ? '保留已有手工更正／屏蔽状态' : '', manualOverride: manual };
+      reason: sourceChange ? sourceChangesAuthorized ? '已授权的 Apple 健康通道内来源更新' : '来源变化，需确认' : !newer ? '导出时间不晚于已保存批次' : same ? '数值与内容未变化，仅更新接收版本' : manual ? '保留已有手工更正／屏蔽状态' : '', manualOverride: manual };
     if (sourceChange) preview.examples.unshift(example); else preview.examples.push(example);
   }
   preview.examples = preview.examples.slice(0, 12);
-  return { preview, state, writes, changes, hash, attemptSummary };
+  return { preview, state, writes, changes, hash, attemptSummary, channel };
 }
 function replaySummary(summary: SyncAttemptSummary, reverted: boolean): SyncAttemptSummary {
   return { ...summary, metrics: summary.metrics.map((metric) => ({ ...metric, added: 0, updated: 0, older: 0, unchanged: reverted ? 0 : metric.received })) };
 }
-export async function previewHealthImport(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload) {
-  return (await plan(db, userId, payload)).preview;
+export async function previewHealthImport(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload, deviceId: string | null = null) {
+  const prepared = await plan(db, userId, payload, deviceId);
+  await unchangedChannel(db, userId, prepared.channel, deviceId);
+  return prepared.preview;
 }
 // All compared values come from the server snapshot, never from client facts.
 const snapshotGuard = `NOT EXISTS (SELECT 1 FROM json_each(?) s
@@ -100,14 +123,19 @@ const snapshotGuard = `NOT EXISTS (SELECT 1 FROM json_each(?) s
 async function batchRow(db: HealthImportDatabase, userId: string, id: string) {
   return db.prepare('SELECT ' + columns + ' FROM health_import_batches WHERE user_id = ? AND batch_id = ?').bind(userId, id).first<BatchRow>();
 }
+const channelGuard = `COALESCE((SELECT revision FROM native_health_channels WHERE user_id=?),0)=?
+  AND (SELECT device_id FROM native_health_channels WHERE user_id=?) IS ?`;
 export async function writeHealthImport(db: HealthImportDatabase, userId: string, payload: HealthSyncPayload, deviceId: string | null, options: HealthImportOptions = {}, now = new Date().toISOString()) {
-  const prepared = await plan(db, userId, payload);
+  const prepared = await plan(db, userId, payload, deviceId);
   const prior = await batchRow(db, userId, prepared.hash);
-  if (prior) return { ...JSON.parse(prior.receiptJson), replayed: true, reverted: prior.revertedAt !== null,
-    attemptSummary: replaySummary(prepared.attemptSummary, prior.revertedAt !== null) };
+  if (prior) {
+    await unchangedChannel(db, userId, prepared.channel, deviceId);
+    return { ...JSON.parse(prior.receiptJson), replayed: true, reverted: prior.revertedAt !== null,
+      attemptSummary: replaySummary(prepared.attemptSummary, prior.revertedAt !== null) };
+  }
   if (!deviceId && options.previewToken !== prepared.preview.token) throw new HealthImportConflictError(options.previewToken ? 'HEALTH_IMPORT_STALE' : 'HEALTH_IMPORT_PREVIEW_REQUIRED', '请先查看本次变更预览，再确认导入。');
   if (options.previewToken && options.previewToken !== prepared.preview.token) throw new HealthImportConflictError();
-  if (prepared.preview.sourceChanges && (!options.previewToken || options.confirmSourceChanges !== true)) {
+  if (prepared.preview.sourceChanges && !prepared.preview.sourceChangesAuthorized && (!options.previewToken || options.confirmSourceChanges !== true)) {
     throw new HealthImportConflictError('HEALTH_IMPORT_SOURCE_CONFIRMATION', '本次导入将切换已有记录的来源，请查看预览并明确确认。');
   }
   const operation = crypto.randomUUID();
@@ -121,10 +149,11 @@ export async function writeHealthImport(db: HealthImportDatabase, userId: string
   const receiptGuard = `EXISTS (SELECT 1 FROM health_import_batches WHERE user_id = ? AND batch_id = ? AND operation_id = ? AND reverted_at IS NULL)`;
   const commands = [db.prepare(`INSERT INTO health_import_batches
     (user_id,batch_id,payload_hash,operation_id,before_json,after_json,receipt_json,created_at)
-    SELECT ?,?,?,?,?,?,?,? WHERE ${snapshotGuard} AND ${deviceGuard}
+    SELECT ?,?,?,?,?,?,?,? WHERE ${snapshotGuard} AND ${deviceGuard} AND ${channelGuard}
     ON CONFLICT(user_id,batch_id) DO NOTHING`)
     .bind(userId, prepared.hash, prepared.hash, operation, JSON.stringify(before), JSON.stringify(after), JSON.stringify(receipt), now,
-      JSON.stringify(prepared.state), userId, userId, deviceId, deviceId, userId),
+      JSON.stringify(prepared.state), userId, userId, deviceId, deviceId, userId,
+      userId, prepared.channel.revision, userId, prepared.channel.deviceId),
   db.prepare(`INSERT INTO health_measurements (user_id,record_key,metric,day,measurement_json,exported_at,received_at)
     SELECT ?,json_extract(value,'$.recordKey'),json_extract(value,'$.metric'),json_extract(value,'$.day'),
       json_extract(value,'$.measurementJson'),json_extract(value,'$.exportedAt'),json_extract(value,'$.receivedAt')
@@ -141,9 +170,11 @@ export async function writeHealthImport(db: HealthImportDatabase, userId: string
   await db.batch(commands);
   const saved = await batchRow(db, userId, prepared.hash);
   if (!saved) {
+    await unchangedChannel(db, userId, prepared.channel, deviceId);
     if (deviceId && !await db.prepare('SELECT id FROM sync_devices WHERE id=? AND user_id=? AND revoked_at IS NULL').bind(deviceId, userId).first()) throw new HealthImportConflictError('SYNC_DEVICE_INVALID', '同步连接已撤销。');
     throw new HealthImportConflictError();
   }
+  if (saved.operationId !== operation) await unchangedChannel(db, userId, prepared.channel, deviceId);
   return { ...JSON.parse(saved.receiptJson), replayed: saved.operationId !== operation, reverted: saved.revertedAt !== null,
     attemptSummary: saved.operationId === operation ? prepared.attemptSummary : replaySummary(prepared.attemptSummary, saved.revertedAt !== null) };
 }
@@ -152,9 +183,16 @@ export async function listHealthImports(db: HealthImportDatabase, userId: string
   return rows.results.map((row) => ({ ...JSON.parse(row.receiptJson), batchId: row.batchId, createdAt: row.createdAt, revertedAt: row.revertedAt, revertReason: row.revertReason }));
 }
 export async function revertHealthImport(db: HealthImportDatabase, userId: string, id: string, reason: string, now = new Date().toISOString()) {
+  const channel = await readNativeHealthChannelPolicy(db, userId);
+  // Manual record correction remains available. Raw batch rollback must not
+  // compete with an explicitly selected automatic ingestion channel.
+  if (channel.deviceId !== null) channelRequired();
   const prior = await batchRow(db, userId, id);
   if (!prior) throw new HealthImportConflictError('HEALTH_IMPORT_NOT_FOUND', '找不到这次导入。');
-  if (prior.revertedAt) return { ok: true, replayed: true, revertedAt: prior.revertedAt };
+  if (prior.revertedAt) {
+    await unchangedChannel(db, userId, channel, null);
+    return { ok: true, replayed: true, revertedAt: prior.revertedAt };
+  }
   const after = JSON.parse(prior.afterJson) as ImportBase[];
   if (!after.length) throw new HealthImportConflictError('HEALTH_IMPORT_NOT_REVERSIBLE', '这次导入没有修改原始记录，无需回退。');
   const before = JSON.parse(prior.beforeJson) as Array<{ recordKey: string; base: ImportBase | null }>;
@@ -168,8 +206,8 @@ export async function revertHealthImport(db: HealthImportDatabase, userId: strin
       WHERE json_extract(p.value,'$.base') IS NULL)`;
   const ownsRevert = `EXISTS (SELECT 1 FROM health_import_batches WHERE user_id=? AND batch_id=? AND revert_id=?)`;
   const result = await db.batch([
-    db.prepare(`UPDATE health_import_batches SET reverted_at=?,revert_reason=?,revert_id=? WHERE user_id=? AND batch_id=? AND reverted_at IS NULL AND ${guard}`)
-      .bind(now, reason, revertId, userId, id, prior.afterJson, userId, prior.beforeJson, userId),
+    db.prepare(`UPDATE health_import_batches SET reverted_at=?,revert_reason=?,revert_id=? WHERE user_id=? AND batch_id=? AND reverted_at IS NULL AND ${guard} AND ${channelGuard}`)
+      .bind(now, reason, revertId, userId, id, prior.afterJson, userId, prior.beforeJson, userId, userId, channel.revision, userId, channel.deviceId),
     db.prepare(`DELETE FROM health_measurements WHERE user_id=? AND record_key IN (SELECT json_extract(value,'$.recordKey') FROM json_each(?) WHERE json_extract(value,'$.base') IS NULL) AND ${ownsRevert}`)
       .bind(userId, prior.beforeJson, userId, id, revertId),
     db.prepare(`INSERT INTO health_measurements (user_id,record_key,metric,day,measurement_json,exported_at,received_at)
@@ -179,6 +217,7 @@ export async function revertHealthImport(db: HealthImportDatabase, userId: strin
       .bind(userId, JSON.stringify(before.filter((row) => row.base).map((row) => row.base)), userId, id, revertId),
   ]);
   if (result[0].meta.changes !== 1) {
+    await unchangedChannel(db, userId, channel, null);
     const saved = await batchRow(db, userId, id);
     if (saved?.revertedAt) return { ok: true, replayed: true, revertedAt: saved.revertedAt };
     throw new HealthImportConflictError('HEALTH_IMPORT_REVERT_CONFLICT', '这些原始记录已有后续同步，或本批新增记录已有手工修改，不能直接回退整批。请到记录管理逐条核对。');

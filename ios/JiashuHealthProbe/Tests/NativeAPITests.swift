@@ -1,13 +1,16 @@
 import Foundation
+import Security
 import XCTest
 @testable import JiashuHealthProbe
 
 final class NativeAPITests: XCTestCase {
     private var hosts: [String] = []
     private var keychainServices: [String] = []
+    private var deviceStores: [NativeHealthDeviceStore] = []
 
     override func tearDown() {
         hosts.forEach { NativeStubProtocol.remove(host: $0) }
+        deviceStores.forEach { try? $0.clear() }
         keychainServices.forEach { try? NativeSessionStore(service: $0).clear() }
         super.tearDown()
     }
@@ -205,6 +208,181 @@ final class NativeAPITests: XCTestCase {
         XCTAssertEqual(values["steps"] as? Double, 8000)
         XCTAssertTrue(values["sleep"] is NSNull)
         XCTAssertTrue(values["active_energy"] is NSNull)
+    }
+
+    func testChannelStatusWithoutCredentialDoesNotSelectOrAssumeThisDevice() async throws {
+        let client = api { request in
+            XCTAssertEqual(request.url?.path, "/api/native/sync/channel")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertNil(request.url?.query)
+            XCTAssertNil(request.httpBody)
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Sync-Device"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"))
+            return .json("{\"revision\":0,\"deviceId\":null,\"label\":null,\"updatedAt\":null,\"isCurrentDevice\":false}")
+        }
+        let channel = try await client.channel(token: "synthetic-native-token")
+        XCTAssertEqual(channel.revision, 0)
+        XCTAssertFalse(channel.hasActiveChannel)
+        XCTAssertFalse(channel.isCurrentDevice)
+    }
+
+    func testChannelStatusUsesCredentialOnlyAsHeaderAndRetainsOtherDeviceStatus() async throws {
+        let credential = try NativeHealthDeviceCredential.generate()
+        let client = api { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-native-token")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Sync-Device"), credential.deviceToken)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Origin"))
+            XCTAssertNil(request.url?.query)
+            return .json("{\"revision\":4,\"deviceId\":\"synthetic-other-device\",\"label\":\"另一台 iPhone\",\"updatedAt\":\"2026-11-17T08:00:00Z\",\"isCurrentDevice\":false}")
+        }
+        let channel = try await client.channel(token: "synthetic-native-token", deviceToken: credential.deviceToken)
+        XCTAssertTrue(channel.hasActiveChannel)
+        XCTAssertFalse(channel.isCurrentDevice, "An active account channel must not automatically authorize this phone")
+    }
+
+    func testSelectingChannelSendsCredentialAndRevisionAsOneExplicitSelection() async throws {
+        let credential = try NativeHealthDeviceCredential.generate()
+        let client = api { request in
+            XCTAssertEqual(request.url?.path, "/api/native/sync/channel")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-native-token")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Origin"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Sync-Device"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"))
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: self.requestBody(request)) as? [String: Any])
+            XCTAssertEqual(Set(body.keys), Set(["deviceToken", "label", "expectedRevision"]))
+            XCTAssertEqual(body["deviceToken"] as? String, credential.deviceToken)
+            XCTAssertEqual(body["label"] as? String, "我的 iPhone")
+            XCTAssertEqual(body["expectedRevision"] as? Int, 4)
+            return .json("{\"revision\":5,\"deviceId\":\"synthetic-this-device\",\"label\":\"我的 iPhone\",\"updatedAt\":\"2026-11-17T08:00:00Z\",\"isCurrentDevice\":true}")
+        }
+        let channel = try await client.selectChannel(token: "synthetic-native-token", deviceToken: credential.deviceToken,
+                                                      label: " 我的 iPhone ", expectedRevision: 4)
+        XCTAssertEqual(channel.revision, 5)
+        XCTAssertTrue(channel.isCurrentDevice)
+    }
+
+    func testClearingChannelIncludesCurrentCredentialAndExpectedRevision() async throws {
+        let credential = try NativeHealthDeviceCredential.generate()
+        let client = api { request in
+            XCTAssertEqual(request.url?.path, "/api/native/sync/channel")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-native-token")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Sync-Device"), credential.deviceToken)
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"))
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: self.requestBody(request)) as? [String: Int])
+            XCTAssertEqual(body, ["expectedRevision": 5])
+            return .json("{\"revision\":6,\"deviceId\":null,\"label\":null,\"updatedAt\":\"2026-11-17T08:00:00Z\",\"isCurrentDevice\":false}")
+        }
+        let channel = try await client.clearChannel(token: "synthetic-native-token", deviceToken: credential.deviceToken, expectedRevision: 5)
+        XCTAssertEqual(channel.revision, 6)
+        XCTAssertFalse(channel.hasActiveChannel)
+    }
+
+    func testSelectedDevicePreviewAndUploadDoNotForgePerBatchSourceConfirmation() async throws {
+        let credential = try NativeHealthDeviceCredential.generate()
+        let payload = Data("{\"version\":1,\"synthetic\":true}".utf8)
+        let client = api { request in
+            XCTAssertEqual(self.requestBody(request), payload)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Sync-Device"), credential.deviceToken)
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"))
+            XCTAssertNil(request.url?.query, "A device credential must never enter a URL")
+            if request.url?.path.hasSuffix("preview") == true {
+                return .json("""
+                {"preview":{"token":"synthetic-preview-token","total":1,"added":0,"updated":1,"skipped":0,"sourceChanges":1,"manualOverrides":0,"from":"2026-11-16","to":"2026-11-16","metrics":["步数"],"examples":[]}}
+                """)
+            }
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Import-Preview"), "synthetic-preview-token")
+            return .json("{\"ok\":true,\"imported\":1,\"skipped\":0,\"lastSync\":\"2026-11-17T08:00:00Z\"}")
+        }
+        let preview = try await client.preview(token: "synthetic-native-token", payload: payload, deviceToken: credential.deviceToken)
+        XCTAssertEqual(preview.sourceChanges, 1)
+        let receipt = try await client.upload(token: "synthetic-native-token", payload: payload, previewToken: preview.token,
+                                             deviceToken: credential.deviceToken)
+        XCTAssertEqual(receipt.imported, 1)
+    }
+
+    func testInvalidDeviceCredentialAndSelectionAreRejectedBeforeTransport() async throws {
+        let client = api { _ in XCTFail("Invalid device settings reached transport"); return .json("{}") }
+        for invalid in ["", "jso_sync_short", "jso_sync_" + String(repeating: "a", count: 43),
+                        "jso_sync_" + String(repeating: "A", count: 42) + "+", "Bearer credential"] {
+            do {
+                _ = try await client.channel(token: "synthetic-native-token", deviceToken: invalid)
+                XCTFail("Invalid credential accepted")
+            } catch NativeAPIError.invalidRequest {}
+        }
+        let valid = try NativeHealthDeviceCredential.generate()
+        do {
+            _ = try await client.selectChannel(token: "synthetic-native-token", deviceToken: valid.deviceToken, label: "iPhone", expectedRevision: -1)
+            XCTFail("Negative revision accepted")
+        } catch NativeAPIError.invalidRequest {}
+        do {
+            _ = try await client.selectChannel(token: "synthetic-native-token", deviceToken: valid.deviceToken, label: "iPhone\n", expectedRevision: 0)
+            XCTFail("Control character accepted")
+        } catch NativeAPIError.invalidRequest {}
+    }
+
+    func testDeviceCredentialsContain32RandomBytesAndCanonicalURLSafeEncoding() throws {
+        var generated = Set<String>()
+        for _ in 0..<128 {
+            let credential = try NativeHealthDeviceCredential.generate()
+            XCTAssertTrue(credential.isValid)
+            XCTAssertEqual(credential.deviceToken.count, 52)
+            XCTAssertTrue(credential.deviceToken.hasPrefix("jso_sync_"))
+            XCTAssertFalse(credential.deviceToken.contains("="))
+            XCTAssertFalse(credential.deviceToken.contains("+"))
+            XCTAssertFalse(credential.deviceToken.contains("/"))
+            let suffix = String(credential.deviceToken.dropFirst(9))
+            let decoded = Data(base64Encoded: suffix.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=")
+            XCTAssertEqual(decoded?.count, 32)
+            XCTAssertTrue(generated.insert(credential.deviceToken).inserted, "Generated credentials must not repeat")
+            let json = try JSONEncoder().encode(credential)
+            XCTAssertEqual(try JSONDecoder().decode(NativeHealthDeviceCredential.self, from: json), credential)
+        }
+    }
+
+    func testDeviceCredentialKeychainIsAccountScopedAndIndependentOfLogin() throws {
+        let service = "synthetic.native-device-tests." + UUID().uuidString
+        keychainServices.append(service)
+        let a = NativeHealthDeviceStore(userID: "synthetic-user-a", service: service)
+        let b = NativeHealthDeviceStore(userID: "synthetic-user-b", service: service)
+        deviceStores += [a, b]
+        let credentialA = try NativeHealthDeviceCredential.generate()
+        let credentialB = try NativeHealthDeviceCredential.generate()
+        XCTAssertNil(try a.load())
+        XCTAssertNil(try b.load())
+        try a.save(credentialA)
+        XCTAssertNil(try b.load())
+        try b.save(credentialB)
+        try NativeSessionStore(service: service).clear()
+        XCTAssertEqual(try a.load(), credentialA, "Logging out must preserve this user's device identity")
+        XCTAssertEqual(try b.load(), credentialB)
+        var attributes: CFTypeRef?
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "https://www.treefund.asia|synthetic-user-a", kSecReturnAttributes as String: true]
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &attributes), errSecSuccess)
+        let metadata = try XCTUnwrap(attributes as? [String: Any])
+        XCTAssertEqual(metadata[kSecAttrAccessible as String] as? String, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        try a.clear()
+        XCTAssertNil(try a.load())
+        XCTAssertEqual(try b.load(), credentialB)
+    }
+
+    func testCorruptedDeviceKeychainValueIsRejectedRatherThanRegeneratedSilently() throws {
+        let service = "synthetic.native-device-tests." + UUID().uuidString
+        let store = NativeHealthDeviceStore(userID: "synthetic-user-a", service: service)
+        deviceStores.append(store)
+        try store.save(NativeHealthDeviceCredential.generate())
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "https://www.treefund.asia|synthetic-user-a"]
+        let invalid: [String: Any] = [kSecValueData as String: Data("{\"deviceToken\":\"invalid\"}".utf8)]
+        XCTAssertEqual(SecItemUpdate(query as CFDictionary, invalid as CFDictionary), errSecSuccess)
+        XCTAssertThrowsError(try store.load())
+        XCTAssertThrowsError(try NativeHealthDeviceStore(userID: "").load())
     }
 
     func testKeychainStoresOnlySessionAndSupportsReplacementAndClear() throws {

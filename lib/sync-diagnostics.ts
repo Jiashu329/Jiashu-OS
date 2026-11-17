@@ -11,6 +11,8 @@ export const SYNC_FAILURES = {
   HEALTH_IMPORT_STALE: '预览后记录已有变化，请重新预览后确认。',
   HEALTH_IMPORT_PREVIEW_REQUIRED: '数据尚未写入，请先查看变更预览并确认导入。',
   HEALTH_IMPORT_SOURCE_CONFIRMATION: '来源发生变化，数据尚未写入；请查看预览并确认切换。',
+  HEALTH_SYNC_CHANNEL_REQUIRED: '此账号已选择 Apple 健康通道，请从选定的 iPhone 同步；其他导入通道已暂停。',
+  HEALTH_SYNC_CHANNEL_CHANGED: '同步通道已变化，本次数据未写入；请读取最新设置后重试。',
   SYNC_STORAGE_UNAVAILABLE: '本次未能确认保存结果，请稍后查看记录或使用相同批次重试。',
 } as const;
 export type SyncFailureCode = keyof typeof SYNC_FAILURES;

@@ -28,8 +28,8 @@ void test('all current migrations initialize an empty database once, before owne
   try {
     const result = await migrateDatabase({ path: f.path, directory: resolve('drizzle') });
     assert.equal(result.schemaReady, true);
-    assert.equal(result.changed, 36);
-    assert.equal(result.applied, 36);
+    assert.equal(result.changed, loadMigrations(resolve('drizzle')).length);
+    assert.equal(result.applied, loadMigrations(resolve('drizzle')).length);
     assert.equal(result.backupPath, undefined);
     const db = new SQLiteD1Database(f.path);
     try {
@@ -46,7 +46,7 @@ void test('all current migrations initialize an empty database once, before owne
 });
 
 void test('session revocation upgrade preserves existing business records, credentials and the entire applied prefix', async () => {
-  const f = fixture(), current = loadMigrations(resolve('drizzle'));
+  const f = fixture(), current = loadMigrations(resolve('drizzle')).filter(migration => migration.idx <= 35);
   try {
     assert.equal(current.length, 36);
     f.migrations(current.slice(0, -1).map(migration => migration.sql));
@@ -81,6 +81,38 @@ void test('session revocation upgrade preserves existing business records, crede
       assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM _selfhost_migrations').get()!.n, 35);
       assert.equal(snapshot.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name='local_session_revocations'").get()!.n, 0);
     } finally { snapshot.close(); }
+  } finally { f.cleanup(); }
+});
+
+void test('native channel upgrade is additive and preserves existing health rows, device credentials and session revocations', async () => {
+  const f = fixture(), current = loadMigrations(resolve('drizzle'));
+  try {
+    assert.equal(current.at(-1)?.idx, 36);
+    f.migrations(current.slice(0, -1).map(migration => migration.sql));
+    await migrateDatabase(f);
+    const before = new SQLiteD1Database(f.path);
+    let ledger: unknown[];
+    try {
+      before.sqlite.prepare("INSERT INTO health_measurements VALUES('existing-owner','steps:2026-11-16','steps','2026-11-16','retained-health-json','2026-11-16','2026-11-16')").run();
+      before.sqlite.prepare("INSERT INTO sync_devices VALUES('existing-device','existing-owner','Existing shortcut','retained-device-hash','2026-11-16',NULL,NULL)").run();
+      before.sqlite.prepare('INSERT INTO local_session_revocations VALUES(?,?)').run('a'.repeat(64), 2000000000000);
+      ledger = before.sqlite.prepare('SELECT * FROM _selfhost_migrations ORDER BY idx').all();
+    } finally { before.close(); }
+    f.migrations(current.map(migration => migration.sql));
+    const result = await migrateDatabase(f);
+    assert.equal(result.changed, 1); assert.equal(result.applied, 37); assert.ok(result.backupPath);
+    const after = new SQLiteD1Database(f.path);
+    try {
+      assert.equal(after.sqlite.prepare('SELECT COUNT(*) AS n FROM native_health_channels').get()!.n, 0, 'Existing users are not silently opted in.');
+      assert.equal(after.sqlite.prepare('SELECT measurement_json FROM health_measurements').get()!.measurement_json, 'retained-health-json');
+      const device = after.sqlite.prepare('SELECT token_hash,revoked_at FROM sync_devices').get()!;
+      assert.equal(device.token_hash, 'retained-device-hash'); assert.equal(device.revoked_at, null);
+      assert.equal(after.sqlite.prepare('SELECT expires_at FROM local_session_revocations').get()!.expires_at, 2000000000000);
+      assert.deepEqual(after.sqlite.prepare('SELECT * FROM _selfhost_migrations ORDER BY idx LIMIT 36').all(), ledger);
+    } finally { after.close(); }
+    const snapshot = new DatabaseSync(result.backupPath, { readOnly: true });
+    try { assert.equal(snapshot.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='native_health_channels'").get()!.n, 0); }
+    finally { snapshot.close(); }
   } finally { f.cleanup(); }
 });
 

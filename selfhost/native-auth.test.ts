@@ -31,7 +31,7 @@ async function fixture(t: test.TestContext, overrides: { users?: SelfhostGateway
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ path: req.url, actor: req.headers['oai-authenticated-user-id'] ?? null, email: req.headers['oai-authenticated-user-email'] ?? null,
       pageOwner: req.headers['x-page-owner'] ?? null, origin: req.headers.origin ?? null, authorization: req.headers.authorization ?? null,
-      cookie: req.headers.cookie ?? null, rawHeaders: req.rawHeaders }));
+      cookie: req.headers.cookie ?? null, nativeClient: req.headers['x-jso-native-client'] ?? null, rawHeaders: req.rawHeaders }));
   }, { now: () => time, readiness: () => ({ schemaReady: true, applied: 2, total: 2, pending: 0 }), commitSha: 'a'.repeat(40),
     users: overrides.users ?? { getById: id => getLocalUserById(db, id), getByEmail: email => getLocalUserByEmail(db, email),
       touchLogin: (id, at) => touchLocalUserLogin(db, id, new Date(at).toISOString()) },
@@ -67,14 +67,32 @@ void test('real HTTP native login and mapped APIs bind each user to their own ex
   assert.doesNotMatch(JSON.stringify(alice), /passwordHash|scrypt|synthetic-password/);
   for (const session of [alice, bob]) {
     const response = await f.call('/api/native/health?days=30', 'GET', { ...bearer(session), 'oai-authenticated-user-id': 'forged',
-      'oai-authenticated-user-email': 'forged@example.test', 'x-forwarded-host': 'evil.example', 'x-page-owner': 'forged' });
+      'oai-authenticated-user-email': 'forged@example.test', 'x-forwarded-host': 'evil.example', 'x-page-owner': 'forged', 'x-jso-native-client': 'forged-client' });
     assert.equal(response.status, 200); assert.equal(response.data.path, '/api/health?days=30');
     assert.equal(response.data.actor, session.user.id); assert.equal(response.data.pageOwner, session.user.id);
     assert.equal(response.data.email, session.user.email); assert.equal(response.data.origin, config.origin);
     assert.equal(response.data.authorization, null); assert.equal(response.data.cookie, null);
+    assert.equal(response.data.nativeClient, 'healthkit-v1');
     assert.doesNotMatch(JSON.stringify(response.data.rawHeaders), /forged|evil\.example|Bearer/);
     assert.equal(response.headers['set-cookie'], undefined);
   }
+});
+
+void test('the native channel marker is gateway-owned and channel methods map to the existing application boundary', async t => {
+  const f = await fixture(t), session = await f.login();
+  const cookie = '__Host-jso-session=' + issueSelfhostSession(config, { id: config.ownerId, revision: 1 }, NOW);
+  const browser = await f.call('/api/sync/channel', 'GET', { Cookie: cookie, 'X-Jso-Native-Client': 'healthkit-v1' });
+  assert.equal(browser.status, 200);
+  assert.equal(browser.data.actor, config.ownerId);
+  assert.equal(browser.data.nativeClient, null, 'A browser session cannot spoof native selection consent.');
+  for (const method of ['GET', 'PUT', 'DELETE']) {
+    const response = await f.call('/api/native/sync/channel', method, { ...bearer(session), 'X-Jso-Native-Client': 'spoofed' });
+    assert.equal(response.status, 200);
+    assert.equal(response.data.path, '/api/sync/channel');
+    assert.equal(response.data.nativeClient, 'healthkit-v1');
+    assert.equal(response.data.actor, config.ownerId);
+  }
+  assert.equal((await f.call('/api/native/sync/channel', 'POST', bearer(session))).status, 405);
 });
 
 void test('native tokens cannot authenticate browser routes and browser cookies or Origins cannot authenticate native routes', async t => {
