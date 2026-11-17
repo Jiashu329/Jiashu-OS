@@ -72,8 +72,7 @@ private struct NativeLoginView: View {
                         SecureField("密码", text: $password).textContentType(.password).focused($passwordFocused).submitLabel(.go)
                             .onSubmit { login() }
                             .padding().background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-                        if let error = model.errorMessage { NativeInlineNotice(error, tone: .error) }
-                        if let error = model.sessionError { NativeInlineNotice(error, tone: .error) }
+                        if let error = model.errorMessage ?? model.sessionError { NativeInlineNotice(error, tone: .error) }
                         Button(action: login) {
                             HStack {
                                 if model.signingIn { ProgressView().tint(.white) }
@@ -126,7 +125,7 @@ private struct NativeTodayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     Text(Date(), style: .date).font(.subheadline).foregroundStyle(.secondary)
-                    if let error = model.sessionError { NativeInlineNotice(error, tone: .attention) }
+                    if let error = model.sessionError, error != model.overviewError { NativeInlineNotice(error, tone: .attention) }
                     if let session = model.session {
                         if typeSize.isAccessibilitySize { VStack(spacing: 12) { recordActions(session) } }
                         else { HStack(spacing: 12) { recordActions(session) } }
@@ -165,6 +164,16 @@ private struct NativeTodayView: View {
                     ForEach(["steps", "sleep", "weight"], id: \.self) { key in
                         let metric = overview.health.metrics.first { $0.metric == key }
                         Button { showHealth(key) } label: {
+                            if typeSize.isAccessibilitySize {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Label(MetricDisplay.title(key), systemImage: MetricDisplay.icon(key)).font(.subheadline).foregroundStyle(.indigo)
+                                    ViewThatFits(in: .horizontal) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 6) { metricValue(metric, key: key) }
+                                        VStack(alignment: .leading, spacing: 4) { metricValue(metric, key: key) }
+                                    }
+                                    Text(MetricDisplay.date(metric?.day)).font(.caption).foregroundStyle(.secondary)
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(16).contentShape(Rectangle())
+                            } else {
                             HStack(spacing: 14) {
                                 Image(systemName: MetricDisplay.icon(key)).foregroundStyle(.indigo).frame(width: 24)
                                 VStack(alignment: .leading, spacing: 5) {
@@ -178,6 +187,7 @@ private struct NativeTodayView: View {
                                 }
                                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                             }.padding(.vertical, 16).padding(.horizontal, 16).contentShape(Rectangle())
+                            }
                         }.buttonStyle(.plain).accessibilityElement(children: .combine)
                         if key != "weight" { Divider().padding(.leading, 54) }
                     }
@@ -199,22 +209,32 @@ private struct NativeTodayView: View {
 
 private struct NativeHomeWeeklyAction: View {
     @ObservedObject var model: NativeAppModel
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var action: NativeWeeklyActionEntry?
     private var week: String { NativeActionDates.day(NativeActionDates.monday(Date())) }
     var body: some View {
         if let session = model.session {
             NavigationLink { HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id) } label: {
+                if typeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("本周行动", systemImage: "calendar").font(.subheadline).foregroundStyle(.secondary)
+                        Text(actionText).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 4 : 2).accessibilityLabel(actionText)
+                        actionStatus
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+                } else {
                 HStack(alignment: .top, spacing: 14) {
                     Image(systemName: "calendar").font(.title3).foregroundStyle(.indigo)
                     VStack(alignment: .leading, spacing: 7) {
                         Text("本周行动").font(.subheadline).foregroundStyle(.secondary)
-                        Text(action?.weekStart == week ? action?.text ?? "回顾这一周，选一件小事" : "回顾这一周，选一件小事").font(.headline)
-                        if let action, action.weekStart == week { Text(action.status.title).font(.caption).foregroundStyle(.secondary) }
+                        Text(actionText).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 4 : 2).accessibilityLabel(actionText)
+                        actionStatus
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                 }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+                }
             }.buttonStyle(.plain)
                 .task(id: week + (model.overview?.asOf ?? "")) {
                     let owner = session.user.id
@@ -225,6 +245,10 @@ private struct NativeHomeWeeklyAction: View {
                     } catch { /* Keep the last visible action; the review page provides retry. */ }
                 }
         }
+    }
+    private var actionText: String { action?.weekStart == week ? action?.text ?? "回顾与计划" : "回顾与计划" }
+    @ViewBuilder private var actionStatus: some View {
+        if let action, action.weekStart == week { Text(action.status.title).font(.caption).foregroundStyle(.secondary) }
     }
 }
 
@@ -313,7 +337,7 @@ struct NativeSyncCenter: View {
                 }
                 Text(model.syncMessage).font(.footnote).foregroundStyle(.secondary)
                 if let note = model.observerMessage { NativeInlineNotice(note, tone: .attention) }
-                if let error = model.errorMessage { NativeInlineNotice(error, tone: .error) }
+                if let error = model.errorMessage, !model.syncMessage.contains(error) { NativeInlineNotice(error, tone: .error) }
             }
             if let session = model.session {
                 Section {

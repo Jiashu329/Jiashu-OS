@@ -138,6 +138,10 @@ final class NativeNotificationsModel: ObservableObject {
         } catch { message = error.localizedDescription; ready = false }
         await load()
     }
+    func updateCredential(token: String, userID: String) {
+        guard self.userID == userID else { invalidate(); return }
+        self.token = token
+    }
 
     func invalidate() { generation = UUID(); readID = UUID(); feed = .null; pending = nil; busy = false; loading = false; ready = false; message = nil }
     func setCategory(_ category: String, enabled: Bool) {
@@ -284,7 +288,8 @@ struct NativeNotificationsView: View {
             }
         }
         .sheet(isPresented: $preferencesVisible) { NavigationStack { NativeNotificationPreferencesView(model: model) } }
-        .task(id: userID + token) { await model.activate(token: token, userID: userID) }
+        .task(id: userID) { await model.activate(token: token, userID: userID) }
+        .onChange(of: token) { _, value in model.updateCredential(token: value, userID: userID) }
         .refreshable { if model.pending == nil { await model.load() } }
         .onDisappear { model.invalidate() }
     }

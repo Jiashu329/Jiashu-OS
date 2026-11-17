@@ -29,15 +29,23 @@ final class NativeUXRenderingTests: XCTestCase {
         XCTAssertNil(model.overviewError)
         let token = try XCTUnwrap(model.session?.accessToken)
 
-        try await capture(ContentView(model: model), name: "SYNTHETIC-home-light")
-        try await capture(NavigationStack { NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID) }, name: "SYNTHETIC-health-light")
+        try await capture(ContentView(model: model), name: "SYNTHETIC-home-light",
+                          waitUntil: { scenario.count("/api/native/notifications") > 0 && scenario.count("/api/native/health/actions") > 0 })
+        let goalsBefore = scenario.count("/api/native/health/goals")
+        try await capture(NavigationStack { NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID) },
+                          name: "SYNTHETIC-health-light", waitUntil: { scenario.count("/api/native/health/goals") > goalsBefore })
         try await capture(NativeSettingsView(model: model), name: "SYNTHETIC-my-light")
-        try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light")
+        let channelsBefore = scenario.count("/api/native/sync/channel")
+        try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
+                          waitUntil: { scenario.count("/api/native/sync/channel") > channelsBefore })
+        let mealsBefore = scenario.count("/api/native/health/nutrition")
         try await capture(NavigationStack {
             NativeNutritionRoot(api: api, token: token, userID: scenario.userID)
-        }, name: "SYNTHETIC-diet-light")
+        }, name: "SYNTHETIC-diet-light", waitUntil: { scenario.count("/api/native/health/nutrition") > mealsBefore })
+        let actionsBefore = scenario.count("/api/native/health/actions")
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-dark-accessibility",
-                          size: CGSize(width: 320, height: 874), dark: true, large: true)
+                          size: CGSize(width: 320, height: 874), dark: true, large: true,
+                          waitUntil: { scenario.count("/api/native/health/actions") > actionsBefore })
 
         XCTAssertGreaterThan(scenario.count("/api/native/notifications"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/health/actions"), 0)
@@ -49,13 +57,15 @@ final class NativeUXRenderingTests: XCTestCase {
     @MainActor
     private func capture<Screen: View>(_ screen: Screen, name: String,
                                       size: CGSize = CGSize(width: 390, height: 844),
-                                      dark: Bool = false, large: Bool = false) async throws {
+                                      dark: Bool = false, large: Bool = false,
+                                      waitUntil: (() -> Bool)? = nil) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(origin: .zero, size: size)
         window.overrideUserInterfaceStyle = dark ? .dark : .light
         let hosting = UIHostingController(rootView: screen
+            .tint(.indigo)
             .environment(\.locale, Locale(identifier: "zh-Hans"))
             .environment(\.calendar, NativeActionDates.calendar)
             .environment(\.timeZone, NativeActionDates.timeZone)
@@ -64,8 +74,19 @@ final class NativeUXRenderingTests: XCTestCase {
         window.rootViewController = hosting
         window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
-        // Let SwiftUI commit its first transactions and the instant local URL
-        // replies; this bounded wait never contacts or waits for a live service.
+        // A newly mounted page must finish starting its own synthetic reads;
+        // using a previous screen's count would hide a cancelled appearance.
+        if let waitUntil {
+            let deadline = Date().addingTimeInterval(5)
+            while !waitUntil() && Date() < deadline {
+                hosting.view.setNeedsLayout()
+                hosting.view.layoutIfNeeded()
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertTrue(waitUntil(), "Synthetic page reads did not arrive before capture: " + name)
+        }
+        // Allow the corresponding state transaction to render after the local
+        // response; no production endpoint is involved.
         try await Task.sleep(nanoseconds: 250_000_000)
         hosting.view.setNeedsLayout()
         hosting.view.layoutIfNeeded()

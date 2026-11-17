@@ -126,6 +126,33 @@ final class NativeLifeTests: XCTestCase {
         XCTAssertFalse(gate.accepts(replacement, owner: "account-a", profile: "profile-b", visible: false))
         XCTAssertTrue(gate.accepts(replacement, owner: "account-a", profile: "profile-b", visible: true))
     }
+    @MainActor
+    func testSameAccountCredentialRenewalKeepsFiltersCachedRecordsAndFrozenWrite() async throws {
+        let owner = "life-renewal-" + UUID().uuidString
+        let persistence = NativeWorkspacePersistence(userID: owner, scope: "life-pending")
+        defer { try? persistence.clear() }
+        let frozen = NativeLifePending(owner: owner, label: "合成待确认整理", path: "life/douban/library", method: "PUT", body: .object(["note": .string("尚待确认的合成备注"), "expectedLocalRevision": .integer(7)]))
+        try persistence.save(frozen)
+        let store = NativeLifeStore(api: NativeAPI(), token: "synthetic-old-token", userID: owner)
+        store.filters.kind = "book"; store.filters.query = "未完成的搜索"; store.filters.tag = "重读"
+        store.items = [item]; store.response = .object(["dataEpoch": .integer(4), "total": .integer(1)])
+        let filters = store.filters
+
+        store.updateCredential(token: "synthetic-renewed-token", userID: owner)
+        XCTAssertEqual(store.token, "synthetic-renewed-token")
+        XCTAssertEqual(store.filters, filters)
+        XCTAssertEqual(store.items.map(\.id), [item.id])
+        XCTAssertEqual(store.epoch, 4)
+        XCTAssertEqual(store.pending?.body, frozen.body)
+        XCTAssertEqual(try persistence.load(NativeLifePending.self)?.body, frozen.body)
+
+        store.updateCredential(token: "synthetic-other-account-token", userID: "another-account")
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.response.isNull)
+        XCTAssertNil(store.pending)
+        let sent = await store.mutate(label: "不能发送旧账号操作", path: frozen.path, method: frozen.method, body: frozen.body)
+        XCTAssertFalse(sent)
+    }
     func testImportAndResetFrozenRequestsRetainSameOperationIdentity() throws {
         let preview = NativeJSON.object(["snapshotHash": .string(String(repeating: "a", count: 64)), "dataEpoch": .number(4)])
         let request = NativeLifeContract.importBody(profile: "synthetic_owner", items: [item.personalSnapshot(rating: 4, date: "2026-11-15", comment: "自己的短评")], epoch: 4, preview: preview, requestID: "12345678-1234-4234-8234-123456789abc")

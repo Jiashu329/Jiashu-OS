@@ -51,6 +51,10 @@ final class NativeLifeStore: ObservableObject {
             } catch { self.error = error.localizedDescription }
         }
     }
+    func updateCredential(token: String, userID: String) {
+        guard self.userID == userID else { deactivate(); return }
+        self.token = token
+    }
     func deactivate() {
         active = false; loadID = UUID(); syncTask?.cancel(); syncTask = nil; syncing = false; completing = false
         items = []; detailItems = [:]; response = .null; pending = nil; notice = nil; error = nil
@@ -312,7 +316,8 @@ struct NativeLifeRoot: View {
         .sheet(isPresented: $filtersVisible) { NavigationStack { NativeLifeFilterSheet(store: store) } }
         .sheet(isPresented: $importVisible, onDismiss: { Task { await store.load() } }) { NavigationStack { NativeLifeImportForm(store: store) } }
         .sheet(isPresented: $resetVisible) { NavigationStack { NativeLifeResetView(store: store) } }
-        .task(id: userID + ":" + token) { store.activate(token: token, userID: userID); await store.load() }
+        .task(id: userID) { store.activate(token: token, userID: userID); await store.load() }
+        .onChange(of: token) { _, value in store.updateCredential(token: value, userID: userID) }
         .onDisappear { store.pause() }
     }
     private var categoryBar: some View {
@@ -651,12 +656,16 @@ struct NativeLifeSyncCenter: View {
     let userID: String
     @StateObject private var store: NativeLifeStore
     @State private var profile = ""
+    @State private var profileInitialized = false
     @State private var disconnect = false
     init(api: NativeAPI, token: String, userID: String) {
         self.api = api; self.token = token; self.userID = userID
         _store = StateObject(wrappedValue: NativeLifeStore(api: api, token: token, userID: userID))
     }
     private var connected: Bool { store.connection["profileId"].stringValue != nil }
+    private var profileBinding: Binding<String> {
+        Binding(get: { profile }, set: { value in profile = value; profileInitialized = true })
+    }
     var body: some View {
         Form {
             Section {
@@ -666,7 +675,7 @@ struct NativeLifeSyncCenter: View {
                     if store.syncing { Button("暂停同步") { store.pause() }; ProgressView() }
                     else { Button(store.run["status"].stringValue == "running" ? "继续同步" : "同步公开收藏") { store.startSync() }.disabled(store.busy || store.pending != nil) }
                 } else {
-                    TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("豆瓣主页链接或 ID", text: profileBinding).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Button("连接豆瓣") { saveConnection(disconnect: false) }.disabled(profile.isEmpty || store.busy || store.pending != nil)
                 }
             }
@@ -694,7 +703,7 @@ struct NativeLifeSyncCenter: View {
             if connected {
                 Section {
                     DisclosureGroup("连接设置") {
-                        TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        TextField("豆瓣主页链接或 ID", text: profileBinding).textInputAutocapitalization(.never).autocorrectionDisabled()
                         Button("保存主页") { saveConnection(disconnect: false) }.disabled(store.busy || store.pending != nil || store.syncing)
                         Button("断开连接", role: .destructive) { disconnect = true }.disabled(store.busy || store.pending != nil || store.syncing)
                     }
@@ -710,7 +719,13 @@ struct NativeLifeSyncCenter: View {
         }
         .navigationTitle("豆瓣同步").navigationBarTitleDisplayMode(.inline)
         .toolbar { Button { Task { await store.load() } } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("刷新状态").disabled(store.busy || store.syncing) }
-        .task(id: userID + ":" + token) { store.activate(token: token, userID: userID); await store.load(); profile = store.connection["profileId"].stringValue ?? "" }
+        .task(id: userID) {
+            store.activate(token: token, userID: userID); await store.load()
+            if !Task.isCancelled, !profileInitialized, store.connection["revision"].intValue != nil {
+                profile = store.connection["profileId"].stringValue ?? ""; profileInitialized = true
+            }
+        }
+        .onChange(of: token) { _, value in store.updateCredential(token: value, userID: userID) }
         .refreshable { await store.load() }.onDisappear { store.pause() }
         .confirmationDialog("断开豆瓣连接？", isPresented: $disconnect) { Button("断开连接", role: .destructive) { saveConnection(disconnect: true) } } message: { Text("已有收藏保留。") }
     }

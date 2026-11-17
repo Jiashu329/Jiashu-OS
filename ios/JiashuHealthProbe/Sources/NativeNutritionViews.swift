@@ -31,7 +31,6 @@ struct NativeNutritionRoot: View {
             NativeNutritionErrorRow(text: context.error)
             Section {
                 DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
-                Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
                 Button("记一餐", systemImage: "plus.circle.fill") { composing = true }
                     .disabled(context.pending != nil || context.busy)
             }
@@ -39,14 +38,13 @@ struct NativeNutritionRoot: View {
             if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重试") { Task { await load() } } } }
             if data != .null {
                 Section("当天记录") {
-                    NativeNutritionTotals(nutrients: data["summary"]["nutrients"])
+                    NativeNutritionTotals(nutrients: data["summary"]["nutrients"], compact: true)
                     NavigationLink {
                         NativeNutritionStatusView(context: context, initial: data["dayStatus"], date: day)
                     } label: {
-                        Label(data["dayStatus"]["complete"].boolValue == true ? "当天已记完 · 查看餐次" : "核对餐次，确认当天已记完",
+                        Label(data["dayStatus"]["complete"].boolValue == true ? "已记完 · 餐次状态" : "确认当天记录",
                               systemImage: data["dayStatus"]["complete"].boolValue == true ? "checkmark.circle.fill" : "circle")
                     }
-                    Text("未知与未记录的食物不计为0。").font(.footnote).foregroundStyle(.secondary)
                 }
                 ForEach(QuickEntryMeal.allCases) { meal in mealSection(meal) }
                 Section { Toggle("显示已删除记录", isOn: $includeDeleted) }
@@ -166,7 +164,20 @@ struct NutritionEditorPresentation: Identifiable {
 
 struct NativeNutritionTotals: View {
     let nutrients: NativeJSON
+    var compact = false
     var body: some View {
+        if compact {
+            LabeledContent("热量已知小计", value: (nutrients["calories"]["knownCount"].intValue ?? 0) > 0 ? NativeNutritionFields.value(nutrients["calories"]["total"], unit: "千卡") : "—")
+            if let unknown = nutrients["calories"]["unknownCount"].intValue, unknown > 0 {
+                Text("另有\(unknown)项热量未知").font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("营养明细") {
+                detailedTotals
+                Text("未知与未记录不计为0。").font(.caption).foregroundStyle(.secondary)
+            }
+        } else { detailedTotals }
+    }
+    private var detailedTotals: some View {
         ForEach(NativeNutritionFields.keys, id: \.self) { key in
             VStack(alignment: .leading, spacing: 3) {
                 LabeledContent(NativeNutritionFields.title(key) + "已知小计",

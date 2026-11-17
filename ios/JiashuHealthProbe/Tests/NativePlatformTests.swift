@@ -140,6 +140,64 @@ final class NativePlatformTests: XCTestCase {
     }
 
     @MainActor
+    func testCredentialRenewalKeepsUnsavedReminderPreferencesAndFilterWithoutReload() async throws {
+        let requests = PlatformCalls()
+        let fixture = platformClient { request in
+            _ = requests.record(.object(["authorization": .string(request.value(forHTTPHeaderField: "Authorization") ?? "")]))
+            return PlatformReply(value: platformFeed(ids: ["sync:existing"], revision: 2))
+        }
+        let owner = "platform-renewal-draft-" + UUID().uuidString
+        defer { fixture.cleanup(); try? NativeWorkspacePersistence(userID: owner, scope: "notifications-pending-command").clear() }
+        let model = NativeNotificationsModel(api: fixture.api, token: "synthetic-old-token", userID: owner)
+        await model.activate(token: "synthetic-old-token", userID: owner)
+        await model.filter(unread: true)
+        model.setCategory("sync", enabled: false)
+        let originalFeed = model.feed, originalRequestCount = requests.count
+
+        model.updateCredential(token: "synthetic-renewed-token", userID: owner)
+        XCTAssertEqual(requests.count, originalRequestCount, "Renewal must not restore or reload over an active editor")
+        XCTAssertEqual(model.feed, originalFeed)
+        XCTAssertEqual(model.preferences["sync"], false)
+        XCTAssertEqual(model.settingsRevision, 2)
+        XCTAssertTrue(model.unreadOnly)
+        XCTAssertTrue(model.canSavePreferences)
+        await model.load()
+        XCTAssertEqual(requests.bodies.last?["authorization"].stringValue, "Bearer synthetic-renewed-token")
+        XCTAssertEqual(model.preferences["sync"], false)
+    }
+
+    @MainActor
+    func testCredentialRenewalRetainsFrozenReminderWriteAndRetriesWithNewCredential() async throws {
+        let calls = PlatformCalls()
+        let fixture = platformClient { request in
+            if request.httpMethod == "POST" {
+                let body = try JSONDecoder().decode(NativeJSON.self, from: platformBody(request))
+                let count = calls.record(.object(["body": body, "authorization": .string(request.value(forHTTPHeaderField: "Authorization") ?? "")]))
+                if count == 1 { return PlatformReply(status: 503, value: .object(["error": .string("合成未知保存结果")])) }
+                return PlatformReply(value: .object(["settings": .object(["categories": body["categories"], "revision": .integer(3)])]))
+            }
+            let preferences = calls.count >= 2 ? (calls.bodies.last?["body"]["categories"].objectValue ?? [:]).compactMapValues(\.boolValue) : NativeNotificationContract.defaults
+            return PlatformReply(value: platformFeed(ids: [], revision: calls.count >= 2 ? 3 : 2, preferences: preferences))
+        }
+        let owner = "platform-renewal-pending-" + UUID().uuidString
+        defer { fixture.cleanup(); try? NativeWorkspacePersistence(userID: owner, scope: "notifications-pending-command").clear() }
+        let model = NativeNotificationsModel(api: fixture.api, token: "synthetic-old-token", userID: owner)
+        await model.activate(token: "synthetic-old-token", userID: owner)
+        model.setCategory("balances", enabled: false)
+        await model.saveSettings()
+        let original = try XCTUnwrap(model.pending)
+
+        model.updateCredential(token: "synthetic-renewed-token", userID: owner)
+        XCTAssertEqual(model.pending, original)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(model.preferences["balances"], false)
+        await model.retry()
+        XCTAssertNil(model.pending)
+        XCTAssertEqual(calls.bodies[0]["body"], calls.bodies[1]["body"])
+        XCTAssertEqual(calls.bodies[1]["authorization"].stringValue, "Bearer synthetic-renewed-token")
+    }
+
+    @MainActor
     func testPendingNotificationsAreAccountScopedAndNeverAutoSubmittedOnRestore() async throws {
         let calls = PlatformCalls(), fixture = platformClient { request in
             if request.httpMethod == "POST" { _ = calls.record(.null) }
