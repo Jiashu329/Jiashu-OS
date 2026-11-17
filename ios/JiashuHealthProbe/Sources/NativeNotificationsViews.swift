@@ -261,7 +261,7 @@ struct NativeNotificationsView: View {
                     ForEach(Array(model.feed["items"].arrayValue.enumerated()), id: \.offset) { _, item in
                         notification(item)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if item["readAt"].isNull, let id = item["id"].stringValue { Button { Task { await model.markRead(ids: [id]) } } label: { Label("已读", systemImage: "envelope.open") }.tint(.indigo).disabled(model.blocked) }
+                                if item["readAt"].isNull, let id = item["id"].stringValue { Button { Task { await model.markRead(ids: [id]) } } label: { Label("已读", systemImage: "envelope.open") }.tint(NativePalette.accent).disabled(model.blocked) }
                             }
                     }
                 }
@@ -277,7 +277,7 @@ struct NativeNotificationsView: View {
                 if model.feed["truncated"].boolValue == true { Section { Text("更早的家庭变更可在账本动态中查看。").font(.footnote).foregroundStyle(.secondary) } }
             }
         }
-        .navigationTitle("消息")
+        .nativeGeometricPage().navigationTitle("消息")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -306,7 +306,7 @@ private struct NativeNotificationRow: View {
     private var unread: Bool { item["readAt"].isNull }
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: NativeNotificationContract.icon(category)).font(.title3).foregroundStyle(.indigo)
+            Image(systemName: NativeNotificationContract.icon(category)).font(.title3).foregroundStyle(NativePalette.accent)
                 .frame(width: 38, height: 38).background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline) {
@@ -315,7 +315,7 @@ private struct NativeNotificationRow: View {
                 }
                 Text(item["summary"].stringValue ?? "").font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                 HStack {
-                    Text(NativeNotificationContract.actionTitle(category)).font(.caption.weight(.medium)).foregroundStyle(.indigo)
+                    Text(NativeNotificationContract.actionTitle(category)).font(.caption.weight(.medium)).foregroundStyle(NativePalette.accent)
                     Spacer()
                     Text(NativeWorkspaceFormat.timestamp(item["createdAt"].stringValue)).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -345,7 +345,7 @@ private struct NativeNotificationPreferencesView: View {
             if let pending = model.pending { Section("结果待确认") { Text(pending.label).font(.subheadline); Button("继续确认") { Task { await model.retry() } }.disabled(model.busy) } }
             if let message = model.message { Section { Text(message == "操作已确认。" ? "已保存" : message).font(.footnote).foregroundStyle(.secondary) } }
         }
-        .navigationTitle("提醒设置").navigationBarTitleDisplayMode(.inline)
+        .nativeGeometricPage().navigationTitle("提醒设置").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await model.saveSettings() } }.disabled(!model.canSavePreferences) }

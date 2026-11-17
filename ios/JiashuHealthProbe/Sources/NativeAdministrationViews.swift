@@ -267,7 +267,7 @@ struct NativeProviderSettingsView: View {
             } else if model.ready { Section { Text("由管理员统一配置。") } }
             NativeAdministrationStatus(model: model)
         }
-        .navigationTitle(kind.title)
+        .nativeGeometricPage().navigationTitle(kind.title)
         .toolbar { Button("刷新") { Task { await model.load() } }.disabled(model.busy) }
         .confirmationDialog("测试服务连接？", isPresented: $test, titleVisibility: .visible) {
             Button("确认测试") { Task { await model.begin(path: kind.path + "/test", method: "POST", body: NativeAdministrationContract.providerTest(kind: kind, revision: revision), label: "测试" + kind.title) } }
@@ -327,7 +327,7 @@ struct NativeAccessManagementView: View {
             }
             NativeAdministrationStatus(model: model)
         }
-        .navigationTitle("网站访问名单")
+        .nativeGeometricPage().navigationTitle("网站访问名单")
         .toolbar { Button("刷新") { Task { await model.load() } }.disabled(model.busy) }
         .confirmationDialog("修改此成员的访问权限？", isPresented: $confirm, titleVisibility: .visible) {
             Button("确认修改", role: selected?["status"].stringValue == "active" ? .destructive : nil) { Task { await changeStatus() } }
@@ -384,7 +384,7 @@ struct NativeUsersManagementView: View {
             }
             NativeAdministrationStatus(model: model)
         }
-        .navigationTitle("用户管理")
+        .nativeGeometricPage().navigationTitle("用户管理")
         .toolbar { Button("刷新") { Task { await model.load() } }.disabled(model.busy) }
         .sheet(isPresented: $showEditor) {
             if let editing { NativeUserEditor(user: editing) { body in
@@ -435,7 +435,7 @@ private struct NativeUserEditor: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }
             .disabled(busy)
-            .navigationTitle("编辑账号")
+            .nativeGeometricPage().navigationTitle("编辑账号")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(busy) }
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { confirm = true }.disabled(busy) }

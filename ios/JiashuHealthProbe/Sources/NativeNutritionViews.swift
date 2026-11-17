@@ -32,10 +32,11 @@ struct NativeNutritionRoot: View {
             Section {
                 DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
                 Button("记一餐", systemImage: "plus.circle.fill") { composing = true }
+                    .font(.headline).padding(.vertical, 5)
                     .disabled(context.pending != nil || context.busy)
-            }
-            if loading { Section { ProgressView("读取饮食记录…") } }
-            if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重试") { Task { await load() } } } }
+            }.listRowBackground(NativePalette.surface)
+            if loading { Section { ProgressView("读取饮食记录…") }.listRowBackground(NativePalette.surface) }
+            if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重试") { Task { await load() } } }.listRowBackground(NativePalette.surface) }
             if data != .null {
                 Section("当天记录") {
                     NativeNutritionTotals(nutrients: data["summary"]["nutrients"], compact: true)
@@ -44,17 +45,17 @@ struct NativeNutritionRoot: View {
                     } label: {
                         Label(data["dayStatus"]["complete"].boolValue == true ? "已记完 · 餐次状态" : "确认当天记录",
                               systemImage: data["dayStatus"]["complete"].boolValue == true ? "checkmark.circle.fill" : "circle")
-                    }
-                }
+                    }.padding(.vertical, 5)
+                }.listRowBackground(NativePalette.surface)
                 ForEach(QuickEntryMeal.allCases) { meal in mealSection(meal) }
-                Section { Toggle("显示已删除记录", isOn: $includeDeleted) }
+                Section { Toggle("显示已删除记录", isOn: $includeDeleted) }.listRowBackground(NativePalette.surface)
             }
             Section("回顾与目标") {
                 NavigationLink("饮食回顾") { NativeNutritionReviewView(context: context, initialDate: date) }
                 NavigationLink("营养目标与需求") { NativeNutritionGoalsView(context: context) }
-            }
+            }.listRowBackground(NativePalette.surface)
         }
-        .navigationTitle("饮食")
+        .nativeGeometricPage().navigationTitle("饮食")
         .environment(\.timeZone, NativeActionDates.timeZone)
         .task {
             context.restorePending()
@@ -76,25 +77,26 @@ struct NativeNutritionRoot: View {
         if let pending = context.pending {
             Section("上次保存待确认") {
                 Text(pending.title)
-                Text("继续核对会重试原操作，不会重复记录。").font(.footnote).foregroundStyle(.secondary)
+                Text("继续核对会重试原操作，不会重复记录。").font(.footnote).foregroundStyle(NativePalette.muted)
                 Button("继续核对") { Task { await context.retry(); await load() } }.disabled(context.busy)
-            }
+            }.listRowBackground(NativePalette.surface)
         }
     }
     private func mealSection(_ selectedMeal: QuickEntryMeal) -> some View {
         Section {
             let rows = data["entries"].arrayValue.filter { $0["meal"].stringValue == selectedMeal.rawValue }
             if rows.isEmpty {
-                Text(data["dayStatus"]["meals"][selectedMeal.rawValue].stringValue == "skipped" ? "已确认未进食" : "暂无记录").foregroundStyle(.secondary)
+                Text(data["dayStatus"]["meals"][selectedMeal.rawValue].stringValue == "skipped" ? "已确认未进食" : "暂无记录").foregroundStyle(NativePalette.muted)
             }
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 NavigationLink { NativeNutritionEntryDetail(context: context, initial: row) } label: {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 7) {
                         Text(row["name"].stringValue ?? "食物").strikethrough(row["deleted"].boolValue == true)
+                            .font(.body.weight(.medium)).foregroundStyle(NativePalette.ink)
                         Text((row["portion"].stringValue ?? "") + " · " + NativeNutritionFields.value(row["calories"], unit: "千卡"))
-                            .font(.footnote).foregroundStyle(.secondary)
-                        if row["deleted"].boolValue == true { Text("已删除").font(.caption).foregroundStyle(.secondary) }
-                    }
+                            .font(.footnote).foregroundStyle(NativePalette.muted)
+                        if row["deleted"].boolValue == true { Text("已删除").font(.caption).foregroundStyle(NativePalette.muted) }
+                    }.padding(.vertical, 6)
                 }
             }
         } header: {
@@ -103,7 +105,7 @@ struct NativeNutritionRoot: View {
                 Button("添加") { meal = selectedMeal.rawValue; composing = true }
                     .disabled(context.pending != nil || context.busy)
             }
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private func load() async {
         let selected = day, identifier = UUID(); readID = identifier
@@ -132,13 +134,13 @@ private struct NativeNutritionEntryChooser: View {
             Section {
                 DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
                 Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
-            }
+            }.listRowBackground(NativePalette.surface)
             Section("怎么记录这餐？") {
                 NavigationLink { NativeNutritionReuseView(context: context, date: selection.date, initialMeal: meal, onDraft: adopt) } label: { Label("常吃与最近", systemImage: "heart") }
                 NavigationLink { NativeNutritionRecognitionView(context: context, date: selection.date, meal: meal, usePhoto: true, onSaved: onSaved) } label: { Label("拍照记录", systemImage: "camera") }
                 NavigationLink { NativeNutritionRecognitionView(context: context, date: selection.date, meal: meal, onSaved: onSaved) } label: { Label("说说吃了什么", systemImage: "text.bubble") }
                 NavigationLink { NativeNutritionBatchEditor(context: context, rows: [selection.applying()], onSaved: onSaved) } label: { Label("手动填写", systemImage: "square.and.pencil") }
-            }.disabled(context.busy || context.pending != nil)
+            }.listRowBackground(NativePalette.surface).labelStyle(NativeNutritionEntryLabelStyle()).disabled(context.busy || context.pending != nil)
             Section("更多选择") {
                 NavigationLink {
                     NativeNutritionFoodsView(api: context.api, token: context.token, userID: context.userID,
@@ -147,14 +149,25 @@ private struct NativeNutritionEntryChooser: View {
                 NavigationLink {
                     NativeNutritionTemplatesView(context: context, initialDate: selection.date, initialMeal: meal, onDraft: adopt)
                 } label: { Label("我的食物与整餐模板", systemImage: "square.stack") }
-            }.disabled(context.busy || context.pending != nil)
+            }.listRowBackground(NativePalette.surface).labelStyle(NativeNutritionEntryLabelStyle()).disabled(context.busy || context.pending != nil)
         }
-        .navigationTitle("记一餐").navigationBarTitleDisplayMode(.inline)
+        .nativeGeometricPage().navigationTitle("记一餐").navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone, NativeActionDates.timeZone)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         .sheet(item: $editor) { value in NavigationStack { NativeNutritionBatchEditor(context: context, rows: value.rows, onSaved: onSaved) } }
     }
     private func adopt(_ rows: [NativeJSON]) { editor = NutritionEditorPresentation(rows: rows) }
+}
+
+private struct NativeNutritionEntryLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 14) {
+            configuration.icon.font(.title3).foregroundStyle(NativePalette.accent)
+                .frame(width: 44, height: 44)
+                .background(NativePalette.soft, in: RoundedRectangle(cornerRadius: 15))
+            configuration.title.font(.body.weight(.medium)).foregroundStyle(NativePalette.ink)
+        }.padding(.vertical, 6)
+    }
 }
 
 struct NutritionEditorPresentation: Identifiable {
@@ -167,13 +180,26 @@ struct NativeNutritionTotals: View {
     var compact = false
     var body: some View {
         if compact {
-            LabeledContent("热量已知小计", value: (nutrients["calories"]["knownCount"].intValue ?? 0) > 0 ? NativeNutritionFields.value(nutrients["calories"]["total"], unit: "千卡") : "—")
-            if let unknown = nutrients["calories"]["unknownCount"].intValue, unknown > 0 {
-                Text("另有\(unknown)项热量未知").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("热量已知小计").font(.subheadline).foregroundStyle(NativePalette.muted)
+                    Spacer()
+                    Image(systemName: "fork.knife").foregroundStyle(NativePalette.accent)
+                        .frame(width: 36, height: 36).background(NativePalette.surface.opacity(0.7), in: Circle())
+                        .accessibilityHidden(true)
+                }
+                Text((nutrients["calories"]["knownCount"].intValue ?? 0) > 0 ? NativeNutritionFields.value(nutrients["calories"]["total"], unit: "千卡") : "—")
+                    .font(.largeTitle.weight(.semibold)).monospacedDigit().foregroundStyle(NativePalette.ink)
+                if let unknown = nutrients["calories"]["unknownCount"].intValue, unknown > 0 {
+                    Text("另有\(unknown)项热量未知").font(.caption).foregroundStyle(NativePalette.muted)
+                }
             }
+            .padding(22).frame(maxWidth: .infinity, alignment: .leading).nativeGeometricCard(fill: NativePalette.soft)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear).listRowSeparator(.hidden)
             DisclosureGroup("营养明细") {
                 detailedTotals
-                Text("未知与未记录不计为0。").font(.caption).foregroundStyle(.secondary)
+                Text("未知与未记录不计为0。").font(.caption).foregroundStyle(NativePalette.muted)
             }
         } else { detailedTotals }
     }
@@ -183,7 +209,7 @@ struct NativeNutritionTotals: View {
                 LabeledContent(NativeNutritionFields.title(key) + "已知小计",
                     value: NativeNutritionFields.value(nutrients[key]["total"], unit: key == "calories" ? "千卡" : "克"))
                 Text("已知\(nutrients[key]["knownCount"].intValue ?? 0)项 · 未知\(nutrients[key]["unknownCount"].intValue ?? 0)项")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(NativePalette.muted)
             }
         }
     }
@@ -198,11 +224,11 @@ struct NativeNutritionReadOnlyFields: View {
         ForEach(NativeNutritionFields.keys, id: \.self) { key in
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent(NativeNutritionFields.title(key), value: NativeNutritionFields.value(row[key], unit: key == "calories" ? "千卡" : "克"))
-                Text("来源：" + NativeNutritionFields.source(row["provenance"][key]["source"].stringValue)).font(.caption).foregroundStyle(.secondary)
+                Text("来源：" + NativeNutritionFields.source(row["provenance"][key]["source"].stringValue)).font(.caption).foregroundStyle(NativePalette.muted)
                 if row["provenance"][key]["basis"].stringValue != nil || row["provenance"][key]["originalValue"].stringValue != nil {
                     DisclosureGroup("查看依据") {
-                        if let basis = row["provenance"][key]["basis"].stringValue { Text(basis).font(.caption).foregroundStyle(.secondary) }
-                        if let original = row["provenance"][key]["originalValue"].stringValue { Text("原参考值：" + original).font(.caption).foregroundStyle(.secondary) }
+                        if let basis = row["provenance"][key]["basis"].stringValue { Text(basis).font(.caption).foregroundStyle(NativePalette.muted) }
+                        if let original = row["provenance"][key]["originalValue"].stringValue { Text("原参考值：" + original).font(.caption).foregroundStyle(NativePalette.muted) }
                     }.font(.caption)
                 }
             }
@@ -226,16 +252,16 @@ struct NativeNutritionEntryDetail: View {
             Section(row["name"].stringValue ?? "食物详情") {
                 NativeNutritionMacroChart(row: row)
                 NativeNutritionReadOnlyFields(row: row)
-            }
+            }.listRowBackground(NativePalette.surface)
             Section {
                 Button("编辑记录") { editing = true }
                 NavigationLink("修改历史与恢复") { NativeNutritionHistoryView(context: context, entryID: entryID) }
                 Button("加入常吃") { Task { await favorite() } }
                 Button(row["deleted"].boolValue == true ? "恢复这条记录" : "删除这条记录", role: .destructive) { confirmingDelete = true }
-            }.disabled(context.busy || context.pending != nil)
+            }.listRowBackground(NativePalette.surface).disabled(context.busy || context.pending != nil)
             NativeNutritionErrorRow(text: error ?? context.error)
         }
-        .navigationTitle("食物详情").navigationBarTitleDisplayMode(.inline)
+        .nativeGeometricPage().navigationTitle("食物详情").navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .onChange(of: context.changes) { _, _ in Task { await load() } }
         .sheet(isPresented: $editing) { NavigationStack { NativeNutritionBatchEditor(context: context, rows: [row], editing: row) } }
@@ -284,7 +310,7 @@ struct NativeNutritionHistoryView: View {
             if !loading && history.isEmpty && error == nil { Text("暂无可用修改历史。") }
             NativeNutritionErrorRow(text: error ?? context.error)
         }
-        .navigationTitle("修改历史").task { await load() }.refreshable { await load() }
+        .nativeGeometricPage().navigationTitle("修改历史").task { await load() }.refreshable { await load() }
         .confirmationDialog("恢复会生成新版本，并保留此版本的日期、餐次和删除状态。", isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }), titleVisibility: .visible) {
             if let target { Button("确认恢复") { Task { await restore(target) } } }
         }
@@ -339,7 +365,7 @@ struct NativeNutritionBatchEditor: View {
                     Task { await Task.yield(); withAnimation { proxy.scrollTo(target, anchor: .center) } }
                 }
         }
-        .navigationTitle(editing == nil ? "核对这餐" : "编辑食物")
+        .nativeGeometricPage().navigationTitle(editing == nil ? "核对这餐" : "编辑食物")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -367,8 +393,8 @@ struct NativeNutritionBatchEditor: View {
         Form {
             recoverySection
             Section {
-                Text("共\(drafts.count)项，展开食物可修改。未知营养留空，填写0表示已确认。").font(.footnote).foregroundStyle(.secondary)
-            }
+                Text("共\(drafts.count)项，展开食物可修改。未知营养留空，填写0表示已确认。").font(.footnote).foregroundStyle(NativePalette.muted)
+            }.listRowBackground(NativePalette.surface)
             ForEach($drafts) { $draft in
                 DisclosureGroup(isExpanded: Binding(get: { expanded.contains(draft.id) }, set: { selected in
                     if selected { expanded.insert(draft.id) } else { expanded.remove(draft.id) }
@@ -392,10 +418,10 @@ struct NativeNutritionBatchEditor: View {
     @ViewBuilder private var recoverySection: some View {
         if let recovered {
             Section("上次未完成的填写") {
-                Text("\(recovered.count)项食物，恢复后仍需确认保存。").font(.footnote).foregroundStyle(.secondary)
+                Text("\(recovered.count)项食物，恢复后仍需确认保存。").font(.footnote).foregroundStyle(NativePalette.muted)
                 Button("恢复草稿") { drafts = recovered; self.recovered = nil }
                 Button("丢弃旧草稿", role: .destructive) { do { try persistence.clear(); self.recovered = nil } catch { self.error = error.localizedDescription } }
-            }
+            }.listRowBackground(NativePalette.surface)
         }
     }
     private func issueMessages(_ draft: NativeNutritionDraft) -> [String: String] {
@@ -442,11 +468,11 @@ private struct NativeNutritionDraftSummary: View {
         return value + " 千卡"
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(draft.name.isEmpty ? "待填写食物" : draft.name).fontWeight(.medium)
             Text((draft.portion.isEmpty ? "份量待补充" : draft.portion) + " · " + calories).font(.subheadline)
-            Text(draft.date + " · " + NativeNutritionFields.meal(draft.meal) + " · " + sources).font(.caption).foregroundStyle(.secondary)
-        }.padding(.vertical, 3)
+            Text(draft.date + " · " + NativeNutritionFields.meal(draft.meal) + " · " + sources).font(.caption).foregroundStyle(NativePalette.muted)
+        }.padding(.vertical, 7).foregroundStyle(NativePalette.ink)
     }
 }
 
@@ -547,7 +573,7 @@ struct NativeNutritionRecognitionView: View {
                         usePhoto = recovered.usePhoto; result = recovered.result; self.recovered = nil
                     }
                     Button("删除本机草稿", role: .destructive) { do { try persistence.clear(); self.recovered = nil } catch { self.error = error.localizedDescription } }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             Section {
                 Picker("录入方式", selection: $usePhoto) { Text("一句话").tag(false); Text("照片").tag(true) }.pickerStyle(.segmented)
@@ -562,38 +588,38 @@ struct NativeNutritionRecognitionView: View {
                     }.disabled(cameraAuthorizing || photoLoading || context.pending != nil)
                     if cameraAccess == .denied {
                         Text("相机权限未开启。可以从相册选择照片，或在系统设置中允许相机。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(NativePalette.muted)
                         Button("打开相机权限设置") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                         }
                     } else if cameraAccess == .restricted {
                         Text("相机访问受系统限制，可以从相册选择食物照片。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(NativePalette.muted)
                     } else if cameraAccess == .unavailable {
                         Text("此设备当前没有可用相机。模拟器可通过相册选择测试图片。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(NativePalette.muted)
                     }
                     if photoLoading { ProgressView("正在本机处理图片…") }
                     if let jpeg, let image = UIImage(data: jpeg) {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220)
                         Text("图片已在本机压缩，确认识别后上传。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(NativePalette.muted)
                     }
                     TextField("实际吃了多少、配料等补充说明", text: $text, axis: .vertical).lineLimit(3...6)
                 } else {
                     TextField("例如：午餐吃了一碗米饭和两个鸡蛋", text: $text, axis: .vertical).lineLimit(4...8)
                 }
-            }.disabled(recognizing)
+            }.listRowBackground(NativePalette.surface).disabled(recognizing)
             Section {
                 DisclosureGroup("识别会使用哪些资料？") {
                     Text(usePhoto ? "确认识别后，图片、说明、日期和餐次会发送至已配置的AI服务。图片不会保存在饮食记录中。" : "确认识别后，描述、日期和餐次会发送至已配置的AI服务。输入文字不会自动识别。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                 }
                 Button(recognizing ? "识别中…" : "识别这餐") { Task { await recognize() } }
                     .disabled(recognizing || photoLoading || cameraAuthorizing || showingCamera || context.pending != nil || (usePhoto ? jpeg == nil : text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 if recognizing { ProgressView() }
                 NativeNutritionErrorRow(text: error)
-            }
+            }.listRowBackground(NativePalette.surface)
             if result != .null {
                 Section("识别结果，尚未保存") {
                     ForEach(Array(result["warnings"].arrayValue.enumerated()), id: \.offset) { _, warning in Text(warning.stringValue ?? "").font(.footnote).foregroundStyle(.orange) }
@@ -611,10 +637,10 @@ struct NativeNutritionRecognitionView: View {
                             editor = NutritionEditorPresentation(rows: result["drafts"].arrayValue.map { selection.applying(to: $0) })
                         }
                     } else { Text("没有生成可核对的食物，请补充说明或手动记录。") }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
         }
-        .navigationTitle("识别饮食").navigationBarTitleDisplayMode(.inline)
+        .nativeGeometricPage().navigationTitle("识别饮食").navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone, NativeActionDates.timeZone)
         .onChange(of: inputSignature) { _, value in
             if restoringSignature == value { restoringSignature = nil } else { result = .null }
@@ -722,9 +748,9 @@ struct NativeNutritionDraftFields: View {
                 TextField(NativeNutritionFields.title(key) + (key == "calories" ? "（千卡，未知留空）" : "（克，未知留空）"),
                     text: Binding(get: { draft.nutrients[key] ?? "" }, set: { draft.setNutrient(key, text: $0) })).keyboardType(.decimalPad).id(anchor(key))
                 fieldIssue(key)
-                Text("来源：" + NativeNutritionFields.source(draft.provenance[key]?["source"].stringValue)).font(.caption).foregroundStyle(.secondary)
+                Text("来源：" + NativeNutritionFields.source(draft.provenance[key]?["source"].stringValue)).font(.caption).foregroundStyle(NativePalette.muted)
                 if let basis = draft.provenance[key]?["basis"].stringValue {
-                    DisclosureGroup("查看参考依据") { Text(basis).font(.caption).foregroundStyle(.secondary) }.font(.caption)
+                    DisclosureGroup("查看参考依据") { Text(basis).font(.caption).foregroundStyle(NativePalette.muted) }.font(.caption)
                 }
                 Menu("核对来源") {
                     ForEach(["manual", "label", "unknown"], id: \.self) { source in
@@ -738,7 +764,7 @@ struct NativeNutritionDraftFields: View {
             }
         }
         if draft.food != .null {
-            Text("已关联食物库版本：" + (draft.food["catalogRelease"].stringValue ?? "原始版本")).font(.caption).foregroundStyle(.secondary)
+            Text("已关联食物库版本：" + (draft.food["catalogRelease"].stringValue ?? "原始版本")).font(.caption).foregroundStyle(NativePalette.muted)
         }
         if context != nil {
             Button(draft.food == .null ? "从食物库核对食物与份量" : "重新选择食物库与份量") { pickingFood = true }
@@ -762,7 +788,7 @@ struct NativeNutritionDraftFields: View {
             DisclosureGroup("识别给出的候选，需核对规格") {
                 ForEach(Array(draft.original["candidates"].arrayValue.enumerated()), id: \.offset) { _, food in
                     Text((food["name"].stringValue ?? "候选食物") + " · " + (food["serving"]["label"].stringValue ?? food["reference"]["label"].stringValue ?? "请查看规格"))
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                 }
             }
         }
@@ -794,11 +820,13 @@ struct NativeNutritionMacroChart: View {
                 Chart(Array(values.enumerated()), id: \.offset) { _, item in
                     SectorMark(angle: .value("供能参考", item.value), innerRadius: .ratio(0.64))
                         .foregroundStyle(by: .value("营养素", NativeNutritionFields.title(item.key)))
-                }.frame(height: 150)
+                }.chartForegroundStyleScale(domain: ["carbs", "protein", "fat"].map(NativeNutritionFields.title),
+                                            range: [NativePalette.accent, NativePalette.peach, NativePalette.muted])
+                    .frame(height: 170)
                 Text("按碳水和蛋白质每克4千卡、脂肪每克9千卡估算供能构成，不替代记录热量。")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else { Text("三项营养素均为已确认的0克。").font(.footnote).foregroundStyle(.secondary) }
-        } else { Text("三项营养素尚未填写完整，暂不绘制供能比例。").font(.footnote).foregroundStyle(.secondary) }
+                    .font(.caption).foregroundStyle(NativePalette.muted)
+            } else { Text("三项营养素均为已确认的0克。").font(.footnote).foregroundStyle(NativePalette.muted) }
+        } else { Text("三项营养素尚未填写完整，暂不绘制供能比例。").font(.footnote).foregroundStyle(NativePalette.muted) }
     }
 }
 
@@ -820,12 +848,12 @@ struct NativeNutritionStatusView: View {
                     }
                 }
                 Toggle("当天已记完", isOn: Binding(get: { status["complete"].boolValue == true }, set: { var value = status.objectValue; value["complete"] = .bool($0); status = .object(value) }))
-            }
-            Text("三次正餐需有记录或明确标记未进食。此标记只表示记录覆盖，不保证实际摄入或营养值准确。").font(.footnote).foregroundStyle(.secondary)
+            }.listRowBackground(NativePalette.surface)
+            Text("三次正餐需有记录或明确标记未进食。此标记只表示记录覆盖，不保证实际摄入或营养值准确。").font(.footnote).foregroundStyle(NativePalette.muted)
             NativeNutritionErrorRow(text: error ?? context.error)
             Button("保存餐次状态") { Task { await save() } }.disabled(context.busy || context.pending != nil)
             Button("重新读取状态") { Task { await load() } }
-        }.navigationTitle("记录完整度").task { await load() }
+        }.nativeGeometricPage().navigationTitle("记录完整度").task { await load() }
     }
     private func setMeal(_ meal: String, _ selection: String) {
         var value = status.objectValue, meals = status["meals"].objectValue; meals[meal] = .string(selection); value["meals"] = .object(meals); status = .object(value)

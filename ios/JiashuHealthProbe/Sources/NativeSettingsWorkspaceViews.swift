@@ -24,7 +24,7 @@ struct NativeSettingsWorkspaceRoot: View {
                     NavigationLink { NativeAccessManagementView(api: api, token: token, userID: userID) } label: { Label("站点访问名单", systemImage: "person.2.badge.gearshape") }
                 }
             }
-        }.navigationTitle("账号与服务").task { await load() }.refreshable { await load() }
+        }.nativeGeometricPage().navigationTitle("账号与服务").task { await load() }.refreshable { await load() }
     }
     @MainActor private func load() async {
         do { let value = try await api.json(path: "session", token: token); guard !Task.isCancelled else { return }; identity = value; error = nil }

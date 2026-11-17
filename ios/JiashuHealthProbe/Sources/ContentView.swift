@@ -28,7 +28,7 @@ struct ContentView: View {
                 }.id(session.user.id)
             } else { NativeLoginView(model: model) }
         }
-        .tint(.indigo).environmentObject(model)
+        .nativeGeometricPage().environmentObject(model)
         .environment(\.timeZone, StepCalendar.calendar.timeZone)
         .environment(\.calendar, StepCalendar.calendar).privacySensitive()
         .onChange(of: model.session?.user.id) { _, _ in
@@ -46,8 +46,8 @@ private struct NativeBrand: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "heart.text.clipboard.fill").font(.system(size: 36))
-                .foregroundStyle(.white).frame(width: 76, height: 76)
-                .background(.indigo.gradient, in: RoundedRectangle(cornerRadius: 22))
+                .foregroundStyle(NativePalette.onAccent).frame(width: 76, height: 76)
+                .background(NativePalette.accent.gradient, in: UnevenRoundedRectangle(topLeadingRadius: 24, bottomLeadingRadius: 24, bottomTrailingRadius: 10, topTrailingRadius: 24))
             Text("Jiashu OS").font(.largeTitle.bold())
         }
     }
@@ -68,10 +68,10 @@ private struct NativeLoginView: View {
                         TextField("邮箱", text: $email).textContentType(.username).keyboardType(.emailAddress)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.next)
                             .onSubmit { passwordFocused = true }
-                            .padding().background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                            .padding().background(NativePalette.canvas, in: RoundedRectangle(cornerRadius: 12))
                         SecureField("密码", text: $password).textContentType(.password).focused($passwordFocused).submitLabel(.go)
                             .onSubmit { login() }
-                            .padding().background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                            .padding().background(NativePalette.canvas, in: RoundedRectangle(cornerRadius: 12))
                         if let error = model.errorMessage ?? model.sessionError { NativeInlineNotice(error, tone: .error) }
                         Button(action: login) {
                             HStack {
@@ -81,9 +81,9 @@ private struct NativeLoginView: View {
                         }.buttonStyle(.borderedProminent).controlSize(.large)
                             .disabled(model.signingIn || email.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
                         Text("使用 treefund.asia 的账号").font(.footnote).foregroundStyle(.secondary)
-                    }.padding(24).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+                    }.padding(24).background(NativePalette.surface, in: RoundedRectangle(cornerRadius: 20))
                 }.padding(24).frame(maxWidth: 520).frame(maxWidth: .infinity)
-            }.background(Color(.systemGroupedBackground)).scrollDismissesKeyboard(.interactively)
+            }.background(NativePalette.canvas).scrollDismissesKeyboard(.interactively)
         }
     }
     private func login() {
@@ -93,49 +93,49 @@ private struct NativeLoginView: View {
     }
 }
 
-private enum MetricDisplay {
-    static func title(_ key: String) -> String {
-        ["steps":"步数", "active_energy":"活动能量", "sleep":"睡眠", "weight":"体重", "lean_body_mass":"去脂体重", "body_fat":"估算体脂率"][key] ?? key
-    }
-    static func unit(_ key: String) -> String {
-        ["steps":"步", "active_energy":"千卡", "sleep":"小时", "weight":"kg", "lean_body_mass":"kg", "body_fat":"%"][key] ?? ""
-    }
-    static func icon(_ key: String) -> String {
-        ["steps":"figure.walk", "active_energy":"flame.fill", "sleep":"moon.fill", "weight":"scalemass.fill", "lean_body_mass":"figure.strengthtraining.traditional", "body_fat":"chart.pie.fill"][key] ?? "heart"
-    }
-    static func value(_ value: Double?, key: String) -> String {
-        guard let value else { return "—" }
-        if key == "steps" { return value.formatted(.number.precision(.fractionLength(0))) }
-        return value.formatted(.number.precision(.fractionLength(0...1)))
-    }
-    static func date(_ day: String?) -> String {
-        guard let day, let date = NativeChartDates.parse(day) else { return "暂无记录" }
-        if day == StepCalendar.dayString(for: Date()) { return "今天" }
-        return NativeActionDates.formatted(date, pattern: "M月d日")
-    }
-}
-
 private struct NativeTodayView: View {
     @ObservedObject var model: NativeAppModel
     let showHealth: (String) -> Void
-    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var quickWeight = false
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    Text(Date(), style: .date).font(.subheadline).foregroundStyle(.secondary)
-                    if let error = model.sessionError, error != model.overviewError { NativeInlineNotice(error, tone: .attention) }
-                    if let session = model.session {
-                        if typeSize.isAccessibilitySize { VStack(spacing: 12) { recordActions(session) } }
-                        else { HStack(spacing: 12) { recordActions(session) } }
-                        NativeHomeWeeklyAction(model: model)
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(NativeActionDates.formatted(Date(), pattern: "M月d日 · EEEE"))
+                        .font(.subheadline).foregroundStyle(NativePalette.muted)
+                    if let error = model.sessionError, error != model.overviewError {
+                        NativeInlineNotice(error, tone: .attention)
                     }
-                    healthOverview
+                    NativeHomeHealthCards(model: model, showHealth: showHealth)
                     NativeHomeWorkspaceCards(model: model)
-                }.padding(20)
-            }.background(Color(.systemGroupedBackground)).navigationTitle("今天")
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { NativeHomeInboxButton(model: model) } }
+                    if let session = model.session {
+                        NavigationLink {
+                            HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id)
+                        } label: {
+                            HStack {
+                                Text("本周行动").font(.subheadline)
+                                Spacer()
+                                Image(systemName: "arrow.up.right").font(.caption)
+                            }.foregroundStyle(NativePalette.muted).frame(minHeight: 44)
+                        }.buttonStyle(NativePressStyle())
+                    }
+                }.padding(.horizontal, 22).padding(.top, 8).padding(.bottom, 24)
+                    .frame(maxWidth: 680).frame(maxWidth: .infinity)
+            }.nativeGeometricPage().navigationTitle("今天")
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if let session = model.session {
+                            Menu {
+                                NavigationLink {
+                                    NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialCompose: true)
+                                } label: { Label("记一餐", systemImage: "fork.knife") }
+                                Button { quickWeight = true } label: { Label("记体重", systemImage: "scalemass") }
+                            } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
+                                .accessibilityLabel("新增记录")
+                        }
+                        NativeHomeInboxButton(model: model)
+                    }
+                }
                 .refreshable { await model.reload() }
                 .sheet(isPresented: $quickWeight) {
                     if let session = model.session {
@@ -144,111 +144,6 @@ private struct NativeTodayView: View {
                     }
                 }
         }
-    }
-    @ViewBuilder private func recordActions(_ session: NativeSession) -> some View {
-        NavigationLink { NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialCompose: true) } label: {
-            Label("记一餐", systemImage: "fork.knife").frame(maxWidth: .infinity, minHeight: 36)
-        }.buttonStyle(.borderedProminent).controlSize(.large)
-        Button { quickWeight = true } label: {
-            Label("记体重", systemImage: "plus").frame(maxWidth: .infinity, minHeight: 36)
-        }.buttonStyle(.bordered).controlSize(.large)
-    }
-    private var healthOverview: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("健康近况").font(.headline); Spacer()
-                Button("全部") { showHealth("steps") }.frame(minWidth: 44, minHeight: 44)
-            }
-            if let overview = model.overview {
-                VStack(spacing: 0) {
-                    ForEach(["steps", "sleep", "weight"], id: \.self) { key in
-                        let metric = overview.health.metrics.first { $0.metric == key }
-                        Button { showHealth(key) } label: {
-                            if typeSize.isAccessibilitySize {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Label(MetricDisplay.title(key), systemImage: MetricDisplay.icon(key)).font(.subheadline).foregroundStyle(.indigo)
-                                    ViewThatFits(in: .horizontal) {
-                                        HStack(alignment: .firstTextBaseline, spacing: 6) { metricValue(metric, key: key) }
-                                        VStack(alignment: .leading, spacing: 4) { metricValue(metric, key: key) }
-                                    }
-                                    Text(MetricDisplay.date(metric?.day)).font(.caption).foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(16).contentShape(Rectangle())
-                            } else {
-                            HStack(spacing: 14) {
-                                Image(systemName: MetricDisplay.icon(key)).foregroundStyle(.indigo).frame(width: 24)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(MetricDisplay.title(key)).font(.subheadline)
-                                    Text(MetricDisplay.date(metric?.day)).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 8)
-                                ViewThatFits(in: .horizontal) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 4) { metricValue(metric, key: key) }
-                                    VStack(alignment: .trailing, spacing: 2) { metricValue(metric, key: key) }
-                                }
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                            }.padding(.vertical, 16).padding(.horizontal, 16).contentShape(Rectangle())
-                            }
-                        }.buttonStyle(.plain).accessibilityElement(children: .combine)
-                        if key != "weight" { Divider().padding(.leading, 54) }
-                    }
-                }.background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
-                if model.overviewLoading { ProgressView().accessibilityLabel("正在更新近况") }
-                if let error = model.overviewError { NativeInlineNotice(error, tone: .error) }
-            } else if model.overviewLoading { ProgressView("读取近况…").frame(maxWidth: .infinity).padding() }
-            else {
-                NativeInlineNotice(model.overviewError ?? "暂无近况", tone: .neutral)
-                Button("重试") { Task { await model.reload() } }
-            }
-        }
-    }
-    @ViewBuilder private func metricValue(_ metric: NativeHomeMetric?, key: String) -> some View {
-        Text(MetricDisplay.value(metric?.value, key: key)).font(.title3.weight(.semibold)).monospacedDigit()
-        if metric?.value != nil { Text(MetricDisplay.unit(key)).font(.caption).foregroundStyle(.secondary) }
-    }
-}
-
-private struct NativeHomeWeeklyAction: View {
-    @ObservedObject var model: NativeAppModel
-    @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var action: NativeWeeklyActionEntry?
-    private var week: String { NativeActionDates.day(NativeActionDates.monday(Date())) }
-    var body: some View {
-        if let session = model.session {
-            NavigationLink { HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id) } label: {
-                if typeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("本周行动", systemImage: "calendar").font(.subheadline).foregroundStyle(.secondary)
-                        Text(actionText).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 4 : 2).accessibilityLabel(actionText)
-                        actionStatus
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
-                } else {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "calendar").font(.title3).foregroundStyle(.indigo)
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("本周行动").font(.subheadline).foregroundStyle(.secondary)
-                        Text(actionText).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 4 : 2).accessibilityLabel(actionText)
-                        actionStatus
-                    }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
-                }
-            }.buttonStyle(.plain)
-                .task(id: week + (model.overview?.asOf ?? "")) {
-                    let owner = session.user.id
-                    do {
-                        let value = try await model.api.weeklyAction(token: session.accessToken, week: week)
-                        guard !Task.isCancelled, model.session?.user.id == owner else { return }
-                        action = value
-                    } catch { /* Keep the last visible action; the review page provides retry. */ }
-                }
-        }
-    }
-    private var actionText: String { action?.weekStart == week ? action?.text ?? "回顾与计划" : "回顾与计划" }
-    @ViewBuilder private var actionStatus: some View {
-        if let action, action.weekStart == week { Text(action.status.title).font(.caption).foregroundStyle(.secondary) }
     }
 }
 
@@ -284,7 +179,17 @@ struct NativeSettingsView: View {
         NavigationStack {
             List {
                 if let session = model.session {
-                    Section { Label(session.user.email, systemImage: "person.crop.circle").textSelection(.enabled) }
+                    Section {
+                        HStack(spacing: 14) {
+                            Image(systemName: "person.crop.circle.fill").font(.system(size: 36))
+                                .foregroundStyle(NativePalette.accent)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Jiashu OS").font(.headline)
+                                Text(session.user.email).font(.subheadline).foregroundStyle(NativePalette.muted)
+                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }.padding(.vertical, 8)
+                    }.listRowBackground(NativePalette.surface)
                     Section {
                         NavigationLink { NativeSyncCenter(model: model) } label: { Label("同步中心", systemImage: "arrow.triangle.2.circlepath") }
                         NavigationLink { NativeFinanceRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialPath: "/finance?ledger=family", embedded: true) } label: { Label("家庭与账本", systemImage: "person.2") }
@@ -297,7 +202,7 @@ struct NativeSettingsView: View {
                 }
                 if let signOutError { NativeInlineNotice(signOutError, tone: .error) }
                 Section { Button("退出登录", role: .destructive) { signingOut = true } }
-            }.navigationTitle("我的")
+            }.nativeGeometricPage().navigationTitle("我的")
                 .confirmationDialog("退出此账号？", isPresented: $signingOut, titleVisibility: .visible) {
                     Button("退出登录", role: .destructive) {
                         Task {
@@ -356,7 +261,7 @@ struct NativeSyncCenter: View {
                         .disabled(model.syncing || model.configuringChannel || model.authorizingHealth)
                 }
             }
-        }.navigationTitle("同步中心").navigationBarTitleDisplayMode(.inline)
+        }.nativeGeometricPage().navigationTitle("同步中心").navigationBarTitleDisplayMode(.inline)
             .task { model.errorMessage = nil; await model.refreshChannelStatus() }
             .refreshable { await model.refreshChannelStatus() }
             .confirmationDialog("解除这台日常设备？", isPresented: $releasingChannel, titleVisibility: .visible) {

@@ -14,7 +14,7 @@ struct NativeHealthWorkspaceRoot: View {
                 NavigationLink("体重计划") { NativeWeightPlanWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("健康助手") { NativeHealthAssistantWorkspace(api: api, token: token, userID: userID) }
             }
-        }.navigationTitle("健康")
+        }.nativeGeometricPage().navigationTitle("健康")
     }
 }
 
@@ -194,8 +194,8 @@ struct NativeHealthRangeWorkspace: View {
             NativeHealthWorkspaceMessage(message:message)
             if let loadedRange {
                 Section(loadedRange.label) {
-                    Text("\(Set(points.map(\.day)).count) / \(loadedRange.days) 天有记录，缺失不补零。")
-                    if let last = points.last { LabeledContent("最新值",value:NativeHealthWorkspaceFormat.number(last.value) + " " + NativeHealthWorkspaceFormat.unit(metric)) }
+                    if let last = points.last { rangeSummary(last, range: loadedRange) }
+                    else { Text("所选范围暂无记录").foregroundStyle(NativePalette.muted) }
                     if !points.isEmpty { chart.frame(height:230) }
                     inspectedDayReadout
                     goalReference
@@ -235,7 +235,7 @@ struct NativeHealthRangeWorkspace: View {
                     }
                 }
             }
-        }.navigationTitle("健康趋势")
+        }.nativeGeometricPage().navigationTitle("健康趋势")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .toolbar {
                 ToolbarItem(placement:.topBarTrailing) {
@@ -260,6 +260,26 @@ struct NativeHealthRangeWorkspace: View {
                 if case .failure(let error) = result { message = error.localizedDescription }
             }
     }
+    private func rangeSummary(_ point: NativeWorkspaceHealthPoint, range: NativeHealthWorkspaceRange) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("最新" + NativeHealthWorkspaceFormat.metric(metric)).font(.subheadline).foregroundStyle(NativePalette.muted)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(NativeHealthWorkspaceFormat.number(point.value)).font(.largeTitle.weight(.semibold)).monospacedDigit()
+                    Text(NativeHealthWorkspaceFormat.unit(metric)).font(.subheadline)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(NativeHealthWorkspaceFormat.number(point.value)).font(.largeTitle.weight(.semibold)).monospacedDigit()
+                    Text(NativeHealthWorkspaceFormat.unit(metric)).font(.subheadline)
+                }
+            }
+            Text(point.day + " · " + String(Set(points.map(\.day)).count) + "/" + String(range.days) + "天有记录")
+                .font(.caption).foregroundStyle(NativePalette.muted)
+        }.foregroundStyle(NativePalette.ink).frame(maxWidth: .infinity, alignment: .leading).padding(18)
+            .nativeGeometricCard(fill: NativePalette.soft, compactAt: .bottomTrailing)
+            .listRowBackground(NativePalette.canvas).listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+    }
     private var chart: some View {
         Chart {
             ForEach(points) { point in
@@ -272,10 +292,10 @@ struct NativeHealthRangeWorkspace: View {
                             }
                         } else { BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("小时",point.value)).foregroundStyle(by:.value("睡眠分期","未分期")) }
                     } else if metric == "steps" || metric == "active_energy" {
-                        BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("数值",point.value)).foregroundStyle(.teal)
+                        BarMark(x:.value("日期",date,unit:.day,calendar:NativeActionDates.calendar),y:.value("数值",point.value)).foregroundStyle(NativePalette.accent)
                     } else {
-                        LineMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
-                        PointMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(.teal)
+                        LineMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(NativePalette.accent)
+                        PointMark(x:.value("日期",date),y:.value("数值",point.value)).foregroundStyle(NativePalette.accent)
                     }
                 }
             }
@@ -556,7 +576,7 @@ private struct NativeHealthDateRangeEditor: View {
                 DatePicker("结束日期",selection:$to,in:...Date(),displayedComponents:.date)
                 Text("最多选择360天，包含开始与结束当天。日期按北京时间统计。").font(.footnote).foregroundStyle(.secondary)
                 if let message { Text(message).foregroundStyle(.red) }
-            }.navigationTitle("查看哪段时间")
+            }.nativeGeometricPage().navigationTitle("查看哪段时间")
                 .navigationBarTitleDisplayMode(.inline)
                 .environment(\.timeZone,NativeActionDates.timeZone)
                 .toolbar {

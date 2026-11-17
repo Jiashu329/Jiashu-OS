@@ -101,7 +101,7 @@ struct NativeHealthAssistantWorkspace: View {
             previewSection
             sourcesSection
         }
-        .navigationTitle("健康助手")
+        .nativeGeometricPage().navigationTitle("健康助手")
         .navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone,NativeActionDates.timeZone)
         .scrollDismissesKeyboard(.interactively)
@@ -168,7 +168,7 @@ struct NativeHealthAssistantWorkspace: View {
         VStack(alignment:.leading,spacing:8) {
             HStack(alignment:.bottom,spacing:12) {
                 TextField("问问这段记录",text:$question,axis:.vertical).lineLimit(1...5).focused($questionFocused)
-                    .disabled(busy).padding(10).background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:12))
+                    .disabled(busy).padding(10).background(NativePalette.surface,in:RoundedRectangle(cornerRadius:12))
                 Button("发送") { questionFocused = false; if turns.isEmpty { confirm = true } else { Task { await send() } } }
                     .buttonStyle(.borderedProminent)
                     .disabled(busy || !ready || question.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || waitingForQuota)
@@ -290,7 +290,7 @@ private struct NativeHealthAssistantScopeEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 if let message { Text(message).foregroundStyle(.red) }
             }
-            .navigationTitle("资料范围").navigationBarTitleDisplayMode(.inline)
+            .nativeGeometricPage().navigationTitle("资料范围").navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone,NativeActionDates.timeZone)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("取消") { dismiss() } }

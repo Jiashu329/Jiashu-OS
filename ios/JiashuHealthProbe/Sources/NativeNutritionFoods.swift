@@ -116,9 +116,9 @@ struct NativeNutritionFoodsView: View {
                         Text((item["name"].stringValue ?? "分类") + "（\(item["count"].intValue ?? 0)）").tag(item["name"].stringValue ?? "")
                     }
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
             if busy { ProgressView("正在查找食物…") }
-            if let error { Section { Text(error).foregroundStyle(.red); Button("重试") { Task { await load(offset) } } } }
+            if let error { Section { Text(error).foregroundStyle(.red); Button("重试") { Task { await load(offset) } } }.listRowBackground(NativePalette.surface) }
             if loaded && error == nil {
                 Section("共\(response["total"].intValue ?? 0)项") {
                     ForEach(Array(response["foods"].arrayValue.enumerated()), id: \.offset) { _, food in
@@ -130,34 +130,41 @@ struct NativeNutritionFoodsView: View {
                                 if let path = response["images"][food["id"].stringValue ?? ""]["src"].stringValue,
                                    let url = URL(string: path, relativeTo: NativeAPI.websiteURL)?.absoluteURL, url.scheme == "https" {
                                     AsyncImage(url: url) { image in image.resizable().scaledToFit() } placeholder: { Image(systemName: "fork.knife") }
-                                        .frame(width: 58, height: 58).clipShape(RoundedRectangle(cornerRadius: 9))
+                                        .frame(width: 52, height: 52).padding(6)
+                                        .background(NativePalette.soft, in: RoundedRectangle(cornerRadius: 16))
+                                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                                } else {
+                                    Image(systemName: "fork.knife").font(.title3).foregroundStyle(NativePalette.accent)
+                                        .frame(width: 64, height: 64)
+                                        .background(NativePalette.soft, in: RoundedRectangle(cornerRadius: 16))
+                                        .accessibilityHidden(true)
                                 }
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(food["name"].stringValue ?? "食物").fontWeight(.medium)
-                                    Text(food["category"].stringValue ?? "").font(.caption).foregroundStyle(.secondary)
-                                    Text(food["serving"]["label"].stringValue ?? food["reference"]["label"].stringValue ?? "每100克").font(.caption).foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text(food["name"].stringValue ?? "食物").font(.body.weight(.medium)).foregroundStyle(NativePalette.ink)
+                                    Text(food["category"].stringValue ?? "").font(.caption).foregroundStyle(NativePalette.muted)
+                                    Text(food["serving"]["label"].stringValue ?? food["reference"]["label"].stringValue ?? "每100克").font(.caption).foregroundStyle(NativePalette.muted)
                                 }
-                            }
+                            }.padding(.vertical, 7)
                         }
                     }
-                    if response["foods"].arrayValue.isEmpty { Text("没有符合筛选条件的食物").foregroundStyle(.secondary) }
-                }
+                    if response["foods"].arrayValue.isEmpty { Text("没有符合筛选条件的食物").foregroundStyle(NativePalette.muted) }
+                }.listRowBackground(NativePalette.surface)
                 Section {
                     HStack {
                         Button("上一页") { Task { await load(max(0, offset - 24)) } }.disabled(offset == 0 || busy)
                         Spacer()
-                        Text("第\(offset / 24 + 1)页").foregroundStyle(.secondary)
+                        Text("第\(offset / 24 + 1)页").foregroundStyle(NativePalette.muted)
                         Spacer()
                         Button("下一页") { Task { await load(offset + 24) } }
                             .disabled(offset + 24 >= (response["total"].intValue ?? 0) || busy)
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             if response["canManage"].boolValue == true {
-                Section { NavigationLink("管理公共食物库") { NativeNutritionManagedFoodsView(api: api, token: token, userID: userID) } }
+                Section { NavigationLink("管理公共食物库") { NativeNutritionManagedFoodsView(api: api, token: token, userID: userID) } }.listRowBackground(NativePalette.surface)
             }
         }
-        .navigationTitle("食物库")
+        .nativeGeometricPage().navigationTitle("食物库")
         .searchable(text: $query, prompt: "名称、品牌或别名")
         .onSubmit(of: .search) { Task { await load(0) } }
         .onChange(of: scope) { _, _ in brand = ""; category = ""; Task { await load(0) } }
@@ -239,18 +246,18 @@ private struct NativeNutritionFoodDetail: View {
                 }
                 DisclosureGroup("营养资料来源") {
                     Text(food["source"]["name"].stringValue ?? "来源未注明")
-                    Text("版本：" + (food["source"]["version"].stringValue ?? "未注明")).font(.footnote).foregroundStyle(.secondary)
+                    Text("版本：" + (food["source"]["version"].stringValue ?? "未注明")).font(.footnote).foregroundStyle(NativePalette.muted)
                     if let urlString = food["source"]["url"].stringValue, let url = URL(string: urlString), url.scheme == "https" { Link("查看原始资料", destination: url) }
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
             if isDrink {
                 Section("核对饮品配置") {
                     configurationPicker("杯型", value: $cup, options: cupOptions)
                     configurationPicker("冰热", value: $temperature, options: temperatureOptions)
                     configurationPicker("糖度", value: $sweetness, options: sweetnessOptions)
                     Text(matchesOfficial ? "所选配置与官网参考一致。" : "此配置暂无对应官方营养。带入时将清除原配置数值，未知不会补零。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
+                }.listRowBackground(NativePalette.surface)
             }
             Section("实际食用份量") {
                 DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
@@ -263,30 +270,30 @@ private struct NativeNutritionFoodDetail: View {
                     }
                 } else if basis == "template", template["totalWeight"].stringValue != nil {
                     Toggle("按成品重量（克）换算", isOn: $templateWeight)
-                } else { Text("按上述规格的份数记录，不推算克重。 ").font(.footnote).foregroundStyle(.secondary) }
-            }
+                } else { Text("按上述规格的份数记录，不推算克重。 ").font(.footnote).foregroundStyle(NativePalette.muted) }
+            }.listRowBackground(NativePalette.surface)
             if basis == "template" {
                 Section {
                     Button("预览模板换算") { Task { await previewTemplate() } }.disabled(busy || template["id"].stringValue == nil)
                     ForEach(Array(preview["rows"].arrayValue.enumerated()), id: \.offset) { _, row in
-                        VStack(alignment: .leading) { Text(row["name"].stringValue ?? "食物"); Text((row["portion"].stringValue ?? "") + " · " + (row["calories"].stringValue.map { $0 + "千卡" } ?? "热量未知")).font(.footnote).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading) { Text(row["name"].stringValue ?? "食物"); Text((row["portion"].stringValue ?? "") + " · " + (row["calories"].stringValue.map { $0 + "千卡" } ?? "热量未知")).font(.footnote).foregroundStyle(NativePalette.muted) }
                     }
                     if !preview["rows"].arrayValue.isEmpty {
                         Button("带入可编辑明细") { onDraft(preview["rows"].arrayValue); dismiss() }
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
             } else {
                 Section {
                     Button(basis == "managed" || basis == "catalogOnly" ? "带入手工核对" : "带入可编辑记录") { prepareDraft() }
-                    Text("此操作只准备明细，核对并确认保存后才会创建饮食记录。").font(.footnote).foregroundStyle(.secondary)
-                }
+                    Text("此操作只准备明细，核对并确认保存后才会创建饮食记录。").font(.footnote).foregroundStyle(NativePalette.muted)
+                }.listRowBackground(NativePalette.surface)
             }
             if canManage, basis != "template", basis != "managed" {
-                Section { NavigationLink("建立此食品的维护副本") { NativeNutritionManagedFoodEditor(api: api, token: token, userID: userID, originalFood: food) } }
+                Section { NavigationLink("建立此食品的维护副本") { NativeNutritionManagedFoodEditor(api: api, token: token, userID: userID, originalFood: food) } }.listRowBackground(NativePalette.surface)
             }
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("食物详情").navigationBarTitleDisplayMode(.inline)
+        }.nativeGeometricPage().navigationTitle("食物详情").navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone, NativeActionDates.timeZone)
             .task { await initialize() }
             .onChange(of: amount) { _, _ in preview = .null }
@@ -431,9 +438,9 @@ struct NativeNutritionManagedFoodsView: View {
         List {
             Section {
                 NavigationLink("新增公共食品草稿") { NativeNutritionManagedFoodEditor(api: api, token: token, userID: userID) }
-                Text("草稿仅管理员可见；审核发布后才供所有成员查找。已发布版本不会改写历史饮食。").font(.footnote).foregroundStyle(.secondary)
-            }
-            if model.pending != nil { Section("待确认操作") { Button("继续核对原食品操作") { Task { _ = await model.retry() } }; Text("处理前不能提交其他维护操作。").font(.footnote).foregroundStyle(.secondary) } }
+                Text("草稿仅管理员可见；审核发布后才供所有成员查找。已发布版本不会改写历史饮食。").font(.footnote).foregroundStyle(NativePalette.muted)
+            }.listRowBackground(NativePalette.surface)
+            if model.pending != nil { Section("待确认操作") { Button("继续核对原食品操作") { Task { _ = await model.retry() } }; Text("处理前不能提交其他维护操作。").font(.footnote).foregroundStyle(NativePalette.muted) }.listRowBackground(NativePalette.surface) }
             if model.busy { ProgressView() }
             if let error = model.error { Text(error).foregroundStyle(.red) }
             if model.loaded {
@@ -444,13 +451,13 @@ struct NativeNutritionManagedFoodsView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item["draft"]["name"].stringValue ?? "食品")
                             Text(statusLabel(item["status"].stringValue ?? "") + " · 版本\(item["revision"].intValue ?? 0)" + (item["hasDraftChanges"].boolValue == true ? " · 有未发布修改" : ""))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(NativePalette.muted)
                         }
                     }
                 }
-                if model.items.isEmpty { Text("尚未建立维护食品").foregroundStyle(.secondary) }
+                if model.items.isEmpty { Text("尚未建立维护食品").foregroundStyle(NativePalette.muted) }
             }
-        }.navigationTitle("公共食物库管理").task { await model.load() }.refreshable { await model.load() }
+        }.nativeGeometricPage().navigationTitle("公共食物库管理").task { await model.load() }.refreshable { await model.load() }
     }
     private func statusLabel(_ value: String) -> String { ["draft":"草稿","published":"已发布","archived":"已下架"][value] ?? value }
 }
@@ -504,10 +511,10 @@ private struct NativeNutritionManagedFoodEditor: View {
             if recoverableDraft != nil {
                 Section("本机未完成的食品填写") {
                     Text("已找到此账号加密保存的填写。恢复仅填入表单，不发布或提交；旧版本仍需核对。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                     Button("恢复填写") { restoreForm() }
                     Button("放弃本机草稿", role: .destructive) { discardForm() }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             Section("食品与规格") {
                 TextField("食品名称", text: $name)
@@ -517,11 +524,11 @@ private struct NativeNutritionManagedFoodEditor: View {
                 TextField("分类", text: $category)
                 TextField("每份规格", text: $portion)
                 TextField("食品说明", text: $description, axis: .vertical).lineLimit(2...5)
-            }.disabled(model.pending != nil || model.busy || recoverableDraft != nil)
+            }.listRowBackground(NativePalette.surface).disabled(model.pending != nil || model.busy || recoverableDraft != nil)
             Section("每份营养（未知留空）") {
                 nutrientField("热量／千卡", text: $calories); nutrientField("碳水／克", text: $carbs)
                 nutrientField("蛋白质／克", text: $protein); nutrientField("脂肪／克", text: $fat)
-            }.disabled(model.pending != nil || model.busy || recoverableDraft != nil)
+            }.listRowBackground(NativePalette.surface).disabled(model.pending != nil || model.busy || recoverableDraft != nil)
             Section("可核对的来源") {
                 TextField("来源名称", text: $sourceName)
                 TextField("来源 HTTPS 链接", text: $sourceURL).textInputAutocapitalization(.never).keyboardType(.URL)
@@ -529,13 +536,13 @@ private struct NativeNutritionManagedFoodEditor: View {
                 if let url = URL(string: imageURL, relativeTo: NativeAPI.websiteURL)?.absoluteURL, url.scheme == "https", !imageURL.isEmpty {
                     AsyncImage(url: url) { image in image.resizable().scaledToFit() } placeholder: { Image(systemName: "photo") }.frame(height: 130)
                 }
-            }.disabled(model.pending != nil || model.busy || recoverableDraft != nil)
+            }.listRowBackground(NativePalette.surface).disabled(model.pending != nil || model.busy || recoverableDraft != nil)
             if !item["published"].objectValue.isEmpty {
                 Section("当前发布版本") {
                     Text(item["published"]["name"].stringValue ?? "")
                     Text(item["published"]["portionLabel"].stringValue ?? "")
                     Text("热量：" + (item["published"]["calories"].stringValue ?? "未知") + " 千卡")
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             if item["id"].stringValue != nil {
                 Section("服务器当前草稿（供核对）") {
@@ -544,7 +551,7 @@ private struct NativeNutritionManagedFoodEditor: View {
                     ForEach(["calories","carbs","protein","fat"], id: \.self) { key in
                         LabeledContent(NativeNutritionFields.title(key), value: item["draft"][key].stringValue ?? "未知")
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             Section {
                 if model.pending != nil {
@@ -558,11 +565,11 @@ private struct NativeNutritionManagedFoodEditor: View {
                     }
                 }
                 if model.busy { ProgressView("正在核对食品操作…") }
-                if let notice { Text(notice).foregroundStyle(.secondary) }
+                if let notice { Text(notice).foregroundStyle(NativePalette.muted) }
                 if let error = model.error { Text(error).foregroundStyle(.red) }
                 Button("保留填写，读取最新食品版本") { Task { await reloadItem() } }.disabled(model.busy || model.pending != nil)
-            }
-        }.navigationTitle(item["id"].stringValue == nil ? "新增食品草稿" : "维护食品")
+            }.listRowBackground(NativePalette.surface)
+        }.nativeGeometricPage().navigationTitle(item["id"].stringValue == nil ? "新增食品草稿" : "维护食品")
             .task { await initialize() }
             .onChange(of: formDraft) { _, _ in persistForm() }
             .onDisappear { persistForm() }
@@ -577,11 +584,11 @@ private struct NativeNutritionManagedFoodEditor: View {
                             Text("来源：" + (item["draft"]["sourceName"].stringValue ?? ""))
                             Text(item["draft"]["sourceUrl"].stringValue ?? "")
                             Text("此次发布只使用服务器中已保存草稿；当前表单尚未保存的修改不会发布。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
+                                .font(.footnote).foregroundStyle(NativePalette.muted)
+                        }.listRowBackground(NativePalette.surface)
                         Button("确认发布") { Task { await mutate("publish"); if model.pending == nil, model.error == nil { publishPreview = false } } }.disabled(model.busy)
                         if let error = model.error { Text(error).foregroundStyle(.red) }
-                    }.navigationTitle("审核发布").toolbar { Button("关闭") { publishPreview = false }.disabled(model.busy) }.interactiveDismissDisabled(model.busy)
+                    }.nativeGeometricPage().navigationTitle("审核发布").toolbar { Button("关闭") { publishPreview = false }.disabled(model.busy) }.interactiveDismissDisabled(model.busy)
                 }
             }
             .confirmationDialog("下架后成员无法在当前公共食物库选择此食品，已有饮食记录与发布快照继续保留。", isPresented: $confirmArchive, titleVisibility: .visible) {

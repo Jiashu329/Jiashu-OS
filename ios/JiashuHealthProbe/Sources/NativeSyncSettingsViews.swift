@@ -351,7 +351,7 @@ struct NativeSyncConnectionsView: View {
             if let message = model.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
             NativeFeatureFeedback(busy: model.busy, error: model.errorMessage)
         }
-        .navigationTitle("其他接入方式")
+        .nativeGeometricPage().navigationTitle("其他接入方式")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: userID + "|" + token) { await model.activate(token: token, userID: userID) }
         .refreshable { await model.refresh() }
