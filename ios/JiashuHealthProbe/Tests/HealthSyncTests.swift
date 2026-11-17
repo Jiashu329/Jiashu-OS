@@ -219,4 +219,95 @@ final class HealthSyncTests: XCTestCase {
         XCTAssertThrowsError(try NativeHealthCalendar.windows(days: 0, capturedAt: capture))
         XCTAssertThrowsError(try NativeHealthCalendar.windows(days: 91, capturedAt: capture))
     }
+
+    func testCutoffUsesStableExportPrecisionWithoutMovingIntoTheFuture() throws {
+        let base = date("2026-11-16T08:00:00+08:00")
+        for fraction in [0.0, 0.0002, 0.0004, 0.0006, 0.0009, 0.0011, 0.0016, 0.9998] {
+            let raw = base.addingTimeInterval(fraction)
+            let cutoff = try NativeHealthCalendar.cutoff(raw)
+            XCTAssertLessThanOrEqual(cutoff, raw)
+            XCTAssertLessThan(raw.timeIntervalSince(cutoff), 0.001001)
+            XCTAssertEqual(try NativeHealthCalendar.cutoff(cutoff), cutoff)
+            XCTAssertEqual(date(NativeHealthCalendar.timestamp(cutoff)), cutoff)
+        }
+    }
+
+    func testSubmillisecondCaptureCanExportCurrentStepsAndEnergy() throws {
+        let base = date("2026-11-16T08:00:00+08:00")
+        for fraction in [0.0004, 0.0006, 0.0009] {
+            let raw = base.addingTimeInterval(fraction)
+            let window = try XCTUnwrap(NativeHealthCalendar.windows(days: 1, capturedAt: raw).first)
+            let rows = [("steps", "count", 1234.0), ("active_energy", "kcal", 123.4)].map { metric, unit, value in
+                NativeHealthMeasurement(id: metric + ":" + window.day, metric: metric, value: value, unit: unit,
+                    startDate: NativeHealthCalendar.timestamp(window.start), endDate: NativeHealthCalendar.timestamp(window.end),
+                    source: "apple-health-merged", aggregation: "daily")
+            }
+            let snapshot = NativeHealthSnapshot(capturedAt: raw, measurements: rows)
+            let payload = try snapshot.encodePayload()
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            let exportedAt = try XCTUnwrap(json["exportedAt"] as? String)
+            XCTAssertEqual(date(exportedAt), base)
+            XCTAssertEqual(rows.map(\.endDate), [exportedAt, exportedAt])
+            XCTAssertEqual(try snapshot.encodePayload(), payload)
+        }
+    }
+
+    func testOngoingSleepClipsToTheSamePrecisionAsItsExportedWindow() throws {
+        let base = date("2026-11-16T08:00:00+08:00")
+        for fraction in [0.0004, 0.0006, 0.0009] {
+            let raw = base.addingTimeInterval(fraction)
+            let window = try NativeHealthCalendar.sleepWindow(day: "2026-11-16", capturedAt: raw)
+            let samples = [0, 1, 2].map { state in
+                NativeHealthSleepSegment(start: window.start.addingTimeInterval(-3600), end: raw.addingTimeInterval(3600),
+                    state: state, source: "watch", isWatch: true)
+            }
+            let row = try XCTUnwrap(NativeHealthSleepAggregation.measurement(segments: samples, window: window))
+            XCTAssertEqual(row.value, 20, accuracy: 1e-8)
+            XCTAssertEqual(row.sleepStages?.inBed ?? -1, 20, accuracy: 1e-8)
+            XCTAssertEqual(row.sleepStages?.awake ?? -1, 20, accuracy: 1e-8)
+            XCTAssertEqual(row.sleepTiming?.wake, NativeHealthCalendar.timestamp(base))
+            XCTAssertEqual(row.sleepTiming?.clipped, true)
+            _ = try NativeHealthSnapshot(capturedAt: raw, measurements: [row]).encodePayload()
+        }
+    }
+
+    func testCutoffKeepsShanghaiMidnightAndNoonInTheirActualReportWindows() throws {
+        let midnight = date("2026-11-17T00:00:00+08:00")
+        let before = midnight.addingTimeInterval(-0.0002)
+        let beforeWindows = try NativeHealthCalendar.windows(days: 1, capturedAt: before)
+        XCTAssertEqual(beforeWindows.map(\.day), ["2026-11-16"])
+        XCTAssertEqual(NativeHealthCalendar.timestamp(try XCTUnwrap(beforeWindows.last).end), "2026-11-16T15:59:59.999Z")
+        let justAfter = midnight.addingTimeInterval(0.0002)
+        let afterWindows = try NativeHealthCalendar.windows(days: 2, capturedAt: justAfter)
+        XCTAssertEqual(afterWindows.map(\.day), ["2026-11-16"], "a sub-millisecond today cannot encode a positive interval yet")
+        XCTAssertEqual(afterWindows.last?.end, midnight)
+        let noon = date("2026-11-16T12:00:00+08:00")
+        let sleep = try NativeHealthCalendar.sleepWindow(day: "2026-11-16", capturedAt: noon.addingTimeInterval(-0.0002))
+        XCTAssertEqual(NativeHealthCalendar.timestamp(sleep.end), "2026-11-16T03:59:59.999Z")
+    }
+
+    func testPrecisionFixStillRejectsActuallyFutureOrInvalidRecords() throws {
+        let base = date("2026-11-16T08:00:00+08:00")
+        let raw = base.addingTimeInterval(0.0004)
+        let future = NativeHealthMeasurement(id: "future-weight", metric: "weight", value: 68, unit: "kg",
+            startDate: NativeHealthCalendar.timestamp(base.addingTimeInterval(0.001)), endDate: nil,
+            source: "scale", aggregation: "sample")
+        XCTAssertThrowsError(try NativeHealthSnapshot(capturedAt: raw, measurements: [future]).encodePayload())
+        let valid = NativeHealthMeasurement(id: "valid-weight", metric: "weight", value: 68, unit: "kg",
+            startDate: NativeHealthCalendar.timestamp(base), endDate: nil, source: "scale", aggregation: "sample")
+        _ = try NativeHealthSnapshot(capturedAt: raw, measurements: [valid]).encodePayload()
+        let invalid = NativeHealthSleepSegment(start: base, end: base.addingTimeInterval(-1), state: 1, source: "watch", isWatch: true)
+        let window = try NativeHealthCalendar.sleepWindow(day: "2026-11-16", capturedAt: capture)
+        XCTAssertThrowsError(try NativeHealthSleepAggregation.measurement(segments: [invalid], window: window))
+    }
+
+    func testSubmillisecondSleepKeepsItsValueWhenTimingBoundsCannotBeRepresented() throws {
+        let base = date("2026-11-16T01:00:00+08:00")
+        let sample = NativeHealthSleepSegment(start: base.addingTimeInterval(0.0001), end: base.addingTimeInterval(0.0002),
+            state: 1, source: "watch", isWatch: true)
+        let row = try XCTUnwrap(NativeHealthSleepAggregation.measurement(segments: [sample], window: window()))
+        XCTAssertGreaterThan(row.value, 0)
+        XCTAssertNil(row.sleepTiming, "equal encoded timing bounds cannot claim a positive sleep bout")
+        _ = try NativeHealthSnapshot(capturedAt: capture, measurements: [row]).encodePayload()
+    }
 }

@@ -399,6 +399,224 @@ final class NativeAppModelTests: XCTestCase {
         XCTAssertNotNil(try fixture.context.deviceStore(for: fixture.context.a).load())
         XCTAssertNotNil(fixture.model.session)
     }
+    @MainActor
+    private func selectedFixture(reader: NativeModelHealthReader, server: NativeModelChannelServer) throws -> NativeModelFixture {
+        let fixture = try NativeModelFixture(reader: reader) { request, context in try server.reply(request, context: context) }
+        let credential = try NativeHealthDeviceCredential.generate()
+        try fixture.context.deviceStore(for: fixture.context.a).save(credential)
+        server.configure(owner: fixture.context.a.user.id, token: credential.deviceToken, revision: 1)
+        UserDefaults.standard.set(true, forKey: "jiashu.native.health-auto-sync." + fixture.context.a.user.id)
+        return fixture
+    }
+
+    @MainActor
+    func testAutomaticInvalidHealthReadHasInlineFailureWithoutPopupOrUpload() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        reader.readError = NativeHealthError.invalidRecord
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        XCTAssertEqual(reader.readCount, 1)
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertTrue(fixture.model.syncMessage.contains(NativeHealthError.invalidRecord.localizedDescription))
+        XCTAssertNil(fixture.model.lastReceipt)
+        XCTAssertEqual(server.previewCount, 0)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertNotNil(try fixture.store.load())
+    }
+
+    @MainActor
+    func testAutomaticInvalidSnapshotNeverPreviewsOrUploadsPartialRecords() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let captured = NativeDates.parse("2026-11-17T08:00:00Z")!
+        reader.snapshotOverride = NativeHealthSnapshot(capturedAt: captured, measurements: [
+            NativeHealthMeasurement(id: "synthetic-out-of-range-weight", metric: "weight", value: 601, unit: "kg",
+                startDate: "2026-11-17T07:00:00Z", endDate: nil, source: "synthetic-scale", aggregation: "sample"),
+        ])
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertTrue(fixture.model.syncMessage.contains(NativeHealthError.invalidRecord.localizedDescription))
+        XCTAssertEqual(server.previewCount, 0)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertNil(fixture.model.lastReceipt)
+    }
+
+    @MainActor
+    func testExplicitManualInvalidHealthReadPresentsItsFailure() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        reader.readError = NativeHealthError.invalidRecord
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        XCTAssertNil(fixture.model.errorMessage)
+
+        await fixture.model.sync()
+
+        XCTAssertEqual(fixture.model.errorMessage, NativeHealthError.invalidRecord.localizedDescription)
+        XCTAssertTrue(fixture.model.syncMessage.contains(NativeHealthError.invalidRecord.localizedDescription))
+        XCTAssertEqual(reader.readCount, 2)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertNil(fixture.model.lastReceipt)
+    }
+
+    @MainActor
+    func testAutomaticNetworkFailureKeepsExistingManualErrorAndShowsInlineReason() async throws {
+        let server = NativeModelChannelServer()
+        let fixture = try selectedFixture(reader: NativeModelHealthReader(), server: server)
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        fixture.model.errorMessage = "Synthetic unsaved manual form"
+        server.uploadFailureStatus = 503
+
+        await fixture.model.sync(automatic: true)
+
+        XCTAssertEqual(fixture.model.errorMessage, "Synthetic unsaved manual form")
+        XCTAssertTrue(fixture.model.syncMessage.contains("Synthetic sync service failed"))
+        XCTAssertTrue(fixture.model.autoSyncEnabled)
+        XCTAssertNotNil(fixture.model.session)
+        XCTAssertEqual(server.uploadCount, 2)
+    }
+
+    @MainActor
+    func testAutomaticAuthenticationFailureStillClearsAccountWithoutPopup() async throws {
+        let server = NativeModelChannelServer()
+        server.uploadFailureStatus = 401
+        let fixture = try selectedFixture(reader: NativeModelHealthReader(), server: server)
+        defer { fixture.cleanup() }
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        XCTAssertNil(fixture.model.session)
+        XCTAssertNil(fixture.model.overview)
+        XCTAssertNil(fixture.model.health)
+        XCTAssertNil(try fixture.store.load())
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertTrue(fixture.model.syncMessage.contains("Synthetic sync service failed"))
+        XCTAssertNotNil(try fixture.context.deviceStore(for: fixture.context.a).load())
+    }
+
+    @MainActor
+    func testAutomaticChannelRejectionStillPausesWithoutPopup() async throws {
+        let server = NativeModelChannelServer()
+        server.rejectUploadsAsChannelChanged = true
+        let fixture = try selectedFixture(reader: NativeModelHealthReader(), server: server)
+        defer { fixture.cleanup() }
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+
+        XCTAssertFalse(fixture.model.autoSyncEnabled)
+        XCTAssertNotNil(fixture.model.session)
+        XCTAssertNotNil(try fixture.store.load())
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertNil(fixture.model.lastReceipt)
+        XCTAssertTrue(fixture.model.syncMessage.contains("日常同步来源已变化"))
+        XCTAssertEqual(server.selectionCount, 0)
+        XCTAssertNotNil(try fixture.context.deviceStore(for: fixture.context.a).load())
+    }
+
+    @MainActor
+    func testManualRetryWaitingForAutomaticReadPerformsOwnVisibleAttempt() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        reader.readError = NativeHealthError.invalidRecord
+        let gate = NativeModelReaderGate()
+        reader.readGate = gate
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { gate.release(); fixture.cleanup() }
+        let activation = Task { await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password") }
+        await gate.waitUntilRequested()
+        XCTAssertNil(fixture.model.errorMessage)
+        let manualStarted = XCTestExpectation(description: "Manual retry joined automatic work")
+        let manual = Task { manualStarted.fulfill(); await fixture.model.sync() }
+        await fulfillment(of: [manualStarted], timeout: 10)
+
+        gate.release()
+        await activation.value
+        await manual.value
+
+        XCTAssertEqual(reader.readCount, 2)
+        XCTAssertEqual(fixture.model.errorMessage, NativeHealthError.invalidRecord.localizedDescription)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertNil(fixture.model.lastReceipt)
+    }
+
+    @MainActor
+    func testAutomaticRetryWaitingForManualSuccessKeepsItsFailureSilent() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        let gate = NativeModelReaderGate()
+        reader.readGate = gate
+        reader.failAtReadCount = 3
+        defer { gate.release() }
+        let manual = Task { await fixture.model.sync() }
+        await gate.waitUntilRequested()
+        let automaticStarted = XCTestExpectation(description: "Automatic update joined manual work")
+        let automatic = Task { automaticStarted.fulfill(); await fixture.model.sync(automatic: true) }
+        await fulfillment(of: [automaticStarted], timeout: 10)
+
+        gate.release()
+        await manual.value
+        await automatic.value
+
+        XCTAssertEqual(reader.readCount, 3)
+        XCTAssertEqual(server.uploadCount, 2)
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertTrue(fixture.model.syncMessage.contains(NativeHealthError.invalidRecord.localizedDescription))
+    }
+
+    @MainActor
+    func testBackgroundFailureIsSilentEvenWithoutAutomaticArgument() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        reader.readError = NativeHealthError.invalidRecord
+
+        await fixture.model.sync(background: true)
+
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertTrue(fixture.model.syncMessage.contains(NativeHealthError.invalidRecord.localizedDescription))
+        XCTAssertEqual(server.uploadCount, 1)
+    }
+
+    @MainActor
+    func testLateAutomaticFailureCannotReplaceNewAccountsError() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server)
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        let gate = NativeModelReaderGate()
+        reader.readGate = gate
+        reader.readError = NativeHealthError.invalidRecord
+        defer { gate.release() }
+        let automatic = Task { await fixture.model.sync(automatic: true) }
+        await gate.waitUntilRequested()
+        await fixture.model.login(email: fixture.context.b.user.email, password: "synthetic-b-password")
+        fixture.model.errorMessage = "Synthetic new-account manual error"
+
+        gate.release()
+        await automatic.value
+
+        XCTAssertEqual(fixture.model.session?.user.id, fixture.context.b.user.id)
+        XCTAssertEqual(fixture.model.errorMessage, "Synthetic new-account manual error")
+        XCTAssertEqual(fixture.model.overview?.health.metrics.first?.value, 200)
+        XCTAssertEqual(server.uploadCount, 1)
+    }
 }
 
 @MainActor
@@ -610,12 +828,23 @@ private final class NativeModelHealthReader: NativeHealthReading {
     private(set) var readCount = 0
     private(set) var stopCount = 0
     private(set) var observerCount = 0
+    var readError: Error?
+    var failAtReadCount: Int?
+    var snapshotOverride: NativeHealthSnapshot?
+    var readGate: NativeModelReaderGate?
     private var callback: (@Sendable () async -> Void)?
 
     func authorize() async throws { authorizationCount += 1 }
 
     func read(days: Int) async throws -> NativeHealthSnapshot {
         readCount += 1
+        if let gate = readGate {
+            readGate = nil
+            await gate.hold()
+        }
+        if let failAtReadCount, readCount >= failAtReadCount { throw NativeHealthError.invalidRecord }
+        if let readError { throw readError }
+        if let snapshotOverride { return snapshotOverride }
         let captured = NativeDates.parse("2026-11-17T08:00:00Z")!
         return NativeHealthSnapshot(capturedAt: captured, measurements: [
             NativeHealthMeasurement(id: "synthetic-daily-steps", metric: "steps", value: 1234, unit: "count",
@@ -646,6 +875,8 @@ private final class NativeModelChannelServer: @unchecked Sendable {
     private var selectionsWritten = 0
     private var statusesRead = 0
     private var uploadsReceived = 0
+    private var previewsReceived = 0
+    private var uploadFailure: Int?
     private var channelsCleared = 0
     private var credentialsSavedBeforeWrite = 0
     private var failSelection = false
@@ -654,6 +885,11 @@ private final class NativeModelChannelServer: @unchecked Sendable {
     var selectionCount: Int { locked { selectionsWritten } }
     var statusCount: Int { locked { statusesRead } }
     var uploadCount: Int { locked { uploadsReceived } }
+    var previewCount: Int { locked { previewsReceived } }
+    var uploadFailureStatus: Int? {
+        get { locked { uploadFailure } }
+        set { locked { uploadFailure = newValue } }
+    }
     var clearCount: Int { locked { channelsCleared } }
     var savedBeforeSelectionCount: Int { locked { credentialsSavedBeforeWrite } }
     var failNextSelectionAfterCommit: Bool {
@@ -743,19 +979,50 @@ private final class NativeModelChannelServer: @unchecked Sendable {
             XCTAssertEqual(suppliedDevice, selected)
             XCTAssertNil(request.value(forHTTPHeaderField: "X-Confirm-Source-Changes"), "Daily source consent must never manufacture a per-batch source confirmation")
             if path.hasSuffix("preview") {
+                locked { previewsReceived += 1 }
                 return .immediate(.json([
                     "preview": ["token": "synthetic-preview-token", "total": 1, "added": 0, "updated": 1,
                         "skipped": 0, "sourceChanges": 1, "manualOverrides": 0, "from": "2026-11-17",
                         "to": "2026-11-17", "metrics": ["步数"], "examples": []] as [String: Any],
                 ]))
             }
-            let reject = locked { uploadsReceived += 1; return rejectUploads }
-            if reject {
+            let result = locked { uploadsReceived += 1; return (rejectUploads, uploadFailure) }
+            if let status = result.1 {
+                return .immediate(.json(["error": "Synthetic sync service failed", "code": status == 401 ? "NATIVE_SIGN_IN_REQUIRED" : "HEALTH_STORAGE_UNAVAILABLE"], status: status))
+            }
+            if result.0 {
                 return .immediate(.json(["error": "日常同步来源已变化", "code": "HEALTH_SYNC_CHANNEL_CHANGED"], status: 409))
             }
             return .immediate(.json(["ok": true, "imported": 1, "skipped": 0,
                 "lastSync": "2026-11-17T08:00:00Z", "batchId": "synthetic-batch"]))
         }
         return try context.standardReply(request)
+    }
+}
+
+
+@MainActor
+private final class NativeModelReaderGate {
+    private let requested = XCTestExpectation(description: "Health read is suspended")
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func hold() async {
+        requested.fulfill()
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() }
+            else { self.continuation = continuation }
+        }
+    }
+
+    func waitUntilRequested() async {
+        let result = await XCTWaiter.fulfillment(of: [requested], timeout: 10)
+        XCTAssertEqual(result, .completed)
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

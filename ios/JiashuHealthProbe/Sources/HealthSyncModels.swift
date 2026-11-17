@@ -7,6 +7,7 @@ struct NativeHealthSnapshot: Sendable {
     let measurements: [NativeHealthMeasurement]
 
     func encodePayload() throws -> Data {
+        let capturedAt = try NativeHealthCalendar.cutoff(self.capturedAt)
         guard !measurements.isEmpty else { throw NativeHealthError.noReadableData }
         guard measurements.count <= 1_000 else { throw NativeHealthError.tooManyRecords }
         guard StepCalendar.supportedTimestamp(capturedAt) else { throw NativeHealthError.invalidRecord }
@@ -120,6 +121,19 @@ struct NativeHealthWindow: Sendable, Equatable {
 }
 
 enum NativeHealthCalendar {
+    /// Match the millisecond precision of the payload, never moving the query
+    /// cutoff into the future or across a midnight that has not arrived yet.
+    /// Round-trip through the actual formatter so binary Date precision cannot
+    /// leave an exported boundary a fraction later than its validation bound.
+    static func cutoff(_ date: Date) throws -> Date {
+        guard StepCalendar.supportedTimestamp(date),
+              let rounded = parseTimestamp(timestamp(date)) else { throw NativeHealthError.invalidRecord }
+        if rounded <= date { return rounded }
+        guard let earlier = parseTimestamp(timestamp(rounded.addingTimeInterval(-0.001))),
+              earlier <= date, StepCalendar.supportedTimestamp(earlier) else { throw NativeHealthError.invalidRecord }
+        return earlier
+    }
+
     static func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -137,6 +151,7 @@ enum NativeHealthCalendar {
         guard (1...90).contains(days), StepCalendar.supportedTimestamp(capturedAt) else {
             throw NativeHealthError.invalidRange
         }
+        let capturedAt = try cutoff(capturedAt)
         let calendar = StepCalendar.calendar, today = calendar.startOfDay(for: capturedAt)
         guard let first = calendar.date(byAdding: .day, value: -(days - 1), to: today) else {
             throw NativeHealthError.invalidRange
@@ -154,6 +169,7 @@ enum NativeHealthCalendar {
     /// Sleep has its own noon-to-noon report window. Before today's noon only
     /// the elapsed part is reported; it is refreshed on the next sync.
     static func sleepWindow(day: String, capturedAt: Date) throws -> NativeHealthWindow {
+        let capturedAt = try cutoff(capturedAt)
         guard let midnight = parseTimestamp(day + "T00:00:00+08:00"),
               StepCalendar.dayString(for: midnight) == day,
               let noon = StepCalendar.calendar.date(bySettingHour: 12, minute: 0, second: 0, of: midnight),
@@ -177,6 +193,8 @@ struct NativeHealthSleepSegment: Sendable, Equatable {
 
 enum NativeHealthSleepAggregation {
     static func measurement(segments: [NativeHealthSleepSegment], window: NativeHealthWindow) throws -> NativeHealthMeasurement? {
+        let window = NativeHealthWindow(day: window.day, start: try NativeHealthCalendar.cutoff(window.start),
+                                        end: try NativeHealthCalendar.cutoff(window.end))
         guard window.end > window.start, window.end.timeIntervalSince(window.start) <= 25 * 3_600 else {
             throw NativeHealthError.invalidRange
         }
@@ -237,9 +255,15 @@ enum NativeHealthSleepAggregation {
         }.first?.0
         var timing: NativeHealthSleepTiming?
         if let onset = main?.first?.0, let wake = main?.last?.1 {
-            timing = NativeHealthSleepTiming(onset: NativeHealthCalendar.timestamp(max(onset, window.start)),
-                                       wake: NativeHealthCalendar.timestamp(min(wake, window.end)),
-                                       clipped: onset < window.start || wake > window.end)
+            let startText = NativeHealthCalendar.timestamp(max(onset, window.start))
+            let endText = NativeHealthCalendar.timestamp(min(wake, window.end))
+            // A sub-millisecond bout can have a duration without representable
+            // distinct timing bounds. Keep its sleep value; timing is optional.
+            if let start = NativeHealthCalendar.parseTimestamp(startText),
+               let end = NativeHealthCalendar.parseTimestamp(endText), end > start {
+                timing = NativeHealthSleepTiming(onset: startText, wake: endText,
+                                           clipped: onset < window.start || wake > window.end)
+            }
         }
         return NativeHealthMeasurement(id: "healthkit-sleep:" + window.day, metric: "sleep", value: stages.asleep,
                                        unit: "hours", startDate: NativeHealthCalendar.timestamp(window.start),
@@ -264,7 +288,7 @@ enum NativeHealthError: LocalizedError {
         switch self {
         case .unavailable: return "此设备无法读取苹果健康，请在支持健康数据的 iPhone 上运行。"
         case .invalidRange: return "请选择最近 1 至 90 天的有效日期范围。"
-        case .invalidRecord: return "苹果健康返回的记录超出导入范围，本次不会改成零值或忽略后继续上传。"
+        case .invalidRecord: return "本次健康记录的数值或时间未通过校验，尚未上传。请稍后重试；若持续出现，请检查苹果健康中的异常记录。"
         case .tooManyRecords: return "本次超过 1,000 条记录或 512 KB，请缩短同步天数后重试；数据未被截断。"
         case .noReadableData: return "没有可同步的健康记录。请检查健康读取权限或日期范围；缺失不会作为零值上传。"
         case .queryTimedOut: return "读取苹果健康超时，请稍后重试。"

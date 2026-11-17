@@ -43,6 +43,7 @@ final class NativeAppModel: ObservableObject {
     private var syncOperation: Task<Void, Never>?
     private var syncOperationID: UUID?
     private var syncIsBackground = false
+    private var syncIsAutomatic = false
     private var syncDays = 0
     private var syncAgain = false
     private var loadID = UUID()
@@ -118,20 +119,24 @@ final class NativeAppModel: ObservableObject {
                 try sessions.save(refreshed)
                 session = refreshed
             }
-            if autoSyncEnabled { await refreshChannelStatus() }
+            if autoSyncEnabled { await refreshChannelStatus(presentError: false) }
             guard isCurrent(current.user.id, epoch) else { return }
             if autoSyncEnabled { await observeHealth() }
-            await reload()
+            await reload(presentError: false)
             guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
             await observeHealth()
             // Foreground visits are a fallback for background delivery, whose timing iOS controls.
             if pendingChannelConsent == nil, lastAutomaticAttempt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
-                await sync(background: false)
+                await sync(background: false, automatic: true)
             }
-        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
+        } catch {
+            guard isCurrent(current.user.id, epoch) else { return }
+            syncMessage = "自动更新未完成：" + error.localizedDescription
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: false)
+        }
     }
 
-    func reload(days: Int? = nil) async {
+    func reload(days: Int? = nil, presentError: Bool = true) async {
         guard let current = session else { return }
         let requestedDays = days ?? healthDays
         healthDays = requestedDays
@@ -145,11 +150,21 @@ final class NativeAppModel: ObservableObject {
         do {
             let value = try await overviewRequest.value
             if isCurrent(current.user.id, epoch), loadID == requestID { overview = value }
-        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
+        } catch {
+            if isCurrent(current.user.id, epoch), loadID == requestID {
+                if !presentError { syncMessage = "自动更新未完成：" + error.localizedDescription }
+                handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
+            }
+        }
         do {
             let value = try await healthRequest.value
             if isCurrent(current.user.id, epoch), loadID == requestID { health = value }
-        } catch { handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken) }
+        } catch {
+            if isCurrent(current.user.id, epoch), loadID == requestID {
+                if !presentError { syncMessage = "自动更新未完成：" + error.localizedDescription }
+                handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
+            }
+        }
     }
 
     private func deviceStore(_ owner: String) -> NativeHealthDeviceStore {
@@ -265,7 +280,7 @@ final class NativeAppModel: ObservableObject {
         await sync(background: false)
     }
 
-    func refreshChannelStatus() async {
+    func refreshChannelStatus(presentError: Bool = true) async {
         guard let current = session, !configuringChannel, !authorizingHealth else { return }
         let epoch = generation
         let requestID = UUID()
@@ -281,7 +296,8 @@ final class NativeAppModel: ObservableObject {
             }
         } catch {
             guard channelRequestID == requestID else { return }
-            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
+            if !presentError, isCurrent(current.user.id, epoch) { syncMessage = "自动核对同步来源未完成：" + error.localizedDescription }
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
         }
     }
 
@@ -366,20 +382,22 @@ final class NativeAppModel: ObservableObject {
 
     private func observedChange(owner: String, epoch: UUID) async {
         guard isCurrent(owner, epoch), autoSyncEnabled else { return }
-        await sync(background: true)
+        await sync(background: true, automatic: true)
     }
 
-    func sync(background: Bool = false, days: Int = 30) async {
+    func sync(background: Bool = false, days: Int = 30, automatic: Bool = false) async {
         guard let current = session, autoSyncEnabled, pendingChannelConsent == nil else { return }
         if let running = syncOperation {
-            // A foreground backfill needs its own range and time budget after
-            // a short background reconciliation, including a just-cancelled one.
-            if running.isCancelled || (!background && (syncIsBackground || days > syncDays)) {
+            // Automatic and manual attempts keep their own presentation context.
+            // A waiter with a different mode, range or budget gets its own turn;
+            // a silent callback never schedules another visible manual retry.
+            let automaticRequest = background || automatic
+            if running.isCancelled || automaticRequest != syncIsAutomatic || (!background && (syncIsBackground || days > syncDays)) {
                 let epoch = generation, operationID = syncOperationID
                 await running.value
                 guard isCurrent(current.user.id, epoch), autoSyncEnabled else { return }
                 if syncOperationID == operationID { syncOperation = nil; syncOperationID = nil }
-                await sync(background: background, days: days)
+                await sync(background: background, days: days, automatic: automatic)
                 return
             }
             syncAgain = true
@@ -389,13 +407,14 @@ final class NativeAppModel: ObservableObject {
         let operationID = UUID(), epoch = generation
         syncOperationID = operationID
         syncIsBackground = background
+        syncIsAutomatic = background || automatic
         syncDays = background ? 7 : days
         syncAgain = false
         let operation = Task { [weak self] in
             guard let self else { return }
             repeat {
                 self.syncAgain = false
-                await self.performSync(background: background, days: background ? 7 : days)
+                await self.performSync(background: background, days: background ? 7 : days, automatic: automatic)
             } while self.syncAgain && !Task.isCancelled && self.generation == epoch && self.autoSyncEnabled && self.pendingChannelConsent == nil
         }
         syncOperation = operation
@@ -410,13 +429,14 @@ final class NativeAppModel: ObservableObject {
         if syncOperationID == operationID { syncOperation = nil; syncOperationID = nil; syncAgain = false }
     }
 
-    private func performSync(background: Bool, days: Int) async {
+    private func performSync(background: Bool, days: Int, automatic: Bool) async {
         guard !Task.isCancelled, let current = session, autoSyncEnabled, pendingChannelConsent == nil else { return }
         let epoch = generation
+        let presentError = !background && !automatic
         syncing = true
         lastAutomaticAttempt = Date()
         syncMessage = "正在读取苹果健康…"
-        if !background { errorMessage = nil }
+        if presentError { errorMessage = nil }
         defer { if generation == epoch { syncing = false } }
         do {
             guard let credential = try deviceStore(current.user.id).load() else {
@@ -442,7 +462,7 @@ final class NativeAppModel: ObservableObject {
             guard isCurrent(current.user.id, epoch) else { return }
             lastReceipt = receipt
             if autoSyncEnabled { syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。" }
-            if !background { await reload() }
+            if !background { await reload(presentError: presentError) }
         } catch {
             guard isCurrent(current.user.id, epoch) else { return }
             if !autoSyncEnabled { return }
@@ -454,8 +474,10 @@ final class NativeAppModel: ObservableObject {
                 syncMessage = "本次未取得可同步记录。请核对系统健康读取权限和记录范围；缺失不会记为零。"
                 return
             }
-            syncMessage = "本次同步未完成，下次打开 App 会再次核对；也可手动重试。"
-            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken)
+            if let failure = error as? NativeAPIError, failure.isAuthenticationFailure,
+               session?.accessToken != current.accessToken { return }
+            syncMessage = "本次同步未完成：" + error.localizedDescription + " 可稍后重试。"
+            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
         }
     }
 
@@ -500,12 +522,13 @@ final class NativeAppModel: ObservableObject {
         syncMessage = "连接苹果健康后，可在打开 App 或健康数据变化时同步。"
     }
 
-    private func handle(_ error: Error, owner: String, epoch: UUID, token: String) {
+    private func handle(_ error: Error, owner: String, epoch: UUID, token: String, presentError: Bool = true) {
         guard isCurrent(owner, epoch) else { return }
         if let failure = error as? NativeAPIError, failure.isAuthenticationFailure {
             guard session?.accessToken == token else { return }
             clearDisplayedAccount()
             try? sessions.clear()
+            if !presentError { syncMessage = "同步已暂停：" + error.localizedDescription }
         }
         if let failure = error as? NativeAPIError,
            ["HEALTH_SYNC_CHANNEL_REQUIRED", "HEALTH_SYNC_CHANNEL_CHANGED", "SYNC_DEVICE_INVALID",
@@ -514,6 +537,6 @@ final class NativeAppModel: ObservableObject {
             pendingChannelConsent = nil
             syncMessage = "日常同步来源已变化，自动同步已暂停。请在设置中核对后重新确认。"
         }
-        errorMessage = error.localizedDescription
+        if presentError { errorMessage = error.localizedDescription }
     }
 }
