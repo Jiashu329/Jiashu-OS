@@ -33,6 +33,29 @@ struct NativeLifeItem: Identifiable {
 struct NativeLifeFilters: Equatable {
     var kind = "all", query = "", profile = "all", rating = "", year = "", sort = "date-desc", hidden = "visible", tag = ""
     var missing = false
+    var activeChips: [(key: String, title: String)] {
+        var chips: [(String, String)] = []
+        if profile == "current" { chips.append(("profile", "当前来源")) }
+        if !rating.isEmpty { chips.append(("rating", rating == "unrated" ? "未评分" : rating + "星")) }
+        if !year.isEmpty { chips.append(("year", year + "年")) }
+        if !tag.isEmpty { chips.append(("tag", tag)) }
+        if hidden != "visible" { chips.append(("hidden", hidden == "hidden" ? "已隐藏" : "包含隐藏")) }
+        if missing { chips.append(("missing", "待补全")) }
+        if sort != "date-desc" { chips.append(("sort", ["date-asc": "日期从早到晚", "rating-desc": "评分从高到低", "rating-asc": "评分从低到高"][sort] ?? "已排序")) }
+        return chips
+    }
+    mutating func removeChip(_ key: String) {
+        switch key {
+        case "profile": profile = "all"
+        case "rating": rating = ""
+        case "year": year = ""
+        case "tag": tag = ""
+        case "hidden": hidden = "visible"
+        case "missing": missing = false
+        case "sort": sort = "date-desc"
+        default: break
+        }
+    }
     func path(offset: Int = 0) -> String {
         var components = URLComponents()
         components.path = "life/douban"
@@ -133,6 +156,22 @@ struct NativeLifeImportDraft: Codable {
     var preview: NativeJSON
     var skipped: Int
     var duplicates: Int
+}
+
+/// A preview belongs to one frozen source selection. An old response cannot
+/// advance a new import, a different account, or a dismissed editor.
+struct NativeLifePreviewGate {
+    struct Ticket: Equatable { let id: UUID; let owner: String; let profile: String }
+    private var current: Ticket?
+    mutating func begin(owner: String, profile: String) -> Ticket {
+        let ticket = Ticket(id: UUID(), owner: owner, profile: profile)
+        current = ticket
+        return ticket
+    }
+    mutating func invalidate() { current = nil }
+    func accepts(_ ticket: Ticket, owner: String, profile: String, visible: Bool) -> Bool {
+        visible && current == ticket && ticket.owner == owner && ticket.profile == profile
+    }
 }
 
 /// Inert local text parsing: no browser, remote reads, or provider credentials.

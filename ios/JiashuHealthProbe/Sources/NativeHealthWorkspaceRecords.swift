@@ -23,6 +23,7 @@ enum NativeHealthRecordRequest {
 }
 
 struct NativeHealthRecordsWorkspace: View {
+    private enum EditingField: Hashable { case value, reason }
     let api: NativeAPI
     let token: String
     let userID: String
@@ -44,6 +45,10 @@ struct NativeHealthRecordsWorkspace: View {
     @State private var switching = false
     @State private var confirming = false
     @State private var quickEntry = false
+    @State private var showingDetail = false
+    @FocusState private var editingField: EditingField?
+    @State private var confirmClose = false
+    @State private var confirmDiscardDraft = false
     @State private var busy = false
     @State private var loaded = false
     @State private var draftReady = false
@@ -53,14 +58,17 @@ struct NativeHealthRecordsWorkspace: View {
     private var signature: String { NativeActionDates.day(from) + NativeActionDates.day(to) + metric + String(includeDeleted) }
     private var dirty: Bool { !reason.isEmpty || (selected["recordKey"].stringValue != nil && value != (selected["effective"]["value"].doubleValue.map { String($0) } ?? "")) || action != "correct" }
     private var draftSignature: String { (selected["recordKey"].stringValue ?? "") + action + value + reason }
-    init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil, compose: Bool = false) {
+    init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil,
+         initialFrom: String? = nil, initialTo: String? = nil, compose: Bool = false) {
         self.api = api; self.token = token; self.userID = userID
         _metric = State(initialValue: initialMetric.flatMap(QuickEntryMetric.init(rawValue:))?.rawValue ?? "all")
+        if let date = initialFrom.flatMap(NativeHealthWorkspaceFormat.date),date <= Date() { _from = State(initialValue:date) }
+        if let date = initialTo.flatMap(NativeHealthWorkspaceFormat.date),date <= Date() { _to = State(initialValue:date) }
         _quickEntry = State(initialValue: compose)
     }
     var body: some View {
         List {
-            Section("筛选原始健康指标") {
+            Section("查看记录") {
                 DatePicker("开始",selection:$from,in:...Date(),displayedComponents:.date)
                 DatePicker("结束",selection:$to,in:...Date(),displayedComponents:.date)
                 Picker("指标",selection:$metric) {
@@ -68,15 +76,22 @@ struct NativeHealthRecordsWorkspace: View {
                     ForEach(NativeHealthWorkspaceFormat.metricKeys,id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) }
                 }
                 Toggle("包含已屏蔽",isOn:$includeDeleted)
-                Button("读取记录") { Task { await load(more:false) } }.disabled(busy)
-                Button("补录一条健康数据") { quickEntry = true }.disabled(busy || pending != nil)
+                Button("更新列表") { Task { await load(more:false) } }.disabled(busy)
+                Button("补记健康数据") { quickEntry = true }.disabled(busy || pending != nil)
             }.disabled(busy)
             if let pending {
-                Section("待确认的原修改") {
+                Section("保存结果待确认") {
                     Text(pending.label)
-                    Text("原数值、同步版本、修改版本与请求标识已安全保存；不更换请求内容。")
+                    Text("填写已安全保留，查看后可继续确认保存。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("继续确认原操作") { Task { await submit(pending) } }.disabled(busy)
+                    Button("查看保存状态") { Task { await openPendingDetail(pending) } }.disabled(busy)
+                }
+            }
+            if pending == nil,selected["recordKey"].stringValue != nil,dirty {
+                Section("未完成的填写") {
+                    Text(recordTitle(selected))
+                    Button("继续编辑") { showingDetail = true }
+                    Button("放弃填写",role:.destructive) { confirmDiscardDraft = true }
                 }
             }
             Section("记录列表") {
@@ -85,19 +100,21 @@ struct NativeHealthRecordsWorkspace: View {
                     Button {
                         if dirty { pendingSelection = record; switching = true } else { Task { await read(record,keepDraft:false) } }
                     } label: {
-                        VStack(alignment:.leading,spacing:6) {
-                            LabeledContent((record["day"].stringValue ?? "") + " · " + NativeHealthWorkspaceFormat.metric(record["metric"].stringValue ?? ""),value:NativeHealthWorkspaceFormat.text(record["effective"]["value"]))
-                            Text(origin(record) + (record["deleted"].boolValue == true ? " · 已屏蔽":"")).font(.caption).foregroundStyle(.secondary)
-                        }
+                        HStack(spacing:12) {
+                            VStack(alignment:.leading,spacing:6) {
+                                LabeledContent(recordTitle(record),value:recordValue(record))
+                                Text(origin(record) + (record["deleted"].boolValue == true ? " · 已屏蔽":"")).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Image(systemName:"chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                        }.foregroundStyle(.primary)
                     }.disabled(busy || pending != nil || loadedQuery != signature)
                 }
                 if records.isEmpty && loaded { Text("当前已读取范围没有记录，缺失不表示0。") }
                 if cursor != nil { Button("读取更多记录") { Task { await load(more:true) } }.disabled(busy || loadedQuery != signature) }
             }
-            if selected["recordKey"].stringValue != nil { selectedSections }
             if busy { ProgressView("正在核对记录…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("健康记录管理")
+        }.navigationTitle("健康记录")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .task {
                 do {
@@ -114,55 +131,171 @@ struct NativeHealthRecordsWorkspace: View {
             .onChange(of:draftSignature) { _,_ in saveDraft() }
             .onDisappear { saveDraft() }
             .sheet(isPresented:$quickEntry) { HealthQuickEntryView(api:api,token:token,userID:userID,initialMetric:QuickEntryMetric(rawValue:metric) ?? .weight) { await load(more:false) } }
-            .confirmationDialog("确认这次健康记录修改？",isPresented:$confirming,titleVisibility:.visible) {
-                Button(NativeHealthRecordRequest.actionLabel(action),role:action == "hide" ? .destructive:nil) { Task { await prepare() } }
-                Button("取消",role:.cancel) { }
-            } message: { Text(impactText + (action == "correct" ? " 新值：" + value:"")) }
+            .sheet(isPresented:$showingDetail) { detailSheet }
+            .confirmationDialog("放弃这次未保存的填写？",isPresented:$confirmDiscardDraft,titleVisibility:.visible) {
+                Button("放弃填写",role:.destructive) { discardUnsentDraft() }
+                Button("继续填写",role:.cancel) { }
+            } message: { Text("只清理本机未提交的内容，已保存的记录不受影响。") }
             .confirmationDialog("放弃未保存填写并切换记录？",isPresented:$switching,titleVisibility:.visible) {
                 Button("放弃填写并切换",role:.destructive) { Task { await read(pendingSelection,keepDraft:false) } }
                 Button("继续填写",role:.cancel) { }
             }
     }
-    @ViewBuilder private var selectedSections: some View {
-        Section("已选记录 · " + (selected["day"].stringValue ?? "")) {
-            LabeledContent("指标",value:NativeHealthWorkspaceFormat.metric(selected["metric"].stringValue ?? ""))
-            LabeledContent("当前有效值",value:NativeHealthWorkspaceFormat.text(selected["effective"]["value"]) + " " + NativeHealthWorkspaceFormat.unit(selected["metric"].stringValue ?? ""))
-            Text(origin(selected))
-            Text(selected["effective"]["source"].stringValue ?? "来源未知").font(.caption)
-            Text((selected["effective"]["startDate"].stringValue ?? "") + " " + (selected["effective"]["endDate"].stringValue ?? "")).font(.caption)
-            LabeledContent("修改版本",value:NativeHealthWorkspaceFormat.text(selected["revision"]))
-            if selected["base"]["measurement"]["value"].doubleValue != nil {
-                LabeledContent("最新同步原值",value:NativeHealthWorkspaceFormat.text(selected["base"]["measurement"]["value"]))
-                Text("原值来源：" + (selected["base"]["measurement"]["source"].stringValue ?? "未知")).font(.caption)
-                Text("原值导出：" + (selected["base"]["exportedAt"].stringValue ?? "未知")).font(.caption)
-            }
-            if selected["override"]["value"].doubleValue != nil { LabeledContent("人工覆盖值",value:NativeHealthWorkspaceFormat.text(selected["override"]["value"])) }
-            Button("读取最新记录，保留当前填写") { Task { await read(selected,keepDraft:true) } }.disabled(busy || pending != nil)
-        }
-        Section("主动修改与影响") {
-            Picker("操作",selection:$action) {
-                Text("更正数值").tag("correct")
-                Text(selected["deleted"].boolValue == true ? "恢复显示":"屏蔽记录").tag(selected["deleted"].boolValue == true ? "restore":"hide")
-                if selected["base"]["exportedAt"].stringValue != nil { Text("恢复最新同步值").tag("reset") }
-            }
-            if action == "correct" { TextField("核对后的值",text:$value).keyboardType(.decimalPad) }
-            TextField("修改原因（可选，最多500字）",text:$reason,axis:.vertical)
-            Text(impactText).font(.footnote).foregroundStyle(.secondary)
-            if conflict { Text("记录或原同步值已经变化。请先读取最新记录，再核对保留的填写。") }
-            Button("核对并确认修改") { confirming = true }.disabled(busy || pending != nil || conflict || !loaded || !draftReady)
-        }.disabled(busy || pending != nil)
-        Section("修改历史") {
-            Button("读取此记录的修改历史") { Task { await loadHistory() } }.disabled(busy)
-            ForEach(Array(changes.enumerated()),id:\.offset) { _,change in
-                DisclosureGroup((change["createdAt"].stringValue ?? "") + " · " + NativeHealthRecordRequest.actionLabel(change["action"].stringValue ?? "")) {
-                    LabeledContent("之前有效值",value:NativeHealthWorkspaceFormat.text(change["before"]["effective"]["value"]))
-                    LabeledContent("之后有效值",value:NativeHealthWorkspaceFormat.text(change["after"]["effective"]["value"]))
-                    Text("之前：" + (change["before"]["deleted"].boolValue == true ? "已屏蔽":"显示") + " · 之后：" + (change["after"]["deleted"].boolValue == true ? "已屏蔽":"显示"))
-                    Text(change["reason"].stringValue ?? "无说明")
-                    Text("修改前同步原值：" + NativeHealthWorkspaceFormat.text(change["before"]["base"]["measurement"]["value"]) + "；修改后同步原值：" + NativeHealthWorkspaceFormat.text(change["after"]["base"]["measurement"]["value"]))
-                        .font(.caption)
+    private var detailSheet: some View {
+        NavigationStack {
+            List {
+                detailSummary
+                if let pending { pendingDetail(pending) }
+                if let message {
+                    Section { Text(message).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled).accessibilityAddTraits(.updatesFrequently) }
                 }
+                if busy { Section { ProgressView("正在确认…") } }
+                editSection
+                evidenceSection
+                historySection
             }
+            .navigationTitle("记录详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .environment(\.timeZone,NativeActionDates.timeZone)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItem(placement:.confirmationAction) { Button("完成") { closeDetail() }.disabled(busy) }
+                ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("完成输入") { hideKeyboard() } }
+            }
+            .interactiveDismissDisabled(busy || dirty || pending != nil)
+            .confirmationDialog("确认修改记录的显示或来源？",isPresented:$confirming,titleVisibility:.visible) {
+                Button(NativeHealthRecordRequest.actionLabel(action),role:action == "hide" || action == "reset" ? .destructive:nil) { Task { await prepare() } }
+                Button("取消",role:.cancel) { action = "correct" }
+            } message: { Text(impactText) }
+            .confirmationDialog("保留这次未保存的填写？",isPresented:$confirmClose,titleVisibility:.visible) {
+                Button("保留草稿并关闭") { if saveDraft() { showingDetail = false } }
+                Button("放弃填写",role:.destructive) { discardUnsentDraft() }
+                Button("继续编辑",role:.cancel) { }
+            } message: { Text("草稿只保存在此设备，不会写入健康记录。") }
+        }
+    }
+    private var detailSummary: some View {
+        let key: String = selected["metric"].stringValue ?? ""
+        return Section {
+            Text(NativeHealthWorkspaceFormat.metric(key)).font(.headline)
+            Text(recordValue(selected)).font(.largeTitle.weight(.semibold)).monospacedDigit()
+            Text(selected["day"].stringValue ?? "日期未知").foregroundStyle(.secondary)
+            Text(origin(selected) + (selected["deleted"].boolValue == true ? " · 已屏蔽":"")).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+    private func pendingDetail(_ operation: NativeHealthWorkspaceMutation) -> some View {
+        let action: String = operation.body["action"].stringValue ?? "correct"
+        let title: String = NativeHealthRecordRequest.actionLabel(action)
+        let savedValue: String = NativeHealthWorkspaceFormat.text(operation.body["value"])
+        return Section("保存结果待确认") {
+            Text(title)
+            if action == "correct" { LabeledContent("待保存的值",value:savedValue) }
+            Text("原填写已安全保留，继续确认不会换成新的提交。").font(.footnote).foregroundStyle(.secondary)
+            Button("继续确认保存") { Task { await submit(operation) } }.disabled(busy)
+        }
+    }
+    private var editSection: some View {
+        Section("更正记录") {
+            TextField("核对后的数值",text:$value).keyboardType(.decimalPad).focused($editingField,equals:.value)
+            TextField("修改说明（可选）",text:$reason,axis:.vertical).lineLimit(2...4).focused($editingField,equals:.reason)
+            Text("原始数据仍保留，更正会用于图表和回顾。").font(.footnote).foregroundStyle(.secondary)
+            if conflict { Text("这条记录已更新。请先查看最新内容，再核对保留的填写。").foregroundStyle(.orange) }
+            Button("保存更正") { action = "correct"; Task { await prepare() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy || pending != nil || conflict || !loaded || !draftReady)
+            Button("查看最新内容，保留填写") { Task { await read(selected,keepDraft:true) } }.disabled(busy || pending != nil)
+            Menu("其他操作") {
+                if selected["deleted"].boolValue == true {
+                    Button("恢复显示") { action = "restore"; confirming = true }
+                } else {
+                    Button("屏蔽这条记录",role:.destructive) { action = "hide"; confirming = true }
+                }
+                if selected["base"]["exportedAt"].stringValue != nil {
+                    Button("恢复最新同步值",role:.destructive) { action = "reset"; confirming = true }
+                }
+            }.disabled(busy || pending != nil || conflict || !loaded || !draftReady)
+        }.disabled(busy || pending != nil)
+    }
+    private var evidenceSection: some View {
+        Section {
+            DisclosureGroup("来源与修改依据") {
+                Text(selected["effective"]["source"].stringValue ?? "来源未知").font(.footnote)
+                Text(measurementPeriod).font(.caption).foregroundStyle(.secondary)
+                LabeledContent("修改版本",value:NativeHealthWorkspaceFormat.text(selected["revision"]))
+                if selected["base"]["measurement"]["value"].doubleValue != nil {
+                    LabeledContent("最新同步原值",value:NativeHealthWorkspaceFormat.text(selected["base"]["measurement"]["value"]))
+                    Text(selected["base"]["measurement"]["source"].stringValue ?? "来源未知").font(.caption)
+                    Text("导出时间：" + localTimestamp(selected["base"]["exportedAt"].stringValue)).font(.caption).foregroundStyle(.secondary)
+                }
+                if selected["override"]["value"].doubleValue != nil { LabeledContent("人工更正值",value:NativeHealthWorkspaceFormat.text(selected["override"]["value"])) }
+            }
+        }
+    }
+    private var historySection: some View {
+        Section {
+            DisclosureGroup("修改历史") {
+                Button("读取修改历史") { Task { await loadHistory() } }.disabled(busy)
+                ForEach(Array(changes.enumerated()),id:\.offset) { _,change in historyRow(change) }
+            }
+        }
+    }
+    private func historyRow(_ change: NativeJSON) -> some View {
+        let date: String = localTimestamp(change["createdAt"].stringValue)
+        let action: String = NativeHealthRecordRequest.actionLabel(change["action"].stringValue ?? "")
+        let title: String = "\(date) · \(action)"
+        let before: String = NativeHealthWorkspaceFormat.text(change["before"]["effective"]["value"])
+        let after: String = NativeHealthWorkspaceFormat.text(change["after"]["effective"]["value"])
+        let beforeStatus: String = change["before"]["deleted"].boolValue == true ? "已屏蔽":"显示"
+        let afterStatus: String = change["after"]["deleted"].boolValue == true ? "已屏蔽":"显示"
+        return DisclosureGroup(title) {
+            LabeledContent("之前",value:before)
+            LabeledContent("之后",value:after)
+            Text("\(beforeStatus) → \(afterStatus)").font(.caption)
+            Text(change["reason"].stringValue ?? "无说明").font(.footnote)
+            LabeledContent("此前同步原值",value:NativeHealthWorkspaceFormat.text(change["before"]["base"]["measurement"]["value"]))
+            LabeledContent("此后同步原值",value:NativeHealthWorkspaceFormat.text(change["after"]["base"]["measurement"]["value"]))
+        }
+    }
+    private func recordTitle(_ record: NativeJSON) -> String {
+        let date: String = record["day"].stringValue ?? ""
+        let metric: String = NativeHealthWorkspaceFormat.metric(record["metric"].stringValue ?? "")
+        return "\(date) · \(metric)"
+    }
+    private func recordValue(_ record: NativeJSON) -> String {
+        let value: String = NativeHealthWorkspaceFormat.text(record["effective"]["value"])
+        let unit: String = NativeHealthWorkspaceFormat.unit(record["metric"].stringValue ?? "")
+        return "\(value) \(unit)"
+    }
+    private func localTimestamp(_ value: String?) -> String {
+        guard let value,let date = NativeDates.parse(value) else { return "时间未知" }
+        return NativeActionDates.formatted(date,pattern:"yyyy-MM-dd HH:mm")
+    }
+    private var measurementPeriod: String {
+        let start: String = localTimestamp(selected["effective"]["startDate"].stringValue)
+        guard let end = selected["effective"]["endDate"].stringValue else { return start }
+        return start + " — " + localTimestamp(end)
+    }
+    private func closeDetail() {
+        hideKeyboard()
+        if pending != nil { showingDetail = false }
+        else if dirty { confirmClose = true }
+        else { showingDetail = false }
+    }
+    private func hideKeyboard() { editingField = nil }
+    private func discardUnsentDraft() {
+        guard pending == nil else { return }
+        do {
+            try draftStore.clear(); selected = .null; value = ""; reason = ""; action = "correct"
+            changes = []; conflict = false; showingDetail = false; message = nil
+        } catch { message = error.localizedDescription }
+    }
+    private func openPendingDetail(_ operation: NativeHealthWorkspaceMutation) async {
+        guard !busy else { return }
+        showingDetail = true
+        let prefix = "health/records/"
+        guard operation.path.hasPrefix(prefix),let key = String(operation.path.dropFirst(prefix.count)).removingPercentEncoding,!key.isEmpty else { return }
+        if selected["recordKey"].stringValue != key {
+            await read(.object(["recordKey":.string(key)]),keepDraft:false)
         }
     }
     private var impactText: String {
@@ -175,7 +308,7 @@ struct NativeHealthRecordsWorkspace: View {
     }
     private func origin(_ record: NativeJSON) -> String {
         if record["manual"].boolValue == true { return "人工补录" }
-        if case .object = record["override"] { return "人工覆盖 · 原同步值保留" }
+        if case .object = record["override"] { return "人工更正" }
         return "同步记录"
     }
     private func load(more: Bool) async {
@@ -194,9 +327,9 @@ struct NativeHealthRecordsWorkspace: View {
         do {
             let result = try await api.json(path:"health/records/" + NativeHealthWorkspaceFormat.encodedSegment(key),token:token)
             guard result["record"]["recordKey"].stringValue == key else { throw NativeAPIError.invalidResponse }
-            selected = result["record"]; conflict = false; changes = []
+            selected = result["record"]; conflict = false; changes = []; showingDetail = true
             if !keepDraft { value = selected["effective"]["value"].doubleValue.map { String($0) } ?? ""; reason = ""; action = "correct" }
-            message = keepDraft ? "已读取最新记录，原填写仍保留，请核对后再保存。":nil
+            message = keepDraft ? "已更新记录，填写已保留。核对后可保存。":nil
         } catch { message = error.localizedDescription }
     }
     private func loadHistory() async {
@@ -205,16 +338,18 @@ struct NativeHealthRecordsWorkspace: View {
         catch { message = error.localizedDescription }
     }
     private func prepare() async {
+        guard !busy,pending == nil,!conflict,loaded,draftReady,selected["recordKey"].stringValue != nil else { return }
         do { let operation = try NativeHealthRecordRequest.operation(record:selected,action:action,value:value,reason:reason); try store.save(operation); pending = operation; await submit(operation) }
         catch { message = error.localizedDescription }
     }
-    private func saveDraft() {
-        guard draftReady,pending == nil else { return }
+    @discardableResult private func saveDraft() -> Bool {
+        guard draftReady,pending == nil else { return pending != nil }
         do {
             if selected["recordKey"].stringValue != nil && dirty {
                 try draftStore.save(NativeHealthWorkspaceFormDraft(fields:["value":value,"reason":reason,"action":action],dates:[:],snapshot:selected))
             } else { try draftStore.clear() }
-        } catch { message = error.localizedDescription }
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     private func submit(_ operation: NativeHealthWorkspaceMutation) async {
         guard !busy else { return }; busy = true; message = nil
@@ -222,12 +357,12 @@ struct NativeHealthRecordsWorkspace: View {
             let result = try await operation.send(api:api,token:token)
             guard result["record"]["recordKey"].stringValue != nil else { throw NativeAPIError.invalidResponse }
             try store.clear(); try draftStore.clear(); pending = nil; selected = result["record"]; value = selected["effective"]["value"].doubleValue.map { String($0) } ?? ""; reason = ""; action = "correct"; conflict = false; changes = []
-            busy = false; await load(more:false); message = "修改已确认保存。"
+            busy = false; await load(more:false); message = "已保存。"
         } catch {
             message = error.localizedDescription
             if NativeHealthWorkspaceFormat.definiteRejection(error) {
                 do { try store.clear(); pending = nil; conflict = true } catch { message = error.localizedDescription }
-            } else { message = (message ?? "") + " 原操作待确认，请继续核对原请求。" }
+            } else { message = (message ?? "") + " 填写已保留，请继续确认保存。" }
         }
         busy = false
     }

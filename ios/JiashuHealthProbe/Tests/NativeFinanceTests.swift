@@ -11,7 +11,7 @@ final class NativeFinanceTests: XCTestCase {
         XCTAssertThrowsError(try NativeFinanceContract.amount("1,000 000.00", currency: "CNY"))
         XCTAssertEqual(try NativeFinanceContract.amount("0", currency: "CNY"), "0.00")
         XCTAssertEqual(try NativeFinanceContract.amount("999999999999999999", currency: "JPY"), "999999999999999999")
-        XCTAssertEqual(NativeFinanceContract.money("900719925474099312", currency: "CNY"), "CNY 9007199254740993.12")
+        XCTAssertEqual(NativeFinanceContract.money("900719925474099312", currency: "CNY"), "CNY 9,007,199,254,740,993.12")
         XCTAssertEqual(NativeFinanceContract.money("-1", currency: "CNY"), "CNY -0.01")
         XCTAssertEqual(NativeFinanceContract.money("0", currency: "JPY"), "JPY 0")
         XCTAssertEqual(NativeFinanceContract.money(nil, currency: "CNY"), "暂无记录")
@@ -20,6 +20,40 @@ final class NativeFinanceTests: XCTestCase {
         }
         XCTAssertThrowsError(try NativeFinanceContract.amount("1.0", currency: "JPY"))
         XCTAssertThrowsError(try NativeFinanceContract.amount("1", currency: "XXX"))
+    }
+
+    func testNativeInputNormalizesDecimalKeyboardWithoutLosingLargeMoney() throws {
+        XCTAssertEqual(try NativeFinanceContract.inputAmount("12,34", currency: "EUR", decimalSeparator: ","), "12.34")
+        XCTAssertEqual(try NativeFinanceContract.inputAmount("9,007,199,254,740,993.12", currency: "CNY", decimalSeparator: ","), "9007199254740993.12")
+        XCTAssertEqual(try NativeFinanceContract.inputAmount("1,234", currency: "JPY", decimalSeparator: ","), "1234")
+        XCTAssertThrowsError(try NativeFinanceContract.inputAmount("1,5", currency: "JPY", decimalSeparator: ","))
+        XCTAssertThrowsError(try NativeFinanceContract.inputAmount("12,34", currency: "EUR", decimalSeparator: "."))
+        XCTAssertEqual(NativeFinanceContract.money("999999999999999999", currency: "JPY"), "JPY 999,999,999,999,999,999")
+        XCTAssertEqual(NativeFinanceContract.money("-900719925474099312", currency: "USD"), "USD -9,007,199,254,740,993.12")
+    }
+
+    func testNativeCalendarRoundTripsAndMonthlyChecklistRejectsFutureDates() throws {
+        for day in ["1970-01-01", "2024-02-29", "2026-11-17", "2100-12-31"] {
+            XCTAssertEqual(NativeFinanceContract.today(try XCTUnwrap(NativeFinanceContract.dateValue(day))), day)
+        }
+        let newYear = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:00Z"))
+        XCTAssertEqual(NativeFinanceContract.previousMonth(newYear), "2025-12")
+        XCTAssertTrue(NativeFinanceContract.checkedThisMonth("2026-11-01", today: "2026-11-17"))
+        XCTAssertFalse(NativeFinanceContract.checkedThisMonth("2026-11-18", today: "2026-11-17"))
+        XCTAssertFalse(NativeFinanceContract.checkedThisMonth("2026-10-31", today: "2026-11-17"))
+        XCTAssertFalse(NativeFinanceContract.checkedThisMonth(nil, today: "2026-11-17"))
+    }
+
+    func testPersistedScopeRequiresAnExactCurrentMembership() throws {
+        let book = "12345678-1234-4123-8123-123456789abc"
+        let selection = NativeFinanceSelection(ledger: "family", book: book, currency: "USD")
+        XCTAssertTrue(selection.isValid)
+        XCTAssertNil(selection.membership(in: [.object(["id": .string("own"), "role": .string("owner")])]))
+        let current: NativeJSON = .object(["id": .string(book), "accessRevision": .number(8), "role": .string("viewer")])
+        XCTAssertEqual(selection.membership(in: [current])?["role"].stringValue, "viewer")
+        XCTAssertFalse(NativeFinanceSelection(ledger: "personal", book: book, currency: "USD").isValid)
+        XCTAssertFalse(NativeFinanceSelection(ledger: "family", book: "foreign-book", currency: "CNY").isValid)
+        XCTAssertFalse(NativeFinanceSelection(ledger: "personal", book: "own", currency: "XXX").isValid)
     }
 
     func testPercentUsesExactBasisPointsAndDateUsesShanghaiDay() throws {
@@ -85,14 +119,66 @@ final class NativeFinanceTests: XCTestCase {
         XCTAssertEqual(loaded.body, body)
         XCTAssertEqual(loaded.path, operation.path)
         XCTAssertEqual(loaded.operationID, operation.operationID)
+        XCTAssertTrue(try XCTUnwrap(loaded.recoveryPath).contains("book=old-book"))
+        XCTAssertTrue(try XCTUnwrap(loaded.recoveryPath).contains("bookRevision=7"))
         XCTAssertThrowsError(try second.save(operation))
+    }
+
+    @MainActor
+    func testRemovedSharedMembershipNeverFallsBackToPersonalBalances() async throws {
+        let owner = "synthetic-finance-removed-" + UUID().uuidString
+        let preference = NativeWorkspacePersistence(userID: owner, scope: "finance-selection")
+        defer { try? preference.clear(); try? NativeFinancePendingStore(owner: owner).clear() }
+        try preference.save(NativeFinanceSelection(ledger: "family", book: "12345678-1234-4123-8123-123456789abc", currency: "CNY"))
+        let host = "finance-removed-" + UUID().uuidString.lowercased() + ".example"
+        FinanceURLProtocol.register(host: host) { request in
+            XCTAssertTrue(request.url!.path.hasSuffix("/books"), "A removed scope must not read a different ledger")
+            return (200, Data("{\"books\":[{\"id\":\"own\",\"name\":\"我的家庭账本\",\"role\":\"owner\",\"accessRevision\":0}],\"invitations\":[]}".utf8))
+        }
+        defer { FinanceURLProtocol.remove(host: host) }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FinanceURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: configuration), token: "synthetic-token", userID: owner)
+        do { _ = try await context.read(context.path("finance")); XCTFail("Removed membership was accepted") } catch {}
+        XCTAssertTrue(context.blocked); XCTAssertFalse(context.canWrite)
+        XCTAssertEqual(context.ledger, "family")
+        await context.loadBooks()
+        XCTAssertEqual(context.books.first?["id"].stringValue, "own", "The book selector must remain recoverable")
+    }
+
+    @MainActor
+    func testRestoredSharedScopeRechecksCurrentRoleAndGrantBeforeReadingBalances() async throws {
+        let owner = "synthetic-finance-scope-" + UUID().uuidString
+        let book = "12345678-1234-4123-8123-123456789abc"
+        let preference = NativeWorkspacePersistence(userID: owner, scope: "finance-selection")
+        defer { try? preference.clear(); try? NativeFinancePendingStore(owner: owner).clear() }
+        try preference.save(NativeFinanceSelection(ledger: "family", book: book, currency: "JPY"))
+        let host = "finance-scope-" + UUID().uuidString.lowercased() + ".example"
+        FinanceURLProtocol.register(host: host) { request in
+            if request.url?.path.hasSuffix("/books") == true {
+                return (200, Data(("{\"books\":[{\"id\":\"" + book + "\",\"name\":\"家用\",\"ownerName\":\"家人\",\"role\":\"viewer\",\"accessRevision\":8}],\"invitations\":[]}").utf8))
+            }
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "bookRevision" }?.value, "8")
+            XCTAssertEqual(query.first { $0.name == "book" }?.value, book)
+            return (200, Data("{\"accounts\":[],\"summary\":{\"byCurrency\":{}}}".utf8))
+        }
+        defer { FinanceURLProtocol.remove(host: host) }
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FinanceURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: configuration), token: "synthetic-token", userID: owner)
+        XCTAssertFalse(context.canWrite)
+        _ = try await context.read(context.path("finance"))
+        XCTAssertEqual(context.role, "viewer"); XCTAssertEqual(context.accessRevision, 8)
+        XCTAssertEqual(context.scopeSummary, "家用 · 家人 · JPY")
+        XCTAssertFalse(context.canWrite)
+        let other = NativeFinanceContext(api: context.api, token: "synthetic-token", userID: owner + "-other")
+        XCTAssertEqual(other.ledger, "personal"); XCTAssertEqual(other.currency, "CNY")
     }
 
     @MainActor
     func testUncertainWriteRetriesOriginalBodyKeyAndBookEvenAfterSelectionChanges() async throws {
         let owner = "synthetic-finance-" + UUID().uuidString
         let pending = NativeFinancePendingStore(owner: owner)
-        defer { try? pending.clear() }
+        defer { try? pending.clear(); try? NativeWorkspacePersistence(userID: owner, scope: "finance-selection").clear() }
         let host = "finance-" + UUID().uuidString.lowercased() + ".example"
         let recorder = FinanceRecordedRequests()
         FinanceURLProtocol.register(host: host) { request in

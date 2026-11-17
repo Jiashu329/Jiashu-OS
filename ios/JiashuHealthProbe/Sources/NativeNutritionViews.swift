@@ -8,92 +8,101 @@ import Charts
 struct NativeNutritionRoot: View {
     private let initialCompose: Bool
     @StateObject private var context: NativeNutritionContext
-    @State private var date = Date()
+    @State private var date: Date
+    @State private var meal: String
     @State private var includeDeleted = false
     @State private var data: NativeJSON = .null
     @State private var loading = false
     @State private var readError: String?
-    @State private var editor: NutritionEditorPresentation?
+    @State private var composing = false
+    @State private var openedInitialCompose = false
     @State private var readID = UUID()
-    init(api: NativeAPI, token: String, userID: String, initialCompose: Bool = false) {
+    init(api: NativeAPI, token: String, userID: String, initialCompose: Bool = false,
+         initialDate: Date = Date(), initialMeal: String? = nil) {
         self.initialCompose = initialCompose
+        _date = State(initialValue: initialDate)
+        _meal = State(initialValue: initialMeal ?? NativeNutritionEntrySelection.suggestedMeal())
         _context = StateObject(wrappedValue: NativeNutritionContext(api: api, token: token, userID: userID))
     }
     private var day: String { NativeActionDates.day(date) }
     var body: some View {
         List {
-            if let pending = context.pending {
-                Section("待确认的原操作") {
-                    Text(pending.title)
-                    Text("原内容和提交标识已在此设备加密保存。继续核对不会创建第二次操作。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("继续核对") { Task { await context.retry(); await load() } }.disabled(context.busy)
-                }
-            }
+            pendingSection
             NativeNutritionErrorRow(text: context.error)
             Section {
-                DatePicker("饮食日期", selection: $date, in: ...Date(), displayedComponents: .date)
-                Button("手动记录食物", systemImage: "plus.circle") {
-                    editor = NutritionEditorPresentation(rows: [.object(["date": .string(day), "meal": .string("lunch")])])
-                }.disabled(context.pending != nil || context.busy)
-                NavigationLink("一句话或照片识别") { NativeNutritionRecognitionView(context: context, date: day) }
-                NavigationLink("食物库与份量换算") {
-                    NativeNutritionFoodsView(api: context.api, token: context.token, userID: context.userID) { rows in editor = NutritionEditorPresentation(rows: rows) }
-                }
-                NavigationLink("常吃、最近与复制餐次") { NativeNutritionReuseView(context: context, date: day) { editor = NutritionEditorPresentation(rows: $0) } }
-                NavigationLink("自建食物、食谱与整餐模板") { NativeNutritionTemplatesView(context: context) { editor = NutritionEditorPresentation(rows: $0) } }
+                DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
+                Button("记一餐", systemImage: "plus.circle.fill") { composing = true }
+                    .disabled(context.pending != nil || context.busy)
             }
-            if loading { Section { ProgressView("正在读取当天饮食…") } }
-            if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重新读取") { Task { await load() } } } }
+            if loading { Section { ProgressView("读取饮食记录…") } }
+            if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重试") { Task { await load() } } } }
             if data != .null {
-                Section("当天已记录") {
-                    NativeNutritionTotals(nutrients: data["summary"]["nutrients"])
-                    Text(data["dayStatus"]["complete"].boolValue == true ? "本人已标记当天记完" : "尚未标记全天记完")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Text("小计只包含已填写项目，未知值及未记录食物不计为0。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                ForEach(QuickEntryMeal.allCases) { meal in
-                    Section(meal.title) {
-                        let rows = data["entries"].arrayValue.filter { $0["meal"].stringValue == meal.rawValue }
-                        if rows.isEmpty { Text(data["dayStatus"]["meals"][meal.rawValue].stringValue == "skipped" ? "已标记未进食" : "暂无记录").foregroundStyle(.secondary) }
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                            NavigationLink {
-                                NativeNutritionEntryDetail(context: context, initial: row)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(row["name"].stringValue ?? "食物").strikethrough(row["deleted"].boolValue == true)
-                                    Text((row["portion"].stringValue ?? "") + " · " + NativeNutritionFields.value(row["calories"], unit: "千卡"))
-                                        .font(.footnote).foregroundStyle(.secondary)
-                                    if row["deleted"].boolValue == true { Text("已删除").font(.caption).foregroundStyle(.secondary) }
-                                }
-                            }
-                        }
+                Section("当天记录") {
+                    NativeNutritionTotals(nutrients: data["summary"]["nutrients"], compact: true)
+                    NavigationLink {
+                        NativeNutritionStatusView(context: context, initial: data["dayStatus"], date: day)
+                    } label: {
+                        Label(data["dayStatus"]["complete"].boolValue == true ? "已记完 · 餐次状态" : "确认当天记录",
+                              systemImage: data["dayStatus"]["complete"].boolValue == true ? "checkmark.circle.fill" : "circle")
                     }
                 }
-                Section {
-                    NavigationLink("餐次状态与当天记完") { NativeNutritionStatusView(context: context, initial: data["dayStatus"], date: day) }
-                    Toggle("显示删除记录", isOn: $includeDeleted)
-                }
+                ForEach(QuickEntryMeal.allCases) { meal in mealSection(meal) }
+                Section { Toggle("显示已删除记录", isOn: $includeDeleted) }
             }
             Section("回顾与目标") {
-                NavigationLink("7天／30天饮食回顾") { NativeNutritionReviewView(context: context, initialDate: date) }
-                NavigationLink("每日营养目标与需求测算") { NativeNutritionGoalsView(context: context) }
+                NavigationLink("饮食回顾") { NativeNutritionReviewView(context: context, initialDate: date) }
+                NavigationLink("营养目标与需求") { NativeNutritionGoalsView(context: context) }
             }
         }
         .navigationTitle("饮食")
         .environment(\.timeZone, NativeActionDates.timeZone)
         .task {
             context.restorePending()
-            if initialCompose, context.pending == nil {
-                editor = NutritionEditorPresentation(rows: [.object(["date": .string(day), "meal": .string("lunch")])])
+            if initialCompose, !openedInitialCompose {
+                openedInitialCompose = true
+                if context.pending == nil { composing = true }
             }
         }
         .task(id: day + String(includeDeleted)) { await load() }
         .onChange(of: context.changes) { _, _ in Task { await load() } }
         .refreshable { await load() }
-        .sheet(item: $editor) { presentation in
-            NavigationStack { NativeNutritionBatchEditor(context: context, rows: presentation.rows) }
+        .sheet(isPresented: $composing) {
+            NavigationStack {
+                NativeNutritionEntryChooser(context: context, date: $date, meal: $meal) { composing = false }
+            }
+        }
+    }
+    @ViewBuilder private var pendingSection: some View {
+        if let pending = context.pending {
+            Section("上次保存待确认") {
+                Text(pending.title)
+                Text("继续核对会重试原操作，不会重复记录。").font(.footnote).foregroundStyle(.secondary)
+                Button("继续核对") { Task { await context.retry(); await load() } }.disabled(context.busy)
+            }
+        }
+    }
+    private func mealSection(_ selectedMeal: QuickEntryMeal) -> some View {
+        Section {
+            let rows = data["entries"].arrayValue.filter { $0["meal"].stringValue == selectedMeal.rawValue }
+            if rows.isEmpty {
+                Text(data["dayStatus"]["meals"][selectedMeal.rawValue].stringValue == "skipped" ? "已确认未进食" : "暂无记录").foregroundStyle(.secondary)
+            }
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                NavigationLink { NativeNutritionEntryDetail(context: context, initial: row) } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(row["name"].stringValue ?? "食物").strikethrough(row["deleted"].boolValue == true)
+                        Text((row["portion"].stringValue ?? "") + " · " + NativeNutritionFields.value(row["calories"], unit: "千卡"))
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if row["deleted"].boolValue == true { Text("已删除").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text(selectedMeal.title); Spacer()
+                Button("添加") { meal = selectedMeal.rawValue; composing = true }
+                    .disabled(context.pending != nil || context.busy)
+            }
         }
     }
     private func load() async {
@@ -109,6 +118,45 @@ struct NativeNutritionRoot: View {
     }
 }
 
+@MainActor
+private struct NativeNutritionEntryChooser: View {
+    @ObservedObject var context: NativeNutritionContext
+    @Binding var date: Date
+    @Binding var meal: String
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var editor: NutritionEditorPresentation?
+    private var selection: NativeNutritionEntrySelection { NativeNutritionEntrySelection(date: NativeActionDates.day(date), meal: meal) }
+    var body: some View {
+        List {
+            Section {
+                DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
+                Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
+            }
+            Section("怎么记录这餐？") {
+                NavigationLink { NativeNutritionReuseView(context: context, date: selection.date, initialMeal: meal, onDraft: adopt) } label: { Label("常吃与最近", systemImage: "heart") }
+                NavigationLink { NativeNutritionRecognitionView(context: context, date: selection.date, meal: meal, usePhoto: true, onSaved: onSaved) } label: { Label("拍照记录", systemImage: "camera") }
+                NavigationLink { NativeNutritionRecognitionView(context: context, date: selection.date, meal: meal, onSaved: onSaved) } label: { Label("说说吃了什么", systemImage: "text.bubble") }
+                NavigationLink { NativeNutritionBatchEditor(context: context, rows: [selection.applying()], onSaved: onSaved) } label: { Label("手动填写", systemImage: "square.and.pencil") }
+            }.disabled(context.busy || context.pending != nil)
+            Section("更多选择") {
+                NavigationLink {
+                    NativeNutritionFoodsView(api: context.api, token: context.token, userID: context.userID,
+                        initialDate: selection.date, initialMeal: meal, onDraft: adopt)
+                } label: { Label("查找食物", systemImage: "magnifyingglass") }
+                NavigationLink {
+                    NativeNutritionTemplatesView(context: context, initialDate: selection.date, initialMeal: meal, onDraft: adopt)
+                } label: { Label("我的食物与整餐模板", systemImage: "square.stack") }
+            }.disabled(context.busy || context.pending != nil)
+        }
+        .navigationTitle("记一餐").navigationBarTitleDisplayMode(.inline)
+        .environment(\.timeZone, NativeActionDates.timeZone)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        .sheet(item: $editor) { value in NavigationStack { NativeNutritionBatchEditor(context: context, rows: value.rows, onSaved: onSaved) } }
+    }
+    private func adopt(_ rows: [NativeJSON]) { editor = NutritionEditorPresentation(rows: rows) }
+}
+
 struct NutritionEditorPresentation: Identifiable {
     let id = UUID()
     let rows: [NativeJSON]
@@ -116,7 +164,20 @@ struct NutritionEditorPresentation: Identifiable {
 
 struct NativeNutritionTotals: View {
     let nutrients: NativeJSON
+    var compact = false
     var body: some View {
+        if compact {
+            LabeledContent("热量已知小计", value: (nutrients["calories"]["knownCount"].intValue ?? 0) > 0 ? NativeNutritionFields.value(nutrients["calories"]["total"], unit: "千卡") : "—")
+            if let unknown = nutrients["calories"]["unknownCount"].intValue, unknown > 0 {
+                Text("另有\(unknown)项热量未知").font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("营养明细") {
+                detailedTotals
+                Text("未知与未记录不计为0。").font(.caption).foregroundStyle(.secondary)
+            }
+        } else { detailedTotals }
+    }
+    private var detailedTotals: some View {
         ForEach(NativeNutritionFields.keys, id: \.self) { key in
             VStack(alignment: .leading, spacing: 3) {
                 LabeledContent(NativeNutritionFields.title(key) + "已知小计",
@@ -138,8 +199,12 @@ struct NativeNutritionReadOnlyFields: View {
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent(NativeNutritionFields.title(key), value: NativeNutritionFields.value(row[key], unit: key == "calories" ? "千卡" : "克"))
                 Text("来源：" + NativeNutritionFields.source(row["provenance"][key]["source"].stringValue)).font(.caption).foregroundStyle(.secondary)
-                if let basis = row["provenance"][key]["basis"].stringValue, !basis.isEmpty { Text(basis).font(.caption).foregroundStyle(.secondary) }
-                if let original = row["provenance"][key]["originalValue"].stringValue { Text("原参考值：" + original).font(.caption).foregroundStyle(.secondary) }
+                if row["provenance"][key]["basis"].stringValue != nil || row["provenance"][key]["originalValue"].stringValue != nil {
+                    DisclosureGroup("查看依据") {
+                        if let basis = row["provenance"][key]["basis"].stringValue { Text(basis).font(.caption).foregroundStyle(.secondary) }
+                        if let original = row["provenance"][key]["originalValue"].stringValue { Text("原参考值：" + original).font(.caption).foregroundStyle(.secondary) }
+                    }.font(.caption)
+                }
             }
         }
         if let release = row["food"]["catalogRelease"].stringValue { LabeledContent("食物库版本", value: release) }
@@ -252,41 +317,39 @@ struct NativeNutritionBatchEditor: View {
     @State private var finished = false
     @State private var persistenceReady = false
     @State private var saveDraftTask: Task<Void, Never>?
+    @State private var validating = false
+    @State private var expanded = Set<UUID>()
+    @State private var firstIssueAnchor: String?
     init(context: NativeNutritionContext, rows: [NativeJSON], editing: NativeJSON? = nil, onSaved: (() -> Void)? = nil) {
         self.context = context; self.editing = editing; self.onSaved = onSaved
         let values = rows.map { NativeNutritionDraft($0) }
         _drafts = State(initialValue: values); _originalDrafts = State(initialValue: values)
+        _expanded = State(initialValue: values.count == 1 ? Set(values.map(\.id)) : [])
     }
     private var persistence: NativeWorkspacePersistence {
         NativeWorkspacePersistence(userID: context.userID, scope: "nutrition-editor." + (editing?["id"].stringValue ?? "new"))
     }
     private var changed: Bool { drafts != originalDrafts || (editing == nil && drafts.contains { !$0.name.isEmpty }) }
+    private var canSave: Bool { !context.busy && context.pending == nil && !drafts.isEmpty && persistenceReady && recovered == nil && !finished }
     var body: some View {
-        Form {
-            if let recovered {
-                Section("本机未完成草稿") {
-                    Text("\(recovered.count)项食物；恢复只填回表单，不调用AI或保存记录。")
-                    Button("恢复本机草稿") { drafts = recovered; self.recovered = nil }
-                    Button("删除本机草稿", role: .destructive) { do { try persistence.clear(); self.recovered = nil } catch { self.error = error.localizedDescription } }
+        ScrollViewReader { proxy in
+            editorForm
+                .onChange(of: firstIssueAnchor) { _, target in
+                    guard let target else { return }
+                    Task { await Task.yield(); withAnimation { proxy.scrollTo(target, anchor: .center) } }
                 }
-            }
-            Section {
-                Text(editing == nil ? "核对每项内容后一次保存。识别、模板和食物库选择都不会自动记账。" : "保存使用当前记录版本；发生冲突时保留填写，请重新核对服务器记录。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            ForEach($drafts) { $draft in
-                DisclosureGroup(draft.name.isEmpty ? "待填写食物" : draft.name) {
-                    NativeNutritionDraftFields(draft: $draft, context: context)
-                }
-            }.onDelete { if editing == nil { drafts.remove(atOffsets: $0) } }
-            if editing == nil && drafts.count < 30 { Button("再加一项") { drafts.append(NativeNutritionDraft()) } }
-            NativeNutritionErrorRow(text: error ?? context.error)
-            Button(context.busy ? "正在确认…" : "确认保存\(drafts.count)项") { Task { await save() } }
-                .disabled(context.busy || context.pending != nil || drafts.isEmpty)
         }
-        .navigationTitle(editing == nil ? "核对饮食明细" : "编辑食物")
+        .navigationTitle(editing == nil ? "核对这餐" : "编辑食物")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { if changed { confirmClose = true } else { dismiss() } }.disabled(context.busy) } }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("关闭") { if changed { confirmClose = true } else { dismiss() } }.disabled(context.busy)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(context.busy ? "保存中…" : "保存") { Task { await save() } }.disabled(!canSave)
+                    .fontWeight(.semibold)
+            }
+        }
         .interactiveDismissDisabled(context.busy || changed)
         .task { do { recovered = try persistence.load([NativeNutritionDraft].self); persistenceReady = true } catch { self.error = error.localizedDescription } }
         .onChange(of: drafts) { _, _ in
@@ -294,17 +357,68 @@ struct NativeNutritionBatchEditor: View {
             saveDraftTask?.cancel()
             saveDraftTask = Task { try? await Task.sleep(for: .milliseconds(350)); if !Task.isCancelled { saveDraft() } }
         }
-        .onDisappear { saveDraftTask?.cancel(); if !finished && persistenceReady && changed { saveDraft() } }
-        .confirmationDialog("还有未完成的饮食明细。", isPresented: $confirmClose, titleVisibility: .visible) {
-            Button("保存本机草稿并关闭") { if saveDraft() { finished = true; dismiss() } }
+        .onDisappear { saveDraftTask?.cancel(); if !finished && persistenceReady && changed && recovered == nil { saveDraft() } }
+        .confirmationDialog("还有未保存的食物。", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("存草稿并关闭") { if saveDraft() { finished = true; dismiss() } }
             Button("放弃本页填写", role: .destructive) { do { try persistence.clear(); finished = true; dismiss() } catch { self.error = error.localizedDescription } }
         }
     }
+    private var editorForm: some View {
+        Form {
+            recoverySection
+            Section {
+                Text("共\(drafts.count)项，展开食物可修改。未知营养留空，填写0表示已确认。").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach($drafts) { $draft in
+                DisclosureGroup(isExpanded: Binding(get: { expanded.contains(draft.id) }, set: { selected in
+                    if selected { expanded.insert(draft.id) } else { expanded.remove(draft.id) }
+                })) {
+                    NativeNutritionDraftFields(draft: $draft, context: context, issues: issueMessages(draft))
+                } label: { NativeNutritionDraftSummary(draft: draft) }
+                .id(draft.id)
+            }.onDelete { if editing == nil && canSave { drafts.remove(atOffsets: $0) } }
+            .disabled(context.busy || context.pending != nil || recovered != nil || !persistenceReady)
+            if editing == nil && drafts.count < 30 {
+                Button("再加一项", systemImage: "plus") {
+                    let target = drafts.first.map { NativeNutritionEntrySelection(date: $0.date, meal: $0.meal) }
+                        ?? NativeNutritionEntrySelection(date: NativeActionDates.day(Date()), meal: NativeNutritionEntrySelection.suggestedMeal())
+                    let added = NativeNutritionDraft(target.applying()); drafts.append(added); expanded.insert(added.id)
+                }.disabled(context.busy || context.pending != nil || recovered != nil || !persistenceReady)
+            }
+            NativeNutritionErrorRow(text: error ?? context.error)
+            if !persistenceReady { Button("重新读取本机草稿") { Task { await loadDraft() } } }
+        }
+    }
+    @ViewBuilder private var recoverySection: some View {
+        if let recovered {
+            Section("上次未完成的填写") {
+                Text("\(recovered.count)项食物，恢复后仍需确认保存。").font(.footnote).foregroundStyle(.secondary)
+                Button("恢复草稿") { drafts = recovered; self.recovered = nil }
+                Button("丢弃旧草稿", role: .destructive) { do { try persistence.clear(); self.recovered = nil } catch { self.error = error.localizedDescription } }
+            }
+        }
+    }
+    private func issueMessages(_ draft: NativeNutritionDraft) -> [String: String] {
+        guard validating else { return [:] }
+        return Dictionary(uniqueKeysWithValues: draft.validationIssues().map { ($0.field, $0.message) })
+    }
+    private func loadDraft() async {
+        do { recovered = try persistence.load([NativeNutritionDraft].self); persistenceReady = true; error = nil }
+        catch { self.error = error.localizedDescription }
+    }
     @discardableResult private func saveDraft() -> Bool {
+        guard persistenceReady, recovered == nil, !finished else { return false }
         do { try persistence.save(drafts); return true }
-        catch { self.error = error.localizedDescription; return false }
+        catch { persistenceReady = false; self.error = error.localizedDescription; return false }
     }
     private func save() async {
+        validating = true; error = nil
+        if let first = drafts.flatMap({ $0.validationIssues() }).first {
+            expanded.insert(first.rowID); firstIssueAnchor = nil
+            Task { await Task.yield(); firstIssueAnchor = first.id }
+            error = "请先修正标出的内容。"
+            return
+        }
         do {
             let rows = try drafts.map { try $0.payload() }
             let command: NativeNutritionCommand
@@ -314,6 +428,25 @@ struct NativeNutritionBatchEditor: View {
             } else { command = NativeNutritionCommand(path: "health/nutrition/batch", title: "保存\(rows.count)项饮食明细", body: .object(["entries": .array(rows)])) }
             if await context.write(command) != nil { try persistence.clear(); finished = true; onSaved?(); dismiss() }
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct NativeNutritionDraftSummary: View {
+    let draft: NativeNutritionDraft
+    private var sources: String {
+        let values = NativeNutritionFields.keys.map { draft.provenance[$0]?["source"].stringValue ?? ((draft.nutrients[$0] ?? "").isEmpty ? "unknown" : "manual") }
+        return Set(values).sorted().map { NativeNutritionFields.source($0) }.joined(separator: "、")
+    }
+    private var calories: String {
+        guard let value = draft.nutrients["calories"], !value.isEmpty else { return "热量未知" }
+        return value + " 千卡"
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(draft.name.isEmpty ? "待填写食物" : draft.name).fontWeight(.medium)
+            Text((draft.portion.isEmpty ? "份量待补充" : draft.portion) + " · " + calories).font(.subheadline)
+            Text(draft.date + " · " + NativeNutritionFields.meal(draft.meal) + " · " + sources).font(.caption).foregroundStyle(.secondary)
+        }.padding(.vertical, 3)
     }
 }
 
@@ -396,7 +529,13 @@ struct NativeNutritionRecognitionView: View {
     }
     private var persistence: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: context.userID, scope: "nutrition-recognition") }
     private var inputSignature: String { [NativeActionDates.day(date), meal, text, String(usePhoto)].joined(separator: "|") }
-    init(context: NativeNutritionContext, date: String) { self.context = context; _date = State(initialValue: NativeChartDates.parse(date) ?? Date()) }
+    private let onSaved: (() -> Void)?
+    init(context: NativeNutritionContext, date: String, meal: String = NativeNutritionEntrySelection.suggestedMeal(),
+         usePhoto: Bool = false, onSaved: (() -> Void)? = nil) {
+        self.context = context; self.onSaved = onSaved
+        _date = State(initialValue: NativeChartDates.parse(date) ?? Date()); _meal = State(initialValue: meal)
+        _usePhoto = State(initialValue: usePhoto)
+    }
     var body: some View {
         Form {
             if let recovered {
@@ -437,7 +576,7 @@ struct NativeNutritionRecognitionView: View {
                     if photoLoading { ProgressView("正在本机处理图片…") }
                     if let jpeg, let image = UIImage(data: jpeg) {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220)
-                        Text("已在本机转为JPEG并移除元数据。点击识别后才上传本张图片。")
+                        Text("图片已在本机压缩，确认识别后上传。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     TextField("实际吃了多少、配料等补充说明", text: $text, axis: .vertical).lineLimit(3...6)
@@ -446,9 +585,11 @@ struct NativeNutritionRecognitionView: View {
                 }
             }.disabled(recognizing)
             Section {
-                Text(usePhoto ? "识别会将本张压缩图片、说明、日期和餐次发送给网站配置的AI服务。照片只留在本页内存中，不存入业务备份。" : "识别会将这段饮食描述、日期和餐次发送给网站配置的AI服务。打开页面和输入文字不会调用AI。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Button(recognizing ? "正在识别…" : "识别并生成可编辑草稿") { Task { await recognize() } }
+                DisclosureGroup("识别会使用哪些资料？") {
+                    Text(usePhoto ? "确认识别后，图片、说明、日期和餐次会发送至已配置的AI服务。图片不会保存在饮食记录中。" : "确认识别后，描述、日期和餐次会发送至已配置的AI服务。输入文字不会自动识别。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Button(recognizing ? "识别中…" : "识别这餐") { Task { await recognize() } }
                     .disabled(recognizing || photoLoading || cameraAuthorizing || showingCamera || context.pending != nil || (usePhoto ? jpeg == nil : text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 if recognizing { ProgressView() }
                 NativeNutritionErrorRow(text: error)
@@ -465,7 +606,10 @@ struct NativeNutritionRecognitionView: View {
                         }
                     }
                     if !result["drafts"].arrayValue.isEmpty {
-                        Button("逐项核对并确认保存") { editor = NutritionEditorPresentation(rows: result["drafts"].arrayValue) }
+                        Button("核对后保存") {
+                            let selection = NativeNutritionEntrySelection(date: NativeActionDates.day(date), meal: meal)
+                            editor = NutritionEditorPresentation(rows: result["drafts"].arrayValue.map { selection.applying(to: $0) })
+                        }
                     } else { Text("没有生成可核对的食物，请补充说明或手动记录。") }
                 }
             }
@@ -497,6 +641,7 @@ struct NativeNutritionRecognitionView: View {
                 NativeNutritionBatchEditor(context: context, rows: presentation.rows, onSaved: {
                     text = ""; photo = nil; jpeg = nil; result = .null
                     try? persistence.clear()
+                    onSaved?()
                 })
             }
         }
@@ -559,20 +704,28 @@ struct NativeNutritionRecognitionView: View {
 struct NativeNutritionDraftFields: View {
     @Binding var draft: NativeNutritionDraft
     var context: NativeNutritionContext? = nil
+    var issues: [String: String] = [:]
     @State private var pickingFood = false
     @State private var foodError: String?
     var body: some View {
-        TextField("食物名称", text: Binding(get: { draft.name }, set: { draft.changeIdentity(name: $0) }))
-        TextField("食用份量", text: Binding(get: { draft.portion }, set: { draft.changeIdentity(portion: $0) }))
+        TextField("食物名称", text: Binding(get: { draft.name }, set: { draft.changeIdentity(name: $0) })).id(anchor("name"))
+        fieldIssue("name")
+        TextField("食用份量", text: Binding(get: { draft.portion }, set: { draft.changeIdentity(portion: $0) })).id(anchor("portion"))
+        fieldIssue("portion")
         DatePicker("记录日期", selection: Binding(get: { NativeChartDates.parse(draft.date) ?? Date() }, set: { draft.date = NativeActionDates.day($0) }), in: ...Date(), displayedComponents: .date)
-            .environment(\.timeZone, NativeActionDates.timeZone)
-        Picker("餐次", selection: $draft.meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
+            .environment(\.timeZone, NativeActionDates.timeZone).id(anchor("date"))
+        fieldIssue("date")
+        Picker("餐次", selection: $draft.meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }.id(anchor("meal"))
+        fieldIssue("meal")
         ForEach(NativeNutritionFields.keys, id: \.self) { key in
             VStack(alignment: .leading, spacing: 5) {
                 TextField(NativeNutritionFields.title(key) + (key == "calories" ? "（千卡，未知留空）" : "（克，未知留空）"),
-                    text: Binding(get: { draft.nutrients[key] ?? "" }, set: { draft.setNutrient(key, text: $0) })).keyboardType(.decimalPad)
+                    text: Binding(get: { draft.nutrients[key] ?? "" }, set: { draft.setNutrient(key, text: $0) })).keyboardType(.decimalPad).id(anchor(key))
+                fieldIssue(key)
                 Text("来源：" + NativeNutritionFields.source(draft.provenance[key]?["source"].stringValue)).font(.caption).foregroundStyle(.secondary)
-                if let basis = draft.provenance[key]?["basis"].stringValue { Text(basis).font(.caption).foregroundStyle(.secondary) }
+                if let basis = draft.provenance[key]?["basis"].stringValue {
+                    DisclosureGroup("查看参考依据") { Text(basis).font(.caption).foregroundStyle(.secondary) }.font(.caption)
+                }
                 Menu("核对来源") {
                     ForEach(["manual", "label", "unknown"], id: \.self) { source in
                         Button(NativeNutritionFields.source(source)) {
@@ -592,9 +745,10 @@ struct NativeNutritionDraftFields: View {
                 .sheet(isPresented: $pickingFood) {
                     if let context {
                         NavigationStack {
-                            NativeNutritionFoodsView(api: context.api, token: context.token, userID: context.userID, initialQuery: draft.name) { rows in
+                            NativeNutritionFoodsView(api: context.api, token: context.token, userID: context.userID, initialQuery: draft.name, initialDate: draft.date, initialMeal: draft.meal) { rows in
                                 guard rows.count == 1, let row = rows.first else { foodError = "整餐模板包含多项，请从饮食首页使用整餐模板。"; pickingFood = false; return }
                                 let selected = NativeNutritionDraft(row, date: draft.date, meal: draft.meal)
+                                draft.date = selected.date; draft.meal = selected.meal
                                 draft.name = selected.name; draft.portion = selected.portion; draft.note = selected.note
                                 draft.nutrients = selected.nutrients; draft.provenance = selected.provenance
                                 draft.food = selected.food; draft.original = selected.original; draft.warnings = selected.warnings
@@ -614,8 +768,14 @@ struct NativeNutritionDraftFields: View {
         }
         NativeNutritionErrorRow(text: foodError)
         ForEach(draft.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.orange) }
-        TextField("备注与来源说明", text: $draft.note, axis: .vertical).lineLimit(2...5)
+        TextField("备注", text: $draft.note, axis: .vertical).lineLimit(2...5).id(anchor("note"))
+        fieldIssue("note")
     }
+    private func anchor(_ field: String) -> String { draft.id.uuidString + ":" + field }
+    @ViewBuilder private func fieldIssue(_ field: String) -> some View {
+        if let message = issues[field] { Text(message).font(.caption).foregroundStyle(.red) }
+    }
+
 }
 
 struct NativeNutritionMacroChart: View {

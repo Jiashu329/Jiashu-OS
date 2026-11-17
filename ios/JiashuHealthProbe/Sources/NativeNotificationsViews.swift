@@ -5,6 +5,12 @@ enum NativeNotificationContract {
     static let categories = ["invitations", "collaboration", "sync", "balances"]
     static let labels = ["invitations": "家庭邀请", "collaboration": "协作变更", "sync": "同步结果", "balances": "余额核对"]
     static let defaults = Dictionary(uniqueKeysWithValues: categories.map { ($0, true) })
+    static func actionTitle(_ category: String) -> String {
+        ["invitations": "查看邀请", "collaboration": "查看变更", "sync": "查看同步中心", "balances": "核对余额"][category] ?? "查看事项"
+    }
+    static func icon(_ category: String) -> String {
+        ["invitations": "person.crop.circle.badge.plus", "collaboration": "person.2", "sync": "arrow.triangle.2.circlepath", "balances": "checkmark.seal"][category] ?? "bell"
+    }
 
     static func validID(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 512
@@ -110,6 +116,7 @@ final class NativeNotificationsModel: ObservableObject {
     private var dirty = false
     private var persistence: NativeWorkspacePersistence { .init(userID: userID, scope: "notifications-pending-command") }
     var blocked: Bool { busy || pending != nil || !ready }
+    var canSavePreferences: Bool { !blocked && dirty && settingsRevision != nil && !settingsConflict }
 
     init(api: NativeAPI, token: String, userID: String) { self.api = api; self.token = token; self.userID = userID }
 
@@ -130,6 +137,10 @@ final class NativeNotificationsModel: ObservableObject {
             }
         } catch { message = error.localizedDescription; ready = false }
         await load()
+    }
+    func updateCredential(token: String, userID: String) {
+        guard self.userID == userID else { invalidate(); return }
+        self.token = token
     }
 
     func invalidate() { generation = UUID(); readID = UUID(); feed = .null; pending = nil; busy = false; loading = false; ready = false; message = nil }
@@ -215,101 +226,129 @@ struct NativeNotificationsView: View {
     let token: String
     let userID: String
     @StateObject private var model: NativeNotificationsModel
+    @State private var preferencesVisible = false
     init(api: NativeAPI, token: String, userID: String) {
         self.api = api; self.token = token; self.userID = userID
         _model = StateObject(wrappedValue: NativeNotificationsModel(api: api, token: token, userID: userID))
     }
-
     var body: some View {
         List {
             Section {
                 Picker("消息范围", selection: Binding(get: { model.unreadOnly }, set: { value in Task { await model.filter(unread: value) } })) {
-                    Text("全部").tag(false); Text("未读").tag(true)
+                    Text("全部").tag(false); Text("未读 \(model.feed["unreadCount"].intValue ?? 0)").tag(true)
                 }.pickerStyle(.segmented).disabled(model.blocked)
-                if !model.feed.isNull {
-                    LabeledContent("近期未读", value: String(model.feed["unreadCount"].intValue ?? 0))
-                    Button("将当前全部未读标为已读") { Task { await model.markAllVisibleUnread() } }
-                        .disabled(model.blocked || model.feed["unreadIds"].arrayValue.isEmpty)
-                }
-                Button("刷新消息") { Task { await model.load() } }.disabled(model.busy || model.pending != nil)
             }
-            if model.loading { Section { ProgressView("读取消息…") } }
             if let pending = model.pending {
-                Section("待确认的原操作") {
-                    Text(pending.label)
-                    Text("原请求已按当前账号加密保存在本机；继续核对不会包含后来到达的新消息。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("继续确认原操作") { Task { await model.retry() } }.disabled(model.busy)
+                Section("结果待确认") {
+                    Text(pending.label).font(.subheadline)
+                    Button("继续确认") { Task { await model.retry() } }.disabled(model.busy)
                 }
             }
-            if let message = model.message { Section { Text(message).foregroundStyle(.secondary).textSelection(.enabled) } }
-            if !model.ready {
-                Section { Button("重新读取本机待确认操作") { Task { await model.activate(token: token, userID: userID) } } }
-            }
+            if let message = model.message, message != "操作已确认。" { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
+            if !model.ready { Section { Button("重试") { Task { await model.activate(token: token, userID: userID) } } } }
+            if model.loading && model.feed.isNull { Section { ProgressView() } }
             if !model.feed.isNull {
                 if !model.feed["unavailable"].arrayValue.isEmpty {
-                    Section("部分消息暂不可用") {
-                        Text(model.feed["unavailable"].arrayValue.compactMap { NativeNotificationContract.labels[$0.stringValue ?? ""] }.joined(separator: "、"))
-                        Text("已显示其他可读取消息；暂不可用不代表没有提醒。").font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Section("消息") {
-                    if model.feed["items"].arrayValue.isEmpty { Text("当前范围暂无可见消息。").foregroundStyle(.secondary) }
-                    ForEach(Array(model.feed["items"].arrayValue.enumerated()), id: \.offset) { _, item in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(NativeNotificationContract.labels[item["category"].stringValue ?? ""] ?? "消息").font(.caption).foregroundStyle(.secondary)
-                                Spacer(); Text(item["readAt"].isNull ? "未读" : "已读").font(.caption).foregroundStyle(item["readAt"].isNull ? Color.indigo : Color.secondary)
-                            }
-                            Text(item["title"].stringValue ?? "").font(.headline)
-                            Text(item["summary"].stringValue ?? "")
-                            Text(NativeWorkspaceFormat.timestamp(item["createdAt"].stringValue)).font(.caption).foregroundStyle(.secondary)
-                            if let href = item["href"].stringValue.flatMap(NativeNotificationContract.destination) {
-                                NavigationLink("查看相关事项") { NativeWorkspaceDestinationView(api: api, token: token, userID: userID, href: href) }
-                                    .disabled(model.busy)
-                            }
-                            if item["readAt"].isNull, let id = item["id"].stringValue {
-                                Button("标为已读") { Task { await model.markRead(ids: [id]) } }.disabled(model.blocked)
-                            }
-                        }.padding(.vertical, 5)
+                    Section {
+                        Label("部分提醒暂未读取", systemImage: "exclamationmark.circle").font(.subheadline).foregroundStyle(.orange)
+                        Button("重试读取") { Task { await model.load() } }.disabled(model.busy)
                     }
                 }
                 Section {
-                    HStack {
-                        Button("上一页") { Task { await model.page(max(0, model.offset - 20)) } }.disabled(model.blocked || model.offset == 0)
-                        Spacer(); Text("第 \(model.offset / 20 + 1) 页").font(.caption)
-                        Spacer(); Button("下一页") { Task { await model.page(model.offset + 20) } }.disabled(model.blocked || model.feed["hasMore"].boolValue != true)
+                    if model.feed["items"].arrayValue.isEmpty {
+                        ContentUnavailableView(model.unreadOnly ? "未读消息已处理完" : "暂无消息", systemImage: "tray", description: Text("家庭邀请和待核对事项会显示在这里。"))
                     }
-                    Text("近期最多100条可见提醒；完整修改记录请在对应家庭账本的协作动态查看。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if model.feed["truncated"].boolValue == true { Text("部分较早动态未列入当前消息。").font(.caption).foregroundStyle(.secondary) }
-                }
-            }
-            Section("提醒开关") {
-                ForEach(NativeNotificationContract.categories, id: \.self) { category in
-                    Toggle(NativeNotificationContract.labels[category] ?? category, isOn: Binding(
-                        get: { model.preferences[category] ?? true }, set: { model.setCategory(category, enabled: $0) }))
-                        .disabled(model.blocked || model.settingsRevision == nil)
-                }
-                Button("保存提醒设置") { Task { await model.saveSettings() } }
-                    .disabled(model.blocked || model.settingsRevision == nil || model.settingsConflict)
-                if model.settingsConflict {
-                    Button("保留填写并读取最新版本") { Task { await model.load(rebaseSettings: true) } }.disabled(model.loading || model.busy)
-                    Text("读取后对照服务器当前开关，再明确保存自己的选择。").font(.footnote).foregroundStyle(.secondary)
-                }
-                if model.settingsConflict || model.feed["settings"]["revision"].intValue != model.settingsRevision {
-                    ForEach(NativeNotificationContract.categories, id: \.self) { category in
-                        LabeledContent("服务器 · " + (NativeNotificationContract.labels[category] ?? category),
-                                       value: model.feed["settings"]["categories"][category].boolValue == true ? "开启" : "关闭")
+                    ForEach(Array(model.feed["items"].arrayValue.enumerated()), id: \.offset) { _, item in
+                        notification(item)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if item["readAt"].isNull, let id = item["id"].stringValue { Button { Task { await model.markRead(ids: [id]) } } label: { Label("已读", systemImage: "envelope.open") }.tint(.indigo).disabled(model.blocked) }
+                            }
                     }
                 }
-                Text("只控制站内消息，设置与已读状态跨设备保存；不会发送邮件或浏览器推送。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                if model.offset > 0 || model.feed["hasMore"].boolValue == true {
+                    Section {
+                        HStack {
+                            Button("上一页") { Task { await model.page(max(0, model.offset - 20)) } }.disabled(model.blocked || model.offset == 0)
+                            Spacer(); Text("\(model.offset / 20 + 1)").font(.caption).foregroundStyle(.secondary)
+                            Spacer(); Button("下一页") { Task { await model.page(model.offset + 20) } }.disabled(model.blocked || model.feed["hasMore"].boolValue != true)
+                        }
+                    }
+                }
+                if model.feed["truncated"].boolValue == true { Section { Text("更早的家庭变更可在账本动态中查看。").font(.footnote).foregroundStyle(.secondary) } }
             }
         }
-        .navigationTitle("消息中心").navigationBarTitleDisplayMode(.inline)
-        .task(id: userID + token) { await model.activate(token: token, userID: userID) }
+        .navigationTitle("消息")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("提醒设置", systemImage: "bell.badge") { preferencesVisible = true }
+                    Button("全部标为已读", systemImage: "envelope.open") { Task { await model.markAllVisibleUnread() } }.disabled(model.blocked || model.feed["unreadIds"].arrayValue.isEmpty)
+                    Button("刷新", systemImage: "arrow.clockwise") { Task { await model.load() } }.disabled(model.busy || model.pending != nil)
+                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("消息选项")
+            }
+        }
+        .sheet(isPresented: $preferencesVisible) { NavigationStack { NativeNotificationPreferencesView(model: model) } }
+        .task(id: userID) { await model.activate(token: token, userID: userID) }
+        .onChange(of: token) { _, value in model.updateCredential(token: value, userID: userID) }
         .refreshable { if model.pending == nil { await model.load() } }
         .onDisappear { model.invalidate() }
+    }
+    @ViewBuilder private func notification(_ item: NativeJSON) -> some View {
+        if let href = item["href"].stringValue.flatMap(NativeNotificationContract.destination) {
+            NavigationLink { NativeWorkspaceDestinationView(api: api, token: token, userID: userID, href: href) } label: { NativeNotificationRow(item: item) }.disabled(model.busy)
+        } else { NativeNotificationRow(item: item) }
+    }
+}
+
+private struct NativeNotificationRow: View {
+    let item: NativeJSON
+    private var category: String { item["category"].stringValue ?? "" }
+    private var unread: Bool { item["readAt"].isNull }
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: NativeNotificationContract.icon(category)).font(.title3).foregroundStyle(.indigo)
+                .frame(width: 38, height: 38).background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(item["title"].stringValue ?? "").font(.subheadline.weight(unread ? .semibold : .regular)).foregroundStyle(.primary)
+                    if unread { Circle().fill(.indigo).frame(width: 7, height: 7).accessibilityLabel("未读") }
+                }
+                Text(item["summary"].stringValue ?? "").font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                HStack {
+                    Text(NativeNotificationContract.actionTitle(category)).font(.caption.weight(.medium)).foregroundStyle(.indigo)
+                    Spacer()
+                    Text(NativeWorkspaceFormat.timestamp(item["createdAt"].stringValue)).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }.padding(.vertical, 7).accessibilityElement(children: .combine)
+    }
+}
+
+private struct NativeNotificationPreferencesView: View {
+    @ObservedObject var model: NativeNotificationsModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Form {
+            Section {
+                ForEach(NativeNotificationContract.categories, id: \.self) { category in
+                    Toggle(NativeNotificationContract.labels[category] ?? category, isOn: Binding(get: { model.preferences[category] ?? true }, set: { model.setCategory(category, enabled: $0) })).disabled(model.blocked || model.settingsRevision == nil)
+                }
+            } footer: { Text("仅控制站内提醒，不发送系统推送。") }
+            if model.settingsConflict {
+                Section("设置已在其他设备更新") {
+                    Button("保留填写并核对最新设置") { Task { await model.load(rebaseSettings: true) } }.disabled(model.loading || model.busy)
+                    DisclosureGroup("服务器当前设置") {
+                        ForEach(NativeNotificationContract.categories, id: \.self) { category in LabeledContent(NativeNotificationContract.labels[category] ?? category, value: model.feed["settings"]["categories"][category].boolValue == true ? "开启" : "关闭") }
+                    }
+                }
+            }
+            if let pending = model.pending { Section("结果待确认") { Text(pending.label).font(.subheadline); Button("继续确认") { Task { await model.retry() } }.disabled(model.busy) } }
+            if let message = model.message { Section { Text(message == "操作已确认。" ? "已保存" : message).font(.footnote).foregroundStyle(.secondary) } }
+        }
+        .navigationTitle("提醒设置").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await model.saveSettings() } }.disabled(!model.canSavePreferences) }
+        }
     }
 }

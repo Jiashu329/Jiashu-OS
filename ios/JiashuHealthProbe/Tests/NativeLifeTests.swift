@@ -90,6 +90,69 @@ final class NativeLifeTests: XCTestCase {
         XCTAssertEqual(body["rating"], .null)
         XCTAssertThrowsError(try NativeLifeContract.localBody(item: item, epoch: 3, note: "", tags: ["重复", "重复"], hidden: false))
     }
+    func testRemovingVisibleFilterChipKeepsSearchAndCollectionScope() throws {
+        var filters = NativeLifeFilters()
+        filters.kind = "book"; filters.query = "合成作者"; filters.rating = "5"; filters.tag = "重读"; filters.year = "2026"
+        XCTAssertEqual(Set(filters.activeChips.map(\.key)), Set(["rating", "tag", "year"]))
+        filters.removeChip("rating")
+        let path = try XCTUnwrap(URLComponents(string: filters.path()))
+        let query = Dictionary(uniqueKeysWithValues: (path.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        XCTAssertNil(query["rating"])
+        XCTAssertEqual(query["kind"], "book")
+        XCTAssertEqual(query["q"], "合成作者")
+        XCTAssertEqual(query["tag"], "重读")
+        XCTAssertEqual(query["year"], "2026")
+    }
+    func testHiddenAndMissingChipsRestoreDefaultFilterWithoutDroppingOtherConditions() {
+        var filters = NativeLifeFilters()
+        filters.hidden = "hidden"; filters.missing = true; filters.sort = "rating-desc"; filters.profile = "current"
+        filters.removeChip("hidden"); filters.removeChip("missing")
+        XCTAssertEqual(filters.hidden, "visible")
+        XCTAssertFalse(filters.missing)
+        XCTAssertEqual(filters.sort, "rating-desc")
+        XCTAssertEqual(filters.profile, "current")
+        let prior = filters; filters.removeChip("unrecognized")
+        XCTAssertEqual(filters, prior)
+    }
+    func testImportPreviewRejectsDelayedReplyAfterChangingSourceLeavingOrSwitchingAccount() {
+        var gate = NativeLifePreviewGate()
+        let original = gate.begin(owner: "account-a", profile: "profile-a")
+        XCTAssertTrue(gate.accepts(original, owner: "account-a", profile: "profile-a", visible: true))
+        gate.invalidate()
+        XCTAssertFalse(gate.accepts(original, owner: "account-a", profile: "profile-a", visible: true))
+        let replacement = gate.begin(owner: "account-a", profile: "profile-b")
+        XCTAssertFalse(gate.accepts(original, owner: "account-a", profile: "profile-b", visible: true))
+        XCTAssertFalse(gate.accepts(replacement, owner: "account-b", profile: "profile-b", visible: true))
+        XCTAssertFalse(gate.accepts(replacement, owner: "account-a", profile: "profile-b", visible: false))
+        XCTAssertTrue(gate.accepts(replacement, owner: "account-a", profile: "profile-b", visible: true))
+    }
+    @MainActor
+    func testSameAccountCredentialRenewalKeepsFiltersCachedRecordsAndFrozenWrite() async throws {
+        let owner = "life-renewal-" + UUID().uuidString
+        let persistence = NativeWorkspacePersistence(userID: owner, scope: "life-pending")
+        defer { try? persistence.clear() }
+        let frozen = NativeLifePending(owner: owner, label: "合成待确认整理", path: "life/douban/library", method: "PUT", body: .object(["note": .string("尚待确认的合成备注"), "expectedLocalRevision": .integer(7)]))
+        try persistence.save(frozen)
+        let store = NativeLifeStore(api: NativeAPI(), token: "synthetic-old-token", userID: owner)
+        store.filters.kind = "book"; store.filters.query = "未完成的搜索"; store.filters.tag = "重读"
+        store.items = [item]; store.response = .object(["dataEpoch": .integer(4), "total": .integer(1)])
+        let filters = store.filters
+
+        store.updateCredential(token: "synthetic-renewed-token", userID: owner)
+        XCTAssertEqual(store.token, "synthetic-renewed-token")
+        XCTAssertEqual(store.filters, filters)
+        XCTAssertEqual(store.items.map(\.id), [item.id])
+        XCTAssertEqual(store.epoch, 4)
+        XCTAssertEqual(store.pending?.body, frozen.body)
+        XCTAssertEqual(try persistence.load(NativeLifePending.self)?.body, frozen.body)
+
+        store.updateCredential(token: "synthetic-other-account-token", userID: "another-account")
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.response.isNull)
+        XCTAssertNil(store.pending)
+        let sent = await store.mutate(label: "不能发送旧账号操作", path: frozen.path, method: frozen.method, body: frozen.body)
+        XCTAssertFalse(sent)
+    }
     func testImportAndResetFrozenRequestsRetainSameOperationIdentity() throws {
         let preview = NativeJSON.object(["snapshotHash": .string(String(repeating: "a", count: 64)), "dataEpoch": .number(4)])
         let request = NativeLifeContract.importBody(profile: "synthetic_owner", items: [item.personalSnapshot(rating: 4, date: "2026-11-15", comment: "自己的短评")], epoch: 4, preview: preview, requestID: "12345678-1234-4234-8234-123456789abc")

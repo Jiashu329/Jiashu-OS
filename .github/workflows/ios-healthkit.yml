@@ -134,6 +134,24 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: Extract synthetic signed-in native previews
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/healthprobe-tests.xcresult" ]]; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/healthprobe-tests.xcresult" \
+              --output-path "$RUNNER_TEMP/native-ux-previews"
+          fi
+
+      - name: Save synthetic signed-in native previews
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-native-ux-previews
+          path: ${{ runner.temp }}/native-ux-previews
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Capture the signed-out native screen
         env:
           TEST_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}

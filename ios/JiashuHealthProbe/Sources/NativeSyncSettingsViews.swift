@@ -284,26 +284,14 @@ struct NativeSyncConnectionsView: View {
 
     var body: some View {
         List {
-            Section("日常健康同步来源") {
-                if let channel = model.channel {
-                    Text(channel.hasActiveChannel ? "已选择：" + (channel.label ?? "Apple 健康设备") : "尚未选择专用的日常同步设备。")
-                    if channel.hasActiveChannel {
-                        Text("其他快捷指令连接暂不能向此账号导入健康记录。日常来源的选择和解除请在“我的 → 苹果健康”中核对。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                } else { Text("日常来源状态暂未读取。撤销连接可能中断该设备的自动同步。") }
-                NavigationLink("查看同步覆盖、诊断与文件导入") {
-                    NativeHealthSyncWorkspace(api: api, token: token, userID: userID)
-                }
-            }
             if let pending = model.pendingCreation {
                 Section("创建结果待核对") {
                     LabeledContent("原连接名称", value: pending.label)
                     LabeledContent("提交时间", value: NativeWorkspaceFormat.timestamp(pending.startedAt))
-                    Text("创建请求不支持重复提交。请核对下方列表；若连接已创建但未收到密钥，请先撤销对应连接，再明确创建新连接。")
+                    Text("先核对列表。若已创建但密钥未收到，请撤销该连接后再创建。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("读取列表并核对原创建") { Task { await model.refresh(reviewCreation: true) } }.disabled(model.busy)
-                    Button("已核对，结束原创建核对") { endingCreationReview = true }
+                    Button("核对创建结果") { Task { await model.refresh(reviewCreation: true) } }.disabled(model.busy)
+                    Button("已核对，结束处理") { endingCreationReview = true }
                         .disabled(model.busy || !model.reviewedPendingCreation)
                 }
             }
@@ -333,7 +321,7 @@ struct NativeSyncConnectionsView: View {
             }
             if model.hasOneTimeCredential {
                 Section("本次连接密钥") {
-                    Text("服务器只提供这一次明文密钥。离开此页面、切换账号或 App 进入后台后将不再显示；分享前请确认接收位置。")
+                    Text("密钥仅显示一次；离开或切后台即隐藏，请先保存。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if model.secretVisible, let secret = model.secret {
                         Text(secret).font(.system(.footnote, design: .monospaced)).privacySensitive()
@@ -346,24 +334,24 @@ struct NativeSyncConnectionsView: View {
             Section("创建快捷指令连接") {
                 TextField("连接名称", text: $label).disabled(!model.canCreate)
                 Button("创建一个新连接") { Task { await model.create(label: label) } }.disabled(!model.canCreate)
-                Text("连接密钥仅用于该账号的同步连接，不授予账号读取或登录权限。创建连接不会替换当前日常 Apple 健康来源。")
+                Text("此连接不会替换日常设备，也不授予账号读取权限。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("接入配置与空白模板") {
+            Section { DisclosureGroup("接入配置与空白模板") {
                 LabeledContent("服务", value: NativeAPI.websiteURL.host ?? "Jiashu OS")
                 if model.configuration["authorizationReady"].boolValue == true {
-                    Text("服务端接入配置已就绪。快捷指令使用登录后的网页交接，原生 App 使用独立登录。")
+                    Text("接入配置已就绪。")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else { Text("接入配置尚未核对，请刷新后重试。").foregroundStyle(.secondary) }
                 Button("下载空白健康同步模板") { Task { await model.downloadTemplate() } }.disabled(model.busy)
                 if let template = model.templateURL { ShareLink("保存或分享空白模板", item: template) }
-                Text("模板不包含设备密钥或个人健康记录。下载和分享不会自动导入数据。")
+                Text("空白模板不含密钥或个人记录。")
                     .font(.footnote).foregroundStyle(.secondary)
-            }
+            } }
             if let message = model.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
             NativeFeatureFeedback(busy: model.busy, error: model.errorMessage)
         }
-        .navigationTitle("同步连接")
+        .navigationTitle("其他接入方式")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: userID + "|" + token) { await model.activate(token: token, userID: userID) }
         .refreshable { await model.refresh() }

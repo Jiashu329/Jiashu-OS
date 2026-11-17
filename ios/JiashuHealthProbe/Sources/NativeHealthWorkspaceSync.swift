@@ -23,9 +23,11 @@ enum NativeHealthFileImport {
 }
 
 struct NativeHealthSyncWorkspace: View {
+    private enum Page: String { case coverage, history, file }
     let api: NativeAPI
     let token: String
     let userID: String
+    @State private var page: Page = .coverage
     @State private var status: NativeJSON = .null
     @State private var history: NativeJSON = .null
     @State private var channel: NativeHealthChannel?
@@ -50,17 +52,17 @@ struct NativeHealthSyncWorkspace: View {
 
     var body: some View {
         List {
-            channelSection
+            Section {
+                Picker("查看", selection: $page) { Text("覆盖").tag(Page.coverage); Text("历史").tag(Page.history); Text("导入").tag(Page.file) }.pickerStyle(.segmented)
+            }
             pendingSection
-            coverageSection
-            importSection
             receiptSection
-            attemptsSection
-            batchesSection
-            revertSection
+            if page == .coverage { coverageSection }
+            if page == .history { attemptsSection; batchesSection; revertSection }
+            if page == .file { importSection }
             if busy { ProgressView("正在核对…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("同步与导入")
+        }.navigationTitle("健康历史与诊断").refreshable { await load() }
             .task {
                 do {
                     pending = try store.load()
@@ -68,7 +70,8 @@ struct NativeHealthSyncWorkspace: View {
                         payload = draft.snapshot["payload"]; selectedBatch = draft.snapshot["batch"]
                         fileName = draft.fields["filename"] ?? ""; reason = draft.fields["reason"] ?? ""
                         preview = .null; sourceConfirmed = false
-                        message = "已恢复未提交的文件或回退填写。导入前需要重新预览当前影响。"
+                        message = "已保留上次填写，请重新核对后提交。"
+                        page = selectedBatch.isNull ? .file : .history
                     }
                     loaded = true; draftReady = true
                 } catch { message = error.localizedDescription }
@@ -92,52 +95,43 @@ struct NativeHealthSyncWorkspace: View {
                 Button("取消",role:.cancel) { }
             } message: { Text(confirmationKind == "revert" ? "操作会恢复此批次导入前的原始同步值，保留人工修改与操作历史。":"只提交刚才预览的原文件；原日期、来源与未知值均保留。") }
     }
-    private var channelSection: some View {
-            Section("当前同步通道") {
-                if let channel {
-                    Text(channelDescription(channel))
-                    if channel.hasActiveChannel { Text("账号已选择设备通道，手动导入暂停。请从主健康页使用选定设备同步，或明确解除原通道后再导入。") }
-                } else { Text("尚未读取通道状态，文件导入不可用。") }
-                Button("刷新通道、覆盖与回执") { Task { await load() } }.disabled(busy)
-            }
-    }
     @ViewBuilder private var pendingSection: some View {
             if let pending {
                 Section("待确认的原操作") {
                     Text(pending.label)
-                    Text("原文件、预览标识、说明和请求标识已安全保存在本机。继续核对会发送完全相同的请求。")
+                    Text("原内容已保留，继续确认不会重复创建。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("继续确认原操作") { Task { await submit(pending) } }.disabled(busy)
+                    Button("继续确认") { Task { await submit(pending) } }.disabled(busy)
                 }
             }
     }
     private var coverageSection: some View {
-            Section("逐指标覆盖与新鲜度") {
+            Section("记录覆盖") {
                 ForEach(Array(status["metrics"].arrayValue.enumerated()),id:\.offset) { _,metric in
                     VStack(alignment:.leading,spacing:5) {
                         LabeledContent(metric["label"].stringValue ?? "指标",value:freshness(metric["freshness"].stringValue))
                         Text(coverageDescription(metric))
                             .font(.caption).foregroundStyle(.secondary)
-                        if let received = metric["lastImport"]["receivedAt"].stringValue { Text("最近接收：" + received).font(.caption2) }
+                        if let received = metric["lastImport"]["receivedAt"].stringValue { Text("接收：" + NativeWorkspaceFormat.timestamp(received)).font(.caption) }
                     }
                 }
-                Text("新鲜度以实际记录日期计算，空导入或其他指标更新不会使本指标显示为最新。")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
     }
     private var importSection: some View {
-            Section("健康 JSON 文件导入") {
+            Section("文件导入") {
+                if !loaded { ProgressView("核对导入条件…") }
+                else if channel?.hasActiveChannel == true { Text("日常设备已启用，文件导入暂停。").font(.footnote).foregroundStyle(.secondary) }
                 Button("选择健康 JSON 文件") { filePicker = true }.disabled(busy || !fileImportAllowed)
                 if !fileName.isEmpty { Text(fileName).font(.caption) }
                 if case .object = payload {
                     LabeledContent("原导出时间",value:payload["exportedAt"].stringValue ?? "未知")
                     LabeledContent("原始记录数量",value:String(payload["measurements"].arrayValue.count))
-                    Button("向服务器预览本文件影响") { Task { await previewFile() } }.disabled(busy || !fileImportAllowed)
+                    Button("核对导入差异") { Task { await previewFile() } }.disabled(busy || !fileImportAllowed)
                 }
                 if preview["token"].stringValue != nil {
                     previewDetails
                     if (preview["sourceChanges"].intValue ?? 0) > 0 { Toggle("已核对并同意这些来源替换",isOn:$sourceConfirmed).disabled(busy || pending != nil) }
-                    Button("确认导入已预览文件") { confirmationKind = "import"; confirming = true }
+                    Button("确认导入") { confirmationKind = "import"; confirming = true }
                         .disabled(busy || !fileImportAllowed || ((preview["sourceChanges"].intValue ?? 0) > 0 && !sourceConfirmed))
                 }
             }
@@ -181,8 +175,7 @@ struct NativeHealthSyncWorkspace: View {
                         }
                     }
                 }
-                Text("回退只恢复原同步数据并保留审计。有后续同步或影响人工修改时服务器会整批拒绝，需到记录管理逐条核对。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("回退说明") { Text("恢复本批次写入前的值，保留人工更正。有后续同步或冲突时不执行。").font(.footnote).foregroundStyle(.secondary) }
             }
     }
     @ViewBuilder private var revertSection: some View {

@@ -1,9 +1,187 @@
 import Foundation
+import Combine
 import Security
 import XCTest
 @testable import JiashuHealthProbe
 
 final class NativeAppModelTests: XCTestCase {
+    @MainActor
+    func testRestoreDisplaysSavedAccountBeforeNetworkValidationFinishes() async throws {
+        let validation = NativeModelReplyGate()
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path.hasSuffix("auth/refresh") == true {
+                return .held(validation, NativeModelReply(status: 200, data: try JSONEncoder().encode(context.a)))
+            }
+            return try context.standardReply(request)
+        }
+        defer { validation.release(); fixture.cleanup() }
+        try fixture.store.save(fixture.context.a)
+        let loaded = XCTestExpectation(description: "Saved account reads finish independently of session validation")
+        let observation = fixture.model.$loadedHealthDays.sink { if $0 == 30 { loaded.fulfill() } }
+        defer { observation.cancel() }
+        let restoration = Task { await fixture.model.restore() }
+        await validation.waitUntilRequested()
+        await fulfillment(of: [loaded], timeout: 10)
+        XCTAssertFalse(fixture.model.restoring, "A slow validation must not hold the launch screen")
+        XCTAssertEqual(fixture.model.session?.user.id, fixture.context.a.user.id)
+        XCTAssertNotNil(fixture.model.health)
+        validation.release()
+        await restoration.value
+        XCTAssertNotNil(fixture.model.overview)
+        XCTAssertEqual(fixture.model.loadedHealthDays, 30)
+    }
+
+    @MainActor
+    func testExpiredSavedSessionDoesNotOpenAuthenticatedUIOrMakeRequests() async throws {
+        let fixture = try NativeModelFixture { _, _ in XCTFail("Expired saved login reached transport"); return .immediate(.json([:])) }
+        defer { fixture.cleanup() }
+        try fixture.store.save(NativeSession(accessToken: fixture.context.a.accessToken, expiresAt: "2000-01-01T00:00:00Z", user: fixture.context.a.user))
+        await fixture.model.restore()
+        XCTAssertFalse(fixture.model.restoring)
+        XCTAssertNil(fixture.model.session)
+        XCTAssertNil(try fixture.store.load())
+    }
+
+    @MainActor
+    func testFailedRangeKeepsItsActualLoadedRangeAndHasIndependentInlineRecovery() async throws {
+        let range = NativeModelReplyGate()
+        let calls = NativeModelRequestCounter()
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path == "/api/native/overview" { _ = calls.next("overview") }
+            if request.url?.path == "/api/native/health", request.url?.query == "days=90" {
+                return .held(range, .json(["error": "合成网络故障"], status: 503))
+            }
+            return try context.standardReply(request)
+        }
+        defer { range.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        let change = Task { await fixture.model.reloadHealth(days: 90) }
+        await range.waitUntilRequested()
+        XCTAssertTrue(fixture.model.healthLoading)
+        XCTAssertFalse(fixture.model.overviewLoading)
+        XCTAssertEqual(fixture.model.healthDays, 90)
+        XCTAssertEqual(fixture.model.loadedHealthDays, 30)
+        range.release()
+        await change.value
+        XCTAssertFalse(fixture.model.healthLoading)
+        XCTAssertEqual(fixture.model.healthDays, 90)
+        XCTAssertEqual(fixture.model.loadedHealthDays, 30)
+        XCTAssertEqual(fixture.model.health?.summary.metrics["steps"]?.latestValue, 100)
+        XCTAssertNotNil(fixture.model.healthError)
+        XCTAssertNil(fixture.model.overviewError)
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertEqual(calls.value("overview"), 1, "Only the original overview read should have occurred")
+    }
+
+    @MainActor
+    func testHealthPublishesWhileAnIndependentOverviewRefreshIsStillWaiting() async throws {
+        let overview = NativeModelReplyGate()
+        let calls = NativeModelRequestCounter()
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path == "/api/native/overview", calls.next("overview") > 1 {
+                return .held(overview, context.overviewReply(value: 101))
+            }
+            if request.url?.path == "/api/native/health", request.url?.query == "days=90" {
+                return .immediate(context.healthReply(value: 90))
+            }
+            return try context.standardReply(request)
+        }
+        defer { overview.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        let loaded = XCTestExpectation(description: "New range published before overview")
+        let observation = fixture.model.$loadedHealthDays.sink { if $0 == 90 { loaded.fulfill() } }
+        defer { observation.cancel() }
+        let reload = Task { await fixture.model.reload(days: 90) }
+        await overview.waitUntilRequested()
+        await fulfillment(of: [loaded], timeout: 10)
+        XCTAssertEqual(fixture.model.health?.summary.metrics["steps"]?.latestValue, 90)
+        XCTAssertTrue(fixture.model.overviewLoading)
+        XCTAssertFalse(fixture.model.healthLoading)
+        overview.release()
+        await reload.value
+    }
+
+    @MainActor
+    func testBriefForegroundVisitsReuseReadsWhileExplicitRefreshStillFetches() async throws {
+        let calls = NativeModelRequestCounter()
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path == "/api/native/overview" { _ = calls.next("overview") }
+            if request.url?.path == "/api/native/health" { _ = calls.next("health") }
+            return try context.standardReply(request)
+        }
+        defer { fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        await fixture.model.becameActive()
+        await fixture.model.becameActive()
+        XCTAssertEqual(calls.value("overview"), 1)
+        XCTAssertEqual(calls.value("health"), 1)
+        await fixture.model.reloadOverview()
+        XCTAssertEqual(calls.value("overview"), 2)
+        XCTAssertEqual(calls.value("health"), 1)
+        XCTAssertNotNil(fixture.model.overviewUpdatedAt)
+        XCTAssertNotNil(fixture.model.healthUpdatedAt)
+    }
+
+    @MainActor
+    func testLateWorkspaceResponseFromOldLoginIsCancelledAfterAccountSwitch() async throws {
+        let response = NativeModelReplyGate()
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path == "/api/native/finance" {
+                return .held(response, .json(["owner": context.a.user.id]))
+            }
+            return try context.standardReply(request)
+        }
+        defer { response.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        let old = Task { try await fixture.model.api.json(path: "finance", token: fixture.context.a.accessToken) }
+        await response.waitUntilRequested()
+        await fixture.model.login(email: fixture.context.b.user.email, password: "synthetic-b-password")
+        response.release()
+        do { _ = try await old.value; XCTFail("Old account response was published") }
+        catch is CancellationError { }
+        XCTAssertEqual(fixture.model.session?.user.id, fixture.context.b.user.id)
+        XCTAssertEqual(fixture.model.overview?.health.metrics.first?.value, 200)
+        XCTAssertNil(fixture.model.errorMessage)
+    }
+
+    @MainActor
+    func testValidationCannotReplaceSavedLoginWithAnotherOwner() async throws {
+        let fixture = try NativeModelFixture { request, context in
+            if request.url?.path.hasSuffix("auth/refresh") == true {
+                return .immediate(NativeModelReply(status: 200, data: try JSONEncoder().encode(context.b)))
+            }
+            return try context.standardReply(request)
+        }
+        defer { fixture.cleanup() }
+        try fixture.store.save(fixture.context.a)
+        await fixture.model.restore()
+        XCTAssertEqual(fixture.model.session, fixture.context.a)
+        XCTAssertEqual(try fixture.store.load(), fixture.context.a)
+        XCTAssertNotNil(fixture.model.sessionError)
+        XCTAssertNil(fixture.model.errorMessage)
+    }
+
+    @MainActor
+    func testDelayed401ForSupersededTokenCannotExpireRenewedLease() async throws {
+        let failure = NativeModelReplyGate()
+        let fixture = try NativeModelFixture { _, _ in
+            .held(failure, .json(["error": "旧凭据已过期", "code": "NATIVE_SIGN_IN_REQUIRED"], status: 401))
+        }
+        defer { failure.release(); fixture.cleanup() }
+        let api = fixture.model.api, first = fixture.context.a
+        let renewed = NativeSession(accessToken: "synthetic-renewed-token", expiresAt: first.expiresAt, user: first.user)
+        api.beginSession(first)
+        var notified: [String] = []
+        api.workspaceAuthenticationFailure = { notified.append($0) }
+        let old = Task { try await api.json(path: "finance", token: first.accessToken) }
+        await failure.waitUntilRequested()
+        XCTAssertTrue(api.renewSession(renewed, replacing: first.accessToken))
+        failure.release()
+        do { _ = try await old.value; XCTFail("Expected superseded response cancellation") }
+        catch is CancellationError { }
+        XCTAssertTrue(notified.isEmpty)
+    }
+
     @MainActor
     func testDelayedLogoutFromPreviousAccountCannotClearNewLogin() async throws {
         let logout = NativeModelReplyGate()
@@ -76,7 +254,9 @@ final class NativeAppModelTests: XCTestCase {
 
         XCTAssertEqual(fixture.model.session?.user.id, fixture.context.b.user.id)
         XCTAssertNil(fixture.model.overview)
-        XCTAssertNil(fixture.model.health)
+        let healthWhileOverviewWaits = fixture.model.health?.summary.metrics["steps"]?.latestValue
+        XCTAssertTrue(healthWhileOverviewWaits == nil || healthWhileOverviewWaits == 200,
+                      "Independent reads may show B's data, never A's previous data")
         newAccountOverview.release()
         await newLogin.value
         XCTAssertEqual(fixture.model.overview?.health.metrics.first?.value, 200)
@@ -155,7 +335,8 @@ final class NativeAppModelTests: XCTestCase {
         XCTAssertEqual(try fixture.store.load(), fixture.context.a)
         XCTAssertFalse(fixture.model.restoring)
         XCTAssertFalse(fixture.model.autoSyncEnabled)
-        XCTAssertNotNil(fixture.model.errorMessage)
+        XCTAssertNotNil(fixture.model.sessionError)
+        XCTAssertNil(fixture.model.errorMessage)
     }
 
     @MainActor
@@ -780,6 +961,10 @@ private final class NativeModelRequestCounter: @unchecked Sendable {
         let count = (counts[name] ?? 0) + 1
         counts[name] = count
         return count
+    }
+    func value(_ name: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return counts[name] ?? 0
     }
 }
 

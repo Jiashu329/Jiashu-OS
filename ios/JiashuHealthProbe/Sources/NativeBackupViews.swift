@@ -143,7 +143,9 @@ final class NativeBackupWorkspace: ObservableObject {
 }
 
 struct NativeBackupView: View {
+    private enum Mode: String { case backup, restore }
     @StateObject private var state: NativeBackupWorkspace
+    @State private var mode: Mode = .backup
     @State private var choosing = false
     @State private var confirmRestore = false
     @State private var confirmDiscard = false
@@ -151,38 +153,51 @@ struct NativeBackupView: View {
     init(api: NativeAPI, token: String, userID: String) { _state = StateObject(wrappedValue: NativeBackupWorkspace(api: api, token: token, userID: userID)) }
     var body: some View {
         Form {
+            Section {
+                Picker("操作", selection: $mode) { Text("备份").tag(Mode.backup); Text("恢复").tag(Mode.restore) }.pickerStyle(.segmented)
+            }
             NativeFeatureFeedback(busy: state.busy, error: state.error)
-            Section("完整业务备份") {
-                Button("生成单文件备份") { Task { await state.export(volumes: false) } }
-                Button("生成清单与全部分卷") { Task { await state.export(volumes: true) } }
+            if mode == .backup { Section("备份数据") {
+                Button("备份我的数据", systemImage: "externaldrive") { Task { await state.export(volumes: true) } }
                 if !state.exports.isEmpty {
                     ShareLink(items: state.exports) { Label("保存全部备份文件", systemImage: "square.and.arrow.up") }
-                    Button("我已确认妥善保存") { state.confirmSaved() }
+                    Button("我已保存全部文件") { state.confirmSaved() }
                 }
                 if let text = state.receiptText { Text(text).font(.footnote).foregroundStyle(.secondary) }
-                Text("备份包含本人健康、饮食、财务与书影音业务记录。AI 密钥、同步连接和其他登录凭据不包含在内。生成文件后，请通过分享菜单妥善保存。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+                DisclosureGroup("格式与范围") {
+                    Button("仅生成单文件") { Task { await state.export(volumes: false) } }
+                    Text("完整备份含清单及全部分卷。健康、饮食、财务和书影音记录包含在内，登录凭据与服务密钥不包含。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } }
+            if mode == .restore {
             Section("恢复备份") {
-                Button("选择备份或清单与全部分卷") { choosing = true }.disabled(state.pendingRestore)
+                Text(state.summary == nil ? "1 · 选择文件" : state.preview.isNull ? "2 · 核对记录" : "3 · 确认恢复").font(.subheadline).foregroundStyle(.secondary)
+                Button("选择备份文件") { choosing = true }.disabled(state.pendingRestore)
                 if let summary = state.summary {
                     LabeledContent("备份时间", value: NativeWorkspaceFormat.timestamp(summary.exportedAt))
                     LabeledContent("记录与文件", value: "\(summary.rows) 行 · \(summary.files) 个文件")
                     if state.pendingRestore {
-                        Text("上次恢复尚未取得确认。可以继续确认原请求，或先重新核对服务器。不会自动创建新的恢复请求。")
-                        Button("继续确认原恢复") { confirmRestore = true }
+                        Text("上次恢复结果待确认，原文件已保留。")
+                        Button("继续确认") { confirmRestore = true }
                         Button("重新核对服务器") { confirmRepreview = true }
-                    } else { Button("读取服务器恢复预览") { Task { await state.previewRestore() } } }
-                    Button("放弃本机恢复内容", role: .destructive) { confirmDiscard = true }
+                    } else { Button("核对恢复差异") { Task { await state.previewRestore() } } }
+                    Button("重新选择", role: .destructive) { confirmDiscard = true }
                 }
-                Text("单文件上限 8 MiB／20,000 行；分卷组上限 16 MiB／40,000 行。服务器核对全部分卷、摘要和关联后，在一个事务中恢复；存在冲突时不写入。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("文件要求") {
+                    Text("请选择单文件，或清单与全部分卷。单文件最多8 MiB／20,000行，分卷组最多16 MiB／40,000行。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             if !state.preview.isNull {
                 Section("恢复预览") {
                     LabeledContent("新增", value: String(state.preview["total"]["added"].intValue ?? 0))
                     LabeledContent("已存在", value: String(state.preview["total"]["skipped"].intValue ?? 0))
                     LabeledContent("冲突", value: String(state.preview["total"]["conflicts"].intValue ?? 0))
+                    if state.preview["canRestore"].boolValue == true && !state.pendingRestore {
+                        Button("确认恢复") { confirmRestore = true }
+                    } else if state.preview["canRestore"].boolValue != true { Text("存在冲突，尚未写入。请核对后重新预览。").foregroundStyle(.orange) }
+                    DisclosureGroup("查看记录明细") {
                     ForEach(Array(state.preview["tables"].arrayValue.enumerated()), id: \.offset) { _, table in
                         DisclosureGroup(table["label"].stringValue ?? "数据表") {
                             Text("新增 \(table["added"].intValue ?? 0)，已存在 \(table["skipped"].intValue ?? 0)，冲突 \(table["conflicts"].intValue ?? 0)")
@@ -197,16 +212,17 @@ struct NativeBackupView: View {
                             }
                         }
                     }
-                    if state.preview["canRestore"].boolValue == true && !state.pendingRestore {
-                        Button("确认恢复这些记录") { confirmRestore = true }
-                    } else if state.preview["canRestore"].boolValue != true { Text("存在冲突，请先核对当前记录后重新预览。不会自动覆盖或合并。") }
+                    }
                 }
             }
             if !state.result.isNull {
                 Section("服务器已确认") { Text("恢复新增 \(state.result["added"].intValue ?? 0) 行，跳过 \(state.result["skipped"].intValue ?? 0) 行。") }
             }
+            }
         }
-        .navigationTitle("数据与备份").disabled(state.busy).task { state.open() }.onDisappear { state.close() }
+        .navigationTitle("备份与恢复").disabled(state.busy).task {
+            state.open(); if state.summary != nil || state.pendingRestore { mode = .restore }
+        }.onDisappear { state.close() }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.json], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { state.select(urls) }
         }

@@ -5,7 +5,21 @@ struct NativeFeatureFeedback: View {
     let error: String?
     var body: some View {
         if busy { Section { ProgressView("正在处理…") } }
-        if let error { Section { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red).textSelection(.enabled) } }
+        if let error { Section { NativeInlineNotice(error, tone: .error) } }
+    }
+}
+
+struct NativeInlineNotice: View {
+    enum Tone: Equatable { case neutral, attention, error }
+    let message: String
+    var tone: Tone = .neutral
+    init(_ message: String, tone: Tone = .neutral) { self.message = message; self.tone = tone }
+    private var symbol: String { tone == .error ? "exclamationmark.circle" : tone == .attention ? "exclamationmark.triangle" : "info.circle" }
+    private var color: Color { tone == .error ? .red : tone == .attention ? .orange : .secondary }
+    var body: some View {
+        Label(message, systemImage: symbol).font(.subheadline).foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            .accessibilityElement(children: .combine)
     }
 }
 

@@ -26,6 +26,8 @@ struct HealthQuickEntryView: View {
     @State private var message: String?
     @StateObject private var drafts: NativeQuickEntryDraftRecovery
     @State private var initialDraft: NativeQuickEntryDraft?
+    private enum EntryField: Hashable { case value, note, name, portion, carbs, protein, fat }
+    @FocusState private var entryFocus: EntryField?
 
     init(api: NativeAPI, token: String, userID: String, defaultIsNutrition: Bool = false, initialMetric: QuickEntryMetric = .weight,
          initialDate: Date = Date(), onSaved: @escaping () async -> Void) {
@@ -44,13 +46,18 @@ struct HealthQuickEntryView: View {
             entryForm
                 .disabled(isSaving)
                 .environment(\.timeZone, NativeActionDates.timeZone)
-                .navigationTitle("快速记录")
+                .navigationTitle(isNutrition ? "记饮食":"记" + metric.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("关闭") { close() }.disabled(isSaving)
                     }
+                    ToolbarItemGroup(placement:.keyboard) {
+                        Spacer()
+                        Button("完成输入") { entryFocus = nil }
+                    }
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .interactiveDismissDisabled(shouldPreventDismissal)
                 .task { loadPending() }
                 .onChange(of: currentDraft) { _, draft in persistDraftChange(draft) }
@@ -80,11 +87,11 @@ struct HealthQuickEntryView: View {
     @ViewBuilder
     private var pendingSection: some View {
         if let pending {
-            Section("待确认的原操作") {
+            Section("保存待确认") {
                 Label(pending.label, systemImage: "clock.arrow.circlepath")
-                Text("这次提交的内容和标识已安全保存在本机。继续核对会重试同一次保存；你也可以关闭页面后再回来处理。")
+                Text("还未收到保存确认，填写已保留。继续确认不会重复创建记录。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("继续核对并保存") { Task { await submit(pending) } }.disabled(isSaving)
+                Button("继续确认") { Task { await submit(pending) } }.disabled(isSaving)
             }
         }
     }
@@ -105,10 +112,10 @@ struct HealthQuickEntryView: View {
         selectionSection
         if isNutrition { nutritionFields } else { healthFields }
         Section("备注（可选）") {
-            TextField("记录说明", text: $note, axis: .vertical).lineLimit(2...4)
+            TextField("记录说明", text: $note, axis: .vertical).lineLimit(2...4).focused($entryFocus,equals:.note)
         }
         Section {
-            Button("确认保存") { Task { await prepareAndSubmit() } }.disabled(!canSave)
+            Button("保存记录") { entryFocus = nil; Task { await prepareAndSubmit() } }.buttonStyle(.borderedProminent).disabled(!canSave)
         }
     }
 
@@ -125,15 +132,15 @@ struct HealthQuickEntryView: View {
     @ViewBuilder
     private var nutritionFields: some View {
         Section("这次吃了什么") {
-            TextField("食物名称", text: $foodName)
+            TextField("食物名称", text: $foodName).focused($entryFocus,equals:.name)
             Picker("餐次", selection: $meal) {
                 ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0) }
             }
-            TextField("份量，例如一碗、200克", text: $portion)
-            TextField("热量（千卡，未知时留空）", text: $value).keyboardType(.decimalPad)
-            TextField("碳水化合物（克，未知时留空）", text: $carbs).keyboardType(.decimalPad)
-            TextField("蛋白质（克，未知时留空）", text: $protein).keyboardType(.decimalPad)
-            TextField("脂肪（克，未知时留空）", text: $fat).keyboardType(.decimalPad)
+            TextField("份量，例如一碗、200克", text: $portion).focused($entryFocus,equals:.portion)
+            TextField("热量（千卡，未知时留空）", text: $value).keyboardType(.decimalPad).focused($entryFocus,equals:.value)
+            TextField("碳水化合物（克，未知时留空）", text: $carbs).keyboardType(.decimalPad).focused($entryFocus,equals:.carbs)
+            TextField("蛋白质（克，未知时留空）", text: $protein).keyboardType(.decimalPad).focused($entryFocus,equals:.protein)
+            TextField("脂肪（克，未知时留空）", text: $fat).keyboardType(.decimalPad).focused($entryFocus,equals:.fat)
         }
         Section {
             Text("未知热量保持未知；填写0表示已确认这份食物的热量为0。此处记录本人核对的值，不自动估算。")
@@ -148,7 +155,7 @@ struct HealthQuickEntryView: View {
                 ForEach(QuickEntryMetric.allCases) { Text($0.title).tag($0) }
             }
             HStack {
-                TextField("数值", text: $value).keyboardType(.decimalPad)
+                TextField("数值", text: $value).keyboardType(.decimalPad).focused($entryFocus,equals:.value)
                 Text(metric.unit).foregroundStyle(.secondary)
             }
             if metric.isSample {
@@ -391,6 +398,21 @@ struct NativeNutritionDayView: View {
     }
 }
 
+enum NativeWeeklySuggestionDraft {
+    static func applying(_ text: String,to original: NativeWeeklyActionCommand) throws -> NativeWeeklyActionCommand {
+        let proposal = text.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !proposal.isEmpty,proposal.utf16.count <= 200,
+              !proposal.unicodeScalars.contains(where:{ $0.value < 32 || $0.value == 127 }) else {
+            throw NativeActionInputError.invalid("这条建议暂时无法填入，请自行填写一项200字以内的行动。")
+        }
+        return .init(weekStart:original.weekStart,text:proposal,status:original.status,feedback:original.feedback,expectedRevision:original.expectedRevision)
+    }
+    static func needsReplacementConfirmation(current: String,proposal: String) -> Bool {
+        let old = current.trimmingCharacters(in:.whitespacesAndNewlines)
+        return !old.isEmpty && old != proposal.trimmingCharacters(in:.whitespacesAndNewlines)
+    }
+}
+
 @MainActor
 struct HealthWeeklyReviewView: View {
     let api: NativeAPI
@@ -427,6 +449,10 @@ struct HealthWeeklyReviewView: View {
     @State private var latestChecked = false
     @State private var confirmAdoptLatest = false
     @State private var confirmDiscardRecovery = false
+    @State private var confirmSuggestion = false
+    @State private var suggestedText: String?
+    private enum ActionField: Hashable { case text, feedback }
+    @FocusState private var actionFocus: ActionField?
 
     init(api: NativeAPI, token: String, userID: String, initialWeek: String? = nil) {
         self.api = api; self.token = token; self.userID = userID
@@ -453,151 +479,197 @@ struct HealthWeeklyReviewView: View {
 
     var body: some View {
         List {
-            Section {
-                Picker("回顾周", selection: $period) {
-                    Text("本周").tag(ReviewPeriod.current)
-                    Text("上周").tag(ReviewPeriod.previous)
-                    Text("历史周").tag(ReviewPeriod.custom)
-                }.pickerStyle(.segmented)
-                if period == .custom {
-                    DatePicker("选择历史周内的日期",selection:$historicalDate,in:...Date(),displayedComponents:.date)
-                        .environment(\.timeZone,NativeActionDates.timeZone)
-                    Text("回顾周从 " + selectedWeek + "（周一）开始。").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if loading { Section { ProgressView("正在读取回顾…") } }
-            if let reviewError {
-                Section {
-                    Text(reviewError).foregroundStyle(.red)
-                    Button("重新读取回顾") { Task { await loadReview() } }
-                }
-            }
-            if let review {
-                Section(review.weekStart + " 至 " + review.cutoffDay) {
-                    if let focus = review.focus {
-                        Text(focus.headline).font(.headline)
-                        Text(focus.summary)
-                        Text(focus.coverageNote).font(.footnote).foregroundStyle(.secondary)
-                    } else {
-                        Text(review.isCurrent ? "本周仍在进行中，以下为已有记录。" : "以下为这周的实际记录。")
-                    }
-                }
-                Section("指标记录日均") {
-                    ForEach(review.metrics) { metric in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(metric.label)
-                                Spacer()
-                                Text(formatted(metric.currentAverage, unit: metric.unit))
-                                    .fontWeight(.semibold)
-                            }
-                            Text("本期有记录\(metric.currentRecordedDays)天 · 前期\(metric.previousRecordedDays)天")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text("前期记录日均：" + formatted(metric.previousAverage, unit: metric.unit))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 3)
-                    }
-                }
-                if let focus = review.focus {
-                    let points = [focus.primary].compactMap { $0 } + focus.secondary
-                    if !points.isEmpty {
-                        Section("本周重点") {
-                            ForEach(points) { point in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(point.title).font(.headline)
-                                    Text(point.evidence)
-                                    Text(point.interpretation).font(.footnote).foregroundStyle(.secondary)
-                                }.padding(.vertical, 3)
-                            }
-                        }
-                    }
-                }
-            }
-            if let recovery {
-                Section(recovery.submitted ? "发现待确认的原保存":"发现未提交的本机填写") {
-                    Text(recovery.command.weekStart + " · " + (recovery.command.text.isEmpty ? "尚未填写行动":recovery.command.text))
-                    Text(recovery.submitted ? "恢复只重新展示原请求，不自动提交；继续核对会保留原周与原版本。放弃只清理本机，不会撤销服务器可能已经保存的内容。":"恢复后保留原加载周与版本，不会用今天的周日期替换，也不会自动保存。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("恢复原填写") { restoreRecovery() }
-                    Button("放弃本机恢复内容",role:.destructive) { confirmDiscardRecovery = true }
-                }
-            }
-            Section("所选周的一项行动 · " + actionWeek) {
-                if actionWeek != currentCalendarWeek {
-                    Text("当前填写属于\(actionWeek)，保存和重试都会保留原周，不会随日历自动改到本周。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("载入本周行动 · " + currentCalendarWeek) {
-                        reloadWeek = currentCalendarWeek
-                        confirmReload = true
-                    }
-                    .disabled(!storageReady || recovery != nil)
-                }
-                if recovery != nil {
-                    Text("请先选择恢复或放弃本机内容。")
-                } else if !storageReady {
-                    Button("重新读取本机恢复内容") { Task { await initializeAction() } }
-                } else if !actionLoaded && loadingAction {
-                    ProgressView("正在读取行动…")
-                } else if actionLoaded {
-                    TextField("这周想做的一件具体小事", text: $actionText, axis: .vertical).lineLimit(2...4)
-                        .disabled(pendingAction != nil)
-                    Picker("执行状态", selection: $actionStatus) {
-                        ForEach(NativeWeeklyActionStatus.allCases) { Text($0.title).tag($0) }
-                    }.disabled(pendingAction != nil)
-                    TextField("执行后的反馈（可选）", text: $feedback, axis: .vertical).lineLimit(2...5)
-                        .disabled(pendingAction != nil)
-                    Button(pendingAction == nil ? "保存行动" : "继续核对原保存") { Task { await saveAction() } }
-                        .disabled(savingAction || !storageReady || actionConflict || (pendingAction == nil && actionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                    if pendingAction != nil { Text("原提交已安全保存。字段保持固定；继续核对会先读取服务器版本，避免重复创建新版本。").font(.footnote).foregroundStyle(.secondary) }
-                    Button("核对服务器最新版本，保留填写") { Task { await checkLatestAction() } }
-                    if latestChecked {
-                        DisclosureGroup("已核对的服务器内容 · 版本 \(latestAction?.revision ?? 0)") {
-                            Text(latestAction?.text ?? "当前没有已保存行动。")
-                            if let latestAction { Text(latestAction.status.title); Text(latestAction.feedback) }
-                        }
-                        if actionConflict {
-                            Button("核对后采用最新版本，保留填写") { confirmAdoptLatest = true }
-                        }
-                    }
-                }
-                if savingAction { ProgressView("正在核对…") }
-                if let actionMessage { Text(actionMessage).foregroundStyle(.green) }
-                if let actionError { Text(actionError).foregroundStyle(.red) }
-                Button("读取回顾周的最新行动 · " + selectedWeek) {
-                    reloadWeek = selectedWeek
-                    confirmReload = true
-                }
-                .disabled(!storageReady || recovery != nil)
-            }
-            .disabled(savingAction || loadingAction)
-            .onChange(of: actionText) { _, _ in actionMessage = nil; persistUnfinishedAction() }
-            .onChange(of: actionStatus) { _, _ in persistUnfinishedAction() }
-            .onChange(of: feedback) { _, _ in persistUnfinishedAction() }
-            Section {
-                Text("记录日均只使用有记录的日期，缺失记录不会补成0；两期覆盖不同的日期时，日均不能直接代表改善或下降。行动始终保存到上方标明的所选周。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+            weekSection
+            focusSection
+            recoverySection
+            actionSection
+            evidenceSection
         }
-        .navigationTitle("健康周回顾")
+        .navigationTitle("每周复盘")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: selectedWeek) { await loadReview() }
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("完成输入") { actionFocus = nil } }
+        }
+        .task(id:selectedWeek) { await loadReview() }
         .task { await initializeAction() }
         .onDisappear { persistUnfinishedAction() }
         .refreshable { await loadReview() }
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { calendarNow = $0 }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { calendarNow = Date() } }
-        .confirmationDialog("读取\(reloadWeek ?? actionWeek)的行动会替换本页尚未保存的填写。待确认的保存可能已在服务器生效；替换不会撤销它。", isPresented: $confirmReload, titleVisibility: .visible) {
-            Button("读取并替换填写") {
-                let week = reloadWeek ?? actionWeek
-                Task { await loadAction(week: week) }
-            }
-        }
+        .onReceive(Timer.publish(every:60,on:.main,in:.common).autoconnect()) { calendarNow = $0 }
+        .onChange(of:scenePhase) { _,phase in if phase == .active { calendarNow = Date() } }
+        .confirmationDialog("替换当前行动填写？",isPresented:$confirmReload,titleVisibility:.visible) {
+            Button("读取并替换填写",role:.destructive) { let week = reloadWeek ?? actionWeek; Task { await loadAction(week:week) } }
+            Button("保留当前填写",role:.cancel) { }
+        } message: { Text("将读取所选行动周。未保存的填写会被替换；已发出的保存不会被撤销。") }
         .confirmationDialog("放弃本机恢复内容？",isPresented:$confirmDiscardRecovery,titleVisibility:.visible) {
             Button("仅放弃本机内容",role:.destructive) { Task { await discardRecovery() } }
-        } message: { Text("不会删除服务器上的行动。待确认的保存可能已经生效，随后读取服务器内容核对。") }
-        .confirmationDialog("采用已核对的服务器版本？",isPresented:$confirmAdoptLatest,titleVisibility:.visible) {
-            Button("采用最新版本，保留我的填写") { adoptLatestAction() }
-        } message: { Text("原请求将结束恢复；保留当前文字与反馈，以核对过的服务器版本重新编辑。下次保存仍需再次核对该版本。") }
+            Button("取消",role:.cancel) { }
+        } message: { Text("不会删除已保存的行动。随后会读取服务器内容。") }
+        .confirmationDialog("采用核对后的版本？",isPresented:$confirmAdoptLatest,titleVisibility:.visible) {
+            Button("保留填写并继续编辑") { adoptLatestAction() }
+            Button("取消",role:.cancel) { }
+        } message: { Text("当前文字和反馈保留，下次保存会使用刚核对的版本。") }
+        .confirmationDialog("用建议替换当前行动文字？",isPresented:$confirmSuggestion,titleVisibility:.visible) {
+            Button("替换文字，保留状态与反馈") { applySuggestion() }
+            Button("保留原文字",role:.cancel) { suggestedText = nil }
+        } message: { Text("只填入草稿，不会自动保存，也不会更改行动周。") }
+    }
+    private var weekSection: some View {
+        Section {
+            Picker("正在回顾",selection:$period) {
+                Text("本周").tag(ReviewPeriod.current)
+                Text("上周").tag(ReviewPeriod.previous)
+                Text("历史周").tag(ReviewPeriod.custom)
+            }.pickerStyle(.segmented)
+            if period == .custom {
+                DatePicker("选择一周",selection:$historicalDate,in:...Date(),displayedComponents:.date)
+                    .environment(\.timeZone,NativeActionDates.timeZone)
+            }
+            LabeledContent("回顾周",value:selectedWeek)
+        }
+    }
+    @ViewBuilder private var focusSection: some View {
+        if loading { Section { ProgressView("读取这一周…") } }
+        if let reviewError { Section { Text(reviewError).foregroundStyle(.red); Button("重试读取") { Task { await loadReview() } } } }
+        if let review {
+            Section("这周值得关注") {
+                if let focus = review.focus {
+                    Text(focus.headline).font(.title3.bold())
+                    Text(focus.summary)
+                } else { Text(review.isCurrent ? "本周还在进行中，先看看已有记录。":"看看这一周的记录，再选一件接下来要做的事。") }
+            }
+        }
+    }
+    @ViewBuilder private var recoverySection: some View {
+        if let recovery {
+            Section(recovery.submitted ? "保存待确认":"有未完成的行动填写") {
+                Text(recovery.command.weekStart)
+                Text(recovery.command.text.isEmpty ? "行动还没写完。":recovery.command.text)
+                Text(recovery.submitted ? "填写已保留。恢复后由你继续确认，不会自动重发。":"恢复后继续填写，不会自动保存。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("恢复填写") { restoreRecovery() }
+                Button("放弃本机填写",role:.destructive) { confirmDiscardRecovery = true }
+            }
+        }
+    }
+    private var actionSection: some View {
+        Section("选一件接下来要做的事") {
+            LabeledContent("行动执行周",value:actionWeek)
+            Menu("更换行动周") {
+                Button("本周 · " + currentCalendarWeek) { requestActionWeek(currentCalendarWeek) }
+                Button("回顾周 · " + selectedWeek) { requestActionWeek(selectedWeek) }
+                if let next = nextReviewWeek { Button("回顾后的下一周 · " + next) { requestActionWeek(next) } }
+            }.disabled(!storageReady || recovery != nil)
+            if recovery != nil { Text("先恢复或放弃上面的填写。") }
+            else if !storageReady { Button("重新读取本机填写") { Task { await initializeAction() } } }
+            else if !actionLoaded && loadingAction { ProgressView("读取行动…") }
+            else if !actionLoaded { Button("重试读取行动") { Task { await loadAction() } } }
+            else if actionLoaded { actionFields }
+            if savingAction { ProgressView("正在保存…") }
+            if let actionMessage { Text(actionMessage).font(.footnote).foregroundStyle(.green) }
+            if let actionError { Text(actionError).font(.footnote).foregroundStyle(.red) }
+            if actionLoaded { actionRecoveryTools }
+        }
+        .disabled(savingAction || loadingAction)
+        .onChange(of:actionText) { _,_ in actionMessage = nil; persistUnfinishedAction() }
+        .onChange(of:actionStatus) { _,_ in persistUnfinishedAction() }
+        .onChange(of:feedback) { _,_ in persistUnfinishedAction() }
+    }
+    @ViewBuilder private var actionFields: some View {
+        if let suggestion = review?.focus?.suggestedAction {
+            VStack(alignment:.leading,spacing:6) {
+                Text("可选建议").font(.caption).foregroundStyle(.secondary)
+                Text(suggestion.text).font(.subheadline)
+                Button("填入行动草稿") { proposeSuggestion(suggestion.text) }
+                    .disabled(pendingAction != nil || actionConflict || !storageReady)
+            }
+        }
+        TextField("想做的一件具体小事",text:$actionText,axis:.vertical).lineLimit(2...4)
+            .focused($actionFocus,equals:.text).disabled(pendingAction != nil)
+        Picker("执行情况",selection:$actionStatus) {
+            ForEach(NativeWeeklyActionStatus.allCases) { Text($0.title).tag($0) }
+        }.disabled(pendingAction != nil)
+        TextField("做完后的反馈（可选）",text:$feedback,axis:.vertical).lineLimit(2...5)
+            .focused($actionFocus,equals:.feedback).disabled(pendingAction != nil)
+        Button(pendingAction == nil ? "保存行动":"继续确认") { actionFocus = nil; Task { await saveAction() } }
+            .buttonStyle(.borderedProminent)
+            .disabled(!storageReady || actionConflict || (pendingAction == nil && actionText.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+        if pendingAction != nil { Text("保存结果还未确认，原填写已保留。继续确认不会重复创建行动。").font(.footnote).foregroundStyle(.secondary) }
+    }
+    @ViewBuilder private var actionRecoveryTools: some View {
+        if actionConflict || pendingAction != nil {
+            Button("查看最新保存结果，保留填写") { Task { await checkLatestAction() } }
+            latestActionComparison
+        } else {
+            DisclosureGroup("读取与保存详情") {
+                Button("核对最新保存结果") { Task { await checkLatestAction() } }
+                Button("重新载入行动填写") { requestActionWeek(actionWeek) }
+                latestActionComparison
+            }
+        }
+    }
+    @ViewBuilder private var latestActionComparison: some View {
+        if latestChecked {
+            DisclosureGroup("已保存的行动") {
+                Text(latestAction?.text ?? "还没有保存行动。")
+                if let latestAction { Text(latestAction.status.title); Text(latestAction.feedback) }
+            }
+            if actionConflict { Button("核对后保留我的填写继续编辑") { confirmAdoptLatest = true } }
+        }
+    }
+    @ViewBuilder private var evidenceSection: some View {
+        if let review {
+            Section {
+                DisclosureGroup("查看记录与判断依据") {
+                    if let focus = review.focus {
+                        Text(focus.coverageNote).font(.footnote).foregroundStyle(.secondary)
+                        let points = [focus.primary].compactMap { $0 } + focus.secondary
+                        ForEach(points) { point in
+                            VStack(alignment:.leading,spacing:5) {
+                                Text(point.title).font(.headline)
+                                Text(point.evidence)
+                                Text(point.interpretation).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    ForEach(review.metrics) { metric in metricEvidenceRow(metric) }
+                    Text("日均只用有记录的日期。缺失不补0，覆盖不同不能直接解释为改善或下降。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    private func metricEvidenceRow(_ metric: NativeWeeklyDetails.Metric) -> some View {
+        let current: String = formatted(metric.currentAverage,unit:metric.unit)
+        let previous: String = formatted(metric.previousAverage,unit:metric.unit)
+        let comparison: String = "前期 \(previous) · 本期有记录\(metric.currentRecordedDays)天，前期\(metric.previousRecordedDays)天"
+        return VStack(alignment:.leading,spacing:5) {
+            LabeledContent(metric.label,value:current)
+            Text(comparison).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private var nextReviewWeek: String? {
+        guard let start = NativeWeeklyReviewWeek.date(selectedWeek),let date = NativeActionDates.calendar.date(byAdding:.day,value:7,to:start) else { return nil }
+        return NativeActionDates.day(date)
+    }
+    private func requestActionWeek(_ week: String) {
+        guard !loadingAction,!savingAction,storageReady,recovery == nil else { return }
+        if pendingAction != nil || (actionLoaded && command != baseline) { reloadWeek = week; confirmReload = true }
+        else { Task { await loadAction(week:week) } }
+    }
+    private func proposeSuggestion(_ text: String) {
+        guard pendingAction == nil,!actionConflict,actionLoaded,storageReady else { return }
+        suggestedText = text
+        if NativeWeeklySuggestionDraft.needsReplacementConfirmation(current:actionText,proposal:text) { confirmSuggestion = true }
+        else { applySuggestion() }
+    }
+    private func applySuggestion() {
+        guard let proposed = suggestedText,pendingAction == nil,!actionConflict else { return }
+        do {
+            let updated = try NativeWeeklySuggestionDraft.applying(proposed,to:command)
+            actionText = updated.text; suggestedText = nil
+            persistUnfinishedAction()
+        } catch { actionError = error.localizedDescription }
     }
 
     private func formatted(_ value: Double?, unit: String) -> String {
@@ -676,7 +748,7 @@ struct HealthWeeklyReviewView: View {
             baseline = saved.baseline; pendingAction = saved.submitted ? original:nil
             actionLoaded = true; actionConflict = false; latestChecked = false; latestAction = nil
             self.recovery = nil
-            actionMessage = saved.submitted ? "原保存已恢复，尚未重新提交。请主动继续核对。":"原填写已恢复，保留原周与原版本，尚未提交。"
+            actionMessage = saved.submitted ? "已恢复上次保存，请点击“继续确认”。":"已恢复填写，尚未保存。"
         } catch { actionError = error.localizedDescription }
     }
 
@@ -711,7 +783,7 @@ struct HealthWeeklyReviewView: View {
             }
             latestAction = latest; latestChecked = true
             actionConflict = (latest?.revision ?? 0) != actionRevision
-            actionMessage = actionConflict ? "服务器版本已有变化。请核对展示的最新内容，再明确采用该版本或替换填写。":"服务器仍是原加载版本；当前填写与版本未改变。"
+            actionMessage = actionConflict ? "另一处修改过行动。请核对已保存内容，再选择继续编辑。":"当前填写与已保存内容没有冲突。"
         } catch { actionError = error.localizedDescription }
     }
 
@@ -724,7 +796,7 @@ struct HealthWeeklyReviewView: View {
             try persistence.save(NativeWeeklyActionRecovery(ownerID:userID,command:updated,baseline:updatedBaseline,submitted:false))
             actionRevision = revision; baseline = updatedBaseline; pendingAction = nil; actionConflict = false
             latestChecked = false; latestAction = nil
-            actionMessage = "已主动采用核对后的版本，填写仍保留，尚未保存。"
+            actionMessage = "已保留你的填写，可继续编辑后保存。"
         } catch { actionError = error.localizedDescription }
     }
 
@@ -735,7 +807,7 @@ struct HealthWeeklyReviewView: View {
         actionText = entry.text; actionStatus = entry.status; feedback = entry.feedback
         baseline = command; pendingAction = nil; recovery = nil; actionConflict = false
         latestChecked = false; latestAction = nil
-        actionMessage = reconciled ? "已核对服务器内容与原保存一致，没有重复保存。":"\(original.weekStart)这周的行动已保存。"
+        actionMessage = reconciled ? "上次的行动已保存，没有重复创建。":"\(original.weekStart)这周的行动已保存。"
     }
 
     private func saveAction() async {
@@ -761,7 +833,7 @@ struct HealthWeeklyReviewView: View {
                 }
                 guard (latest?.revision ?? 0) == draft.expectedRevision else {
                     latestAction = latest; latestChecked = true; actionConflict = true
-                    actionError = "原周的服务器版本已变化，原请求未重发。请先核对最新内容。"
+                    actionError = "另一处修改过这周的行动，尚未重复保存。请先核对已保存内容。"
                     return
                 }
             }

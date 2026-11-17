@@ -34,6 +34,9 @@ struct NativeWeightPlanWorkspace: View {
     @State private var pending: NativeHealthWorkspaceMutation?
     @State private var operationKind = "save"
     @State private var confirming = false
+    @State private var confirmStart = false
+    @State private var isEditing = false
+    @FocusState private var focusedWeight: String?
     @State private var busy = false
     @State private var loaded = false
     @State private var formRevision = 0
@@ -48,71 +51,12 @@ struct NativeWeightPlanWorkspace: View {
     private var hasCurrent: Bool { data["cycle"]["id"].stringValue != nil && !archived }
     var body: some View {
         List {
-            if let pending {
-                Section("待确认的原操作") {
-                    Text(pending.label)
-                    Text("原计划、目标日期、版本与周期操作标识已安全保存，不会在重试时改为另一周期。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("继续核对原计划操作") { Task { await submit(pending,recovering:true) } }.disabled(busy)
-                }
-            }
-            Section("当前观察") {
-                LabeledContent("最新实测",value:NativeHealthWorkspaceFormat.text(data["observations"]["latestWeight"]) + " kg")
-                LabeledContent("最新日期",value:data["observations"]["latestDate"].stringValue ?? "暂无")
-                LabeledContent("近7天记录日均",value:NativeHealthWorkspaceFormat.text(data["observations"]["average7"]) + " kg")
-                LabeledContent("近7天覆盖",value:NativeHealthWorkspaceFormat.text(data["observations"]["recordedDays7"]) + " 天")
-                rate(data["observations"]["rate7"],label:"近7天")
-                rate(data["observations"]["rate30"],label:"近30天")
-                Text("速度按实际记录日期的首末值及跨度折算；缺少两个不同日期时保持未知，缺失日期不补值。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                let points = data["observations"]["points"].arrayValue.compactMap(NativeWorkspaceHealthPoint.init)
-                if !points.isEmpty {
-                    Chart(points) { point in
-                        if let date = NativeHealthWorkspaceFormat.date(point.day) { PointMark(x:.value("日期",date),y:.value("实测kg",point.value)).foregroundStyle(.teal) }
-                    }.frame(height:180)
-                }
-            }
-            if data["progress"]["status"].stringValue != nil {
-                Section("本周期进度") { progress(data["progress"]) }
-            }
-            Section(hasCurrent ? "编辑当前周期":"开始新周期") {
-                TextField("起始体重（kg）",text:$baseline).keyboardType(.decimalPad)
-                if let last = data["observations"]["latestWeight"].doubleValue {
-                    Button("将最新实测填入起始体重（核对后保存）") { baseline = String(last) }
-                }
-                TextField("目标体重（kg）",text:$target).keyboardType(.decimalPad)
-                DatePicker("起始日期",selection:$start,in:...Date(),displayedComponents:.date)
-                DatePicker("目标日期",selection:$deadline,displayedComponents:.date)
-                Toggle("启用本计划",isOn:$enabled)
-                if conflict { Text("计划版本已变化，请读取最新设置，再核对保留的填写。") }
-                Button(hasCurrent ? "核对并保存当前计划":"核对并开始新周期") { operationKind = hasCurrent ? "save":"start"; confirming = true }
-                    .disabled(!loaded || !draftReady || conflict || busy || pending != nil)
-                Button("读取最新版本，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
-                Button("载入已保存计划到表单") { Task { await load(populate:true) } }.disabled(busy || pending != nil)
-            }.disabled(busy || pending != nil)
-            if hasCurrent {
-                Section("归档周期") {
-                    Text("归档会冻结此刻的计划与总结并停用本周期，保留全部实测；以后更正记录不会重算已归档总结。归档后才可开始新周期。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("核对并归档当前周期",role:.destructive) { operationKind = "archive"; confirming = true }.disabled(busy || pending != nil || conflict)
-                }
-            }
-            Section("历史周期") {
-                ForEach(Array(cycles.enumerated()),id:\.offset) { _,cycle in
-                    DisclosureGroup(cycleTitle(cycle)) {
-                        LabeledContent("起点",value:NativeHealthWorkspaceFormat.text(cycle["settings"]["baselineWeight"]) + " kg")
-                        LabeledContent("目标",value:NativeHealthWorkspaceFormat.text(cycle["settings"]["targetWeight"]) + " kg")
-                        LabeledContent("归档时日均",value:NativeHealthWorkspaceFormat.text(cycle["summary"]["average7"]) + " kg")
-                        LabeledContent("归档时间",value:cycle["archivedAt"].stringValue ?? "未知")
-                        rate(cycle["summary"]["rate7"],label:"归档时7天")
-                        rate(cycle["summary"]["rate30"],label:"归档时30天")
-                        if cycle["summary"]["progress"]["status"].stringValue != nil { progress(cycle["summary"]["progress"]) }
-                    }
-                }
-                if cycles.count < (data["cycleCount"].intValue ?? 0) { Button("读取更早周期") { Task { await moreCycles() } }.disabled(busy) }
-                if cycles.isEmpty { Text("暂无归档周期。") }
-            }
-            if busy { ProgressView("正在核对计划…") }
+            pendingSection
+            currentPlanSection
+            observationsSection
+            editEntrySection
+            historySection
+            if busy { ProgressView("正在确认…") }
             NativeHealthWorkspaceMessage(message:message)
         }.navigationTitle("体重计划")
             .environment(\.timeZone,NativeActionDates.timeZone)
@@ -125,17 +69,141 @@ struct NativeWeightPlanWorkspace: View {
                         baseline = draft.fields["baseline"] ?? ""; target = draft.fields["target"] ?? ""
                         start = draft.dates["start"] ?? start; deadline = draft.dates["deadline"] ?? deadline
                         enabled = draft.fields["enabled"] == "true"; formRevision = draft.snapshot["revision"].intValue ?? 0
-                        conflict = true; message = "已恢复本机计划填写。请读取最新版本，核对保留的填写后再保存。"
+                        conflict = true; message = "未保存的计划已恢复，可点“继续核对填写”查看最新内容。"
                     }
                     draftReady = true
                 } catch { message = error.localizedDescription }
             }
             .onChange(of:draftSignature) { _,_ in saveDraft() }
             .onDisappear { saveDraft() }
+            .sheet(isPresented:$isEditing) { editorSheet }
             .confirmationDialog(operationKind == "archive" ? "归档当前体重周期？":"保存已核对的体重计划？",isPresented:$confirming,titleVisibility:.visible) {
                 Button(operationKind == "archive" ? "确认归档":"确认保存",role:operationKind == "archive" ? .destructive:nil) { Task { await prepare() } }
                 Button("取消",role:.cancel) { }
             } message: { Text(confirmationMessage) }
+    }
+    @ViewBuilder private var pendingSection: some View {
+        if let pending {
+            Section("保存结果待确认") {
+                Text(pending.label)
+                Text("原填写已安全保留，继续确认不会另建周期。").font(.footnote).foregroundStyle(.secondary)
+                Button("继续确认保存") { Task { await submit(pending,recovering:true) } }.disabled(busy)
+            }
+        }
+    }
+    private var currentPlanSection: some View {
+        Section("本周期目标") {
+            if loaded,data["settings"]["baselineWeight"].doubleValue != nil {
+                LabeledContent("起始体重",value:mass(data["settings"]["baselineWeight"]))
+                LabeledContent("目标体重",value:mass(data["settings"]["targetWeight"]))
+                LabeledContent("目标日期",value:data["settings"]["deadline"].stringValue ?? "未知")
+                if data["progress"]["status"].stringValue != nil { progress(data["progress"]) }
+                else { Text(archived ? "此周期已归档，可开始新周期。":"计划当前未启用。").foregroundStyle(.secondary) }
+            } else if loaded { Text("尚未设置体重计划，可先记录体重，再确定目标。").foregroundStyle(.secondary) }
+            else { Text("尚未读取计划").foregroundStyle(.secondary) }
+        }
+    }
+    private var observationsSection: some View {
+        Section("近期实测") {
+            LabeledContent("最新体重",value:mass(data["observations"]["latestWeight"]))
+            LabeledContent("记录日期",value:data["observations"]["latestDate"].stringValue ?? "暂无")
+            LabeledContent("近7天日均",value:mass(data["observations"]["average7"]))
+            LabeledContent("有记录日期",value:NativeHealthWorkspaceFormat.text(data["observations"]["recordedDays7"]) + " / 7 天")
+            observationChart
+            DisclosureGroup("变化速度与计算依据") {
+                rate(data["observations"]["rate7"],label:"近7天")
+                rate(data["observations"]["rate30"],label:"近30天")
+                Text("按实际记录的首末值和日期跨度计算；不足两个不同日期时不估算。").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+    @ViewBuilder private var observationChart: some View {
+        let points = data["observations"]["points"].arrayValue.compactMap(NativeWorkspaceHealthPoint.init)
+        if !points.isEmpty {
+            Chart(points) { point in
+                if let date = NativeHealthWorkspaceFormat.date(point.day) { PointMark(x:.value("日期",date),y:.value("实测kg",point.value)).foregroundStyle(.teal) }
+            }.frame(height:180)
+        }
+    }
+    private var editEntrySection: some View {
+        Section {
+            Button(conflict ? "继续核对填写":hasCurrent ? "编辑计划":"开始新周期") { isEditing = true }
+                .disabled(busy || pending != nil || !loaded || !draftReady)
+            if hasCurrent {
+                DisclosureGroup("周期管理") {
+                    Text("归档会冻结当前总结并停用计划，全部实测记录继续保留。").font(.footnote).foregroundStyle(.secondary)
+                    Button("归档当前周期",role:.destructive) { operationKind = "archive"; confirming = true }.disabled(busy || pending != nil || conflict)
+                }
+            }
+        }
+    }
+    private var historySection: some View {
+        Section {
+            DisclosureGroup("历史周期") {
+                ForEach(Array(cycles.enumerated()),id:\.offset) { _,cycle in archivedCycle(cycle) }
+                if cycles.count < (data["cycleCount"].intValue ?? 0) { Button("读取更早周期") { Task { await moreCycles() } }.disabled(busy) }
+                if cycles.isEmpty { Text("暂无归档周期。").foregroundStyle(.secondary) }
+            }
+        }
+    }
+    private func archivedCycle(_ cycle: NativeJSON) -> some View {
+        let title: String = cycleTitle(cycle)
+        return DisclosureGroup(title) {
+            LabeledContent("起点",value:mass(cycle["settings"]["baselineWeight"]))
+            LabeledContent("目标",value:mass(cycle["settings"]["targetWeight"]))
+            LabeledContent("归档时日均",value:mass(cycle["summary"]["average7"]))
+            LabeledContent("归档时间",value:cycle["archivedAt"].stringValue ?? "未知")
+            rate(cycle["summary"]["rate7"],label:"归档时7天")
+            rate(cycle["summary"]["rate30"],label:"归档时30天")
+            if cycle["summary"]["progress"]["status"].stringValue != nil { progress(cycle["summary"]["progress"]) }
+        }
+    }
+    private var editorSheet: some View {
+        NavigationStack {
+            Form {
+                pendingSection
+                planFormSection
+                NativeHealthWorkspaceMessage(message:message)
+                Text("关闭后会保留填写；保存后才更新计划。").font(.footnote).foregroundStyle(.secondary)
+            }
+            .navigationTitle(hasCurrent ? "编辑体重计划":"新体重周期").navigationBarTitleDisplayMode(.inline)
+            .environment(\.timeZone,NativeActionDates.timeZone)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItem(placement:.confirmationAction) { Button("完成") { focusedWeight = nil; if saveDraft() { isEditing = false } }.disabled(busy) }
+                ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("完成输入") { focusedWeight = nil } }
+            }
+            .interactiveDismissDisabled(busy || hasUnsentDraft)
+            .onDisappear { saveDraft() }
+            .confirmationDialog("开始新的体重周期？",isPresented:$confirmStart,titleVisibility:.visible) {
+                Button("开始新周期") { Task { await prepare() } }
+                Button("取消",role:.cancel) { }
+            } message: { Text(confirmationMessage) }
+        }
+    }
+    private var planFormSection: some View {
+        Section("计划内容") {
+            TextField("起始体重（kg）",text:$baseline).keyboardType(.decimalPad).focused($focusedWeight,equals:"baseline")
+            if let last = data["observations"]["latestWeight"].doubleValue {
+                Button("用最新实测填入起点") { baseline = String(last) }
+            }
+            TextField("目标体重（kg）",text:$target).keyboardType(.decimalPad).focused($focusedWeight,equals:"target")
+            DatePicker("起始日期",selection:$start,in:...Date(),displayedComponents:.date)
+            DatePicker("目标日期",selection:$deadline,displayedComponents:.date)
+            Toggle("启用计划",isOn:$enabled)
+            if conflict { Text("计划已更新。请先查看最新内容，再核对保留的填写。").foregroundStyle(.orange) }
+            Button(hasCurrent ? "保存计划":"开始新周期") {
+                focusedWeight = nil; operationKind = hasCurrent ? "save":"start"
+                if hasCurrent { Task { await prepare() } } else { confirmStart = true }
+            }.buttonStyle(.borderedProminent).disabled(!loaded || !draftReady || conflict || busy || pending != nil)
+            Button("查看最新计划，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
+        }.disabled(busy || pending != nil)
+    }
+    private func mass(_ value: NativeJSON) -> String { NativeHealthWorkspaceFormat.text(value) + " kg" }
+    private var hasUnsentDraft: Bool {
+        let current = data["settings"]
+        return (!baseline.isEmpty || !target.isEmpty) && (Double(baseline) != current["baselineWeight"].doubleValue || Double(target) != current["targetWeight"].doubleValue ||
+            NativeActionDates.day(start) != current["startDate"].stringValue || NativeActionDates.day(deadline) != current["deadline"].stringValue || enabled != current["enabled"].boolValue)
     }
     @ViewBuilder private func rate(_ value: NativeJSON,label: String) -> some View {
         let title: String = label + "变化速度"
@@ -161,11 +229,12 @@ struct NativeWeightPlanWorkspace: View {
         LabeledContent("当前状态",value:status)
         LabeledContent("距目标",value:NativeHealthWorkspaceFormat.text(value["gapKg"]) + " kg")
         LabeledContent("目标进度",value:NativeHealthWorkspaceFormat.text(value["progressPercent"]) + "%")
-        LabeledContent("日历参考体重",value:NativeHealthWorkspaceFormat.text(value["referenceWeight"]) + " kg")
-        LabeledContent("剩余日期",value:NativeHealthWorkspaceFormat.text(value["remainingDays"]))
-        LabeledContent("持续达成",value:sustainedLabel)
-        Text(coverage)
-            .font(.caption).foregroundStyle(.secondary)
+        LabeledContent("剩余天数",value:NativeHealthWorkspaceFormat.text(value["remainingDays"]))
+        DisclosureGroup("参考与持续达成依据") {
+            LabeledContent("日历参考体重",value:mass(value["referenceWeight"]))
+            LabeledContent("持续达成",value:sustainedLabel)
+            Text(coverage).font(.caption).foregroundStyle(.secondary)
+        }
     }
     private func cycleTitle(_ cycle: NativeJSON) -> String {
         let from: String = cycle["settings"]["startDate"].stringValue ?? ""
@@ -198,7 +267,7 @@ struct NativeWeightPlanWorkspace: View {
         catch { message = error.localizedDescription }
     }
     private func prepare() async {
-        guard !busy,pending == nil,loaded,!conflict else { return }
+        guard !busy,pending == nil,loaded,draftReady,!conflict else { return }
         do {
             var body: [String:NativeJSON] = ["expectedRevision":.number(Double(revision))]
             let path: String; let method: String
@@ -212,8 +281,8 @@ struct NativeWeightPlanWorkspace: View {
             try store.save(operation); pending = operation; await submit(operation,recovering:false)
         } catch { message = error.localizedDescription }
     }
-    private func saveDraft() {
-        guard draftReady,pending == nil else { return }
+    @discardableResult private func saveDraft() -> Bool {
+        guard draftReady,pending == nil else { return pending != nil }
         let current = data["settings"]
         let edited = Double(baseline) != current["baselineWeight"].doubleValue || Double(target) != current["targetWeight"].doubleValue ||
             NativeActionDates.day(start) != current["startDate"].stringValue || NativeActionDates.day(deadline) != current["deadline"].stringValue || enabled != current["enabled"].boolValue
@@ -221,7 +290,8 @@ struct NativeWeightPlanWorkspace: View {
             if edited && (!baseline.isEmpty || !target.isEmpty) {
                 try draftStore.save(NativeHealthWorkspaceFormDraft(fields:["baseline":baseline,"target":target,"enabled":String(enabled)],dates:["start":start,"deadline":deadline],snapshot:.object(["revision":.number(Double(formRevision))])))
             } else { try draftStore.clear() }
-        } catch { message = error.localizedDescription }
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     private func submit(_ operation: NativeHealthWorkspaceMutation,recovering: Bool) async {
         guard !busy else { return }; busy = true; message = nil
@@ -233,12 +303,12 @@ struct NativeWeightPlanWorkspace: View {
                 else { result = try await operation.send(api:api,token:token) }
             } else { result = try await operation.send(api:api,token:token) }
             guard result["settings"]["revision"].intValue != nil else { throw NativeAPIError.invalidResponse }
-            try store.clear(); try draftStore.clear(); pending = nil; busy = false; await load(populate:true); message = "计划操作已确认。"
+            try store.clear(); try draftStore.clear(); pending = nil; busy = false; await load(populate:true); message = "计划已保存。"; isEditing = false
         } catch {
             message = error.localizedDescription
             if NativeHealthWorkspaceFormat.definiteRejection(error) {
                 do { try store.clear(); pending = nil; conflict = true } catch { message = error.localizedDescription }
-            } else { message = (message ?? "") + " 原操作仍待确认，请继续核对，不会自动创建另一个周期。" }
+            } else { message = (message ?? "") + " 填写已保留，请继续确认保存。" }
         }
         busy = false
     }
