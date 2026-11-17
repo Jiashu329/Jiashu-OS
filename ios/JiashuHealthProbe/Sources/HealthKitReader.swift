@@ -38,7 +38,10 @@ final class HealthKitReader: NativeHealthReading {
 
     func read(days: Int = 30) async throws -> NativeHealthSnapshot {
         guard HKHealthStore.isHealthDataAvailable() else { throw NativeHealthError.unavailable }
-        let capturedAt = Date(), windows = try NativeHealthCalendar.windows(days: days, capturedAt: capturedAt)
+        // Query and export one representable cutoff. Rounding a raw Date only
+        // while serializing could place today's end after the captured instant.
+        let capturedAt = try NativeHealthCalendar.cutoff(Date())
+        let windows = try NativeHealthCalendar.windows(days: days, capturedAt: capturedAt)
         guard let first = windows.first else { throw NativeHealthError.noReadableData }
         var measurements: [NativeHealthMeasurement] = []
         for (metric, identifier, unit) in [

@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'ios/**'
+      - 'lib/health.ts'
       - '.github/workflows/ios-healthkit.yml'
   push:
     branches: [main]
     paths:
       - 'ios/**'
+      - 'lib/health.ts'
       - '.github/workflows/ios-healthkit.yml'
   workflow_dispatch:
 
@@ -26,6 +28,21 @@ jobs:
 
       - name: Check Xcode project structure
         run: python3 ios/JiashuHealthProbe/scripts/verify-project.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Validate actual Swift exports with the backend parser
+        run: |
+          xcrun swiftc -parse-as-library \
+            ios/JiashuHealthProbe/Sources/StepModels.swift \
+            ios/JiashuHealthProbe/Sources/HealthSyncModels.swift \
+            ios/JiashuHealthProbe/scripts/ExportContractFixtures.swift \
+            -o "$RUNNER_TEMP/health-export-contract"
+          "$RUNNER_TEMP/health-export-contract" > "$RUNNER_TEMP/health-export-contract.ndjson"
+          node --experimental-strip-types ios/JiashuHealthProbe/scripts/validate-export-contract.mjs \
+            "$RUNNER_TEMP/health-export-contract.ndjson"
 
       - name: Select an installed iPhone simulator
         id: simulator
