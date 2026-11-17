@@ -37,7 +37,8 @@ export async function resolveFinanceBookScope(db: FinanceBooksDatabase, value: F
   const actor = normalizeFinanceBookActor(value), selected = parseFinanceBookId(bookId);
   if (ledger !== 'personal' && ledger !== 'family') throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '请选择个人或家庭账本。');
   if (ledger === 'personal' && selected !== 'own') throw new FinanceBookError('FINANCE_BOOK_INVALID', 400, '个人账本不能使用家庭共享身份。');
-  const base = { actorUserId: actor.userId, actorEmail: actor.email, actorName: actor.displayName, ledger, isSiteOwner: actor.isOwner === true };
+  const base = { actorUserId: actor.userId, actorEmail: actor.email, actorName: actor.displayName, ledger,
+    isSiteOwner: actor.isOwner === true, localAccountRevision: actor.localAccountRevision };
   const book = ledger === 'personal' ? null : selected === 'own' ? await ownBook(db, actor.userId) : await readBook(db, selected);
   if (selected === 'own' || book?.ownerUserId === actor.userId) {
     if (accessRevision !== undefined && accessRevision !== 0) throw financeBookAccessChanged();

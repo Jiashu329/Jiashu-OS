@@ -122,14 +122,16 @@ void test('return paths cannot escape the site, reach internal APIs or create au
 
 void test('the gateway strips forged identity/proxy/middleware headers before any application handler, including raw headers', async () => {
   const f = fixture(), { req, res } = await f.call('/api/session', 'GET', { 'oai-authenticated-user-id': 'attacker', 'oai-authenticated-user-email': 'attacker@example.test',
-    'x-auth-request-user': 'attacker', 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'http', 'x-real-ip': 'evil', 'x-middleware-subrequest': 'middleware:middleware', 'x-vinext-prerender-secret': 'forged', 'x-page-owner': 'kept-for-app-validation' });
+    'x-auth-request-user': 'attacker', 'x-auth-local-account-revision': 'forged', 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'http', 'x-real-ip': 'evil', 'x-middleware-subrequest': 'middleware:middleware', 'x-vinext-prerender-secret': 'forged', 'x-page-owner': 'kept-for-app-validation' });
   assert.equal(res.statusCode, 200); assert.equal(f.downstream.length, 1);
   assert.equal(req.headers['oai-authenticated-user-id'], undefined); assert.equal(req.headers['x-auth-request-user'], undefined);
+  assert.equal(req.headers['x-auth-local-account-revision'], undefined);
   assert.equal(req.headers['x-middleware-subrequest'], undefined); assert.equal(req.headers['x-vinext-prerender-secret'], undefined);
   assert.equal(req.headers.host, config.host); assert.equal(req.headers['x-forwarded-proto'], 'https'); assert.equal(req.headers['x-forwarded-host'], config.host);
   assert.equal(req.headers['x-page-owner'], 'kept-for-app-validation'); assert.doesNotMatch(req.rawHeaders.join(' '), /attacker|evil|forged/);
-  const authenticated = sanitizedSelfhostHeaders({ 'oai-authenticated-user-id': 'attacker' }, config, { id: config.ownerId, email: config.ownerEmail });
+  const authenticated = sanitizedSelfhostHeaders({ 'oai-authenticated-user-id': 'attacker', 'x-auth-local-account-revision': '99' }, config, { id: config.ownerId, email: config.ownerEmail, revision: 2 });
   assert.equal(authenticated['oai-authenticated-user-id'], config.ownerId);
+  assert.equal(authenticated['x-auth-local-account-revision'], '2');
 });
 
 void test('login requires same-origin CSRF, issues a host-only secure cookie and injects only the configured owner', async () => {

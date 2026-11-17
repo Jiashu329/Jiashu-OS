@@ -78,7 +78,7 @@ struct NativeNutritionRoot: View {
             Section("上次保存待确认") {
                 Text(pending.title)
                 Text("继续核对会重试原操作，不会重复记录。").font(.footnote).foregroundStyle(NativePalette.muted)
-                Button("继续核对") { Task { await context.retry(); await load() } }.disabled(context.busy)
+                Button("继续核对") { Task { await context.retry(pending); await load() } }.disabled(context.busy)
             }.listRowBackground(NativePalette.surface)
         }
     }

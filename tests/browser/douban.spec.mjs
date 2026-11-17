@@ -603,9 +603,10 @@ test('private files are normalized locally, previewed without writes and importe
   await page.locator('#douban-import-profile').fill(PROFILE);
   const rawItems = [{ title: '私密导入测试电影', url: 'https://movie.douban.com/subject/1234567/', type: 'movie',
     state: '看过', myRating: 4, collectionDate: '2026-11-12', myComment: '只属于本人的导入短评', score: 9.8,
-    unrelatedPrivateData: 'PRIVATE-DO-NOT-UPLOAD' }];
+    unrelatedPrivateData: 'PRIVATE-DO-NOT-UPLOAD' },
+    { title: '无完成状态的测试电影', url: 'https://movie.douban.com/subject/2345678/', type: 'movie' }];
   await page.locator('#douban-import-files').setInputFiles({ name: 'private-douban-records.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rawItems)) });
-  await page.locator('#douban-import-completed').check();
+  await expect(page.locator('#douban-import-completed')).not.toBeChecked();
   expect(mutations(testInfo)).toEqual([]);
   expect(testInfo.synthetic.doubanItems).toEqual([]);
   await page.locator('#douban-import-preview').click();
@@ -621,10 +622,14 @@ test('private files are normalized locally, previewed without writes and importe
   expect(imports()[0].body.items[0].rating).toBe(4);
   expect(imports()[0].body.items[0].details.doubanRating).toBe(9.8);
   expect(JSON.stringify(imports()[0].body)).not.toMatch(/private-douban-records\.json|myRating|myComment|collectionDate|"score"|unrelatedPrivateData|PRIVATE-DO-NOT-UPLOAD|rawFile|rawText|cookie|password|userId/);
-  await page.locator('#douban-import-completed').uncheck();
+  await page.locator('#douban-import-completed').check();
   await expect(page.locator('#douban-import-confirm')).toBeDisabled();
   expect(testInfo.synthetic.doubanItems).toEqual([]);
-  await page.locator('#douban-import-completed').check();
+  await page.locator('#douban-import-preview').click();
+  await expect(page.locator('#douban-import-confirm')).toBeEnabled();
+  expect(imports()[1].body.items.map(item => item.subjectId)).toEqual(['1234567', '2345678']);
+  await page.locator('#douban-import-completed').uncheck();
+  await expect(page.locator('#douban-import-confirm')).toBeDisabled();
   await page.locator('#douban-import-preview').click();
   await expect(page.locator('#douban-import-confirm')).toBeEnabled();
   testInfo.synthetic.doubanLoseImportReply = true;

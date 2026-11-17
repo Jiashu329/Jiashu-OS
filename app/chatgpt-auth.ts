@@ -5,7 +5,7 @@ import { identityFromHeaders } from '../lib/account-identity';
 import type { SiteIdentity } from '../lib/account-identity';
 import { safeAccountRetryPath } from '../lib/account-retry';
 
-export type ChatGPTUser = SiteIdentity & { isOwner: boolean };
+export type ChatGPTUser = SiteIdentity & { isOwner: boolean; localAccountRevision?: number };
 const SIGN_IN_PATH = '/signin-with-chatgpt';
 const SIGN_OUT_PATH = '/signout-with-chatgpt';
 const CALLBACK_PATH = '/callback';

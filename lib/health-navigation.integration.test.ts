@@ -144,7 +144,7 @@ test('manual shortcut handoff clears the sensitive fragment and does not auto-su
 });
 
 test('non-sleep trends retain a readable scrollable chart instead of shrinking labels to phone width', async () => {
-  const f = fixture('/health?metric=steps&days=7', [{ metric: 'steps', value: 5000, day: '2026-11-11', startDate: '2026-11-11T00:00:00+08:00' }]);
+  const f = fixture('/health?metric=steps&from=2026-11-10&to=2026-11-16', [{ metric: 'steps', value: 5000, day: '2026-11-11', startDate: '2026-11-11T00:00:00+08:00' }]);
   await f.ready();
   assert.equal(f.el('chart-wrap').querySelector('.metric-chart-scroll')?.getAttribute('tabindex'), '0');
   assert.match(f.el('chart-wrap').textContent ?? '', /横向滑动/);

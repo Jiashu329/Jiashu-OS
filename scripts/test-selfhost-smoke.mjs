@@ -235,6 +235,48 @@ async function accountMutation(browser, path, method, body, expectedStatus = 200
   }), expectedStatus, 'Administrator account mutation');
 }
 
+async function familyBookAcceptance(administrator, memberSession, member, memberPassword) {
+  const browserWrite = (browser, actorId, path, body, operationId = randomUUID()) => browser.request('/api/finance' + path, {
+    method: 'POST', body: JSON.stringify(body),
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': actorId, 'Idempotency-Key': operationId },
+  });
+  const invited = await json(await browserWrite(administrator, ownerId, '/books/own/invitations', { email: member.email, role: 'editor' }), 200, 'Browser owner invites a local editor');
+  const native = (path, token, body, operationId = randomUUID()) => fetch(origin + '/api/native' + path, {
+    method: body === undefined ? 'GET' : 'POST', body: body === undefined ? undefined : JSON.stringify(body),
+    headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json', 'Idempotency-Key': operationId }) },
+    redirect: 'manual', signal: AbortSignal.timeout(10000),
+  });
+  const session = await json(await native('/auth/login', null, { email: member.email, password: memberPassword }), 200, 'Native local editor login');
+  assert.equal(session.user.id, member.id);
+  const token = session.accessToken;
+  const pending = (await json(await native('/finance/books', token), 200, 'Native editor lists pending invitations')).invitations.find(item => item.id === invited.member.id);
+  assert.ok(pending);
+  const accepted = await json(await native('/finance/books/invitations/' + pending.id + '/respond', token, { action: 'accept', expectedRevision: pending.revision }), 200, 'Native editor accepts invitation');
+  const scope = '?ledger=family&book=' + pending.bookId + '&bookRevision=' + accepted.member.revision;
+  const shared = await json(await native('/finance' + scope, token), 200, 'Native local editor opens the shared family book');
+  assert.equal(shared.book.role, 'editor');
+  const input = { ledger: 'family', name: 'Synthetic collaboration account', type: 'bank', currency: 'CNY', amount: '123.45', asOfDate: date, note: '' };
+  const operationId = randomUUID();
+  const account = await json(await native('/finance/accounts' + scope, token, input, operationId), 201, 'Native local editor writes to the shared family book');
+  const replay = await json(await native('/finance/accounts' + scope, token, input, operationId), 201, 'Native editor retries the original operation');
+  assert.equal(replay.account.id, account.account.id);
+  const ownerBook = await json(await administrator.request('/api/finance?ledger=family'), 200, 'Browser owner sees the shared write');
+  assert.equal(ownerBook.accounts.filter(item => item.id === account.account.id).length, 1);
+  const activity = await json(await native('/finance/books/' + pending.bookId + '/activity?bookRevision=' + accepted.member.revision, token), 200, 'Native local editor reads transaction-guarded activity');
+  assert.ok(activity.items.some(item => item.action === 'account.create' && item.targetId === account.account.id && item.actorName === member.email));
+
+  const own = '?ledger=family&book=own&bookRevision=0';
+  await json(await memberSession.request('/api/finance' + own), 200, 'Browser local member owns a family book before its first invitation');
+  await json(await browserWrite(memberSession, member.id, '/books/own/invitations', { email: 'another-invitee@example.test', role: 'viewer' }), 200, 'Browser local member materializes their own family book');
+  const memberBook = await json(await memberSession.request('/api/finance' + own), 200, 'Browser local member continues to own their materialized family book');
+  assert.equal(memberBook.book.role, 'owner');
+  await json(await browserWrite(memberSession, member.id, '/accounts' + own, input), 201, 'Browser local owner writes to their own materialized family book');
+
+  await json(await browserWrite(administrator, ownerId, '/books/' + pending.bookId + '/members/' + pending.id, { action: 'revoke', expectedRevision: accepted.member.revision }), 200, 'Browser owner revokes editor access');
+  const revoked = await json(await native('/finance/accounts' + scope, token, input, operationId), 403, 'Revoked native editor cannot replay the committed write');
+  assert.equal(revoked.code, 'FINANCE_BOOK_ACCESS_REVOKED');
+}
+
 async function multiuserAcceptance() {
   const administrator = new Browser(); await login(administrator);
   const initial = await adminMetadata(administrator);
@@ -273,6 +315,7 @@ async function multiuserAcceptance() {
   assert.equal(rootGoals.targets.steps, 8000, 'Normal-user writes preserve the administrator goals');
   const memberNutrition = await json(await memberSession.request('/api/health/nutrition?date=' + date, { headers: { 'X-Page-Owner': memberId } }), 200, 'Normal-user nutrition isolation');
   assert.equal(memberNutrition.entries.length, 0, 'Administrator nutrition is not visible in a normal account');
+  await familyBookAcceptance(administrator, memberSession, member, memberPassword);
 
   const renamed = await accountMutation(administrator, '/api/admin/users/' + encodeURIComponent(memberId), 'PATCH', { expectedRevision: member.revision, email: 'renamed@example.test' });
   member = renamed.user; assert.equal(member.id, memberId); assert.equal(member.email, 'renamed@example.test');

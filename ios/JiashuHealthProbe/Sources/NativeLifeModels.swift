@@ -176,16 +176,46 @@ struct NativeLifePreviewGate {
 
 /// Inert local text parsing: no browser, remote reads, or provider credentials.
 enum NativeLifeImportParser {
-    static func parse(data: Data, filename: String, profile: String, confirmMissingStatus: Bool) throws -> NativeLifeImportResult {
-        guard data.count <= 8 * 1024 * 1024, let text = String(data: data, encoding: .utf8) else { throw NativeLifeError.invalid("请选择不超过8MiB的UTF-8文本资料。") }
+    static func parse(files: [(name: String, data: Data)], profile: String, confirmMissingStatus: Bool) throws -> NativeLifeImportResult {
+        guard (1...100).contains(files.count) else { throw NativeLifeError.invalid("请选择1–100个文本导出文件。") }
         let profileID = try NativeLifeContract.profileID(profile)
-        let ext = (filename as NSString).pathExtension.lowercased()
-        var explicit = false
-        let rows: [NativeJSON]
+        var result = NativeLifeImportResult(items: [])
+        var seen: [String: NativeJSON] = [:]
+        var inputBytes = 0
+        var inputRows = 0
+        for file in files {
+            guard file.data.count <= 8 * 1024 * 1024 - inputBytes,
+                  let decoded = String(data: file.data, encoding: .utf8) else { throw NativeLifeError.invalid("请选择合计不超过8MiB的UTF-8文本资料。") }
+            inputBytes += file.data.count
+            let text = decoded.first == "\u{FEFF}" ? String(decoded.dropFirst()) : decoded
+            let ext = (file.name as NSString).pathExtension.lowercased()
+            let (rows, explicit) = try readRows(text, ext: ext, bytes: file.data.count, profile: profileID)
+            guard rows.count <= 500 - inputRows else { throw NativeLifeError.invalid("一次最多预览500条输入记录。") }
+            inputRows += rows.count
+            for row in rows {
+                try rejectSecrets(row)
+                guard case .object = row else { throw NativeLifeError.invalid("导入条目需为有名称和豆瓣链接的对象。") }
+                let claimed = try agreed(row, ["profileId", "sourceProfile"])
+                guard claimed == .null || claimed == .string(profileID) else { throw NativeLifeError.invalid("文件中的来源主页与本次选择不一致。") }
+                let identity = try subject(row)
+                let status = try agreed(row, ["state", "status", "myState", "collectionStatus", "状态", "收藏状态"])
+                guard try completed(status, domain: identity.domain, confirmed: confirmMissingStatus) else { result.skipped += 1; continue }
+                let item = try normalized(row, explicit: explicit, subject: identity)
+                let key = identity.domain + ":" + identity.id
+                if let existing = seen[key] {
+                    guard existing == item else { throw NativeLifeError.invalid("同一作品有冲突的评分、短评或资料，请先保留正确的一份。") }
+                    result.duplicates += 1
+                } else { seen[key] = item; result.items.append(item) }
+            }
+        }
+        return result
+    }
+
+    private static func readRows(_ text: String, ext: String, bytes: Int, profile: String) throws -> (rows: [NativeJSON], explicit: Bool) {
         if ext == "csv" {
             let table = try csv(text)
             guard let names = table.first, !names.isEmpty, names.count <= 100, names.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.utf16.count <= 100 }), Set(names.map(keyName)).count == names.count else { throw NativeLifeError.invalid("CSV列名重复或缺失。") }
-            rows = try table.dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.map { line in
+            let rows = try table.dropFirst().filter { !$0.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }.map { line -> NativeJSON in
                 guard line.count == names.count else { throw NativeLifeError.invalid("CSV列数不一致，请核对引号和分隔符。") }
                 var values: [String: NativeJSON] = [:]
                 for (name, value) in zip(names, line) {
@@ -194,42 +224,63 @@ enum NativeLifeImportParser {
                 }
                 return .object(values)
             }
-        } else if ["md", "markdown"].contains(ext) {
-            rows = [try markdown(text)]
-        } else if ["html", "htm"].contains(ext) {
-            guard data.count <= 2 * 1024 * 1024 else { throw NativeLifeError.invalid("单份HTML不能超过2MiB。") }
-            rows = try html(text, profile: profileID)
-        } else {
-            let parsed = try JSONDecoder().decode(NativeJSON.self, from: data)
-            if parsed["format"].stringValue == "jiashu-douban-import-v1" { explicit = true; rows = parsed["items"].arrayValue }
-            else if !parsed.arrayValue.isEmpty { rows = parsed.arrayValue }
-            else if !parsed["items"].arrayValue.isEmpty { rows = parsed["items"].arrayValue }
-            else { throw NativeLifeError.invalid("JSON需为条目数组或书影音导出清单。") }
+            return (rows, false)
         }
-        guard !rows.isEmpty, rows.count <= 500 else { throw NativeLifeError.invalid("每次导入1–500条资料。") }
-        var result = NativeLifeImportResult(items: []), seen: [String: Data] = [:]
-        for row in rows {
-            try rejectSecrets(row)
-            guard !row.objectValue.isEmpty else { throw NativeLifeError.invalid("导入条目需为有名称和豆瓣链接的对象。") }
-            if let claimed = first(row, ["profileId", "sourceProfile"]).stringValue, !claimed.isEmpty, claimed != profileID { throw NativeLifeError.invalid("文件中的来源主页与本次选择不一致。") }
-            let status = first(row, ["state", "status", "myState", "collectionStatus", "状态", "收藏状态"]).stringValue?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !status.isEmpty && !["collect", "collected", "completed", "complete", "done", "看过", "读过", "听过"].contains(status) { result.skipped += 1; continue }
-            if status.isEmpty && !confirmMissingStatus { throw NativeLifeError.invalid("部分资料没有完成状态，请核对后确认这些条目均已完成。") }
-            let item = try normalize(row, explicit: explicit)
-            let key = (item["domain"].stringValue ?? "") + ":" + (item["subjectId"].stringValue ?? "")
-            let encoded = try canonical(item)
-            if let existing = seen[key] {
-                guard existing == encoded else { throw NativeLifeError.invalid("同一作品有冲突的评分、短评或资料，请先保留正确的一份。") }
-                result.duplicates += 1
-            } else { seen[key] = encoded; result.items.append(item) }
+        if ["md", "markdown"].contains(ext) { return ([try markdown(text)], false) }
+        if ["html", "htm"].contains(ext) {
+            guard bytes <= 2 * 1024 * 1024 else { throw NativeLifeError.invalid("单份HTML不能超过2MiB。") }
+            return (try html(text, profile: profile), false)
         }
-        guard !result.items.isEmpty else { throw NativeLifeError.invalid("没有可导入的已完成记录。") }
-        return result
+        let parsed = try JSONDecoder().decode(NativeJSON.self, from: Data(text.utf8))
+        try rejectSecrets(parsed)
+        if case .array(let rows) = parsed { return (rows, false) }
+        let fields = parsed.objectValue
+        let format = NativeJSON.string("jiashu-douban-import-v1")
+        if fields["items"] != nil || fields["format"] == format {
+            guard fields.keys.allSatisfy({ ["format", "items", "profileId"].contains($0) }),
+                  fields["format"] == nil || fields["format"] == format,
+                  let items = fields["items"], case .array(let rows) = items else { throw NativeLifeError.invalid("JSON导入清单格式不正确。") }
+            guard fields["profileId"] == nil || fields["profileId"] == .string(profile) else { throw NativeLifeError.invalid("JSON中的来源主页与本次选择不一致。") }
+            return (rows, fields["format"] == format)
+        }
+        return ([parsed], false)
+    }
+
+    private static func agreed(_ row: NativeJSON, _ aliases: [String]) throws -> NativeJSON {
+        let keys = Set(aliases.map(keyName))
+        let values = row.objectValue.filter { keys.contains(keyName($0.key)) }.map(\.value).filter {
+            if $0 == .null { return false }
+            guard let value = $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) else { return true }
+            return !value.isEmpty && value.range(of: "^(?:null|~|\\{\\{[^{}]+\\}\\})$", options: [.regularExpression, .caseInsensitive]) == nil
+        }
+        guard let value = values.first else { return .null }
+        guard values.allSatisfy({ $0 == value }) else { throw NativeLifeError.invalid("同一条目含有相互冲突的来源或状态字段。") }
+        return value
+    }
+
+    private static func completed(_ status: NativeJSON, domain: String, confirmed: Bool) throws -> Bool {
+        if status == .null { return confirmed }
+        guard let value = status.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { throw NativeLifeError.invalid("收藏状态需为文字。") }
+        if ["collect", "collected", "completed", "complete", "done", "完成", "已完成"].contains(value) { return true }
+        switch domain {
+        case "screen": return ["看过", "已看", "watched"].contains(value)
+        case "book": return ["读过", "已读", "read"].contains(value)
+        default: return ["听过", "已听", "listened"].contains(value)
+        }
     }
 
     static func normalize(_ row: NativeJSON, explicit: Bool) throws -> NativeJSON {
-        let title = first(row, ["title", "name", "名称", "标题"]).stringValue ?? ""
-        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.utf16.count <= 500 else { throw NativeLifeError.invalid("作品名称需为1–500字。") }
+        try normalized(row, explicit: explicit, subject: subject(row))
+    }
+
+    private struct Subject {
+        let domain: String
+        let id: String
+        let kind: String
+        let url: String
+    }
+
+    private static func subject(_ row: NativeJSON) throws -> Subject {
         var rawURL = first(row, ["url", "subjectUrl", "doubanUrl", "link", "豆瓣链接", "条目链接", "链接"]).stringValue ?? ""
         let rawKind = first(row, ["kind", "type", "类型", "分类"]).stringValue?.lowercased() ?? ""
         let kinds = ["movie": "movie", "film": "movie", "电影": "movie", "series": "series", "tv": "series", "tvseries": "series", "teleplay": "series", "电视剧": "series", "剧集": "series", "screen": "screen", "影视": "screen", "待分类影视": "screen", "book": "book", "books": "book", "书": "book", "书籍": "book", "图书": "book", "music": "music", "album": "music", "音乐": "music", "专辑": "music"]
@@ -244,8 +295,15 @@ enum NativeLifeImportParser {
               let domain = ["movie.douban.com": "screen", "book.douban.com": "book", "music.douban.com": "music"][url.host ?? ""],
               url.path.range(of: "^/subject/[1-9][0-9]{0,15}/?$", options: .regularExpression) != nil else { throw NativeLifeError.invalid("请使用无额外参数的豆瓣作品完整链接。") }
         let subject = String(url.path.split(separator: "/").last ?? "")
-        guard explicitID.isEmpty || explicitID == subject, row["domain"].stringValue == nil || row["domain"].stringValue == domain else { throw NativeLifeError.invalid("作品ID或来源分类与链接不一致。") }
+        let claimedDomain = try agreed(row, ["domain"])
+        guard explicitID.isEmpty || explicitID == subject, claimedDomain == .null || claimedDomain == .string(domain) else { throw NativeLifeError.invalid("作品ID或来源分类与链接不一致。") }
         guard let kind = rawKind.isEmpty ? domain : kinds[rawKind], domain == "screen" ? ["movie", "series", "screen"].contains(kind) : kind == domain else { throw NativeLifeError.invalid("作品类型与豆瓣来源不一致。") }
+        return Subject(domain: domain, id: subject, kind: kind, url: "https://" + (url.host ?? "") + "/subject/" + subject + "/")
+    }
+
+    private static func normalized(_ row: NativeJSON, explicit: Bool, subject: Subject) throws -> NativeJSON {
+        let title = first(row, ["title", "name", "名称", "标题"]).stringValue ?? ""
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.utf16.count <= 500 else { throw NativeLifeError.invalid("作品名称需为1–500字。") }
         let ratingValue = first(row, explicit ? ["rating", "myRating", "personalRating", "userRating", "个人评分"] : ["myRating", "personalRating", "userRating", "个人评分"])
         let ratingText = ratingValue.stringValue ?? ""
         let rating = ratingValue.doubleValue ?? Double(ratingText)
@@ -258,9 +316,9 @@ enum NativeLifeImportParser {
         }
         let comment = first(row, ["myComment", "comment", "personalComment", "个人短评", "短评"]).stringValue ?? ""
         guard comment.utf16.count <= 2000 else { throw NativeLifeError.invalid("个人短评最多2000字。") }
-        var result: [String: NativeJSON] = ["domain": .string(domain), "subjectId": .string(subject), "title": .string(title), "url": .string("https://" + (url.host ?? "") + "/subject/" + subject + "/"), "kind": .string(kind), "coverUrl": .null, "rating": rating.map(NativeJSON.number) ?? .null, "markedDate": dateText.isEmpty ? .null : .string(dateText), "comment": comment.isEmpty ? .null : .string(comment), "publishedAt": .null, "source": .string("import")]
+        var result: [String: NativeJSON] = ["domain": .string(subject.domain), "subjectId": .string(subject.id), "title": .string(title), "url": .string(subject.url), "kind": .string(subject.kind), "coverUrl": .null, "rating": rating.map(NativeJSON.number) ?? .null, "markedDate": dateText.isEmpty ? .null : .string(dateText), "comment": comment.isEmpty ? .null : .string(comment), "publishedAt": .null, "source": .string("import")]
         if let cover = first(row, ["coverUrl", "image", "cover", "封面"]).stringValue, let coverURL = URL(string: cover), coverURL.host?.range(of: "^img[0-9]{1,2}\\.doubanio\\.com$", options: .regularExpression) != nil, ["https", "http"].contains(coverURL.scheme ?? ""), coverURL.user == nil, coverURL.password == nil, coverURL.port == nil, coverURL.query == nil, coverURL.fragment == nil { result["coverUrl"] = .string(cover.replacingOccurrences(of: "http://", with: "https://")) }
-        let details = try mappedDetails(row, domain: domain)
+        let details = try mappedDetails(row, domain: subject.domain)
         if !details.objectValue.isEmpty { result["details"] = details }
         return .object(result)
     }
@@ -305,7 +363,6 @@ enum NativeLifeImportParser {
         guard try result.encodedData().count <= 16 * 1024 else { throw NativeLifeError.invalid("单部作品详情不能超过16KiB。") }
         return result
     }
-    static func canonical(_ value: NativeJSON) throws -> Data { let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return try encoder.encode(value) }
     static func rejectSecrets(_ value: NativeJSON, depth: Int = 0) throws {
         guard depth <= 12 else { throw NativeLifeError.invalid("资料嵌套过深。") }
         let secret = ["cookie", "cookies", "password", "passwd", "authorization", "token", "session", "accesstoken", "refreshtoken", "authtoken", "sessiontoken", "dbcl2", "apikey", "secret", "__proto__", "prototype", "constructor"]

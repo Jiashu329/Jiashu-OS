@@ -5,6 +5,10 @@ import test, { type TestContext } from 'node:test';
 import { financeBookDatabase, type FinanceBookCommand } from './finance-book-database.ts';
 import { appendFinanceBalance, createFinanceAccount, findFinanceAccount, patchFinanceAccount, FinanceMetadataConflictError } from './finance-store.ts';
 import type { FinanceBookScope } from '../lib/finance-books.ts';
+import { SQLiteD1Database } from '../selfhost/database.ts';
+import { loadMigrations } from '../selfhost/migrations.ts';
+import { bootstrapLocalOwner, createLocalUser, updateLocalUser } from './local-users-store.ts';
+import { inviteFinanceBookMember, resolveFinanceBookScope, respondFinanceBookInvitation } from './finance-books-store.ts';
 
 const time = '2026-11-13T01:00:00.000Z';
 const bookId = '11111111-1111-4111-8111-111111111111';
@@ -151,4 +155,42 @@ void test('a revoked actor cannot replay an already committed command even when 
   sqlite.prepare("UPDATE family_book_members SET status='revoked',revision=revision+1 WHERE id=?").run(memberId);
   await assert.rejects(createFinanceAccount(financeBookDatabase(db, editor, cmd), 'owner', input, time, cmd.operationId), hasCode('FINANCE_BOOK_ACCESS_REVOKED'));
   assert.equal(count(sqlite, 'finance_accounts'), 1); assert.equal(count(sqlite, 'family_finance_commands'), 1);
+});
+
+void test('the self-host SQLite transaction rechecks account credentials independently of Sites grants', async (t) => {
+  const db = new SQLiteD1Database(':memory:');
+  t.after(() => db.close());
+  const migrations = loadMigrations();
+  db.transaction(() => { for (const migration of migrations) db.executeMigrationSQL(migration.sql); });
+  const passwordHash = ['scrypt-v1', '32768', '8', '1', Buffer.alloc(16, 1).toString('base64url'), Buffer.alloc(64, 2).toString('base64url')].join('$');
+  const admin = { userId: owner.actorUserId, email: owner.actorEmail, isOwner: true, localAccountRevision: 1 };
+  const actor = { userId: crypto.randomUUID(), email: editor.actorEmail, localAccountRevision: 1 };
+  await bootstrapLocalOwner(db, { id: admin.userId, email: admin.email, passwordHash }, time);
+  await createLocalUser(db, { id: actor.userId, email: actor.email, passwordHash }, time);
+  const invitation = await inviteFinanceBookMember(db, admin, 'own', { email: actor.email }, crypto.randomUUID(), time);
+  const accepted = await respondFinanceBookInvitation(db, actor, invitation.member.id, { action: 'accept', expectedRevision: 1 }, crypto.randomUUID(), time);
+  const book = await db.prepare('SELECT id FROM family_books WHERE owner_user_id=?').bind(admin.userId).first<string>('id');
+  assert.ok(book);
+
+  const sitesScope = await resolveFinanceBookScope(db, { userId: actor.userId, email: actor.email }, 'family', book, accepted.member.revision);
+  await assert.rejects(financeBookDatabase(db, sitesScope).prepare('SELECT 1').first(), hasCode('FINANCE_BOOK_ACCESS_REVOKED'));
+  const localScope = await resolveFinanceBookScope(db, actor, 'family', book, accepted.member.revision);
+  const cmd = command();
+  const guarded = financeBookDatabase(db, localScope, cmd);
+  assert.equal(await createFinanceAccount(guarded, admin.userId, input, time, cmd.operationId), cmd.operationId);
+  const pending = command();
+  const pendingWrite = financeBookDatabase(db, localScope, pending);
+
+  // A Sites grant must not preserve a stale or disabled local account's access.
+  await db.prepare("INSERT INTO app_access_grants(id,email,bound_user_id,status,revision,created_at,updated_at) VALUES(?,?,?,'active',1,?,?)")
+    .bind(crypto.randomUUID(), actor.email, actor.userId, time, time).run();
+  await updateLocalUser(db, admin.userId, actor.userId, { expectedRevision: 1, passwordHash }, time);
+  await assert.rejects(createFinanceAccount(guarded, admin.userId, input, time, cmd.operationId), hasCode('FINANCE_BOOK_ACCESS_REVOKED'));
+  await assert.rejects(createFinanceAccount(pendingWrite, admin.userId, input, time, pending.operationId), hasCode('FINANCE_BOOK_ACCESS_REVOKED'));
+  const fresh = await resolveFinanceBookScope(db, { ...actor, localAccountRevision: 2 }, 'family', book, accepted.member.revision);
+  assert.equal((await findFinanceAccount(financeBookDatabase(db, fresh), admin.userId, cmd.operationId))?.id, cmd.operationId);
+  await updateLocalUser(db, admin.userId, actor.userId, { expectedRevision: 2, status: 'disabled' }, time);
+  await assert.rejects(findFinanceAccount(financeBookDatabase(db, fresh), admin.userId, cmd.operationId), hasCode('FINANCE_BOOK_ACCESS_REVOKED'));
+  assert.equal(count(db.sqlite, 'finance_accounts'), 1);
+  assert.equal(count(db.sqlite, 'family_finance_commands'), 1);
 });

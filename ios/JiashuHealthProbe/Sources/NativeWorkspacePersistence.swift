@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import CryptoKit
 import Security
@@ -100,5 +101,90 @@ enum NativeWorkspacePersistenceError: LocalizedError {
         case .corrupted: return "本机草稿不完整，未执行任何提交。请核对后重新填写。"
         case .tooLarge: return "本机恢复内容超过容量上限，请缩小范围后重试。"
         }
+    }
+}
+
+/// Screens for the same account and feature share custody of the durable command.
+/// Restore is read-only. Only an explicit attempt can claim the slot and send.
+@MainActor
+final class NativePendingSubmission<Command: Equatable>: ObservableObject {
+    @Published private(set) var pending: Command?
+    @Published private(set) var busy = false
+    @Published private(set) var storageError: Error?
+    private let load: () throws -> Command?
+    private let save: (Command) throws -> Void
+    private let clear: () throws -> Void
+    private var loaded = false
+
+    init(load: @escaping () throws -> Command?, save: @escaping (Command) throws -> Void,
+         clear: @escaping () throws -> Void) {
+        self.load = load
+        self.save = save
+        self.clear = clear
+    }
+
+    func restore() {
+        guard !busy, !loaded else { return }
+        do {
+            pending = try load()
+            loaded = true
+            storageError = nil
+        } catch { storageError = error }
+    }
+
+    /// Return a result when the request outcome is definitive. Throw when the
+    /// outcome is unknown and the original must remain available for recovery.
+    func attempt<Value>(_ command: Command, retrying: Bool,
+                        perform: @MainActor () async throws -> Result<Value, Error>) async throws -> Value? {
+        guard !busy else { return nil }
+        restore()
+        if let storageError { throw storageError }
+        guard retrying ? pending == command : pending == nil else { return nil }
+        busy = true
+        defer { busy = false }
+        if !retrying {
+            try updateStorage { try save(command) }
+            pending = command
+        }
+        let outcome = try await perform()
+        guard try retire(command) else { return nil }
+        return try outcome.get()
+    }
+
+    func finishRecovery(of command: Command) throws -> Bool {
+        guard !busy else { return false }
+        restore()
+        if let storageError { throw storageError }
+        return try retire(command)
+    }
+
+    private func retire(_ command: Command) throws -> Bool {
+        guard pending == command else { return false }
+        try updateStorage(clear)
+        pending = nil
+        return true
+    }
+
+    private func updateStorage(_ update: () throws -> Void) throws {
+        do { try update() }
+        catch {
+            loaded = false
+            storageError = error
+            throw error
+        }
+    }
+}
+
+@MainActor
+final class NativePendingSubmissions<Command: Equatable> {
+    private struct Entry { weak var submission: NativePendingSubmission<Command>? }
+    private var entries: [String: Entry] = [:]
+
+    func forOwner(_ owner: String, make: () -> NativePendingSubmission<Command>) -> NativePendingSubmission<Command> {
+        if let existing = entries[owner]?.submission { return existing }
+        entries = entries.filter { $0.value.submission != nil }
+        let submission = make()
+        entries[owner] = Entry(submission: submission)
+        return submission
     }
 }

@@ -131,7 +131,7 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser, de
     if (missing(raw)) return confirmed;
     if (typeof raw !== 'string') fail('收藏状态需为文字。');
     const value = raw.trim().toLowerCase();
-    if (['collect', 'collected', 'completed', 'done', '完成', '已完成'].includes(value)) return true;
+    if (['collect', 'collected', 'completed', 'complete', 'done', '完成', '已完成'].includes(value)) return true;
     if ((domain === 'screen' ? ['看过', '已看', 'watched'] : domain === 'book' ? ['读过', '已读', 'read'] : ['听过', '已听', 'listened']).includes(value)) return true;
     return false;
   }
@@ -202,7 +202,7 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser, de
     const found = subject(get(raw, ['url', 'subjectUrl', '豆瓣链接', '条目链接']), get(raw, ['subjectId', 'doubanId', '条目ID']), kind);
     const rawDomain = get(raw, ['domain']);
     if (!missing(rawDomain) && rawDomain !== found.domain) fail('条目来源分类与链接不一致。');
-    const state = get(raw, ['state', 'status', 'myState', '状态', '收藏状态']);
+    const state = get(raw, ['state', 'status', 'myState', 'collectionStatus', '状态', '收藏状态']);
     if (!completed(state, found.domain, options.confirmCompleted === true)) {
       warn(missing(state) ? '未注明完成状态的条目已跳过；只有确认这些条目均已完成后才会导入。' : '想看、在看、想读、在读及其他非完成状态已跳过。');
       return null;
@@ -351,8 +351,8 @@ export function createDoubanImportParser(Parser: typeof globalThis.DOMParser, de
         let json: unknown; try { json = JSON.parse(text); } catch { return fail('JSON 文件格式不正确。'); }
         secretKeys(json);
         if (Array.isArray(json)) rows = json;
-        else if (plain(json) && Array.isArray(json.items)) {
-          if (Object.keys(json).some(key => !['format', 'items', 'profileId'].includes(key)) || json.format !== undefined && json.format !== 'jiashu-douban-import-v1') fail('JSON 导入清单格式不正确。');
+        else if (plain(json) && (Object.hasOwn(json, 'items') || json.format === 'jiashu-douban-import-v1')) {
+          if (!Array.isArray(json.items) || Object.keys(json).some(key => !['format', 'items', 'profileId'].includes(key)) || json.format !== undefined && json.format !== 'jiashu-douban-import-v1') fail('JSON 导入清单格式不正确。');
           if (json.profileId !== undefined && json.profileId !== options.profileId) fail('JSON 中的来源主页与本次选择不一致。');
           canonical = json.format === 'jiashu-douban-import-v1'; rows = json.items;
         } else rows = [json];

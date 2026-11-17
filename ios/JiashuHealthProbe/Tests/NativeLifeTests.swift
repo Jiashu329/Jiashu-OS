@@ -4,7 +4,60 @@ import XCTest
 
 final class NativeLifeTests: XCTestCase {
     private func parse(_ text: String, name: String = "synthetic.json", confirm: Bool = false, profile: String = "synthetic_owner") throws -> NativeLifeImportResult {
-        try NativeLifeImportParser.parse(data: Data(text.utf8), filename: name, profile: profile, confirmMissingStatus: confirm)
+        try NativeLifeImportParser.parse(files: [(name, Data(text.utf8))], profile: profile, confirmMissingStatus: confirm)
+    }
+
+    func testSharedLocalImportContract() throws {
+        struct Fixture: Decodable {
+            let profileId: String
+            let cases: [Scenario]
+        }
+        struct Scenario: Decodable {
+            struct File: Decodable {
+                let name: String
+                let input: NativeJSON
+                let repeatRows: Int?
+            }
+            struct Expected: Decodable {
+                let subjects: [String]
+                let ratings: [Int]?
+                let skipped: Int
+                let duplicates: Int
+            }
+            let name: String
+            let files: [File]
+            let confirmCompleted: Bool?
+            let expected: Expected?
+            let errorIncludes: String?
+        }
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "DoubanImportContract", withExtension: "json"))
+        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+        for scenario in fixture.cases {
+            try XCTContext.runActivity(named: scenario.name) { _ in
+                let files = try scenario.files.map { file -> (name: String, data: Data) in
+                    var input = file.input
+                    if let repetitions = file.repeatRows {
+                        guard case .array(let rows) = input else { throw NativeLifeError.invalid("Repeated fixture rows must be an array.") }
+                        input = .array(Array(repeating: rows, count: repetitions).flatMap { $0 })
+                    }
+                    return (file.name, try input.encodedData())
+                }
+                func parseScenario() throws -> NativeLifeImportResult {
+                    try NativeLifeImportParser.parse(files: files, profile: fixture.profileId, confirmMissingStatus: scenario.confirmCompleted == true)
+                }
+                if let errorIncludes = scenario.errorIncludes {
+                    XCTAssertThrowsError(try parseScenario()) { XCTAssertTrue($0.localizedDescription.contains(errorIncludes), $0.localizedDescription) }
+                    return
+                }
+                let expected = try XCTUnwrap(scenario.expected)
+                let result = try parseScenario()
+                XCTAssertEqual(result.items.compactMap { $0["subjectId"].stringValue }, expected.subjects)
+                XCTAssertEqual(result.skipped, expected.skipped)
+                XCTAssertEqual(result.duplicates, expected.duplicates)
+                XCTAssertTrue(result.items.allSatisfy { $0["source"].stringValue == "import" })
+                if let ratings = expected.ratings { XCTAssertEqual(result.items.compactMap { $0["rating"].intValue }, ratings) }
+            }
+        }
     }
     private var item: NativeLifeItem {
         NativeLifeItem(raw: .object(["profileId": .string("synthetic_owner"), "domain": .string("book"), "subjectId": .string("2345678"), "title": .string("合成书籍"), "kind": .string("book"), "url": .string("https://book.douban.com/subject/2345678/"), "updatedAt": .string("2026-11-17T00:00:00.000Z"), "local": .object(["revision": .number(7), "note": .string("旧备注"), "tags": .array([.string("旧标签")]), "hidden": .bool(false)])]))
@@ -25,7 +78,9 @@ final class NativeLifeTests: XCTestCase {
     }
     func testMissingStatusNeedsConfirmationAndDoesNotPromoteWish() throws {
         let text = #"[{"title":"已核对作品","url":"https://book.douban.com/subject/2345678/"},{"title":"想读作品","url":"https://book.douban.com/subject/2345679/","state":"想读"}]"#
-        XCTAssertThrowsError(try parse(text))
+        let unconfirmed = try parse(text)
+        XCTAssertTrue(unconfirmed.items.isEmpty)
+        XCTAssertEqual(unconfirmed.skipped, 2)
         let result = try parse(text, confirm: true)
         XCTAssertEqual(result.items.count, 1)
         XCTAssertEqual(result.skipped, 1)

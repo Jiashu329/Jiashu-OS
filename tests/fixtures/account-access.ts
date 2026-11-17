@@ -5,10 +5,11 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type { TestContext } from 'node:test';
 import { identityFromHeaders, pageAccountFailure } from '../../lib/account-identity.ts';
 import type { SiteIdentity } from '../../lib/account-identity.ts';
+import type { ChatGPTUser } from '../../app/chatgpt-auth.ts';
 import { resolveAccess } from '../../db/access-grants-store.ts';
 import { resolveOwnerIdentity } from '../../db/owner-identity-store.ts';
 import { getLocalUserById } from '../../db/local-users-store.ts';
-import { normalizeLocalEmail } from '../../lib/local-users.ts';
+import { LOCAL_ACCOUNT_REVISION_HEADER, normalizeLocalEmail } from '../../lib/local-users.ts';
 import { safeAccountRetryPath } from '../../lib/account-retry.ts';
 
 export interface AccessResult { identity: SiteIdentity | null; allowed: boolean; isOwner: boolean; reason?: string }
@@ -44,13 +45,13 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
   const env: { DB?: D1Database; APP_OWNER_USER_ID?: string; APP_OWNER_EMAIL?: string; SELFHOST_AUTH_PROVIDER?: 'local' } = { DB: db, APP_OWNER_USER_ID: config.userId, APP_OWNER_EMAIL: config.email };
   const diagnostics: string[] = [];
   const { accountAccess } = load<{ accountAccess: (headers: Pick<Headers, 'get'>) => Promise<AccessResult> }>(new URL('../../app/account-access.ts', import.meta.url),
-    { env, identityFromHeaders, resolveAccess, resolveOwnerIdentity, getLocalUserById, normalizeLocalEmail, console: { error(value: string) { diagnostics.push(value); } } }, ['accountAccess']);
+    { env, identityFromHeaders, resolveAccess, resolveOwnerIdentity, getLocalUserById, LOCAL_ACCOUNT_REVISION_HEADER, normalizeLocalEmail, console: { error(value: string) { diagnostics.push(value); } } }, ['accountAccess']);
   let currentHeaders = new Headers();
   const auth = load<{
     getChatGPTAccess(): Promise<AccessResult>;
-    getChatGPTUser(returnToOnUnavailable?: string): Promise<(SiteIdentity & { isOwner: boolean }) | null>;
+    getChatGPTUser(returnToOnUnavailable?: string): Promise<ChatGPTUser | null>;
     getChatGPTIdentity(): Promise<SiteIdentity | null>;
-    requireChatGPTUser(returnTo: string): Promise<SiteIdentity & { isOwner: boolean }>;
+    requireChatGPTUser(returnTo: string): Promise<ChatGPTUser>;
     chatGPTSignInPath(returnTo: string): string; chatGPTSignOutPath(returnTo?: string): string;
   }>(new URL('../../app/chatgpt-auth.ts', import.meta.url), {
     headers: async () => currentHeaders, accountAccess, identityFromHeaders, safeAccountRetryPath,
@@ -67,9 +68,13 @@ export function authorizationFixture(t: TestContext, config: { userId?: string; 
       next: () => new Response(null, { headers: { 'x-middleware-next': '1' } }),
     },
   }, ['middleware']);
-  function identity(userId: string, email: string) { return new Headers({ 'oai-authenticated-user-id': userId, 'oai-authenticated-user-email': email }); }
+  function identity(userId: string, email: string, localAccountRevision?: number) {
+    const result = new Headers({ 'oai-authenticated-user-id': userId, 'oai-authenticated-user-email': email });
+    if (localAccountRevision !== undefined) result.set(LOCAL_ACCOUNT_REVISION_HEADER, String(localAccountRevision));
+    return result;
+  }
   return { sqlite, db, env, auth, api, middleware, accountAccess, diagnostics, identity,
-    signIn(userId: string | null, email = '') { currentHeaders = userId ? identity(userId, email) : new Headers(); },
+    signIn(userId: string | null, email = '', localAccountRevision?: number) { currentHeaders = userId ? identity(userId, email, localAccountRevision) : new Headers(); },
     headers() { return new Headers(currentHeaders); },
   };
 }
