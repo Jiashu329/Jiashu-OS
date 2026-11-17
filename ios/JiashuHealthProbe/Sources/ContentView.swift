@@ -97,6 +97,7 @@ private struct NativeTodayView: View {
     @ObservedObject var model: NativeAppModel
     let showHealth: (String) -> Void
     @State private var quickWeight = false
+    @State private var hasShownHome = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -137,6 +138,10 @@ private struct NativeTodayView: View {
                     }
                 }
                 .refreshable { await model.reload() }
+                .task {
+                    if hasShownHome { await model.reload(presentError: false) }
+                    else { hasShownHome = true }
+                }
                 .sheet(isPresented: $quickWeight) {
                     if let session = model.session {
                         HealthQuickEntryView(api: model.api, token: session.accessToken, userID: session.user.id,
