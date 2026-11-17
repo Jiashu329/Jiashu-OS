@@ -840,7 +840,6 @@ private struct NativeLifeImportForm: View {
     @State private var parsed: NativeLifeImportResult?
     @State private var preview: NativeJSON = .null
     @State private var confirmMissingStatus = false
-    @State private var needsCompletionConfirmation = false
     @State private var confirmed = false
     @State private var reading = false
     @State private var committing = false
@@ -928,7 +927,7 @@ private struct NativeLifeImportForm: View {
                     guard total <= 8 * 1024 * 1024 else { throw NativeLifeError.invalid("一次文件合计不能超过8MiB。") }
                     chosen.append((url.lastPathComponent, data))
                 }
-                files = chosen; invalidate(); fileError = nil
+                files = chosen; confirmMissingStatus = false; invalidate(); fileError = nil
             } catch { fileError = error.localizedDescription }
         }
     }
@@ -943,16 +942,16 @@ private struct NativeLifeImportForm: View {
                     guard let value = values.first else { return }
                     let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
                     let name = text.hasPrefix("[") || text.hasPrefix("{") ? "剪贴板.json" : text.hasPrefix("---") ? "剪贴板.md" : text.hasPrefix("<") ? "剪贴板.html" : "剪贴板.csv"
-                    files = [(name, Data(value.utf8))]; invalidate()
+                    files = [(name, Data(value.utf8))]; confirmMissingStatus = false; invalidate()
                 }.disabled(reading || store.pending != nil)
                 ForEach(Array(files.enumerated()), id: \.offset) { _, file in Label(file.name, systemImage: "doc.text").font(.subheadline).lineLimit(1) }
             }
             Section("资料来源") {
-                TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled().onChange(of: profile) { _, value in if value != previewProfile { invalidate() } }
-                if needsCompletionConfirmation {
-                    Toggle("这些条目均已完成", isOn: $confirmMissingStatus).onChange(of: confirmMissingStatus) { _, _ in invalidate() }
-                    Text("文件缺少状态字段，请核对后确认。").font(.footnote).foregroundStyle(.secondary)
+                TextField("豆瓣主页链接或 ID", text: $profile).textInputAutocapitalization(.never).autocorrectionDisabled().onChange(of: profile) { _, value in
+                    if value != previewProfile { confirmMissingStatus = false; invalidate() }
                 }
+                Toggle("我已核对未注明状态的条目均已完成", isOn: $confirmMissingStatus).onChange(of: confirmMissingStatus) { _, _ in invalidate() }
+                Text("默认跳过未注明状态的条目。想看、在看等记录和未知状态仍会跳过。").font(.footnote).foregroundStyle(.secondary)
             }
             Section {
                 DisclosureGroup("支持的文件与隐私") { Text("JSON、CSV、Markdown 或本人保存的完成收藏 HTML。每批最多500条、合计8MiB；原始文件留在手机，仅上传核对后的作品资料。").font(.footnote).foregroundStyle(.secondary) }
@@ -973,7 +972,7 @@ private struct NativeLifeImportForm: View {
             Section("将保存到你的收藏") {
                 HStack { summaryCount("新增", value: preview["added"].intValue ?? 0); Spacer(); summaryCount("更新", value: preview["updated"].intValue ?? 0); Spacer(); summaryCount("未变", value: preview["unchanged"].intValue ?? 0) }.padding(.vertical, 8)
                 LabeledContent("来源主页", value: previewProfile)
-                if parsed.skipped > 0 { LabeledContent("跳过未完成", value: String(parsed.skipped)) }
+                if parsed.skipped > 0 { LabeledContent("跳过的条目", value: String(parsed.skipped)) }
                 if parsed.duplicates > 0 { LabeledContent("合并重复", value: String(parsed.duplicates)) }
                 Toggle("已核对来源与作品", isOn: $confirmed).disabled(committing || reading || store.busy || store.pending != nil)
             }
@@ -982,7 +981,7 @@ private struct NativeLifeImportForm: View {
                     ForEach(Array(parsed.items.prefix(30).enumerated()), id: \.offset) { _, item in VStack(alignment: .leading, spacing: 4) { Text(item["title"].stringValue ?? ""); Text(item["markedDate"].stringValue ?? "标记日期未知").font(.caption).foregroundStyle(.secondary) } }
                     if parsed.items.count > 30 { Text("显示前30部，其余作品已一并核对。").font(.footnote).foregroundStyle(.secondary) }
                 }
-                Button("更换资料") { files = []; invalidate(); step = 0 }.disabled(committing || store.pending != nil || store.busy)
+                Button("更换资料") { files = []; confirmMissingStatus = false; invalidate() }.disabled(committing || store.pending != nil || store.busy)
             }
         }
     }
@@ -994,18 +993,8 @@ private struct NativeLifeImportForm: View {
         reading = true; fileError = nil; preview = .null; confirmed = false
         do {
             let profile = try NativeLifeContract.profileID(profile)
-            var combined = NativeLifeImportResult(items: []), seen: [String: Data] = [:]
-            for file in files {
-                let batch = try NativeLifeImportParser.parse(data: file.data, filename: file.name, profile: profile, confirmMissingStatus: confirmMissingStatus)
-                combined.skipped += batch.skipped; combined.duplicates += batch.duplicates
-                for item in batch.items {
-                    let key = (item["domain"].stringValue ?? "") + ":" + (item["subjectId"].stringValue ?? "")
-                    let value = try NativeLifeImportParser.canonical(item)
-                    if let old = seen[key] { guard old == value else { throw NativeLifeError.invalid("不同文件包含同一作品的冲突资料，请先保留正确的一份。") }; combined.duplicates += 1 }
-                    else { seen[key] = value; combined.items.append(item) }
-                }
-            }
-            guard combined.items.count <= 500, !combined.items.isEmpty else { throw NativeLifeError.invalid("每批需为1–500条完成收藏。") }
+            let combined = try NativeLifeImportParser.parse(files: files, profile: profile, confirmMissingStatus: confirmMissingStatus)
+            guard !combined.items.isEmpty else { throw NativeLifeError.invalid("没有可导入的已完成记录。请核对收藏状态和所属类型。") }
             previewProfile = self.profile
             let body = NativeLifeContract.importBody(profile: profile, items: combined.items, epoch: store.epoch)
             Task {
@@ -1019,7 +1008,7 @@ private struct NativeLifeImportForm: View {
                     try draftStorage.save(NativeLifeImportDraft(profile: profile, items: combined.items, preview: preview, skipped: combined.skipped, duplicates: combined.duplicates))
                 } catch { if previewGate.accepts(ticket, owner: store.userID, profile: self.profile, visible: visible) { fileError = error.localizedDescription; reading = false } }
             }
-        } catch { if error.localizedDescription.contains("没有完成状态") { needsCompletionConfirmation = true; fileError = nil } else { fileError = error.localizedDescription }; reading = false }
+        } catch { fileError = error.localizedDescription; reading = false }
     }
     private func commitImport(_ parsed: NativeLifeImportResult) {
         guard !committing, !reading, !store.busy, store.pending == nil, confirmed, let epoch = preview["dataEpoch"].intValue, !preview["snapshotHash"].stringValue.orEmpty.isEmpty else { return }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { parseHTML } from 'linkedom/worker';
@@ -23,6 +24,39 @@ function invalid(operation: () => unknown, pattern?: RegExp) {
     return true;
   });
 }
+
+type ImportContractCase = {
+  name: string;
+  files: { name: string; input: unknown; repeatRows?: number }[];
+  confirmCompleted?: boolean;
+  expected?: { subjects: string[]; ratings?: number[]; skipped: number; duplicates: number };
+  errorIncludes?: string;
+};
+
+void test('the rendered browser parser follows the shared native and web import contract', async context => {
+  const fixture = JSON.parse(readFileSync(new URL('../ios/JiashuHealthProbe/Tests/DoubanImportContract.json', import.meta.url), 'utf8')) as {
+    profileId: string; cases: ImportContractCase[];
+  };
+  for (const scenario of fixture.cases) await context.test(scenario.name, () => {
+    const files = scenario.files.map(file => {
+      if (file.repeatRows === undefined) return json(file.input, file.name);
+      assert.ok(Array.isArray(file.input));
+      return json(Array.from({ length: file.repeatRows }, () => file.input).flat(), file.name);
+    });
+    const settings = { profileId: fixture.profileId, confirmCompleted: scenario.confirmCompleted === true };
+    if (scenario.errorIncludes) {
+      assert.throws(() => browserParse(files, settings), { message: new RegExp(scenario.errorIncludes) });
+      return;
+    }
+    const output = browserParse(files, settings) as ReturnType<typeof parseDoubanImportFiles>;
+    assert.ok(scenario.expected);
+    assert.deepEqual(output.items.map(item => item.subjectId), scenario.expected.subjects);
+    assert.equal(output.skipped, scenario.expected.skipped);
+    assert.equal(output.duplicates, scenario.expected.duplicates);
+    assert.ok(output.items.every(item => item.source === 'import'));
+    if (scenario.expected.ratings) assert.deepEqual(output.items.map(item => item.rating), scenario.expected.ratings);
+  });
+});
 
 void test('JSON maps only completed personal fields across all four kinds and never uploads unrelated private metadata', () => {
   const rows = [base,

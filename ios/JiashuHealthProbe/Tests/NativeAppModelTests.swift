@@ -581,8 +581,11 @@ final class NativeAppModelTests: XCTestCase {
         XCTAssertNotNil(fixture.model.session)
     }
     @MainActor
-    private func selectedFixture(reader: NativeModelHealthReader, server: NativeModelChannelServer) throws -> NativeModelFixture {
-        let fixture = try NativeModelFixture(reader: reader) { request, context in try server.reply(request, context: context) }
+    private func selectedFixture(reader: NativeModelHealthReader, server: NativeModelChannelServer,
+                                 backgroundSyncBudget: Duration = .seconds(25)) throws -> NativeModelFixture {
+        let fixture = try NativeModelFixture(reader: reader, backgroundSyncBudget: backgroundSyncBudget) { request, context in
+            try server.reply(request, context: context)
+        }
         let credential = try NativeHealthDeviceCredential.generate()
         try fixture.context.deviceStore(for: fixture.context.a).save(credential)
         server.configure(owner: fixture.context.a.user.id, token: credential.deviceToken, revision: 1)
@@ -775,6 +778,87 @@ final class NativeAppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testObserverAcknowledgesWithinItsBudgetWhileForegroundSyncIsStillRunning() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server, backgroundSyncBudget: .milliseconds(250))
+        let gate = NativeModelReaderGate()
+        defer { gate.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        reader.readGate = gate
+        let foreground = Task { await fixture.model.sync(automatic: true) }
+        await gate.waitUntilRequested()
+
+        let acknowledged = XCTestExpectation(description: "Observer acknowledged while foreground read is held")
+        let callback = Task { await reader.notifyChange(); acknowledged.fulfill() }
+        await fulfillment(of: [acknowledged], timeout: 5)
+        XCTAssertTrue(fixture.model.syncing)
+        XCTAssertEqual(reader.readWindows, [30, 30])
+        XCTAssertEqual(server.previewCount, 1)
+        XCTAssertEqual(server.uploadCount, 1)
+        XCTAssertNil(fixture.model.errorMessage)
+
+        gate.release()
+        await foreground.value
+        await callback.value
+        XCTAssertEqual(reader.readWindows, [30, 30])
+        XCTAssertEqual(server.uploadCount, 2)
+        XCTAssertNotNil(fixture.model.lastReceipt)
+    }
+
+    @MainActor
+    func testObserverRunsItsOwnSevenDayAttemptWhenForegroundFinishesInTime() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server)
+        let gate = NativeModelReaderGate()
+        defer { gate.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        reader.readGate = gate
+        let foreground = Task { await fixture.model.sync(automatic: true) }
+        await gate.waitUntilRequested()
+
+        let callbackStarted = XCTestExpectation(description: "Observer notified while foreground read is held")
+        let callback = Task { callbackStarted.fulfill(); await reader.notifyChange() }
+        await fulfillment(of: [callbackStarted], timeout: 5)
+        gate.release()
+        await foreground.value
+        await callback.value
+
+        XCTAssertEqual(reader.readWindows, [30, 30, 7])
+        XCTAssertEqual(server.uploadCount, 3)
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertNotNil(fixture.model.lastReceipt)
+    }
+
+    @MainActor
+    func testExpiredObserverDoesNotPreviewOrUploadWhenItsReadCompletesLate() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let fixture = try selectedFixture(reader: reader, server: server, backgroundSyncBudget: .seconds(1))
+        let gate = NativeModelReaderGate()
+        defer { gate.release(); fixture.cleanup() }
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        reader.readGate = gate
+
+        let readStarted = XCTestExpectation(description: "Seven-day observer read started")
+        reader.readStarted = { readStarted.fulfill() }
+        let acknowledged = XCTestExpectation(description: "Observer acknowledged while its own read is held")
+        let callback = Task { await reader.notifyChange(); acknowledged.fulfill() }
+        await fulfillment(of: [readStarted, acknowledged], timeout: 5, enforceOrder: true)
+        XCTAssertEqual(server.previewCount, 1)
+        XCTAssertEqual(server.uploadCount, 1)
+        XCTAssertNil(fixture.model.errorMessage)
+
+        gate.release()
+        await callback.value
+        await fixture.model.sync()
+        XCTAssertEqual(reader.readWindows, [30, 7, 30])
+        XCTAssertEqual(server.previewCount, 2)
+        XCTAssertEqual(server.uploadCount, 2)
+    }
+
+    @MainActor
     func testLateAutomaticFailureCannotReplaceNewAccountsError() async throws {
         let server = NativeModelChannelServer()
         let reader = NativeModelHealthReader()
@@ -809,7 +893,8 @@ private final class NativeModelFixture {
     let reader: NativeModelHealthReader?
     private let host: String
 
-    init(reader: NativeModelHealthReader? = nil, handler: @escaping (URLRequest, NativeModelFixtureContext) throws -> NativeModelDelivery) throws {
+    init(reader: NativeModelHealthReader? = nil, backgroundSyncBudget: Duration = .seconds(25),
+         handler: @escaping (URLRequest, NativeModelFixtureContext) throws -> NativeModelDelivery) throws {
         self.reader = reader
         let unique = UUID().uuidString.lowercased()
         host = "model-" + unique + ".example"
@@ -823,7 +908,8 @@ private final class NativeModelFixture {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [NativeModelProtocol.self]
         let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
-        model = NativeAppModel(api: api, sessions: store, reader: reader, healthDeviceService: context.healthDeviceService)
+        model = NativeAppModel(api: api, sessions: store, reader: reader,
+                               healthDeviceService: context.healthDeviceService, backgroundSyncBudget: backgroundSyncBudget)
     }
 
     func cleanup() {
@@ -1010,19 +1096,23 @@ private final class NativeModelProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 private final class NativeModelHealthReader: NativeHealthReading {
     private(set) var authorizationCount = 0
-    private(set) var readCount = 0
+    private(set) var readWindows: [Int] = []
+    var readCount: Int { readWindows.count }
     private(set) var stopCount = 0
     private(set) var observerCount = 0
     var readError: Error?
     var failAtReadCount: Int?
     var snapshotOverride: NativeHealthSnapshot?
     var readGate: NativeModelReaderGate?
+    var readStarted: (() -> Void)?
     private var callback: (@Sendable () async -> Void)?
 
     func authorize() async throws { authorizationCount += 1 }
 
     func read(days: Int) async throws -> NativeHealthSnapshot {
-        readCount += 1
+        readWindows.append(days)
+        readStarted?()
+        readStarted = nil
         if let gate = readGate {
             readGate = nil
             await gate.hold()
@@ -1041,6 +1131,11 @@ private final class NativeModelHealthReader: NativeHealthReading {
     func startObserving(onChange: @escaping @Sendable () async -> Void) async throws {
         observerCount += 1
         callback = onChange
+    }
+
+    func notifyChange() async {
+        guard let callback else { XCTFail("Expected a registered HealthKit observer"); return }
+        await callback()
     }
 
     func stopObserving() { stopCount += 1; callback = nil }

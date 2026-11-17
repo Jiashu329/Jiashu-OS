@@ -1,0 +1,101 @@
+{
+  "profileId": "synthetic_owner",
+  "cases": [
+    {
+      "name": "Completion follows the media domain",
+      "files": [{"name": "statuses.json", "input": [
+        {"title": "影视", "url": "https://movie.douban.com/subject/1001/", "state": "看过"},
+        {"title": "书籍", "url": "https://book.douban.com/subject/1002/", "state": "已读"},
+        {"title": "音乐", "url": "https://music.douban.com/subject/1003/", "state": "listened"},
+        {"title": "一般完成", "url": "https://book.douban.com/subject/1004/", "state": "完成"},
+        {"title": "一般已完成", "url": "https://music.douban.com/subject/1005/", "state": "已完成"},
+        {"title": "状态类别不符", "url": "https://book.douban.com/subject/1006/", "state": "看过"},
+        {"title": "状态中", "url": "https://movie.douban.com/subject/1007/", "state": "在看"},
+        {"title": "未知状态", "url": "https://music.douban.com/subject/1008/", "state": "未知状态"}
+      ]}],
+      "expected": {"subjects": ["1001", "1002", "1003", "1004", "1005"], "skipped": 3, "duplicates": 0}
+    },
+    {
+      "name": "Known completions can preview when missing statuses are skipped",
+      "files": [
+        {"name": "unconfirmed.json", "input": [
+          {"title": "无状态", "url": "https://book.douban.com/subject/2001/"},
+          {"title": "插件占位符", "url": "https://book.douban.com/subject/2002/", "state": "{{myState}}"},
+          {"title": "想读", "url": "https://book.douban.com/subject/2003/", "state": "想读"}
+        ]},
+        {"name": "completed.json", "input": {"title": "已完成", "url": "https://book.douban.com/subject/2004/", "state": "collect"}}
+      ],
+      "expected": {"subjects": ["2004"], "skipped": 3, "duplicates": 0}
+    },
+    {
+      "name": "Explicit confirmation includes only missing statuses alongside completed rows",
+      "confirmCompleted": true,
+      "files": [{"name": "confirmed.json", "input": [
+        {"title": "无状态", "url": "https://book.douban.com/subject/2001/", "state": null},
+        {"title": "插件占位符", "url": "https://book.douban.com/subject/2002/", "state": "{{myState}}"},
+        {"title": "想读", "url": "https://book.douban.com/subject/2003/", "state": "想读"}
+      ]}],
+      "expected": {"subjects": ["2001", "2002"], "skipped": 1, "duplicates": 0}
+    },
+    {
+      "name": "A malformed status is never importable by confirmation",
+      "confirmCompleted": true,
+      "files": [{"name": "invalid-status.json", "input": [{"title": "数字状态", "url": "https://book.douban.com/subject/2005/", "state": 1}]}],
+      "errorIncludes": "状态"
+    },
+    {
+      "name": "A canonical manifest applies only within the selected profile",
+      "files": [{"name": "manifest.json", "input": {"format": "jiashu-douban-import-v1", "profileId": "synthetic_owner", "items": [
+        {"title": "清单评分", "url": "https://book.douban.com/subject/3001/", "state": "读过", "rating": 4}
+      ]}}],
+      "expected": {"subjects": ["3001"], "ratings": [4], "skipped": 0, "duplicates": 0}
+    },
+    {
+      "name": "A foreign manifest profile rejects the entire batch",
+      "files": [{"name": "foreign.json", "input": {"format": "jiashu-douban-import-v1", "profileId": "another_owner", "items": [
+        {"title": "清单来自其他主页", "url": "https://book.douban.com/subject/3002/", "state": "读过"}
+      ]}}],
+      "errorIncludes": "主页"
+    },
+    {
+      "name": "A foreign row profile rejects the entire batch",
+      "files": [{"name": "foreign-row.json", "input": [
+        {"title": "条目来自其他主页", "url": "https://book.douban.com/subject/3003/", "state": "读过", "sourceProfile": "another_owner"}
+      ]}],
+      "errorIncludes": "主页"
+    },
+    {
+      "name": "An unknown manifest format is rejected",
+      "files": [{"name": "unsupported.json", "input": {"format": "jiashu-douban-import-v2", "items": [
+        {"title": "未知清单格式", "url": "https://book.douban.com/subject/3004/", "state": "读过"}
+      ]}}],
+      "errorIncludes": "格式"
+    },
+    {
+      "name": "A canonical manifest requires an items array",
+      "files": [{"name": "malformed.json", "input": {"format": "jiashu-douban-import-v1", "items": {}}}],
+      "errorIncludes": "格式"
+    },
+    {
+      "name": "Credential fields on the manifest are rejected locally",
+      "files": [{"name": "credential.json", "input": {"format": "jiashu-douban-import-v1", "cookie": "synthetic-only", "items": []}}],
+      "errorIncludes": "凭据"
+    },
+    {
+      "name": "Exactly 500 input rows across files pass before deduplication",
+      "files": [
+        {"name": "one.json", "repeatRows": 250, "input": [{"title": "重复作品", "url": "https://book.douban.com/subject/4001/", "state": "读过"}]},
+        {"name": "two.json", "repeatRows": 250, "input": [{"title": "重复作品", "url": "https://book.douban.com/subject/4001/", "state": "读过"}]}
+      ],
+      "expected": {"subjects": ["4001"], "skipped": 0, "duplicates": 499}
+    },
+    {
+      "name": "Across-file row limit counts duplicates and skipped rows",
+      "files": [
+        {"name": "one.json", "repeatRows": 250, "input": [{"title": "重复作品", "url": "https://book.douban.com/subject/4001/", "state": "读过"}]},
+        {"name": "two.json", "repeatRows": 251, "input": [{"title": "想读作品", "url": "https://book.douban.com/subject/4002/", "state": "想读"}]}
+      ],
+      "errorIncludes": "500"
+    }
+  ]
+}
