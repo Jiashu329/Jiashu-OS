@@ -1,7 +1,7 @@
 import SwiftUI
 import Charts
 
-enum NativeTab: Hashable { case today, health, review, settings }
+enum NativeTab: Hashable { case today, health, finance, life, settings }
 
 struct ContentView: View {
     @ObservedObject var model: NativeAppModel
@@ -17,14 +17,20 @@ struct ContentView: View {
                         .tabItem { Label("今天", systemImage: "sun.max") }.tag(NativeTab.today)
                     NativeHealthView(model: model)
                         .tabItem { Label("健康", systemImage: "heart") }.tag(NativeTab.health)
-                    NavigationStack { HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id) }
-                        .tabItem { Label("复盘", systemImage: "calendar") }.tag(NativeTab.review)
+                    NativeFinanceRoot(api: model.api, token: session.accessToken, userID: session.user.id)
+                        .tabItem { Label("财务", systemImage: "chart.bar.xaxis") }.tag(NativeTab.finance)
+                    NavigationStack { NativeLifeRoot(api: model.api, token: session.accessToken, userID: session.user.id) }
+                        .tabItem { Label("书影音", systemImage: "books.vertical") }.tag(NativeTab.life)
                     NativeSettingsView(model: model)
                         .tabItem { Label("我的", systemImage: "person.crop.circle") }.tag(NativeTab.settings)
-                }.id(session.user.id)
+                }.id(session.viewIdentity)
             } else { NativeLoginView(model: model) }
         }
         .tint(.indigo)
+        .environment(\.timeZone, StepCalendar.calendar.timeZone)
+        .environment(\.calendar, StepCalendar.calendar)
+        .privacySensitive()
+        .onChange(of: model.session?.user.id) { _, _ in tab = .today }
         .task { await model.restore() }
         .onChange(of: scenePhase) { _, phase in if phase == .active && !model.restoring { Task { await model.becameActive() } } }
         .sheet(item: $model.pendingChannelConsent) { _ in
@@ -144,18 +150,21 @@ private struct NativeTodayView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                     if let session = model.session {
                         NavigationLink {
-                            NativeNutritionDayView(api: model.api, token: session.accessToken, userID: session.user.id) { await model.reload() }
+                            NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id)
                         } label: {
                             Label("查看饮食记录与营养小计", systemImage: "fork.knife").frame(maxWidth: .infinity, minHeight: 34)
                         }.buttonStyle(.bordered).controlSize(.large)
                     }
-                    Button { tab = .review } label: {
+                    if let session = model.session {
+                    NavigationLink { HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id) } label: {
                         HStack {
                             Image(systemName: "calendar.badge.clock").font(.title2)
                             VStack(alignment: .leading, spacing: 6) { Text("给这一周一点回顾").font(.headline); Text("看看变化，选一项接下来的行动").font(.subheadline).foregroundStyle(.secondary) }
                             Spacer(); Image(systemName: "chevron.right").font(.footnote)
                         }.padding(20).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
                     }.buttonStyle(.plain)
+                    }
+                    NativeHomeWorkspaceCards(model: model)
                 }.padding(20)
             }.background(Color(.systemGroupedBackground)).navigationTitle("今天")
                 .refreshable { await model.reload() }
@@ -247,6 +256,13 @@ private struct NativeHealthView: View {
         NavigationStack {
             List {
                 Section { NativeSyncCard(model: model).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
+                if let session = model.session {
+                    Section("日常健康") {
+                        NavigationLink { NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("饮食、食物库与营养", systemImage: "fork.knife") }
+                        NavigationLink { NativeHealthWorkspaceRoot(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("记录管理、分析与健康助手", systemImage: "heart.text.clipboard") }
+                        NavigationLink { HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("每周复盘与行动", systemImage: "calendar") }
+                    }
+                }
                 Section {
                     Picker("指标", selection: $metric) { ForEach(MetricDisplay.keys, id: \.self) { Text(MetricDisplay.title($0)).tag($0) } }
                     Picker("范围", selection: $days) { Text("7 天").tag(7); Text("30 天").tag(30); Text("90 天").tag(90); Text("180 天").tag(180); Text("360 天").tag(360) }.pickerStyle(.segmented)
@@ -356,10 +372,12 @@ private struct NativeSettingsView: View {
                 if let session = model.session {
                     Section {
                         NavigationLink("健康目标") { NativeGoalsView(api: model.api, token: session.accessToken) }
-                        NavigationLink("同步历史") { NativeImportHistoryView(api: model.api, token: session.accessToken) }
+                        NavigationLink("同步历史与诊断") { NativeHealthSyncWorkspace(api: model.api, token: session.accessToken, userID: session.user.id) }
+                        NavigationLink("设置、数据与成员") { NativeSettingsWorkspaceRoot(api: model.api, token: session.accessToken, userID: session.user.id) }
+                        NavigationLink("消息与提醒") { NativeNotificationsView(api: model.api, token: session.accessToken, userID: session.user.id) }
                     }
                 }
-                Section { Link("打开桌面与管理网页版", destination: NativeAPI.websiteURL); Button("退出登录", role: .destructive) { signingOut = true } }
+                Section { Button("退出登录", role: .destructive) { signingOut = true } }
             }.navigationTitle("我的")
                 .task { await model.refreshChannelStatus() }
                 .confirmationDialog(

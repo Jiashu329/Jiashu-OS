@@ -55,6 +55,12 @@ final class NativeAppModel: ObservableObject {
         self.sessions = sessions
         self.reader = reader ?? HealthKitReader()
         self.healthDeviceService = healthDeviceService
+        self.api.workspaceAuthenticationFailure = { [weak self] token in
+            guard let self, self.session?.accessToken == token else { return }
+            self.clearDisplayedAccount()
+            try? self.sessions.clear()
+            self.errorMessage = "登录已失效，请重新登录。"
+        }
     }
 
     private func syncKey(_ userID: String) -> String { "jiashu.native.health-auto-sync." + userID }

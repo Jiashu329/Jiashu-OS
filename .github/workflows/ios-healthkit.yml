@@ -5,12 +5,16 @@ on:
     paths:
       - 'ios/**'
       - 'lib/health.ts'
+      - 'lib/backup-volumes.ts'
+      - 'lib/data-backup.ts'
       - '.github/workflows/ios-healthkit.yml'
   push:
     branches: [main]
     paths:
       - 'ios/**'
       - 'lib/health.ts'
+      - 'lib/backup-volumes.ts'
+      - 'lib/data-backup.ts'
       - '.github/workflows/ios-healthkit.yml'
   workflow_dispatch:
 
@@ -43,6 +47,21 @@ jobs:
           "$RUNNER_TEMP/health-export-contract" > "$RUNNER_TEMP/health-export-contract.ndjson"
           node --experimental-strip-types ios/JiashuHealthProbe/scripts/validate-export-contract.mjs \
             "$RUNNER_TEMP/health-export-contract.ndjson"
+
+      - name: Validate lossless Swift backup files with the backend parser
+        run: |
+          node --experimental-strip-types ios/JiashuHealthProbe/scripts/create-backup-contract.mjs \
+            "$RUNNER_TEMP/native-backup-contract"
+          xcrun swiftc -parse-as-library \
+            ios/JiashuHealthProbe/Sources/NativeBackupCodec.swift \
+            ios/JiashuHealthProbe/scripts/BackupContractFixtures.swift \
+            -o "$RUNNER_TEMP/native-backup-contract-tool"
+          "$RUNNER_TEMP/native-backup-contract-tool" \
+            "$RUNNER_TEMP/native-backup-contract/server-backup-set.json" \
+            "$RUNNER_TEMP/native-backup-contract/swift-output"
+          node --experimental-strip-types ios/JiashuHealthProbe/scripts/validate-backup-contract.mjs \
+            "$RUNNER_TEMP/native-backup-contract/server-backup-set.json" \
+            "$RUNNER_TEMP/native-backup-contract/swift-output"
 
       - name: Select an installed iPhone simulator
         id: simulator

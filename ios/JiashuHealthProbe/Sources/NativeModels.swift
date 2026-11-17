@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct NativeUser: Codable, Equatable, Sendable {
     let id: String
@@ -12,6 +13,9 @@ struct NativeSession: Codable, Equatable, Sendable {
 
     var expiryDate: Date? { NativeDates.parse(expiresAt) }
     var isExpired: Bool { expiryDate.map { $0 <= Date() } ?? true }
+    var viewIdentity: String {
+        user.id + "|" + SHA256.hash(data: Data(accessToken.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 enum NativeDates {
@@ -27,6 +31,25 @@ struct NativeOverview: Codable, Sendable {
     let today: String
     let health: NativeOverviewHealth
     let priorities: [NativePriority]
+    let finance: [String: NativeOverviewFinance]?
+    let nutrition: NativeJSON?
+    let modules: NativeJSON?
+}
+
+struct NativeOverviewFinance: Codable, Sendable {
+    let status: String
+    let accountCount: Int
+    let currencies: [NativeOverviewCurrency]
+    let staleAccountCount: Int
+    let uncheckedAccountCount: Int
+    let pendingBalanceCount: Int
+}
+struct NativeOverviewCurrency: Codable, Sendable, Identifiable {
+    let currency: String
+    let netFormatted: String
+    let assetsFormatted: String
+    let liabilitiesFormatted: String
+    var id: String { currency }
 }
 
 struct NativeOverviewHealth: Codable, Sendable {

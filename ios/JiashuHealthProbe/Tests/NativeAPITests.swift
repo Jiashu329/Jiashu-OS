@@ -385,6 +385,126 @@ final class NativeAPITests: XCTestCase {
         XCTAssertThrowsError(try NativeHealthDeviceStore(userID: "").load())
     }
 
+    func testRawBackupUploadDoesNotReencodeSignedJSONAndDownloadRetainsBytes() async throws {
+        let original = Data(#"{"z":1e-7,"a":"\u4f60","amount_minor":"900719925474099312345"}"#.utf8)
+        let client = api { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-native-token")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Origin"))
+            if request.httpMethod == "POST" {
+                XCTAssertEqual(self.requestBody(request), original)
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+                return .json("{\"ok\":true}")
+            }
+            return NativeStubReply(status: 200, headers: ["Content-Type": "application/json", "Content-Disposition": "attachment; filename=backup.json"], data: original)
+        }
+        let uploaded = try await client.upload(path: "data/backup", token: "synthetic-native-token", data: original)
+        XCTAssertEqual(uploaded["ok"].boolValue, true)
+        let downloaded = try await client.download(path: "data/backup", token: "synthetic-native-token")
+        XCTAssertEqual(downloaded.data, original)
+        XCTAssertEqual(downloaded.filename, "backup.json")
+    }
+
+    func testRouteSpecificUploadLimitsPermitExactBoundaryAndRejectOverflow() async throws {
+        let client = api { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            return .json("{\"ok\":true}")
+        }
+        let limits = [("health/import", 512 * 1024), ("health/nutrition/photo", 3 * 1024 * 1024),
+                      ("life/douban/import", 4 * 1024 * 1024), ("data/backup", 16 * 1024 * 1024 + 128 * 1024)]
+        for (path, limit) in limits {
+            _ = try await client.upload(path: path, token: "synthetic-native-token", data: Data(repeating: 32, count: limit))
+            do {
+                _ = try await client.upload(path: path, token: "synthetic-native-token", data: Data(repeating: 32, count: limit + 1))
+                XCTFail("Oversized request was accepted for " + path)
+            } catch NativeAPIError.invalidRequest {}
+        }
+        do {
+            _ = try await client.upload(path: "health/nutrition/photo", token: "synthetic-native-token", data: Data(), contentType: "image/jpeg")
+            XCTFail("Non-JSON request bypassed the fixed protocol")
+        } catch NativeAPIError.invalidRequest {}
+    }
+
+    func testRouteSpecificDownloadLimitsRejectOversizedResponses() async throws {
+        for (path, limit) in [("health/export", 4 * 1024 * 1024), ("life/douban", 8 * 1024 * 1024), ("data/backup", 18 * 1024 * 1024)] {
+            let accepted = api { _ in NativeStubReply(status: 200, headers: ["Content-Type": "application/octet-stream"], data: Data(repeating: 65, count: limit)) }
+            let downloaded = try await accepted.download(path: path, token: "synthetic-native-token")
+            XCTAssertEqual(downloaded.data.count, limit)
+            let rejected = api { _ in NativeStubReply(status: 200, headers: ["Content-Type": "application/octet-stream"], data: Data(repeating: 65, count: limit + 1)) }
+            do {
+                _ = try await rejected.download(path: path, token: "synthetic-native-token")
+                XCTFail("Oversized response was accepted for " + path)
+            } catch NativeAPIError.responseTooLarge {}
+        }
+    }
+
+    func testDownloadFilenamesAreDecodedAndUnsafeNamesAreDiscarded() async throws {
+        let cases: [(String, String?)] = [
+            ("attachment; filename=health.json", "health.json"),
+            ("attachment; filename*=UTF-8''%E5%81%A5%E5%BA%B7.json", "健康.json"),
+            ("attachment; filename=../backup.json", nil),
+            ("attachment; filename*=UTF-8''..%2Fbackup.json", nil),
+            ("attachment; filename*=UTF-8''folder%5Cbackup.json", nil),
+            ("attachment; filename*=UTF-8''bad%00name.json", nil),
+            ("attachment; filename=..", nil),
+            ("attachment; filename=" + String(repeating: "a", count: 201), nil),
+        ]
+        for (header, expected) in cases {
+            let client = api { _ in NativeStubReply(status: 200,
+                headers: ["Content-Type": "application/json", "Content-Disposition": header], data: Data("{}".utf8)) }
+            let download = try await client.download(path: "health/export", token: "synthetic-native-token")
+            XCTAssertEqual(download.filename, expected)
+        }
+    }
+
+    func testEncodedSlashIsAllowedOnlyInsideRecognizedHealthRecordKey() async throws {
+        let client = api { request in
+            XCTAssertTrue(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.percentEncodedPath.contains("%2F"))
+            return .json("{\"ok\":true}")
+        }
+        _ = try await client.json(path: "health/records/weight:synthetic%2Fsample/history", token: "synthetic-native-token")
+        for path in ["finance/accounts/a%2Fb", "health/records/unrecognized%2Fkey", "health/records/weight:synthetic%252Fsample"] {
+            do {
+                _ = try await client.json(path: path, token: "synthetic-native-token")
+                XCTFail("Unsupported encoded path reached transport")
+            } catch NativeAPIError.invalidRequest {}
+        }
+    }
+
+    func testExtendedTransportCannotOverrideTrustedOrContentHeaders() async throws {
+        let client = api { _ in XCTFail("Forbidden header reached transport"); return .json("{}") }
+        for header in ["Content-Type", "Content-Length", "X-JSO-Native-Client", "Forwarded", "X-Forwarded-Host", "Proxy-Authorization", "X-Auth-User-ID", "OAI-Authenticated-User-ID", "Cookie", "Origin"] {
+            do {
+                _ = try await client.download(path: "data/backup", token: "synthetic-native-token", headers: [header: "forged"])
+                XCTFail("Header override accepted: " + header)
+            } catch NativeAPIError.invalidRequest {}
+        }
+    }
+
+    @MainActor
+    func testWorkspaceAuthenticationCallbackRequiresNativeCodeAndKeepsOriginalToken() async throws {
+        var notified: [String] = []
+        let client = api { _ in .json("{\"error\":\"App 登录已失效\",\"code\":\"NATIVE_SIGN_IN_REQUIRED\"}", status: 401) }
+        client.workspaceAuthenticationFailure = { notified.append($0) }
+        do { _ = try await client.json(path: "finance", token: "synthetic-workspace-token"); XCTFail("Expected 401") }
+        catch let error as NativeAPIError { XCTAssertTrue(error.isAuthenticationFailure) }
+        do { _ = try await client.download(path: "finance/export", token: "synthetic-workspace-token"); XCTFail("Expected 401") }
+        catch let error as NativeAPIError { XCTAssertTrue(error.isAuthenticationFailure) }
+        do { _ = try await client.upload(path: "data/backup", token: "synthetic-workspace-token", data: Data("{}".utf8)); XCTFail("Expected 401") }
+        catch let error as NativeAPIError { XCTAssertTrue(error.isAuthenticationFailure) }
+        XCTAssertEqual(notified, Array(repeating: "synthetic-workspace-token", count: 3))
+        do { _ = try await client.health(token: "synthetic-health-token"); XCTFail("Expected 401") }
+        catch let error as NativeAPIError { XCTAssertTrue(error.isAuthenticationFailure) }
+        XCTAssertEqual(notified.count, 3, "Original health flow owns automatic/manual error presentation")
+        for (status, code) in [(401, "OTHER_SIGN_IN_REQUIRED"), (403, "NATIVE_SIGN_IN_REQUIRED")] {
+            let unrelated = api { _ in .json("{\"error\":\"Synthetic error\",\"code\":\"" + code + "\"}", status: status) }
+            unrelated.workspaceAuthenticationFailure = { notified.append($0) }
+            do { _ = try await unrelated.json(path: "finance", token: "synthetic-unrelated-token"); XCTFail("Expected rejection") }
+            catch is NativeAPIError {}
+        }
+        XCTAssertEqual(notified.count, 3)
+    }
+
     func testKeychainStoresOnlySessionAndSupportsReplacementAndClear() throws {
         let service = "synthetic.native-tests." + UUID().uuidString
         keychainServices.append(service)
