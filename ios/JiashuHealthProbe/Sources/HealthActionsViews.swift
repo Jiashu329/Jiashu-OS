@@ -24,6 +24,8 @@ struct HealthQuickEntryView: View {
     @State private var isSaving = false
     @State private var hasLoaded = false
     @State private var message: String?
+    @StateObject private var drafts: NativeQuickEntryDraftRecovery
+    @State private var initialDraft: NativeQuickEntryDraft?
 
     init(api: NativeAPI, token: String, userID: String, defaultIsNutrition: Bool = false, initialMetric: QuickEntryMetric = .weight,
          initialDate: Date = Date(), onSaved: @escaping () async -> Void) {
@@ -34,6 +36,7 @@ struct HealthQuickEntryView: View {
         _isNutrition = State(initialValue: defaultIsNutrition)
         _metric = State(initialValue: initialMetric)
         _date = State(initialValue: initialDate)
+        _drafts = StateObject(wrappedValue: NativeQuickEntryDraftRecovery(userID: userID))
     }
 
     var body: some View {
@@ -48,6 +51,18 @@ struct HealthQuickEntryView: View {
                             .disabled(isSaving)
                     }
                 } else {
+                    if let saved = drafts.recovery {
+                        Section("发现未完成的填写") {
+                            Text("此前的" + (saved.isNutrition ? "饮食" : "健康") + "填写已加密保存在本机。你可以恢复或丢弃；不会自动保存为记录。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Button("恢复填写") { restoreDraft() }
+                            Button("丢弃旧草稿", role: .destructive) {
+                                do { try drafts.discard(); message = nil }
+                                catch { message = error.localizedDescription }
+                            }
+                        }
+                    }
+                    Group {
                     Section {
                         Picker("记录类型", selection: $isNutrition) {
                             Text("健康数据").tag(false)
@@ -94,14 +109,21 @@ struct HealthQuickEntryView: View {
                     }
                     Section {
                         Button("确认保存") { Task { await prepareAndSubmit() } }
-                            .disabled(isSaving || !hasLoaded)
+                            .disabled(isSaving || !hasLoaded || !drafts.canWrite)
                     }
+                    }.disabled(!drafts.canWrite)
                 }
                 if isSaving { Section { ProgressView("正在核对保存结果…") } }
                 if let message {
                     Section {
                         Text(message).foregroundStyle(.red).textSelection(.enabled)
                         if !hasLoaded { Button("重新读取原操作") { loadPending() } }
+                        else if pending == nil && !drafts.hasLoaded {
+                            Button("重新读取草稿") {
+                                do { try drafts.read(); message = nil }
+                                catch { message = error.localizedDescription }
+                            }
+                        }
                     }
                 }
             }
@@ -110,10 +132,15 @@ struct HealthQuickEntryView: View {
             .navigationTitle("快速记录")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(isSaving) }
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { close() }.disabled(isSaving) }
             }
-            .interactiveDismissDisabled(isSaving)
+            .interactiveDismissDisabled(isSaving || (pending == nil && (!drafts.canWrite || currentDraft != initialDraft)))
             .task { loadPending() }
+            .onChange(of: currentDraft) { _, value in
+                guard hasLoaded, pending == nil, drafts.canWrite else { return }
+                do { try drafts.save(value) }
+                catch { message = error.localizedDescription }
+            }
         }
     }
 
@@ -121,19 +148,46 @@ struct HealthQuickEntryView: View {
         guard !hasLoaded else { return }
         do {
             pending = try NativePendingEntryStore(userID: userID).load()
+            if pending == nil { try drafts.read() }
+            initialDraft = currentDraft
             hasLoaded = true
+        } catch { message = error.localizedDescription }
+    }
+
+    private var currentDraft: NativeQuickEntryDraft {
+        NativeQuickEntryDraft(isNutrition: isNutrition, metric: metric.rawValue, date: date, time: time,
+            value: value, note: note, foodName: foodName, meal: meal.rawValue, portion: portion,
+            carbs: carbs, protein: protein, fat: fat)
+    }
+
+    private func restoreDraft() {
+        do {
+            let saved = try drafts.restore()
+            isNutrition = saved.isNutrition; metric = QuickEntryMetric(rawValue: saved.metric)!
+            date = saved.date; time = saved.time; value = saved.value; note = saved.note
+            foodName = saved.foodName; meal = QuickEntryMeal(rawValue: saved.meal)!
+            portion = saved.portion; carbs = saved.carbs; protein = saved.protein; fat = saved.fat
+            message = nil
+        } catch { message = error.localizedDescription }
+    }
+
+    private func close() {
+        if pending != nil || !hasLoaded || drafts.recovery != nil { dismiss(); return }
+        do {
+            guard drafts.canWrite else { throw NativeWorkspacePersistenceError.unavailable }
+            if currentDraft != initialDraft { try drafts.save(currentDraft) }
+            dismiss()
         } catch { message = error.localizedDescription }
     }
 
     private func prepareAndSubmit() async {
         message = nil
         do {
-            let entry = try isNutrition
-                ? NativePendingEntry.nutrition(name: foodName, meal: meal, portion: portion, calories: value,
-                    note: note, date: date, carbs: carbs, protein: protein, fat: fat)
-                : NativePendingEntry.health(metric: metric, value: value, date: date, time: time, reason: note)
+            guard drafts.canWrite else { throw NativeWorkspacePersistenceError.unavailable }
+            let entry = try currentDraft.operation()
             try NativePendingEntryStore(userID: userID).save(entry)
             pending = entry
+            try drafts.clearAfterPendingStored()
             await submit(entry)
         } catch { message = error.localizedDescription }
     }
@@ -144,6 +198,9 @@ struct HealthQuickEntryView: View {
         message = nil
         defer { isSaving = false }
         do {
+            // A loaded immutable pending operation always takes precedence over
+            // ordinary drafts; never leave a stale compose draft after success.
+            try drafts.clearAfterPendingStored()
             _ = try await api.saveQuickEntry(token: token, entry: entry)
             // Clear only after an acknowledged response; if Keychain clearing
             // fails the original request remains safe to replay next time.
@@ -156,7 +213,10 @@ struct HealthQuickEntryView: View {
             // uncertain write. Let the user correct their original fields.
             if case .server(let status, _, _, _) = error,
                [400, 404, 409, 413, 415, 422].contains(status) {
-                do { try NativePendingEntryStore(userID: userID).clear(); pending = nil }
+                do {
+                    try NativePendingEntryStore(userID: userID).clear(); pending = nil
+                    try drafts.read()
+                }
                 catch { message = error.localizedDescription; return }
                 message = error.localizedDescription
             } else {

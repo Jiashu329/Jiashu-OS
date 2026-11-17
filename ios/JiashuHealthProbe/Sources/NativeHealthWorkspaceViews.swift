@@ -163,38 +163,82 @@ struct NativeHealthRangeWorkspace: View {
         }.accessibilityLabel("所选范围的" + NativeHealthWorkspaceFormat.metric(metric) + "，缺失日期留空")
     }
     @ViewBuilder private var sleepSections: some View {
+        sleepSummarySection
+        sleepTimingSection
+        if loadedRange != nil { sleepWeeklySection }
+    }
+    private var sleepSummarySection: some View {
         let summary = NativeWorkspaceSleepSummary(points)
-        Section("主睡眠作息与规律") {
-            LabeledContent("平均入睡",value:summary.onset ?? "暂无完整时刻")
-            LabeledContent("入睡平均偏离",value:NativeHealthWorkspaceFormat.number(summary.onsetDeviation) + " 分钟")
-            LabeledContent("平均起床",value:summary.wake ?? "暂无完整时刻")
-            LabeledContent("起床平均偏离",value:NativeHealthWorkspaceFormat.number(summary.wakeDeviation) + " 分钟")
-            Text("完整时刻 \(summary.timingDays) 天；窗口截断 \(summary.clippedDays) 天；分期 \(summary.stageDays) 天。跨午夜按圆周平均，至少2天才给出偏离；旧版总时长不推算时刻。")
-                .font(.footnote).foregroundStyle(.secondary)
-            ForEach(NativeWorkspaceSleepSummary.stageKeys,id:\.self) { key in LabeledContent(stageLabel(key) + "占比",value:NativeHealthWorkspaceFormat.number(summary.stages[key]) + "%") }
+        let onset: String = summary.onset ?? "暂无完整时刻"
+        let wake: String = summary.wake ?? "暂无完整时刻"
+        let onsetDeviation: String = NativeHealthWorkspaceFormat.number(summary.onsetDeviation) + " 分钟"
+        let wakeDeviation: String = NativeHealthWorkspaceFormat.number(summary.wakeDeviation) + " 分钟"
+        let coverage: String = "完整时刻 \(summary.timingDays) 天；窗口截断 \(summary.clippedDays) 天；分期 \(summary.stageDays) 天。跨午夜按圆周平均，至少2天才给出偏离；旧版总时长不推算时刻。"
+        return Section("主睡眠作息与规律") {
+            LabeledContent("平均入睡",value:onset)
+            LabeledContent("入睡平均偏离",value:onsetDeviation)
+            LabeledContent("平均起床",value:wake)
+            LabeledContent("起床平均偏离",value:wakeDeviation)
+            Text(coverage).font(.footnote).foregroundStyle(.secondary)
+            ForEach(NativeWorkspaceSleepSummary.stageKeys,id:\.self) { key in sleepStageRow(key,summary:summary,suffix:"占比") }
         }
+    }
+    private var sleepTimingSection: some View {
         Section("真实时刻明细") {
-            ForEach(points.reversed()) { point in
-                VStack(alignment:.leading,spacing:4) {
-                    Text(point.day).font(.headline)
-                    Text("入睡 " + NativeHealthWorkspaceFormat.clock(point.timing["onset"].stringValue) + " · 起床 " + NativeHealthWorkspaceFormat.clock(point.timing["wake"].stringValue))
-                    Text(point.timing["clipped"].boolValue == true ? "窗口截断，不参与规律性计算" : NativeWorkspaceSleepSummary.validTiming(point) == nil ? "仅有总时长，时刻未知" : "同来源最长主睡眠组的真实时刻").font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            ForEach(points.reversed()) { point in sleepTimingRow(point) }
         }
-        if let range = loadedRange, let first = NativeHealthWorkspaceFormat.date(range.from) {
-            Section("分周规律与分期") {
-                ForEach(Array(stride(from:0,to:range.days,by:7)),id:\.self) { offset in
-                    let start = NativeActionDates.day(NativeActionDates.calendar.date(byAdding:.day,value:offset,to:first)!)
-                    let end = NativeActionDates.day(NativeActionDates.calendar.date(byAdding:.day,value:min(offset+6,range.days-1),to:first)!)
-                    let week = NativeWorkspaceSleepSummary(points.filter { $0.day >= start && $0.day <= end })
-                    DisclosureGroup(start + " — " + end) {
-                        Text("完整时刻 \(week.timingDays) 天 · " + (week.onset ?? "未知") + " / " + (week.wake ?? "未知"))
-                        ForEach(NativeWorkspaceSleepSummary.stageKeys,id:\.self) { key in LabeledContent(stageLabel(key),value:NativeHealthWorkspaceFormat.number(week.stages[key]) + "%") }
-                    }
-                }
-            }
+    }
+    private func sleepTimingRow(_ point: NativeWorkspaceHealthPoint) -> some View {
+        let onset: String = NativeHealthWorkspaceFormat.clock(point.timing["onset"].stringValue)
+        let wake: String = NativeHealthWorkspaceFormat.clock(point.timing["wake"].stringValue)
+        let detail: String = "入睡 \(onset) · 起床 \(wake)"
+        let timingStatus: String
+        if point.timing["clipped"].boolValue == true { timingStatus = "窗口截断，不参与规律性计算" }
+        else if NativeWorkspaceSleepSummary.validTiming(point) == nil { timingStatus = "仅有总时长，时刻未知" }
+        else { timingStatus = "同来源最长主睡眠组的真实时刻" }
+        return VStack(alignment:.leading,spacing:4) {
+            Text(point.day).font(.headline)
+            Text(detail)
+            Text(timingStatus).font(.caption).foregroundStyle(.secondary)
         }
+    }
+    private struct SleepWeek: Identifiable {
+        let from: String
+        let to: String
+        let summary: NativeWorkspaceSleepSummary
+        var id: String { from }
+    }
+    private var sleepWeeks: [SleepWeek] {
+        guard let range = loadedRange,let first = NativeHealthWorkspaceFormat.date(range.from) else { return [] }
+        let source: [NativeWorkspaceHealthPoint] = points
+        return stride(from:0,to:range.days,by:7).map { offset -> SleepWeek in
+            let startDate: Date = NativeActionDates.calendar.date(byAdding:.day,value:offset,to:first)!
+            let endDate: Date = NativeActionDates.calendar.date(byAdding:.day,value:min(offset+6,range.days-1),to:first)!
+            let start: String = NativeActionDates.day(startDate)
+            let end: String = NativeActionDates.day(endDate)
+            let daily: [NativeWorkspaceHealthPoint] = source.filter { $0.day >= start && $0.day <= end }
+            return SleepWeek(from:start,to:end,summary:NativeWorkspaceSleepSummary(daily))
+        }
+    }
+    private var sleepWeeklySection: some View {
+        Section("分周规律与分期") {
+            ForEach(sleepWeeks) { week in sleepWeekRow(week) }
+        }
+    }
+    private func sleepWeekRow(_ week: SleepWeek) -> some View {
+        let title: String = "\(week.from) — \(week.to)"
+        let onset: String = week.summary.onset ?? "未知"
+        let wake: String = week.summary.wake ?? "未知"
+        let detail: String = "完整时刻 \(week.summary.timingDays) 天 · \(onset) / \(wake)"
+        return DisclosureGroup(title) {
+            Text(detail)
+            ForEach(NativeWorkspaceSleepSummary.stageKeys,id:\.self) { key in sleepStageRow(key,summary:week.summary,suffix:"") }
+        }
+    }
+    private func sleepStageRow(_ key: String,summary: NativeWorkspaceSleepSummary,suffix: String) -> some View {
+        let title: String = stageLabel(key) + suffix
+        let percent: String = NativeHealthWorkspaceFormat.number(summary.stages[key]) + "%"
+        return LabeledContent(title,value:percent)
     }
     private func stageLabel(_ key: String) -> String { ["deep":"深度","core":"核心","rem":"REM","unspecified":"未分类"][key] ?? key }
     private func load() async {

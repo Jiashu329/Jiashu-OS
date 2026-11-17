@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import ImageIO
+import AVFoundation
 @testable import JiashuHealthProbe
 
 final class NativeNutritionTests: XCTestCase {
@@ -92,6 +93,32 @@ final class NativeNutritionTests: XCTestCase {
         let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
         XCTAssertLessThanOrEqual((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? .max, 1600)
         XCTAssertNil(properties[kCGImagePropertyGPSDictionary])
+    }
+
+    func testCameraAvailabilityNeverTreatsDenialOrMissingHardwareAsReady() {
+        XCTAssertEqual(NativeNutritionCameraAccess.resolve(available: false, authorization: .authorized), .unavailable)
+        XCTAssertEqual(NativeNutritionCameraAccess.resolve(available: true, authorization: .notDetermined), .needsPermission)
+        XCTAssertEqual(NativeNutritionCameraAccess.resolve(available: true, authorization: .denied), .denied)
+        XCTAssertEqual(NativeNutritionCameraAccess.resolve(available: true, authorization: .restricted), .restricted)
+        XCTAssertEqual(NativeNutritionCameraAccess.resolve(available: true, authorization: .authorized), .ready)
+    }
+
+    @MainActor
+    func testCameraImageOrientationIsBakedBeforeMetadataIsRemoved() throws {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2000, height: 1000), format: format).image {
+            UIColor.orange.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 2000, height: 1000))
+        }
+        let pixels = try XCTUnwrap(image.cgImage)
+        let portrait = UIImage(cgImage: pixels, scale: 1, orientation: .right)
+        let sanitized = try NativeNutritionPhoto.jpeg(image: portrait)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(sanitized as CFData, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        XCTAssertEqual((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue, 800)
+        XCTAssertEqual((properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, 1600)
+        XCTAssertEqual(UIImage(data: sanitized)?.imageOrientation, .up)
+        XCTAssertNil(properties[kCGImagePropertyGPSDictionary])
+        XCTAssertLessThanOrEqual(sanitized.count, 2 * 1024 * 1024)
     }
 
     @MainActor

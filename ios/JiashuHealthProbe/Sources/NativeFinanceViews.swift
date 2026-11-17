@@ -458,51 +458,135 @@ private struct NativeFinanceAccountForm: View {
     @State private var confirm = false
     private var draftScope: String { context.draftScope("account:" + (initial?.financeID ?? "new")) }
     private var draftValues: NativeJSON { .object(["name": .string(name), "type": .string(type), "currency": .string(currency), "amount": .string(amount), "date": .string(date), "note": .string(note), "liquidity": .string(liquidity), "usable": .string(usable)]) }
-    private var changed: Bool { initial == nil ? !name.isEmpty || !amount.isEmpty || !note.isEmpty : name != initial?["name"].stringValue || type != initial?["type"].stringValue || note != initial?["note"].stringValue || liquidity != initial?["liquidityKind"].stringValue || (try? NativeFinanceContract.basisPoints(usable)) != initial?["usableBps"].intValue }
+    private var changed: Bool {
+        guard let initial else { return !name.isEmpty || !amount.isEmpty || !note.isEmpty }
+        if name != initial["name"].stringValue { return true }
+        if type != initial["type"].stringValue { return true }
+        if note != initial["note"].stringValue { return true }
+        if liquidity != initial["liquidityKind"].stringValue { return true }
+        let ratio: Int? = try? NativeFinanceContract.basisPoints(usable)
+        return ratio != initial["usableBps"].intValue
+    }
     init(context: NativeFinanceContext, account: NativeJSON?) { self.context = context; self.initial = account }
+    private var fieldsDisabled: Bool { context.pending != nil || context.busy }
+    private var formTitle: String { initial == nil ? "新增账户" : "编辑账户" }
+    private var saveTitle: String { initial == nil ? "创建账户" : "保存账户资料" }
+    private var draftBasis: NativeJSON { account ?? .null }
+    private var confirmationSummary: String {
+        let classification: String = NativeFinanceContract.typeName(type)
+        return [name, classification, currency].joined(separator: " · ")
+    }
+    private var latestSummary: String {
+        let latestName: String = latest?["name"].stringValue ?? ""
+        let latestType: String = latest?["type"].stringValue ?? ""
+        let latestNote: String = latest?["note"].stringValue ?? ""
+        let classification: String = NativeFinanceContract.typeName(latestType)
+        return latestName + " · " + classification + "\n备注：" + latestNote + "\n采用版本后可重新保存；填写不会自动覆盖。"
+    }
     var body: some View {
+        monitoredForm
+            .confirmationDialog("确认保存此账户？", isPresented: $confirm, titleVisibility: .visible) {
+                Button("确认保存") { Task { await save() } }
+            } message: { Text(confirmationSummary) }
+            .alert("核对最新账户", isPresented: $adopt) {
+                Button("保留我的填写，采用此版本") { account = latest }
+                Button("继续查看", role: .cancel) {}
+            } message: { Text(latestSummary) }
+    }
+    private var monitoredForm: some View {
+        accountForm
+            .navigationTitle(formTitle)
+            .modifier(NativeFinancePrivacy(context: context))
+            .onChange(of: context.change) { _, _ in confirmedCreation() }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { closeButton } }
+            .interactiveDismissDisabled(changed || fieldsDisabled)
+            .task { initializeFields() }
+            .onChange(of: liquidity) { _, value in
+                if ["unreviewed", "illiquid"].contains(value) { usable = "0" }
+            }
+            .onChange(of: type) { _, value in updateTypeDefaults(value) }
+    }
+    private var closeButton: some View {
+        NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: draftBasis, changed: changed) { dismiss() }
+    }
+    private var accountForm: some View {
         Form {
             NativeFinanceStatus(context: context)
-            NativeFinanceDraftRecovery(context: context, scope: draftScope, values: draftValues, basis: account ?? .null, ready: initialized) { values in
-                name = values["name"].stringValue ?? name; type = values["type"].stringValue ?? type; currency = values["currency"].stringValue ?? currency
-                amount = values["amount"].stringValue ?? amount; date = values["date"].stringValue ?? date; note = values["note"].stringValue ?? note
-                liquidity = values["liquidity"].stringValue ?? liquidity; usable = values["usable"].stringValue ?? usable
+            draftRecovery
+            accountFields
+            modeFields
+            Section { Button(saveTitle) { confirm = true }.disabled(!context.canWrite) }
+        }
+    }
+    private var draftRecovery: some View {
+        NativeFinanceDraftRecovery(context: context, scope: draftScope, values: draftValues, basis: draftBasis, ready: initialized, restore: restoreFields)
+    }
+    private var accountFields: some View {
+        Section("账户资料") {
+            TextField("账户名称", text: $name)
+            Picker("账户类型", selection: $type) {
+                ForEach(NativeFinanceContract.accountTypes, id: \.0) { option in Text(option.1).tag(option.0) }
             }
-            Section("账户资料") {
-                TextField("账户名称", text: $name)
-                Picker("账户类型", selection: $type) { ForEach(NativeFinanceContract.accountTypes, id: \.0) { Text($0.1).tag($0.0) } }
-                Picker("币种", selection: $currency) { ForEach(NativeFinanceContract.currencies, id: \.self) { Text($0).tag($0) } }.disabled(initial != nil)
-                TextField("备注", text: $note, axis: .vertical)
-            }.disabled(context.pending != nil || context.busy)
-            if initial == nil {
-                Section("初始余额或欠款") {
-                    TextField("金额（负债也填正数）", text: $amount).keyboardType(.decimalPad)
-                    TextField("余额日期 YYYY-MM-DD", text: $date).keyboardType(.numbersAndPunctuation)
-                }.disabled(context.pending != nil || context.busy)
-            } else {
-                Section("应急资金可动用程度") {
-                    Picker("可动用程度", selection: $liquidity) { ForEach(NativeFinanceContract.liquidityKinds, id: \.0) { Text($0.1).tag($0.0) } }
-                    TextField("可动用比例 %", text: $usable).keyboardType(.decimalPad)
-                    Text("类型与归档调整从北京时间今天生效，保留此前月份分类。类型变化后请重新核对可动用程度。") .font(.caption).foregroundStyle(.secondary)
-                }.disabled(context.pending != nil || context.busy)
-                Button("读取最新账户并核对版本") { Task { await readLatest() } }.disabled(context.busy)
+            Picker("币种", selection: $currency) {
+                ForEach(NativeFinanceContract.currencies, id: \.self) { code in Text(code).tag(code) }
+            }.disabled(initial != nil)
+            TextField("备注", text: $note, axis: .vertical)
+        }.disabled(fieldsDisabled)
+    }
+    @ViewBuilder private var modeFields: some View {
+        if initial == nil { initialBalanceFields }
+        else {
+            liquidityFields
+            Button("读取最新账户并核对版本") { Task { await readLatest() } }.disabled(context.busy)
+        }
+    }
+    private var initialBalanceFields: some View {
+        Section("初始余额或欠款") {
+            TextField("金额（负债也填正数）", text: $amount).keyboardType(.decimalPad)
+            TextField("余额日期 YYYY-MM-DD", text: $date).keyboardType(.numbersAndPunctuation)
+        }.disabled(fieldsDisabled)
+    }
+    private var liquidityFields: some View {
+        Section("应急资金可动用程度") {
+            Picker("可动用程度", selection: $liquidity) {
+                ForEach(NativeFinanceContract.liquidityKinds, id: \.0) { option in Text(option.1).tag(option.0) }
             }
-            Section { Button(initial == nil ? "创建账户" : "保存账户资料") { confirm = true }.disabled(!context.canWrite) }
-        }
-        .navigationTitle(initial == nil ? "新增账户" : "编辑账户")
-        .modifier(NativeFinancePrivacy(context: context))
-        .onChange(of: context.change) { _, _ in if initial == nil && context.notice == "创建账户已确认。" { try? NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear(); dismiss() } }
-        .toolbar { ToolbarItem(placement: .cancellationAction) { NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: account ?? .null, changed: changed) { dismiss() } } }
-        .interactiveDismissDisabled(changed || context.busy || context.pending != nil)
-        .task { if !initialized { initialized = true; account = initial; currency = initial?["currency"].stringValue ?? context.currency; name = initial?["name"].stringValue ?? ""; type = initial?["type"].stringValue ?? "bank"; note = initial?["note"].stringValue ?? ""; liquidity = initial?["liquidityKind"].stringValue ?? "liquid"; let bps = initial?["usableBps"].intValue ?? 10000; usable = String(bps / 100) + "." + String(format: "%02d", bps % 100) } }
-        .onChange(of: liquidity) { _, value in if ["unreviewed", "illiquid"].contains(value) { usable = "0" } }
-        .onChange(of: type) { _, value in
-            if initial != nil { if ["cash", "bank"].contains(value) { liquidity = "liquid"; usable = "100" } else if ["property", "credit_card", "loan", "other_liability"].contains(value) { liquidity = "illiquid"; usable = "0" } else { liquidity = "unreviewed"; usable = "0" } }
-        }
-        .confirmationDialog("确认保存此账户？", isPresented: $confirm, titleVisibility: .visible) { Button("确认保存") { Task { await save() } } } message: { Text("\(name) · \(NativeFinanceContract.typeName(type)) · \(currency)") }
-        .alert("核对最新账户", isPresented: $adopt) { Button("保留我的填写，采用此版本") { account = latest }; Button("继续查看", role: .cancel) {} } message: {
-            Text((latest?["name"].stringValue ?? "") + " · " + NativeFinanceContract.typeName(latest?["type"].stringValue ?? "") + "\n备注：" + (latest?["note"].stringValue ?? "") + "\n采用版本后可重新保存；填写不会自动覆盖。")
-        }
+            TextField("可动用比例 %", text: $usable).keyboardType(.decimalPad)
+            Text("类型与归档调整从北京时间今天生效，保留此前月份分类。类型变化后请重新核对可动用程度。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.disabled(fieldsDisabled)
+    }
+    private func restoreFields(_ values: NativeJSON) {
+        name = values["name"].stringValue ?? name
+        type = values["type"].stringValue ?? type
+        currency = values["currency"].stringValue ?? currency
+        amount = values["amount"].stringValue ?? amount
+        date = values["date"].stringValue ?? date
+        note = values["note"].stringValue ?? note
+        liquidity = values["liquidity"].stringValue ?? liquidity
+        usable = values["usable"].stringValue ?? usable
+    }
+    private func initializeFields() {
+        guard !initialized else { return }
+        initialized = true; account = initial
+        currency = initial?["currency"].stringValue ?? context.currency
+        name = initial?["name"].stringValue ?? ""
+        type = initial?["type"].stringValue ?? "bank"
+        note = initial?["note"].stringValue ?? ""
+        liquidity = initial?["liquidityKind"].stringValue ?? "liquid"
+        let bps: Int = initial?["usableBps"].intValue ?? 10000
+        usable = String(bps / 100) + "." + String(format: "%02d", bps % 100)
+    }
+    private func updateTypeDefaults(_ value: String) {
+        guard initial != nil else { return }
+        if ["cash", "bank"].contains(value) { liquidity = "liquid"; usable = "100" }
+        else if ["property", "credit_card", "loan", "other_liability"].contains(value) { liquidity = "illiquid"; usable = "0" }
+        else { liquidity = "unreviewed"; usable = "0" }
+    }
+    private func confirmedCreation() {
+        guard initial == nil, context.notice == "创建账户已确认。" else { return }
+        try? NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear()
+        dismiss()
     }
     private func readLatest() async {
         guard let account else { return }
@@ -754,35 +838,67 @@ private struct NativeFinanceGoalDetail: View {
     @State private var goal: NativeJSON = .null
     @State private var editing = false
     @State private var archive = false
+    private var title: String { goal["name"].stringValue ?? "资金目标" }
+    private var archived: Bool { goal["archived"].boolValue == true }
+    private var archiveTitle: String { archived ? "恢复目标" : "归档目标" }
+    private var archiveRole: ButtonRole? { archived ? nil : .destructive }
+    private var dateRange: String {
+        let oldest: String = goal["oldestBalanceDate"].stringValue ?? "未知"
+        let latest: String = goal["latestBalanceDate"].stringValue ?? "未知"
+        return "余额日期：\(oldest) 至 \(latest)"
+    }
+    private func money(_ key: String) -> String {
+        NativeFinanceContract.money(goal[key], currency: context.currency)
+    }
+    private func count(_ key: String) -> String { String(goal[key].intValue ?? 0) }
     var body: some View {
+        goalList
+            .navigationTitle(title)
+            .modifier(NativeFinancePrivacy(context: context))
+            .task(id: String(context.change)) { await load() }
+            .refreshable { await load() }
+            .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) { editor }
+            .confirmationDialog("确认调整目标归档状态？", isPresented: $archive, titleVisibility: .visible) {
+                Button("确认") { Task { await setArchive() } }
+            } message: { Text("目标及账户记录保留。") }
+    }
+    private var goalList: some View {
         List {
             NativeFinanceStatus(context: context)
-            Section("目标进度") {
-                NativeFinanceMetric(title: "目前余额", value: NativeFinanceContract.money(goal["currentMinor"], currency: context.currency))
-                LabeledContent("目标", value: NativeFinanceContract.money(goal["targetMinor"], currency: context.currency))
-                LabeledContent("缺口", value: NativeFinanceContract.money(goal["gapMinor"], currency: context.currency))
-                LabeledContent("每月参考", value: NativeFinanceContract.money(goal["monthlyMinor"], currency: context.currency))
-                LabeledContent("截止日", value: goal["deadline"].stringValue ?? "")
-                LabeledContent("剩余天数", value: String(goal["daysRemaining"].intValue ?? 0))
-            }
-            Section("计算依据") {
-                LabeledContent("有效关联账户", value: String(goal["matchedAccountCount"].intValue ?? 0))
-                LabeledContent("余额超过30天", value: String(goal["staleAccountCount"].intValue ?? 0))
-                LabeledContent("缺失或归档", value: String(goal["missingCount"].intValue ?? 0))
-                Text("余额日期：" + (goal["oldestBalanceDate"].stringValue ?? "未知") + " 至 " + (goal["latestBalanceDate"].stringValue ?? "未知")).font(.caption)
-                Text("达成状态依赖当前余额；陈旧、缺失或归档的依据需重新核对。") .font(.caption).foregroundStyle(.secondary)
-            }
+            progressSection
+            basisSection
             NativeFinanceSharing(sharing: goal["sharing"], currency: context.currency)
-            Section {
-                Button("编辑目标") { editing = true }.disabled(!context.canWrite)
-                Button(goal["archived"].boolValue == true ? "恢复目标" : "归档目标", role: goal["archived"].boolValue == true ? nil : .destructive) { archive = true }.disabled(!context.canWrite)
-            }
+            actionSection
         }
-        .navigationTitle(goal["name"].stringValue ?? "资金目标")
-        .modifier(NativeFinancePrivacy(context: context))
-        .task(id: String(context.change)) { await load() }.refreshable { await load() }
-        .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) { NavigationStack { NativeFinanceGoalForm(context: context, initial: goal, available: available) } }
-        .confirmationDialog("确认调整目标归档状态？", isPresented: $archive, titleVisibility: .visible) { Button("确认") { Task { await setArchive() } } } message: { Text("目标及账户记录保留。") }
+    }
+    private var progressSection: some View {
+        Section("目标进度") {
+            NativeFinanceMetric(title: "目前余额", value: money("currentMinor"))
+            LabeledContent("目标", value: money("targetMinor"))
+            LabeledContent("缺口", value: money("gapMinor"))
+            LabeledContent("每月参考", value: money("monthlyMinor"))
+            LabeledContent("截止日", value: goal["deadline"].stringValue ?? "")
+            LabeledContent("剩余天数", value: count("daysRemaining"))
+        }
+    }
+    private var basisSection: some View {
+        Section("计算依据") {
+            LabeledContent("有效关联账户", value: count("matchedAccountCount"))
+            LabeledContent("余额超过30天", value: count("staleAccountCount"))
+            LabeledContent("缺失或归档", value: count("missingCount"))
+            Text(dateRange).font(.caption)
+            Text("达成状态依赖当前余额；陈旧、缺失或归档的依据需重新核对。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private var actionSection: some View {
+        Section {
+            Button("编辑目标") { editing = true }.disabled(!context.canWrite)
+            Button(archiveTitle, role: archiveRole) { archive = true }.disabled(!context.canWrite)
+        }
+    }
+    private var editor: some View {
+        NavigationStack { NativeFinanceGoalForm(context: context, initial: goal, available: available) }
     }
     private func load() async {
         do { let data = try await context.read(context.path("finance/goals", extra: ["currency": context.currency, "includeArchived": "1"])); goal = data["goals"].arrayValue.first { $0.financeID == initial.financeID } ?? .null }
@@ -830,38 +946,121 @@ private struct NativeFinanceGoalForm: View {
     private var accounts: [NativeJSON] { available.filter { $0["currency"].stringValue == context.currency } }
     private var draftScope: String { context.draftScope("goal:" + (initial?.financeID ?? "new")) }
     private var draftValues: NativeJSON { .object(["name": .string(name), "target": .string(target), "deadline": .string(deadline), "ids": .array(ids.sorted().map { .string($0) })]) }
-    private var changed: Bool { name != (initial?["name"].stringValue ?? "") || target != (initial?["targetAmount"].stringValue ?? "") || deadline != (initial?["deadline"].stringValue ?? NativeFinanceContract.today()) || ids != originalIDs }
+    private var changed: Bool {
+        let initialName: String = initial?["name"].stringValue ?? ""
+        let initialTarget: String = initial?["targetAmount"].stringValue ?? ""
+        let initialDeadline: String = initial?["deadline"].stringValue ?? NativeFinanceContract.today()
+        if name != initialName { return true }
+        if target != initialTarget { return true }
+        if deadline != initialDeadline { return true }
+        return ids != originalIDs
+    }
+    private var formTitle: String { initial == nil ? "新增资金目标" : "编辑资金目标" }
+    private var saveTitle: String { initial == nil ? "创建目标" : "保存目标" }
+    private var fieldsDisabled: Bool { context.busy || context.pending != nil }
+    private var draftBasis: NativeJSON { current ?? .null }
+    private var missingIDs: [String] {
+        let known: Set<String> = Set(accounts.map(.financeID))
+        return ids.subtracting(known).sorted()
+    }
+    private var latestSummary: String {
+        let latestName: String = latest?["name"].stringValue ?? ""
+        let latestAmount: String = latest?["targetAmount"].stringValue ?? ""
+        let latestDeadline: String = latest?["deadline"].stringValue ?? ""
+        return [latestName, latestAmount, latestDeadline].joined(separator: " · ")
+    }
+    private var confirmationSummary: String { "\(name) · \(context.currency) \(target) · \(deadline)" }
     var body: some View {
+        monitoredForm
+            .confirmationDialog("确认保存资金目标？", isPresented: $confirm, titleVisibility: .visible) {
+                Button("确认保存") { Task { await save() } }
+            } message: { Text(confirmationSummary) }
+            .alert("核对最新目标", isPresented: $adopt) {
+                Button("保留填写，采用此版本") { adoptLatestVersion() }
+                Button("取消", role: .cancel) {}
+            } message: { Text(latestSummary) }
+    }
+    private var monitoredForm: some View {
+        goalForm
+            .navigationTitle(formTitle)
+            .modifier(NativeFinancePrivacy(context: context))
+            .onChange(of: context.change) { _, _ in confirmedCreation() }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { closeButton } }
+            .interactiveDismissDisabled(changed || fieldsDisabled)
+            .task { initializeFields() }
+    }
+    private var closeButton: some View {
+        NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: draftBasis, changed: changed) { dismiss() }
+    }
+    private var goalForm: some View {
         Form {
             NativeFinanceStatus(context: context)
-            NativeFinanceDraftRecovery(context: context, scope: draftScope, values: draftValues, basis: current ?? .null, ready: initialized) { values in
-                name = values["name"].stringValue ?? name; target = values["target"].stringValue ?? target; deadline = values["deadline"].stringValue ?? deadline; ids = Set(values["ids"].arrayValue.compactMap(\.stringValue))
-            }
-            Section("目标") {
-                TextField("目标名称", text: $name)
-                TextField("目标金额 " + context.currency, text: $target).keyboardType(.decimalPad)
-                TextField("截止日 YYYY-MM-DD", text: $deadline).keyboardType(.numbersAndPunctuation)
-            }.disabled(context.busy || context.pending != nil)
-            Section("关联资产账户") {
-                ForEach(accounts, id: \.financeID) { account in
-                    Toggle(isOn: Binding(get: { ids.contains(account.financeID) }, set: { if $0 { ids.insert(account.financeID) } else { ids.remove(account.financeID) } })) {
-                        VStack(alignment: .leading) { Text(account["name"].stringValue ?? "账户"); Text(NativeFinanceContract.money(account["balanceMinor"], currency: context.currency)).font(.caption) }
-                    }
-                }
-                ForEach(Array(ids.subtracting(Set(accounts.map(\.financeID)))).sorted(), id: \.self) { id in Toggle("当前不可用的关联账户", isOn: Binding(get: { ids.contains(id) }, set: { if !$0 { ids.remove(id) } })) }
-                Text("仅选择同一账本、同币种的资产账户。关联不会预留资金。") .font(.caption).foregroundStyle(.secondary)
-            }.disabled(context.busy || context.pending != nil)
+            draftRecovery
+            goalFields
+            accountFields
             if initial != nil { Button("读取最新目标并核对版本") { Task { await readLatest() } }.disabled(context.busy) }
-            Button(initial == nil ? "创建目标" : "保存目标") { confirm = true }.disabled(!context.canWrite)
+            Button(saveTitle) { confirm = true }.disabled(!context.canWrite)
         }
-        .navigationTitle(initial == nil ? "新增资金目标" : "编辑资金目标")
-        .modifier(NativeFinancePrivacy(context: context))
-        .onChange(of: context.change) { _, _ in if initial == nil && context.notice == "创建资金目标已确认。" { try? NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear(); dismiss() } }
-        .toolbar { ToolbarItem(placement: .cancellationAction) { NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: current ?? .null, changed: changed) { dismiss() } } }
-        .interactiveDismissDisabled(changed || context.busy || context.pending != nil)
-        .task { if !initialized { initialized = true; current = initial; name = initial?["name"].stringValue ?? ""; target = initial?["targetAmount"].stringValue ?? ""; deadline = initial?["deadline"].stringValue ?? NativeFinanceContract.today(); ids = Set(initial?["accountIds"].arrayValue.compactMap(\.stringValue) ?? []); originalIDs = ids } }
-        .confirmationDialog("确认保存资金目标？", isPresented: $confirm, titleVisibility: .visible) { Button("确认保存") { Task { await save() } } } message: { Text("\(name) · \(context.currency) \(target) · \(deadline)") }
-        .alert("核对最新目标", isPresented: $adopt) { Button("保留填写，采用此版本") { current = latest; originalIDs = Set(latest?["accountIds"].arrayValue.compactMap(\.stringValue) ?? []) }; Button("取消", role: .cancel) {} } message: { Text((latest?["name"].stringValue ?? "") + " · " + (latest?["targetAmount"].stringValue ?? "") + " · " + (latest?["deadline"].stringValue ?? "")) }
+    }
+    private var draftRecovery: some View {
+        NativeFinanceDraftRecovery(context: context, scope: draftScope, values: draftValues, basis: draftBasis, ready: initialized, restore: restoreFields)
+    }
+    private var goalFields: some View {
+        Section("目标") {
+            TextField("目标名称", text: $name)
+            TextField("目标金额 " + context.currency, text: $target).keyboardType(.decimalPad)
+            TextField("截止日 YYYY-MM-DD", text: $deadline).keyboardType(.numbersAndPunctuation)
+        }.disabled(fieldsDisabled)
+    }
+    private var accountFields: some View {
+        Section("关联资产账户") {
+            ForEach(accounts, id: \.financeID) { account in accountToggle(account) }
+            ForEach(missingIDs, id: \.self) { id in missingAccountToggle(id) }
+            Text("仅选择同一账本、同币种的资产账户。关联不会预留资金。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.disabled(fieldsDisabled)
+    }
+    private func accountToggle(_ account: NativeJSON) -> some View {
+        let id: String = account.financeID
+        let selection = Binding<Bool>(get: { ids.contains(id) }, set: { selected in
+            if selected { ids.insert(id) } else { ids.remove(id) }
+        })
+        let accountName: String = account["name"].stringValue ?? "账户"
+        let balance: String = NativeFinanceContract.money(account["balanceMinor"], currency: context.currency)
+        return Toggle(isOn: selection) {
+            VStack(alignment: .leading) { Text(accountName); Text(balance).font(.caption) }
+        }
+    }
+    private func missingAccountToggle(_ id: String) -> some View {
+        let selection = Binding<Bool>(get: { ids.contains(id) }, set: { selected in
+            if !selected { ids.remove(id) }
+        })
+        return Toggle("当前不可用的关联账户", isOn: selection)
+    }
+    private func restoreFields(_ values: NativeJSON) {
+        name = values["name"].stringValue ?? name
+        target = values["target"].stringValue ?? target
+        deadline = values["deadline"].stringValue ?? deadline
+        ids = Set(values["ids"].arrayValue.compactMap(\.stringValue))
+    }
+    private func initializeFields() {
+        guard !initialized else { return }
+        initialized = true; current = initial
+        name = initial?["name"].stringValue ?? ""
+        target = initial?["targetAmount"].stringValue ?? ""
+        deadline = initial?["deadline"].stringValue ?? NativeFinanceContract.today()
+        let accountIDs: [String] = initial?["accountIds"].arrayValue.compactMap(\.stringValue) ?? []
+        ids = Set(accountIDs); originalIDs = ids
+    }
+    private func adoptLatestVersion() {
+        current = latest
+        let accountIDs: [String] = latest?["accountIds"].arrayValue.compactMap(\.stringValue) ?? []
+        originalIDs = Set(accountIDs)
+    }
+    private func confirmedCreation() {
+        guard initial == nil, context.notice == "创建资金目标已确认。" else { return }
+        try? NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear()
+        dismiss()
     }
     private func readLatest() async { guard let current else { return }; do { latest = try await context.read(context.path("finance/goals/" + current.financeID))["goal"]; adopt = true } catch { context.fail(error) } }
     private func save() async {
@@ -1050,40 +1249,78 @@ private struct NativeFinanceClosedReport: View {
 
 private struct NativeFinanceReport: View {
     let report: NativeJSON; let currency: String
+    private var month: String? { report["month"].stringValue }
+    private var title: String { (month ?? "") + "资产负债" }
+    private var dateRange: String {
+        let oldest: String = report["snapshot"]["oldestBalanceDate"].stringValue ?? "未知"
+        let latest: String = report["snapshot"]["latestBalanceDate"].stringValue ?? "未知"
+        return "余额日期：\(oldest) 至 \(latest)"
+    }
+    private func money(_ section: String, _ key: String) -> String {
+        NativeFinanceContract.money(report[section][key], currency: currency)
+    }
     var body: some View {
-        if report["month"].stringValue != nil {
-            Section((report["month"].stringValue ?? "") + "资产负债") {
-                NativeFinanceMetric(title: "净资产", value: NativeFinanceContract.money(report["snapshot"]["netMinor"], currency: currency))
-                LabeledContent("资产", value: NativeFinanceContract.money(report["snapshot"]["assetsMinor"], currency: currency))
-                LabeledContent("负债", value: NativeFinanceContract.money(report["snapshot"]["liabilitiesMinor"], currency: currency))
-                LabeledContent("上月净资产", value: NativeFinanceContract.money(report["previous"]["netMinor"], currency: currency))
-                LabeledContent("净资产变化", value: NativeFinanceContract.money(report["change"]["netMinor"], currency: currency))
-                LabeledContent("沿用此前余额的账户", value: String(report["snapshot"]["carriedAccountCount"].intValue ?? 0))
-                Text("余额日期：" + (report["snapshot"]["oldestBalanceDate"].stringValue ?? "未知") + " 至 " + (report["snapshot"]["latestBalanceDate"].stringValue ?? "未知")).font(.caption)
-            }
-            Section("变化来源") {
-                LabeledContent("已有账户余额变化", value: NativeFinanceContract.money(report["change"]["comparableNetMinor"], currency: currency))
-                LabeledContent("首次计入账户", value: NativeFinanceContract.money(report["change"]["newNetMinor"], currency: currency))
-                LabeledContent("分类变更影响", value: NativeFinanceContract.money(report["change"]["reclassificationNetMinor"], currency: currency))
-                LabeledContent("归档/恢复影响", value: NativeFinanceContract.money(report["change"]["membershipNetMinor"], currency: currency))
-                Text("各项由服务器按历史生效口径计算，不代表投资收益。") .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("近月趋势精确明细") {
-                ForEach(Array(report["trend"].arrayValue.enumerated()), id: \.offset) { _, point in
-                    LabeledContent(point["month"].stringValue ?? "月份未知", value: NativeFinanceContract.money(point["netMinor"], currency: currency))
-                }
-            }
-            Section("账户变化") {
-                ForEach(report["accounts"].arrayValue, id: \.financeID) { account in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(account["name"].stringValue ?? "账户").font(.headline)
-                        Text("本月 " + NativeFinanceContract.money(account["currentMinor"], currency: currency))
-                        Text("上月 " + NativeFinanceContract.money(account["previousMinor"], currency: currency)).font(.caption)
-                        Text("变化 " + NativeFinanceContract.money(account["netChangeMinor"], currency: currency)).font(.caption)
-                        if account["carried"].boolValue == true { Text("沿用此前余额 · " + (account["currentAsOfDate"].stringValue ?? "")).font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-            }
+        if month != nil {
+            snapshotSection
+            changeSection
+            trendSection
+            accountsSection
+        }
+    }
+    private var snapshotSection: some View {
+        Section(title) {
+            NativeFinanceMetric(title: "净资产", value: money("snapshot", "netMinor"))
+            LabeledContent("资产", value: money("snapshot", "assetsMinor"))
+            LabeledContent("负债", value: money("snapshot", "liabilitiesMinor"))
+            LabeledContent("上月净资产", value: money("previous", "netMinor"))
+            LabeledContent("净资产变化", value: money("change", "netMinor"))
+            LabeledContent("沿用此前余额的账户", value: String(report["snapshot"]["carriedAccountCount"].intValue ?? 0))
+            Text(dateRange).font(.caption)
+        }
+    }
+    private var changeSection: some View {
+        Section("变化来源") {
+            LabeledContent("已有账户余额变化", value: money("change", "comparableNetMinor"))
+            LabeledContent("首次计入账户", value: money("change", "newNetMinor"))
+            LabeledContent("分类变更影响", value: money("change", "reclassificationNetMinor"))
+            LabeledContent("归档/恢复影响", value: money("change", "membershipNetMinor"))
+            Text("各项由服务器按历史生效口径计算，不代表投资收益。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private var trendSection: some View {
+        let trend: [NativeJSON] = report["trend"].arrayValue
+        return Section("近月趋势精确明细") {
+            ForEach(Array(trend.enumerated()), id: \.offset) { _, point in trendRow(point) }
+        }
+    }
+    private func trendRow(_ point: NativeJSON) -> some View {
+        let month: String = point["month"].stringValue ?? "月份未知"
+        let amount: String = NativeFinanceContract.money(point["netMinor"], currency: currency)
+        return LabeledContent(month, value: amount)
+    }
+    private var accountsSection: some View {
+        let accounts: [NativeJSON] = report["accounts"].arrayValue
+        return Section("账户变化") {
+            ForEach(accounts, id: \.financeID) { account in NativeFinanceReportAccountRow(account: account, currency: currency) }
+        }
+    }
+}
+
+private struct NativeFinanceReportAccountRow: View {
+    let account: NativeJSON; let currency: String
+    private var name: String { account["name"].stringValue ?? "账户" }
+    private var current: String { "本月 " + NativeFinanceContract.money(account["currentMinor"], currency: currency) }
+    private var previous: String { "上月 " + NativeFinanceContract.money(account["previousMinor"], currency: currency) }
+    private var change: String { "变化 " + NativeFinanceContract.money(account["netChangeMinor"], currency: currency) }
+    private var carriedDate: String { "沿用此前余额 · " + (account["currentAsOfDate"].stringValue ?? "") }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(name).font(.headline)
+            Text(current)
+            Text(previous).font(.caption)
+            Text(change).font(.caption)
+            if account["carried"].boolValue == true { Text(carriedDate).font(.caption).foregroundStyle(.secondary) }
         }
     }
 }

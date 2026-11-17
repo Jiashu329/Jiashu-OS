@@ -318,6 +318,35 @@ struct NativeNutritionBatchEditor: View {
 }
 
 enum NativeNutritionPhoto {
+    /// Retain only pixels and explicit orientation from a camera UIImage, then
+    /// use the same transform/size/metadata sanitizer as selected photo files.
+    static func jpeg(image: UIImage) throws -> Data {
+        guard let pixels = image.cgImage, pixels.width > 0, pixels.height > 0,
+              Double(pixels.width) * Double(pixels.height) <= 32_000_000 else {
+            throw NativeActionInputError.invalid("拍摄图片过大或无法读取，请重拍或从相册选择较小图片。")
+        }
+        let orientation: CGImagePropertyOrientation
+        switch image.imageOrientation {
+        case .up: orientation = .up
+        case .upMirrored: orientation = .upMirrored
+        case .down: orientation = .down
+        case .downMirrored: orientation = .downMirrored
+        case .left: orientation = .left
+        case .leftMirrored: orientation = .leftMirrored
+        case .right: orientation = .right
+        case .rightMirrored: orientation = .rightMirrored
+        @unknown default: orientation = .up
+        }
+        let encoded = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(encoded as CFMutableData, "public.jpeg" as CFString, 1, nil) else {
+            throw NativeActionInputError.invalid("拍摄图片暂时无法处理，请重试。")
+        }
+        CGImageDestinationAddImage(destination, pixels, [kCGImagePropertyOrientation: orientation.rawValue,
+            kCGImageDestinationLossyCompressionQuality: 0.95] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw NativeActionInputError.invalid("拍摄图片暂时无法处理，请重试。") }
+        return try jpeg(encoded as Data)
+    }
+
     static func jpeg(_ original: Data) throws -> Data {
         guard original.count <= 20 * 1024 * 1024,
               let source = CGImageSourceCreateWithData(original as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -355,6 +384,13 @@ struct NativeNutritionRecognitionView: View {
     @State private var recovered: RecognitionDraft?
     @State private var persistenceReady = false
     @State private var restoringSignature: String?
+    @Environment(\.openURL) private var openURL
+    @State private var cameraAuthorizing = false
+    @State private var showingCamera = false
+    @State private var cameraID: UUID?
+    @State private var pageEpoch = UUID()
+    @State private var visible = false
+    @State private var cameraAccess: NativeNutritionCameraAccess?
     private struct RecognitionDraft: Codable {
         let date: String; let meal: String; let text: String; let usePhoto: Bool; let result: NativeJSON
     }
@@ -381,6 +417,23 @@ struct NativeNutritionRecognitionView: View {
                 if usePhoto {
                     let pickerTitle = jpeg == nil ? "从相册选择食物照片" : "更换照片"
                     PhotosPicker(selection: $photo, matching: .images) { Label(pickerTitle, systemImage: "photo") }
+                        .disabled(cameraAuthorizing || photoLoading)
+                    Button(cameraAuthorizing ? "正在核对相机权限…" : "拍一张餐食照片", systemImage: "camera") {
+                        Task { await openCamera() }
+                    }.disabled(cameraAuthorizing || photoLoading || context.pending != nil)
+                    if cameraAccess == .denied {
+                        Text("相机权限未开启。可以从相册选择照片，或在系统设置中允许相机。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("打开相机权限设置") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }
+                    } else if cameraAccess == .restricted {
+                        Text("相机访问受系统限制，可以从相册选择食物照片。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else if cameraAccess == .unavailable {
+                        Text("此设备当前没有可用相机。模拟器可通过相册选择测试图片。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if photoLoading { ProgressView("正在本机处理图片…") }
                     if let jpeg, let image = UIImage(data: jpeg) {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220)
@@ -396,7 +449,7 @@ struct NativeNutritionRecognitionView: View {
                 Text(usePhoto ? "识别会将本张压缩图片、说明、日期和餐次发送给网站配置的AI服务。照片只留在本页内存中，不存入业务备份。" : "识别会将这段饮食描述、日期和餐次发送给网站配置的AI服务。打开页面和输入文字不会调用AI。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button(recognizing ? "正在识别…" : "识别并生成可编辑草稿") { Task { await recognize() } }
-                    .disabled(recognizing || photoLoading || context.pending != nil || (usePhoto ? jpeg == nil : text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    .disabled(recognizing || photoLoading || cameraAuthorizing || showingCamera || context.pending != nil || (usePhoto ? jpeg == nil : text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 if recognizing { ProgressView() }
                 NativeNutritionErrorRow(text: error)
             }
@@ -425,8 +478,20 @@ struct NativeNutritionRecognitionView: View {
         }
         .onChange(of: result) { _, _ in if recovered == nil { saveDraft() } }
         .task { do { recovered = try persistence.load(RecognitionDraft.self); persistenceReady = true } catch { self.error = error.localizedDescription } }
-        .onDisappear { saveDraft() }
+        .onAppear { visible = true; if !showingCamera { pageEpoch = UUID() } }
+        .onDisappear {
+            if !showingCamera { visible = false; pageEpoch = UUID(); cameraID = nil; cameraAuthorizing = false }
+            saveDraft()
+        }
         .onChange(of: photo) { _, item in Task { await loadPhoto(item) } }
+        .fullScreenCover(isPresented: $showingCamera, onDismiss: { cameraID = nil }) {
+            if let identifier = cameraID {
+                NativeNutritionCamera(onCapture: { image in acceptCameraImage(image, identifier: identifier) },
+                    onCancel: { closeCamera(identifier: identifier) },
+                    onUnavailable: { cameraAccess = .unavailable; closeCamera(identifier: identifier) })
+                    .ignoresSafeArea()
+            }
+        }
         .sheet(item: $editor) { presentation in
             NavigationStack {
                 NativeNutritionBatchEditor(context: context, rows: presentation.rows, onSaved: {
@@ -435,6 +500,30 @@ struct NativeNutritionRecognitionView: View {
                 })
             }
         }
+    }
+    private func openCamera() async {
+        guard visible, usePhoto, !cameraAuthorizing, !recognizing, context.pending == nil else { return }
+        let epoch = pageEpoch
+        cameraAuthorizing = true
+        defer { if pageEpoch == epoch { cameraAuthorizing = false } }
+        let access = await NativeNutritionCameraAccess.requestForUserAction()
+        guard visible, pageEpoch == epoch, usePhoto, context.pending == nil, !Task.isCancelled else { return }
+        cameraAccess = access
+        guard access == .ready else { return }
+        cameraID = UUID(); showingCamera = true
+    }
+    private func closeCamera(identifier: UUID) {
+        guard cameraID == identifier else { return }
+        cameraID = nil; showingCamera = false
+    }
+    private func acceptCameraImage(_ image: UIImage, identifier: UUID) {
+        guard showingCamera, cameraID == identifier else { return }
+        do {
+            let prepared = try NativeNutritionPhoto.jpeg(image: image)
+            guard cameraID == identifier else { return }
+            photoID = UUID(); jpeg = prepared; result = .null; error = nil
+        } catch { self.error = error.localizedDescription }
+        closeCamera(identifier: identifier)
     }
     private func saveDraft() {
         guard persistenceReady, !text.isEmpty || result != .null else { return }

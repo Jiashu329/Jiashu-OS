@@ -45,51 +45,10 @@ struct NativeHealthGoalsWorkspace: View {
     private var draftSignature: String { NativeHealthGoalRequest.keys.map { fields[$0] ?? "" }.joined(separator:"|") + NativeActionDates.day(effective) }
     var body: some View {
         List {
-            if let pending {
-                Section("待确认的原目标") {
-                    Text(pending.label)
-                    Button("继续核对原目标") { Task { await submit(pending,recovering:true) } }.disabled(busy)
-                }
-            }
-            Section("本人每日目标") {
-                ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in
-                    TextField(NativeHealthWorkspaceFormat.metric(key) + "（" + NativeHealthWorkspaceFormat.unit(key) + "，取消目标留空）",text:Binding(get:{ fields[key] ?? "" },set:{ fields[key] = $0 })).keyboardType(.decimalPad)
-                }
-                DatePicker("生效日期",selection:$effective,in:...Date(),displayedComponents:.date)
-                Text("每一天按当日生效版本评价；修改目标不会把此前的日历重新套用今天的目标。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if conflict { Text("版本已变化。保留填写，先读取最新目标再核对保存。") }
-                Button("核对并保存目标") { confirming = true }.disabled(!loaded || !draftReady || busy || pending != nil || conflict)
-                Button("读取最新目标，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
-                Button("载入已存目标到表单") { Task { await load(populate:true) } }.disabled(busy || pending != nil)
-            }.disabled(busy || pending != nil)
-            Section("近30天达成日历") {
-                Button("刷新达成与覆盖") { Task { await loadProgress() } }.disabled(busy)
-                ForEach(Array(progress["metrics"].arrayValue.enumerated()),id:\.offset) { _,metric in
-                    DisclosureGroup((metric["label"].stringValue ?? "") + " · 达成 " + NativeHealthWorkspaceFormat.text(metric["achievedDays"]) + " / 有记录 " + NativeHealthWorkspaceFormat.text(metric["recordedDays"]) + " 天") {
-                        ForEach(Array(metric["days"].arrayValue.enumerated()),id:\.offset) { _,day in
-                            VStack(alignment:.leading,spacing:3) {
-                                LabeledContent(day["day"].stringValue ?? "",value:status(day["status"].stringValue))
-                                Text("记录 " + NativeHealthWorkspaceFormat.text(day["value"]) + " · 当日目标 " + NativeHealthWorkspaceFormat.text(day["target"]))
-                                    .font(.caption)
-                                Text("目标生效：" + (day["targetEffectiveFrom"].stringValue ?? "未设置")).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                Text("缺失、未设置、今日进行中与真实零值分别保留；不把缺失日期当作未达成。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("目标生效历史") {
-                ForEach(Array(settings["history"].arrayValue.reversed().enumerated()),id:\.offset) { _,version in
-                    DisclosureGroup(version["effectiveFrom"].stringValue == "1970-01-01" ? "兼容基线（实际生效日期未知）":(version["effectiveFrom"].stringValue ?? "未知日期")) {
-                        ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in
-                            LabeledContent(NativeHealthWorkspaceFormat.metric(key),value:NativeHealthWorkspaceFormat.text(version["targets"][key]) + " " + NativeHealthWorkspaceFormat.unit(key))
-                        }
-                        LabeledContent("版本",value:NativeHealthWorkspaceFormat.text(version["revision"]))
-                    }
-                }
-            }
+            pendingSection
+            goalFormSection
+            progressSection
+            historySection
             if busy { ProgressView("正在核对目标…") }
             NativeHealthWorkspaceMessage(message:message)
         }.navigationTitle("健康目标与历史")
@@ -112,6 +71,86 @@ struct NativeHealthGoalsWorkspace: View {
                 Button("确认保存") { Task { await prepare() } }
                 Button("取消",role:.cancel) { }
             } message: { Text("目标从 " + NativeActionDates.day(effective) + " 生效。留空的指标将取消目标，不改写原始健康记录。") }
+    }
+    @ViewBuilder private var pendingSection: some View {
+        if let pending {
+            Section("待确认的原目标") {
+                Text(pending.label)
+                Button("继续核对原目标") { Task { await submit(pending,recovering:true) } }.disabled(busy)
+            }
+        }
+    }
+    private var goalFormSection: some View {
+        Section("本人每日目标") {
+            ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in goalField(key) }
+            DatePicker("生效日期",selection:$effective,in:...Date(),displayedComponents:.date)
+            Text("每一天按当日生效版本评价；修改目标不会把此前的日历重新套用今天的目标。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if conflict { Text("版本已变化。保留填写，先读取最新目标再核对保存。") }
+            Button("核对并保存目标") { confirming = true }.disabled(!loaded || !draftReady || busy || pending != nil || conflict)
+            Button("读取最新目标，保留填写") { Task { await load(populate:false) } }.disabled(busy || pending != nil)
+            Button("载入已存目标到表单") { Task { await load(populate:true) } }.disabled(busy || pending != nil)
+        }.disabled(busy || pending != nil)
+    }
+    private func goalField(_ key: String) -> some View {
+        let name: String = NativeHealthWorkspaceFormat.metric(key)
+        let unit: String = NativeHealthWorkspaceFormat.unit(key)
+        let title: String = "\(name)（\(unit)，取消目标留空）"
+        let field: Binding<String> = Binding(get:{ fields[key] ?? "" },set:{ fields[key] = $0 })
+        return TextField(title,text:field).keyboardType(.decimalPad)
+    }
+    private var progressSection: some View {
+        Section("近30天达成日历") {
+            Button("刷新达成与覆盖") { Task { await loadProgress() } }.disabled(busy)
+            ForEach(Array(progress["metrics"].arrayValue.enumerated()),id:\.offset) { _,metric in goalMetricGroup(metric) }
+            Text("缺失、未设置、今日进行中与真实零值分别保留；不把缺失日期当作未达成。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+    private func goalMetricGroup(_ metric: NativeJSON) -> some View {
+        let label: String = metric["label"].stringValue ?? ""
+        let achieved: String = NativeHealthWorkspaceFormat.text(metric["achievedDays"])
+        let recorded: String = NativeHealthWorkspaceFormat.text(metric["recordedDays"])
+        let title: String = "\(label) · 达成 \(achieved) / 有记录 \(recorded) 天"
+        let days: [NativeJSON] = metric["days"].arrayValue
+        return DisclosureGroup(title) {
+            ForEach(Array(days.enumerated()),id:\.offset) { _,day in goalDayRow(day) }
+        }
+    }
+    private func goalDayRow(_ day: NativeJSON) -> some View {
+        let date: String = day["day"].stringValue ?? ""
+        let dayStatus: String = status(day["status"].stringValue)
+        let value: String = NativeHealthWorkspaceFormat.text(day["value"])
+        let target: String = NativeHealthWorkspaceFormat.text(day["target"])
+        let effective: String = day["targetEffectiveFrom"].stringValue ?? "未设置"
+        let detail: String = "记录 \(value) · 当日目标 \(target)"
+        let source: String = "目标生效：\(effective)"
+        return VStack(alignment:.leading,spacing:3) {
+            LabeledContent(date,value:dayStatus)
+            Text(detail).font(.caption)
+            Text(source).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+    private var historySection: some View {
+        Section("目标生效历史") {
+            ForEach(Array(settings["history"].arrayValue.reversed().enumerated()),id:\.offset) { _,version in goalVersionGroup(version) }
+        }
+    }
+    private func goalVersionGroup(_ version: NativeJSON) -> some View {
+        let date: String = version["effectiveFrom"].stringValue ?? "未知日期"
+        let title: String = date == "1970-01-01" ? "兼容基线（实际生效日期未知）":date
+        let revision: String = NativeHealthWorkspaceFormat.text(version["revision"])
+        return DisclosureGroup(title) {
+            ForEach(NativeHealthGoalRequest.keys,id:\.self) { key in goalVersionTarget(version,key:key) }
+            LabeledContent("版本",value:revision)
+        }
+    }
+    private func goalVersionTarget(_ version: NativeJSON,key: String) -> some View {
+        let label: String = NativeHealthWorkspaceFormat.metric(key)
+        let value: String = NativeHealthWorkspaceFormat.text(version["targets"][key])
+        let unit: String = NativeHealthWorkspaceFormat.unit(key)
+        let detail: String = "\(value) \(unit)"
+        return LabeledContent(label,value:detail)
     }
     private func status(_ key: String?) -> String { ["unset":"未设置目标","missing":"缺少记录","in-progress":"今日进行中","achieved":"已达成","missed":"未达成"][key ?? ""] ?? "未知" }
     private func load(populate: Bool) async {

@@ -100,4 +100,74 @@ final class HealthActionsTests: XCTestCase {
         XCTAssertEqual(payload["expectedRevision"] as? Int, 4)
         XCTAssertEqual(firstSubmission, retry)
     }
+    private func unfinishedDraft(now: Date, note: String = "合成说明") -> NativeQuickEntryDraft {
+        NativeQuickEntryDraft(isNutrition: true, metric: "lean_body_mass", date: now, time: now,
+            value: "", note: note, foodName: "米饭", meal: "dinner", portion: "半碗", carbs: "0", protein: "12.5", fat: "")
+    }
+
+    func testUnfinishedQuickEntryPreservesAllFieldsAndUnknownVersusZero() throws {
+        let now = date("2026-11-16T08:00:00Z")
+        let original = unfinishedDraft(now: now)
+        let restored = try JSONDecoder().decode(NativeQuickEntryDraft.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.value, "")
+        XCTAssertEqual(restored.carbs, "0")
+        let operation = try restored.operation(now: now)
+        let payload = try object(operation)
+        XCTAssertTrue(payload["calories"] is NSNull)
+        XCTAssertEqual(payload["carbs"] as? String, "0")
+        XCTAssertEqual(payload["protein"] as? String, "12.5")
+        XCTAssertEqual(payload["meal"] as? String, "dinner")
+        XCTAssertTrue(payload["fat"] is NSNull)
+    }
+
+    @MainActor
+    func testQuickEntryRecoveryRequiresExplicitRestoreBeforeReplacingStoredDraft() throws {
+        let user = "synthetic-quick-entry-" + UUID().uuidString
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(user)
+        let persistence = NativeWorkspacePersistence(userID: user, scope: "quick-entry.unfinished", directory: directory,
+            service: user, maximumBytes: 2048)
+        defer { try? persistence.clear(); try? FileManager.default.removeItem(at: directory) }
+        let original = unfinishedDraft(now: date("2026-11-16T08:00:00Z"))
+        try persistence.save(original)
+        let recovery = NativeQuickEntryDraftRecovery(userID: user, persistence: persistence)
+        try recovery.read()
+        XCTAssertEqual(recovery.recovery, original)
+        XCTAssertFalse(recovery.canWrite)
+        var callerSelection = unfinishedDraft(now: date("2026-11-15T08:00:00Z"))
+        callerSelection.metric = "weight"; callerSelection.isNutrition = false
+        XCTAssertThrowsError(try recovery.save(callerSelection))
+        XCTAssertEqual(try persistence.load(NativeQuickEntryDraft.self), original)
+        XCTAssertEqual(callerSelection.metric, "weight", "Reading recovery must not replace the caller's selected metric or date")
+        XCTAssertEqual(try recovery.restore(), original)
+        XCTAssertTrue(recovery.canWrite)
+        try recovery.save(callerSelection)
+        XCTAssertEqual(try persistence.load(NativeQuickEntryDraft.self), callerSelection)
+    }
+
+    @MainActor
+    func testFailedDraftSaveCannotOverwriteUnreconciledDraftAndPendingOperationTakesPriority() throws {
+        let user = "synthetic-quick-entry-" + UUID().uuidString
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(user)
+        let persistence = NativeWorkspacePersistence(userID: user, scope: "quick-entry.unfinished", directory: directory,
+            service: user, maximumBytes: 512)
+        let pendingStore = NativePendingEntryStore(userID: user)
+        defer { try? persistence.clear(); try? pendingStore.clear(); try? FileManager.default.removeItem(at: directory) }
+        let now = date("2026-11-16T08:00:00Z")
+        let original = unfinishedDraft(now: now)
+        let recovery = NativeQuickEntryDraftRecovery(userID: user, persistence: persistence)
+        try recovery.read(); try recovery.save(original)
+        XCTAssertThrowsError(try recovery.save(unfinishedDraft(now: now, note: String(repeating: "x", count: 2048))))
+        XCTAssertFalse(recovery.canWrite)
+        XCTAssertThrowsError(try recovery.save(unfinishedDraft(now: now, note: "unreconciled replacement")))
+        XCTAssertEqual(try persistence.load(NativeQuickEntryDraft.self), original)
+        try recovery.read()
+        XCTAssertEqual(try recovery.restore(), original)
+        let pending = try original.operation(now: now)
+        try pendingStore.save(pending)
+        try recovery.clearAfterPendingStored()
+        XCTAssertNil(try persistence.load(NativeQuickEntryDraft.self))
+        XCTAssertEqual(try pendingStore.load(), pending, "Ordinary draft cleanup must preserve the immutable submitted operation")
+    }
+
 }
