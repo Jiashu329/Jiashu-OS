@@ -52,8 +52,9 @@ void test('two configured-email identities racing bootstrap authorize only the w
 void test('invited members are bound independently, cannot enumerate grants, and revocation is checked on the next request', async (t) => {
   const f = authorizationFixture(t); await f.accountAccess(f.identity(OWNER, 'owner@example.test'));
   await inviteAccessGrant(f.db, owner, { email: 'member@example.test' }, INVITE);
-  f.signIn('member-site-id', 'member@example.test');
+  f.signIn('member-site-id', 'member@example.test', 1);
   assert.equal((await f.auth.getChatGPTUser())!.isOwner, false);
+  assert.equal((await f.auth.getChatGPTUser())!.localAccountRevision, undefined, 'Sites does not use a local revision header');
   const handlers = createAccessHandlers({ user: () => f.auth.getChatGPTUser(), ownerId(user) { return user.isOwner ? user.userId : undefined; },
     database() { assert.fail('ordinary member must not read the member directory'); }, json: (value, status = 200) => Response.json(value, { status }) });
   assert.equal((await handlers.GET(new Request('https://site.example/api/access'))).status, 403);
@@ -112,17 +113,20 @@ void test('local members use active persisted accounts independently of Sites in
   f.env.SELFHOST_AUTH_PROVIDER = 'local';
   await bootstrapLocalOwner(f.db, { id: OWNER, email: 'owner@example.test', passwordHash: LOCAL_HASH });
   await createLocalUser(f.db, { id: INVITE, email: 'member@example.test', passwordHash: LOCAL_HASH });
-  const administrator = await f.accountAccess(f.identity(OWNER, 'OWNER@example.test'));
+  const administrator = await f.accountAccess(f.identity(OWNER, 'OWNER@example.test', 1));
   assert.equal(administrator.allowed, true); assert.equal(administrator.isOwner, true);
-  f.signIn(INVITE, 'member@example.test');
+  assert.equal((await f.accountAccess(f.identity(INVITE, 'member@example.test'))).allowed, false, 'The gateway must attest the session revision');
+  f.signIn(INVITE, 'member@example.test', 1);
   const member = await f.auth.getChatGPTUser();
   assert.equal(member?.userId, INVITE); assert.equal(member?.isOwner, false);
+  assert.equal(member?.localAccountRevision, 1);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM app_access_grants').get()!.n, 0);
   assert.equal((await f.accountAccess(f.identity('unknown-account', 'member@example.test'))).allowed, false);
   assert.equal((await f.accountAccess(f.identity(INVITE, 'different@example.test'))).reason, 'identity_conflict');
   await updateLocalUser(f.db, OWNER, INVITE, { expectedRevision: 1, email: 'new-member@example.test' });
   assert.equal((await f.accountAccess(f.headers())).allowed, false);
-  f.signIn(INVITE, 'new-member@example.test');
+  assert.equal((await f.accountAccess(f.identity(INVITE, 'new-member@example.test', 1))).reason, 'revoked', 'A stale gateway session cannot adopt the newer account revision');
+  f.signIn(INVITE, 'new-member@example.test', 2);
   assert.equal((await f.auth.getChatGPTUser())?.userId, INVITE);
   await updateLocalUser(f.db, OWNER, INVITE, { expectedRevision: 2, status: 'disabled' });
   assert.equal((await f.accountAccess(f.headers())).reason, 'revoked');
@@ -136,7 +140,7 @@ void test('local owner privileges also require a matching active stored account 
   assert.equal((await f.accountAccess(f.identity(OWNER, 'owner@example.test'))).allowed, false);
   await bootstrapLocalOwner(f.db, { id: OWNER, email: 'new-owner@example.test', passwordHash: LOCAL_HASH });
   assert.equal((await f.accountAccess(f.identity(OWNER, 'owner@example.test'))).allowed, false);
-  assert.equal((await f.accountAccess(f.identity(OWNER, 'new-owner@example.test'))).isOwner, true);
+  assert.equal((await f.accountAccess(f.identity(OWNER, 'new-owner@example.test', 1))).isOwner, true);
   f.sqlite.prepare("UPDATE local_users SET status='disabled' WHERE id=?").run(OWNER);
   assert.equal((await f.accountAccess(f.identity(OWNER, 'new-owner@example.test'))).allowed, false);
   f.env.DB = undefined;

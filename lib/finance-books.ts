@@ -1,11 +1,16 @@
 import { normalizeAccessEmail, validAccessUserId } from './access-control.ts';
 
-export interface FinanceBookActor { userId: string; email: string; displayName?: string; isOwner?: boolean }
+export interface FinanceBookActor {
+  userId: string; email: string; displayName?: string; isOwner?: boolean;
+  /** Present only for a local account authenticated at this credential revision. */
+  localAccountRevision?: number;
+}
 export interface FinanceBookScope {
   actorUserId: string; actorEmail: string; actorName: string; ownerUserId: string;
   ledger: 'personal' | 'family'; bookId: string | null; role: 'owner' | 'editor' | 'viewer';
   canWrite?: boolean;
   membershipId: string | null; accessRevision: number; isSiteOwner: boolean;
+  localAccountRevision?: number;
 }
 export type FinanceBookMemberStatus = 'pending' | 'active' | 'revoked' | 'declined';
 export interface FinanceBookMember {
@@ -42,7 +47,7 @@ export function normalizeFinanceBookActor(actor: FinanceBookActor): FinanceBookA
   let email: string;
   try { email = normalizeAccessEmail(actor.email); } catch { throw new FinanceBookError('FINANCE_BOOK_IDENTITY_INVALID', 401, '当前账户邮箱无法核对，请重新登录。'); }
   const name = typeof actor.displayName === 'string' ? Array.from(actor.displayName).filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127).join('').trim().slice(0, 200) : '';
-  return { userId: actor.userId, email, displayName: name || email, isOwner: actor.isOwner === true };
+  return { userId: actor.userId, email, displayName: name || email, isOwner: actor.isOwner === true, localAccountRevision: actor.localAccountRevision };
 }
 export function parseFinanceBookId(value: unknown, allowOwn = true): string {
   if (allowOwn && (value === undefined || value === null || value === '' || value === 'own')) return 'own';

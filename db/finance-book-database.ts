@@ -30,12 +30,19 @@ export function financeBookDatabase(db: D1Database, scope: FinanceBookScope, com
   if (command && (!uuid.test(command.operationId) || !/^[0-9a-f]{64}$/.test(command.requestHash) || !command.action || command.action.length > 100)) throw bookError('FINANCE_BOOK_OPERATION_CONFLICT', 409, '提交标识或内容无效，请重新确认。');
   const statements = new WeakMap<object, { raw: D1PreparedStatement; write: boolean }>();
   const bookId = scope.bookId;
+  const admission = scope.localAccountRevision === undefined ? {
+    sql: "(?=1 OR EXISTS (SELECT 1 FROM app_access_grants g WHERE g.bound_user_id=? AND g.status='active'))",
+    values: [scope.isSiteOwner ? 1 : 0, scope.actorUserId],
+  } : {
+    sql: "EXISTS (SELECT 1 FROM local_users u WHERE u.id=? AND u.email=? AND u.status='active' AND u.revision=?)",
+    values: [scope.actorUserId, scope.actorEmail, scope.localAccountRevision],
+  };
   const permissionSQL = `EXISTS (SELECT 1 FROM family_books b WHERE b.id=? AND b.owner_user_id=? AND (
     (?='owner' AND ?=b.owner_user_id AND ? IS NULL AND ?=0) OR
     (? IN ('editor','viewer') AND EXISTS (SELECT 1 FROM family_book_members m WHERE m.id=? AND m.book_id=b.id AND m.user_id=? AND m.status='active' AND m.revision=? AND m.role=?))
-  )) AND (?=1 OR EXISTS (SELECT 1 FROM app_access_grants g WHERE g.bound_user_id=? AND g.status='active'))`;
+  )) AND ${admission.sql}`;
   const permissionValues = [bookId, scope.ownerUserId, scope.role, scope.actorUserId, scope.membershipId, scope.accessRevision,
-    scope.role, scope.membershipId, scope.actorUserId, scope.accessRevision, scope.role, scope.isSiteOwner ? 1 : 0, scope.actorUserId];
+    scope.role, scope.membershipId, scope.actorUserId, scope.accessRevision, scope.role, ...admission.values];
   const permission = () => db.prepare(`SELECT CASE WHEN ${permissionSQL} THEN 1 ELSE ${abort} END AS allowed`).bind(...permissionValues);
   const receiptMatch = `actor_user_id=? AND membership_id IS ? AND access_revision=? AND request_hash=? AND action=? AND target_id IS ?`;
   const receiptValues = command ? [scope.actorUserId, scope.membershipId, scope.accessRevision, command.requestHash, command.action, command.targetId ?? null] : [];

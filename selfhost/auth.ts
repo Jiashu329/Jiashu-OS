@@ -1,6 +1,6 @@
 /* oxlint-disable no-control-regex -- Authentication boundaries intentionally reject control bytes in credentials, identity fields and request paths. */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { normalizeLocalEmail } from '../lib/local-users.ts';
+import { LOCAL_ACCOUNT_REVISION_HEADER, normalizeLocalEmail } from '../lib/local-users.ts';
 import type { LocalUser } from '../lib/local-users.ts';
 import { isValidPasswordHash, verifyPassword } from './password-hash.ts';
 import { renderSelfhostLoginPage } from './login-page.ts';
@@ -168,7 +168,7 @@ function renewableRead(path: string, method: string | undefined): boolean {
   return ['GET', 'HEAD'].includes(method ?? 'GET') && !['/signin-with-chatgpt', '/signout-with-chatgpt', '/_selfhost/healthz'].includes(path)
     && !path.startsWith('/_next/') && !path.startsWith('/downloads/') && !/\.(?:css|js|mjs|map|json|webmanifest|txt|xml|pdf|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|zip|mp4|webm|mp3|ogg)$/i.test(path);
 }
-export function sanitizedSelfhostHeaders(headers: IncomingHttpHeaders, config: SelfhostAuthConfig, user: Pick<LocalUser, 'id' | 'email'> | null): IncomingHttpHeaders {
+export function sanitizedSelfhostHeaders(headers: IncomingHttpHeaders, config: SelfhostAuthConfig, user: Pick<LocalUser, 'id' | 'email' | 'revision'> | null): IncomingHttpHeaders {
   const result: IncomingHttpHeaders = {};
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
@@ -182,6 +182,7 @@ export function sanitizedSelfhostHeaders(headers: IncomingHttpHeaders, config: S
     result['oai-authenticated-user-email'] = user.email;
     result['oai-authenticated-user-full-name'] = encodeURIComponent(user.email);
     result['oai-authenticated-user-full-name-encoding'] = 'percent-encoded-utf-8';
+    result[LOCAL_ACCOUNT_REVISION_HEADER] = String(user.revision);
   }
   return result;
 }

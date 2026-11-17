@@ -1,5 +1,8 @@
 import { normalizeAccessEmail, validAccessUserId } from './access-control.ts';
 
+// Reserved for the self-host gateway, which replaces all incoming x-auth headers.
+export const LOCAL_ACCOUNT_REVISION_HEADER = 'x-auth-local-account-revision';
+
 export type LocalUserStatus = 'active' | 'disabled';
 /** Internal authentication record. Never serialize this record into a response. */
 export interface LocalUser {

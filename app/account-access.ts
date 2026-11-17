@@ -3,7 +3,7 @@ import { identityFromHeaders } from '../lib/account-identity';
 import { resolveAccess } from '../db/access-grants-store';
 import { resolveOwnerIdentity } from '../db/owner-identity-store';
 import { getLocalUserById } from '../db/local-users-store';
-import { normalizeLocalEmail } from '../lib/local-users';
+import { LOCAL_ACCOUNT_REVISION_HEADER, normalizeLocalEmail } from '../lib/local-users';
 
 export async function accountAccess(requestHeaders: Pick<Headers, 'get'>) {
   const identity = identityFromHeaders(requestHeaders);
@@ -17,7 +17,9 @@ export async function accountAccess(requestHeaders: Pick<Headers, 'get'>) {
       if (!user) return { identity, allowed: false, isOwner: false, reason: 'not_invited' } as const;
       if (user.status !== 'active') return { identity, allowed: false, isOwner: false, reason: 'revoked' } as const;
       if (user.email !== normalizeLocalEmail(identity.email)) return { identity, allowed: false, isOwner: false, reason: 'identity_conflict' } as const;
-      return { identity, allowed: true, isOwner: user.id === ownerId } as const;
+      // Keep the session revision verified by the gateway across later database checks.
+      if (requestHeaders.get(LOCAL_ACCOUNT_REVISION_HEADER) !== String(user.revision)) return { identity, allowed: false, isOwner: false, reason: 'revoked' } as const;
+      return { identity: { ...identity, localAccountRevision: user.revision }, allowed: true, isOwner: user.id === ownerId } as const;
     }
     if (identity.userId === ownerId) return { identity, allowed: true, isOwner: true } as const;
     if (!env.DB) return { identity, allowed: false, isOwner: false, reason: 'unavailable' } as const;
