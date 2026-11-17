@@ -217,7 +217,7 @@ private final class NativeRenderingScenario: @unchecked Sendable {
             let currency: [String: Any] = ["currency": "CNY", "netFormatted": "CNY 338,600.00",
                                           "assetsFormatted": "CNY 386,800.00", "liabilitiesFormatted": "CNY 48,200.00"]
             let finance: [String: Any] = ["status": "ready", "accountCount": 4, "currencies": [currency],
-                                         "oldestBalanceDate": day(offset: -45), "latestBalanceDate": day,
+                                         "oldestBalanceDate": self.day(offset: -45), "latestBalanceDate": day,
                                          "staleAccountCount": 1, "uncheckedAccountCount": 1, "pendingBalanceCount": 1]
             result = ["asOf": now, "today": day, "health": ["status": "ready", "lastSync": now, "recordedMetricCount": 6,
                 "metrics": overviewMetrics()],
