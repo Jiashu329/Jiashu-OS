@@ -18,10 +18,10 @@ struct NativeNutritionGoalsView: View {
             if let recovered {
                 Section("本机未保存目标") {
                     Text("恢复后请与服务器当前目标核对，再主动保存。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                     Button("恢复目标填写") { fields = recovered; self.recovered = nil }
                     Button("删除本机草稿", role: .destructive) { do { try persistence.clear(); self.recovered = nil } catch { message = error.localizedDescription } }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             Section("本人每日参考目标") {
                 ForEach(NativeNutritionFields.keys, id: \.self) { key in
@@ -29,16 +29,16 @@ struct NativeNutritionGoalsView: View {
                         text: Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 })).keyboardType(.decimalPad)
                 }
                 Text("未设置时留空。当前目标不带历史生效日，不用于重新判定过去日期是否达标。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }.disabled(loading || context.busy)
+                    .font(.footnote).foregroundStyle(NativePalette.muted)
+            }.listRowBackground(NativePalette.surface).disabled(loading || context.busy)
             if loading { ProgressView("读取目标…") }
-            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+            if let message { Text(message).font(.footnote).foregroundStyle(NativePalette.muted) }
             if fields != original && settings != .null {
                 Section("当前服务器目标，供核对") {
                     ForEach(NativeNutritionFields.keys, id: \.self) { key in
                         LabeledContent(NativeNutritionFields.title(key), value: original[key].flatMap { $0.isEmpty ? nil : $0 } ?? "未设置")
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             NativeNutritionErrorRow(text: context.error)
             Section {
@@ -46,17 +46,17 @@ struct NativeNutritionGoalsView: View {
                 Button("保留填写并读取最新目标") { Task { await load(keepInput: true) } }.disabled(loading || context.busy)
                 Button("AI测算每日热量与营养") { needs = true }.disabled(settings == .null || fields != original || context.busy)
                 if fields != original { Text("先保存或核对当前填写，再将测算结果带入目标，避免覆盖未保存内容。")
-                    .font(.footnote).foregroundStyle(.secondary) }
-            }
+                    .font(.footnote).foregroundStyle(NativePalette.muted) }
+            }.listRowBackground(NativePalette.surface)
             if settings["weightPlan"] != .null {
                 Section("关联的体重计划") {
                     LabeledContent("起点", value: NativeNutritionFields.value(settings["weightPlan"]["baselineWeight"], unit: "kg"))
                     LabeledContent("目标", value: NativeNutritionFields.value(settings["weightPlan"]["targetWeight"], unit: "kg"))
                     LabeledContent("期限", value: settings["weightPlan"]["deadline"].stringValue ?? "未知")
-                }
+                }.listRowBackground(NativePalette.surface)
             }
         }
-        .navigationTitle("每日营养目标").task {
+        .nativeGeometricPage().navigationTitle("每日营养目标").task {
             await load()
             do { recovered = try persistence.load([String: String].self); persistenceReady = true }
             catch { message = error.localizedDescription }
@@ -123,14 +123,14 @@ struct NativeNutritionNeedsView: View {
                     Text("久坐").tag("sedentary"); Text("轻度活动").tag("light"); Text("中度活动").tag("moderate"); Text("高度活动").tag("active"); Text("极高活动").tag("veryActive")
                 }
                 Picker("体重方向", selection: $goal) { Text("维持").tag("maintain"); Text("减重").tag("lose"); Text("增重").tag("gain") }
-            }.disabled(loading)
+            }.listRowBackground(NativePalette.surface).disabled(loading)
             Section {
                 Text("适用于一般成人，不适用于孕期、哺乳期或需要特殊营养治疗的情形。点击测算才发送本次身体资料供AI解读；资料不保存到个人档案。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(NativePalette.muted)
                 Button(loading ? "正在测算…" : "测算并请求AI解读") { Task { await calculate() } }.disabled(loading)
                 if loading { ProgressView() }
                 NativeNutritionErrorRow(text: error)
-            }
+            }.listRowBackground(NativePalette.surface)
             if result != .null {
                 Section("固定公式参考结果") {
                     LabeledContent("静息能量估值", value: NativeNutritionFields.value(result["estimate"]["bmr"], unit: "千卡／天"))
@@ -140,23 +140,23 @@ struct NativeNutritionNeedsView: View {
                         LabeledContent(NativeNutritionFields.title(key), value: NativeNutritionFields.value(result["estimate"]["targets"][key], unit: key == "calories" ? "千卡" : "克"))
                     }
                     ForEach(Array(result["estimate"]["warnings"].arrayValue.enumerated()), id: \.offset) { _, warning in Text(warning.stringValue ?? "").font(.footnote).foregroundStyle(.orange) }
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("AI解读") {
                     Text(result["ai"]["text"].stringValue ?? result["ai"]["message"].stringValue ?? "本次未生成AI解读，公式结果仍可核对。")
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("方法与来源") {
                     Text("Mifflin–St Jeor公式估算静息消耗，再按所选活动系数及方向生成参考目标；不代表实测个人消耗或医学处方。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                     ForEach(Array(result["estimate"]["sources"].arrayValue.enumerated()), id: \.offset) { _, source in
                         if let string = source["url"].stringValue, let url = URL(string: string), url.scheme == "https" {
                             Link(source["title"].stringValue ?? "来源", destination: url)
                         }
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
                 Button("填入每日目标草稿") { onApply(result["estimate"]["targets"]); dismiss() }
             }
         }
-        .navigationTitle("营养需求测算").navigationBarTitleDisplayMode(.inline)
+        .nativeGeometricPage().navigationTitle("营养需求测算").navigationBarTitleDisplayMode(.inline)
         .onChange(of: signature) { _, _ in result = .null }
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(loading) } }
     }
@@ -193,48 +193,53 @@ struct NativeNutritionReviewView: View {
                 DatePicker("截止日期", selection: $date, in: ...Date(), displayedComponents: .date)
                 Picker("回顾范围", selection: $days) { Text("7天").tag(7); Text("30天").tag(30) }.pickerStyle(.segmented)
                 Picker("营养指标", selection: $metric) { ForEach(NativeNutritionFields.keys, id: \.self) { Text(NativeNutritionFields.title($0)).tag($0) } }
-            }
+            }.listRowBackground(NativePalette.surface)
             if loading { ProgressView("读取饮食回顾…") }
             NativeNutritionErrorRow(text: error)
             if error != nil { Button("重试") { Task { await load() } } }
             if data != .null {
                 Section("记录覆盖") {
-                    LabeledContent("有食物记录", value: "\(data["summary"]["recordedDays"].intValue ?? 0)天")
-                    LabeledContent("本人标记记完", value: "\(data["summary"]["completeDays"].intValue ?? 0)天")
-                    LabeledContent("本项完整可比较", value: "\(data["summary"]["nutrientAverages"][metric]["comparableDays"].intValue ?? 0)天")
-                    LabeledContent("完整记录日均", value: NativeNutritionFields.value(data["summary"]["nutrientAverages"][metric]["average"], unit: metric == "calories" ? "千卡" : "克"))
+                    VStack(spacing: 14) {
+                        LabeledContent("有食物记录", value: "\(data["summary"]["recordedDays"].intValue ?? 0)天")
+                        LabeledContent("本人标记记完", value: "\(data["summary"]["completeDays"].intValue ?? 0)天")
+                        LabeledContent("本项完整可比较", value: "\(data["summary"]["nutrientAverages"][metric]["comparableDays"].intValue ?? 0)天")
+                        LabeledContent("完整记录日均", value: NativeNutritionFields.value(data["summary"]["nutrientAverages"][metric]["average"], unit: metric == "calories" ? "千卡" : "克"))
+                    }.font(.subheadline).monospacedDigit().foregroundStyle(NativePalette.ink)
+                        .padding(20).nativeGeometricCard(fill: NativePalette.soft, compactAt: .bottomLeading)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
                     NativeNutritionTotals(nutrients: data["summary"]["nutrients"])
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("已知部分的每日记录") {
                     Chart {
                         ForEach(Array(data["days"].arrayValue.enumerated()), id: \.offset) { _, day in
                             if let date = NativeChartDates.parse(day["date"].stringValue ?? ""),
                                let text = day["nutrients"][metric]["total"].stringValue, let value = Double(text) {
-                                BarMark(x: .value("日期", date), y: .value(NativeNutritionFields.title(metric), value)).foregroundStyle(.indigo.gradient)
+                                BarMark(x: .value("日期", date), y: .value(NativeNutritionFields.title(metric), value)).foregroundStyle(NativePalette.accent.gradient)
                             }
                         }
                     }.frame(height: 180)
                     Text("未知日期不画作0；柱高仅为已知小计，缺项不代表实际全天摄入。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(NativePalette.muted)
                     ForEach(Array(data["days"].arrayValue.enumerated()), id: \.offset) { _, day in
                         VStack(alignment: .leading, spacing: 3) {
                             LabeledContent(day["date"].stringValue ?? "日期", value: NativeNutritionFields.value(day["nutrients"][metric]["total"]))
                             Text("\(day["entryCount"].intValue ?? 0)项食物 · 本项未知\(day["nutrients"][metric]["unknownCount"].intValue ?? 0)项 · " + (day["complete"].boolValue == true ? "已记完" : "未记完"))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(NativePalette.muted)
                         }
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("餐次分布") {
                     ForEach(Array(data["meals"].arrayValue.enumerated()), id: \.offset) { _, meal in
                         LabeledContent(meal["label"].stringValue ?? "餐次", value: NativeNutritionFields.value(meal["nutrients"][metric]["total"]))
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("统计口径") {
-                    ForEach(Array(data["limitations"].arrayValue.enumerated()), id: \.offset) { _, note in Text(note.stringValue ?? "").font(.footnote).foregroundStyle(.secondary) }
-                }
+                    ForEach(Array(data["limitations"].arrayValue.enumerated()), id: \.offset) { _, note in Text(note.stringValue ?? "").font(.footnote).foregroundStyle(NativePalette.muted) }
+                }.listRowBackground(NativePalette.surface)
             }
         }
-        .navigationTitle("饮食回顾").environment(\.timeZone, NativeActionDates.timeZone)
+        .nativeGeometricPage().navigationTitle("饮食回顾").environment(\.timeZone, NativeActionDates.timeZone)
         .task(id: selection) { await load() }.refreshable { await load() }
     }
     private func load() async {

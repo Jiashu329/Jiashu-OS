@@ -46,7 +46,7 @@ struct HealthQuickEntryView: View {
             entryForm
                 .disabled(isSaving)
                 .environment(\.timeZone, NativeActionDates.timeZone)
-                .navigationTitle(isNutrition ? "记饮食":"记" + metric.title)
+                .nativeGeometricPage().navigationTitle(isNutrition ? "记饮食":"记" + metric.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -349,7 +349,7 @@ struct NativeNutritionDayView: View {
                 }
             }
         }
-        .navigationTitle("饮食记录")
+        .nativeGeometricPage().navigationTitle("饮食记录")
         .navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone, NativeActionDates.timeZone)
         .toolbar {
@@ -485,7 +485,7 @@ struct HealthWeeklyReviewView: View {
             actionSection
             evidenceSection
         }
-        .navigationTitle("每周复盘")
+        .nativeGeometricPage().navigationTitle("每周复盘")
         .navigationBarTitleDisplayMode(.inline)
         .scrollDismissesKeyboard(.interactively)
         .toolbar {

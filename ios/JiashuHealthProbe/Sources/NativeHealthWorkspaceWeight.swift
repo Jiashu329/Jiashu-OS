@@ -58,7 +58,7 @@ struct NativeWeightPlanWorkspace: View {
             historySection
             if busy { ProgressView("正在确认…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("体重计划")
+        }.nativeGeometricPage().navigationTitle("体重计划")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .task {
                 do {
@@ -166,7 +166,7 @@ struct NativeWeightPlanWorkspace: View {
                 NativeHealthWorkspaceMessage(message:message)
                 Text("关闭后会保留填写；保存后才更新计划。").font(.footnote).foregroundStyle(.secondary)
             }
-            .navigationTitle(hasCurrent ? "编辑体重计划":"新体重周期").navigationBarTitleDisplayMode(.inline)
+            .nativeGeometricPage().navigationTitle(hasCurrent ? "编辑体重计划":"新体重周期").navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone,NativeActionDates.timeZone)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {

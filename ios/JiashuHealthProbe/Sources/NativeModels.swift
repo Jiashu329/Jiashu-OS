@@ -42,6 +42,8 @@ struct NativeOverviewFinance: Codable, Sendable {
     let staleAccountCount: Int
     let uncheckedAccountCount: Int
     let pendingBalanceCount: Int
+    var oldestBalanceDate: String? = nil
+    var latestBalanceDate: String? = nil
 }
 struct NativeOverviewCurrency: Codable, Sendable, Identifiable {
     let currency: String

@@ -53,7 +53,7 @@ struct NativeHealthGoalsWorkspace: View {
             historySection
             if busy { ProgressView("正在核对目标…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("健康目标")
+        }.nativeGeometricPage().navigationTitle("健康目标")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .task {
                 do {
@@ -108,7 +108,7 @@ struct NativeHealthGoalsWorkspace: View {
                 NativeHealthWorkspaceMessage(message:message)
                 Text("关闭后会保留未保存的填写；保存后才更新目标。").font(.footnote).foregroundStyle(.secondary)
             }
-            .navigationTitle("编辑目标").navigationBarTitleDisplayMode(.inline)
+            .nativeGeometricPage().navigationTitle("编辑目标").navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone,NativeActionDates.timeZone)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {

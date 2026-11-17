@@ -381,7 +381,7 @@ struct NativeFinanceRoot: View {
     var body: some View {
         NavigationStack {
             NativeFinanceDashboard(context: context)
-                .navigationTitle("财务")
+                .nativeGeometricPage().navigationTitle("财务")
                 .toolbar { if embedded { ToolbarItem(placement: .topBarLeading) { Button("返回") { dismiss() } } } }
                 .navigationDestination(isPresented: $showDestination) {
                     Group {
@@ -437,21 +437,21 @@ private struct NativeFinanceStatus: View {
     var scopeOverride: String? = nil
     @State private var recovery = false
     var body: some View {
-        Text(scopeOverride ?? context.scopeSummary).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        Text(scopeOverride ?? context.scopeSummary).font(.caption.weight(.medium)).foregroundStyle(NativePalette.muted)
         if context.busy { ProgressView("正在保存…") }
         if let error = context.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
         if context.storageUnavailable { Button("解锁后重试") { context.retryPendingStorage() } }
-        if let notice = context.notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+        if let notice = context.notice { Text(notice).font(.caption).foregroundStyle(NativePalette.muted) }
         if let pending = context.pending { pendingCard(pending) }
     }
     private func pendingCard(_ pending: NativeFinancePending) -> some View {
         Section("保存结果待确认") {
             Text(pending.title).font(.headline)
             ForEach(Array(pending.summaryLines.enumerated()), id: \.offset) { _, line in Text(line).font(.callout) }
-            Text(pending.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+            Text(pending.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(NativePalette.muted)
             if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending() } }.disabled(context.busy) }
             Button("查看最新结果") { recovery = true }.disabled(context.busy)
-        }.sheet(isPresented: $recovery) { NavigationStack { NativeFinancePendingRecovery(context: context, pending: pending) } }
+        }.listRowBackground(NativePalette.surface).sheet(isPresented: $recovery) { NavigationStack { NativeFinancePendingRecovery(context: context, pending: pending) } }
     }
 }
 
@@ -468,18 +468,18 @@ private struct NativeFinancePendingRecovery: View {
             Section("原保存内容") {
                 Text(pending.title).font(.headline)
                 ForEach(Array(pending.summaryLines.enumerated()), id: \.offset) { _, line in Text(line) }
-            }
+            }.listRowBackground(NativePalette.surface)
             NativeFinanceReadFeedback(state: state) { Task { await load() } }
             if state == .ready { currentResult }
             Section {
                 if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending(); if context.pending == nil { dismiss() } } }.disabled(context.busy) }
                 DisclosureGroup("已自行核对") {
-                    Text("结束核对不会撤销已保存的记录").font(.caption).foregroundStyle(.secondary)
+                    Text("结束核对不会撤销已保存的记录").font(.caption).foregroundStyle(NativePalette.muted)
                     Button("结束此项待确认") { finish = true }.disabled(context.busy || state != .ready)
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
         }
-        .navigationTitle("核对保存结果")
+        .nativeGeometricPage().navigationTitle("核对保存结果")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         .task { await load() }
         .confirmationDialog("已核对原保存结果？", isPresented: $finish, titleVisibility: .visible) {
@@ -498,18 +498,18 @@ private struct NativeFinancePendingRecovery: View {
                     LabeledContent("备注", value: result["account"]["note"].stringValue ?? "")
                     LabeledContent("状态", value: result["account"]["archived"].boolValue == true ? "已归档" : "未归档")
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
         } else if result["goal"]["id"].stringValue != nil {
-            Section("最新目标") { Text(result["goal"]["name"].stringValue ?? "目标"); LabeledContent("目标金额", value: NativeFinanceContract.money(result["goal"]["targetMinor"], currency: currency)) }
+            Section("最新目标") { Text(result["goal"]["name"].stringValue ?? "目标"); LabeledContent("目标金额", value: NativeFinanceContract.money(result["goal"]["targetMinor"], currency: currency)) }.listRowBackground(NativePalette.surface)
         } else if result["month"].stringValue != nil {
-            Section("最新月结") { Text(result["month"].stringValue ?? ""); LabeledContent("版本", value: String(result["close"]["latestVersion"].intValue ?? 0)) }
+            Section("最新月结") { Text(result["month"].stringValue ?? ""); LabeledContent("版本", value: String(result["close"]["latestVersion"].intValue ?? 0)) }.listRowBackground(NativePalette.surface)
         } else if result["revision"].intValue != nil {
-            Section("最新应急储备") { LabeledContent("每月开支", value: result["settings"]["monthlyExpenseAmount"].stringValue ?? "尚未设置"); LabeledContent("目标月数", value: String(result["settings"]["targetMonths"].intValue ?? 0)) }
+            Section("最新应急储备") { LabeledContent("每月开支", value: result["settings"]["monthlyExpenseAmount"].stringValue ?? "尚未设置"); LabeledContent("目标月数", value: String(result["settings"]["targetMonths"].intValue ?? 0)) }.listRowBackground(NativePalette.surface)
         } else {
             Section("最新家庭协作") {
                 ForEach(result["members"].arrayValue, id: \.financeID) { member in LabeledContent(member["email"].stringValue ?? "成员", value: member["status"].stringValue ?? "") }
                 ForEach(result["books"].arrayValue, id: \.financeID) { book in Text(book["name"].stringValue ?? "家庭账本") }
-            }
+            }.listRowBackground(NativePalette.surface)
         }
     }
     private func load() async {
@@ -531,7 +531,15 @@ private struct NativeFinancePendingRecovery: View {
 
 private struct NativeFinanceMetric: View {
     let title: String; let value: String; var detail: String? = nil
-    var body: some View { VStack(alignment: .leading, spacing: 5) { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).font(.title3.monospacedDigit()); if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) } }.padding(.vertical, 3) }
+    var prominent = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.subheadline).foregroundStyle(NativePalette.muted)
+            Text(value).font(prominent ? .largeTitle.weight(.semibold) : .title2.weight(.semibold))
+                .monospacedDigit().foregroundStyle(NativePalette.ink)
+            if let detail { Text(detail).font(.caption).foregroundStyle(NativePalette.muted) }
+        }.padding(.vertical, 5)
+    }
 }
 
 private struct NativeFinanceDashboard: View {
@@ -557,10 +565,17 @@ private struct NativeFinanceDashboard: View {
         List {
             NativeFinanceStatus(context: context)
             Section {
-                Button { switchBook = true } label: { HStack { Label(context.scopeLabel, systemImage: "books.vertical"); Spacer(); Text("切换").font(.caption) } }
+                Button { switchBook = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "books.vertical").font(.title3).foregroundStyle(NativePalette.accent)
+                            .frame(width: 40, height: 40).background(NativePalette.soft, in: RoundedRectangle(cornerRadius: 14))
+                        Text(context.scopeLabel).font(.headline).foregroundStyle(NativePalette.ink)
+                        Spacer(); Text("切换").font(.caption).foregroundStyle(NativePalette.accent)
+                    }.padding(.vertical, 4)
+                }
                 Picker("币种", selection: $context.currency) { ForEach(NativeFinanceContract.currencies, id: \.self) { Text($0).tag($0) } }
-            }
-            if context.blocked { Text("请重新选择账本").foregroundStyle(.secondary) }
+            }.listRowBackground(NativePalette.surface)
+            if context.blocked { Text("请重新选择账本").foregroundStyle(NativePalette.muted) }
             else {
                 NativeFinanceReadFeedback(state: state) { Task { await load() } }
                 if state == .ready { loadedContent }
@@ -573,33 +588,46 @@ private struct NativeFinanceDashboard: View {
                 ContentUnavailableView("暂无" + context.currency + "账户", systemImage: "building.columns", description: Text("先添加账户和当前余额"))
                 Button("添加账户", systemImage: "plus") { addAccount = true }.disabled(!context.canWrite)
                 Toggle("显示归档账户", isOn: $archived)
-                if !response["accounts"].arrayValue.isEmpty { Text("可切换币种查看其他账户").font(.caption).foregroundStyle(.secondary) }
-            }
+                if !response["accounts"].arrayValue.isEmpty { Text("可切换币种查看其他账户").font(.caption).foregroundStyle(NativePalette.muted) }
+            }.listRowBackground(NativePalette.surface)
         } else {
             summarySection
             Section {
                 NavigationLink { NativeFinanceBalanceCheck(context: context) } label: {
                     Label("核对本月余额", systemImage: "checklist")
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
             accountsSection
         }
             Section("规划与复盘") {
-                NavigationLink("资金目标") { NativeFinanceGoals(context: context) }
-                NavigationLink("应急储备") { NativeFinanceRunway(context: context) }
-                NavigationLink("月度回顾与月结") { NativeFinanceReview(context: context) }
+                NavigationLink { NativeFinanceGoals(context: context) } label: { Label("资金目标", systemImage: "flag") }
+                NavigationLink { NativeFinanceRunway(context: context) } label: { Label("应急储备", systemImage: "umbrella") }
+                NavigationLink { NativeFinanceReview(context: context) } label: { Label("月度回顾与月结", systemImage: "calendar") }
                 if context.ledger == "family" { NavigationLink("协作动态") { NativeFinanceActivity(context: context) } }
-            }
+            }.listRowBackground(NativePalette.surface)
         if context.role == "owner" {
-            Section { DisclosureGroup("数据管理") { Button("导出账本", systemImage: "square.and.arrow.up") { Task { await export() } } } }
+            Section { DisclosureGroup("数据管理") { Button("导出账本", systemImage: "square.and.arrow.up") { Task { await export() } } } }.listRowBackground(NativePalette.surface)
         }
     }
     private var summarySection: some View {
         let summary: NativeJSON = response["summary"]["byCurrency"][context.currency]
         return Section("当前资产负债") {
-            NativeFinanceMetric(title: "净资产", value: NativeFinanceContract.money(summary["netMinor"], currency: context.currency))
-            LabeledContent("资产", value: NativeFinanceContract.money(summary["assetsMinor"], currency: context.currency))
-            LabeledContent("负债", value: NativeFinanceContract.money(summary["liabilitiesMinor"], currency: context.currency))
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
+                    NativeFinanceMetric(title: "净资产", value: NativeFinanceContract.money(summary["netMinor"], currency: context.currency), prominent: true)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chart.bar.xaxis").font(.title2).foregroundStyle(NativePalette.accent)
+                        .frame(width: 44, height: 44).background(NativePalette.surface.opacity(0.7), in: Circle())
+                        .accessibilityHidden(true)
+                }
+                VStack(spacing: 12) {
+                    LabeledContent("资产", value: NativeFinanceContract.money(summary["assetsMinor"], currency: context.currency))
+                    LabeledContent("负债", value: NativeFinanceContract.money(summary["liabilitiesMinor"], currency: context.currency))
+                }.font(.subheadline).monospacedDigit().foregroundStyle(NativePalette.ink)
+            }
+            .padding(22).nativeGeometricCard(fill: NativePalette.soft)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear).listRowSeparator(.hidden)
         }
     }
     private var accountsSection: some View {
@@ -607,7 +635,7 @@ private struct NativeFinanceDashboard: View {
             ForEach(accounts, id: \.financeID) { account in accountRow(account) }
             Button("新增账户", systemImage: "plus") { addAccount = true }.disabled(!context.canWrite)
             Toggle("显示归档账户", isOn: $archived)
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private func accountRow(_ account: NativeJSON) -> some View {
         let name: String = account["name"].stringValue ?? "账户"
@@ -615,11 +643,15 @@ private struct NativeFinanceDashboard: View {
         let date: String = account["asOfDate"].stringValue ?? "未知日期"
         let classification: String = NativeFinanceContract.typeName(account["type"].stringValue ?? "")
         return NavigationLink { NativeFinanceAccountDetail(context: context, accountID: account.financeID) } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack { Text(name); if account["archived"].boolValue == true { Text("已归档").font(.caption).foregroundStyle(.secondary) } }
-                Text(balance).monospacedDigit().fontWeight(.medium)
-                Text(classification + " · " + date).font(.caption).foregroundStyle(.secondary)
-            }
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "building.columns").font(.headline).foregroundStyle(NativePalette.accent)
+                    .frame(width: 40, height: 40).background(NativePalette.soft, in: RoundedRectangle(cornerRadius: 13))
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack { Text(name).font(.subheadline.weight(.medium)); if account["archived"].boolValue == true { Text("已归档").font(.caption).foregroundStyle(NativePalette.muted) } }
+                    Text(balance).font(.title3.weight(.semibold)).monospacedDigit()
+                    Text(classification + " · " + date).font(.caption).foregroundStyle(NativePalette.muted)
+                }
+            }.padding(.vertical, 8).foregroundStyle(NativePalette.ink)
         }
     }
     private func load() async {
@@ -653,12 +685,12 @@ private struct NativeFinanceBooksView: View {
         List {
             NativeFinanceStatus(context: context)
             if context.bookLoading { ProgressView("正在读取账本…") }
-            if let error = context.bookError { Text(error).foregroundStyle(.secondary); Button("重试") { Task { await context.loadBooks() } } }
+            if let error = context.bookError { Text(error).foregroundStyle(NativePalette.muted); Button("重试") { Task { await context.loadBooks() } } }
             selectionSection
-            Section { NavigationLink("管理家庭协作者") { NativeFinanceMembers(context: context) } }
+            Section { NavigationLink("管理家庭协作者") { NativeFinanceMembers(context: context) } }.listRowBackground(NativePalette.surface)
             if loaded { invitationSection }
         }
-        .navigationTitle("切换账本")
+        .nativeGeometricPage().navigationTitle("切换账本")
         .task { await context.loadBooks() }
         .refreshable { await context.loadBooks() }
     }
@@ -666,7 +698,7 @@ private struct NativeFinanceBooksView: View {
         Section("账本") {
             Button { context.select(ledger: "personal"); dismiss() } label: { Label("个人账本", systemImage: context.ledger == "personal" ? "checkmark.circle.fill" : "person") }
             if loaded { ForEach(context.books, id: \.financeID) { book in bookButton(book) } }
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private func bookButton(_ book: NativeJSON) -> some View {
         let name: String = book["name"].stringValue ?? "家庭账本"
@@ -679,9 +711,9 @@ private struct NativeFinanceBooksView: View {
     }
     private var invitationSection: some View {
         Section("收到的邀请") {
-            if context.invitations.isEmpty { Text("暂无邀请").foregroundStyle(.secondary) }
+            if context.invitations.isEmpty { Text("暂无邀请").foregroundStyle(NativePalette.muted) }
             ForEach(context.invitations, id: \.financeID) { invitation in NativeFinanceInvitationRow(context: context, invitation: invitation) }
-        }
+        }.listRowBackground(NativePalette.surface)
     }
 }
 
@@ -693,7 +725,7 @@ private struct NativeFinanceInvitationRow: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(invitation["bookName"].stringValue ?? "家庭账本").font(.headline)
             Text((invitation["ownerName"].stringValue ?? "") + "邀请你 · " + NativeFinanceContract.roleName(invitation["role"].stringValue ?? "editor"))
-            Text("有效至 " + (invitation["expiresAt"].stringValue ?? "未知")).font(.caption).foregroundStyle(.secondary)
+            Text("有效至 " + (invitation["expiresAt"].stringValue ?? "未知")).font(.caption).foregroundStyle(NativePalette.muted)
             HStack { Button("接受") { action = "accept" }; Button("婉拒", role: .destructive) { action = "decline" } }.disabled(context.busy || context.pending != nil)
         }.confirmationDialog(action == "accept" ? "加入此家庭账本？" : "婉拒此邀请？", isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } }), titleVisibility: .visible) {
             Button("确认") { let chosen = action ?? "decline"; action = nil; Task { await respond(chosen) } }
@@ -757,7 +789,7 @@ private struct NativeFinanceAccountForm: View {
     }
     private var monitoredForm: some View {
         accountForm
-            .navigationTitle(formTitle)
+            .nativeGeometricPage().navigationTitle(formTitle)
             .modifier(NativeFinancePrivacy(context: context))
             .onChange(of: context.change) { _, _ in confirmedCreation() }
             .toolbar { ToolbarItem(placement: .cancellationAction) { closeButton } }
@@ -778,7 +810,7 @@ private struct NativeFinanceAccountForm: View {
             draftRecovery
             accountFields
             modeFields
-            Section { Button(saveTitle) { Task { await save() } }.disabled(!context.canWrite) }
+            Section { Button(saveTitle) { Task { await save() } }.disabled(!context.canWrite) }.listRowBackground(NativePalette.surface)
         }
     }
     private var draftRecovery: some View {
@@ -794,7 +826,7 @@ private struct NativeFinanceAccountForm: View {
                 ForEach(NativeFinanceContract.currencies, id: \.self) { code in Text(code).tag(code) }
             }.disabled(initial != nil)
             TextField("备注", text: $note, axis: .vertical)
-        }.disabled(fieldsDisabled)
+        }.listRowBackground(NativePalette.surface).disabled(fieldsDisabled)
     }
     @ViewBuilder private var modeFields: some View {
         if initial == nil { initialBalanceFields }
@@ -807,7 +839,7 @@ private struct NativeFinanceAccountForm: View {
         Section("初始余额或欠款") {
             NativeFinanceAmountField(title: "余额或欠款", currency: currency, value: $amount)
             NativeFinanceDateField(title: "余额日期", value: $date)
-        }.disabled(fieldsDisabled)
+        }.listRowBackground(NativePalette.surface).disabled(fieldsDisabled)
     }
     private var liquidityFields: some View {
         Section("应急资金可动用程度") {
@@ -816,8 +848,8 @@ private struct NativeFinanceAccountForm: View {
             }
             TextField("可动用比例 %", text: $usable).keyboardType(.decimalPad)
             Text("类型与归档调整从北京时间今天生效，保留此前月份分类。类型变化后请重新核对可动用程度。")
-                .font(.caption).foregroundStyle(.secondary)
-        }.disabled(fieldsDisabled)
+                .font(.caption).foregroundStyle(NativePalette.muted)
+        }.listRowBackground(NativePalette.surface).disabled(fieldsDisabled)
     }
     private func restoreFields(_ values: NativeJSON) {
         name = values["name"].stringValue ?? name
@@ -901,42 +933,42 @@ private struct NativeFinanceAccountDetail: View {
                     Button("编辑账户资料") { editing = true }.disabled(!context.canWrite)
                     Button("记录新余额") { balance = true }.disabled(!context.canWrite || account["archived"].boolValue == true)
                     Button(account["archived"].boolValue == true ? "恢复账户" : "归档账户", role: account["archived"].boolValue == true ? nil : .destructive) { archive = true }.disabled(!context.canWrite)
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section("余额历史") {
-                    Text("作废记录不参与统计；更正保留原始内容。最后一条有效余额请更正或归档账户。") .font(.caption).foregroundStyle(.secondary)
+                    Text("作废记录不参与统计；更正保留原始内容。最后一条有效余额请更正或归档账户。") .font(.caption).foregroundStyle(NativePalette.muted)
                     ForEach(visibleBalances, id: \.financeID) { entry in
                         NavigationLink { NativeFinanceBalanceForm(context: context, account: account, entry: entry) } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(NativeFinanceContract.money(entry["amountMinor"], currency: account["currency"].stringValue ?? "CNY"))
-                                Text((entry["asOfDate"].stringValue ?? "") + " · " + status(entry["status"].stringValue ?? "active")).font(.caption).foregroundStyle(.secondary)
+                                Text((entry["asOfDate"].stringValue ?? "") + " · " + status(entry["status"].stringValue ?? "active")).font(.caption).foregroundStyle(NativePalette.muted)
                                 if let note = entry["note"].stringValue, !note.isEmpty { Text(note).font(.caption) }
                             }
                         }
                     }
-                }
+                }.listRowBackground(NativePalette.surface)
                 if response["balances"].arrayValue.count > 10 { Button(allBalances ? "收起较早余额" : "查看全部余额记录") { allBalances.toggle() } }
                 Section { DisclosureGroup("分类与归档历史") {
                     ForEach(Array(response["classifications"].arrayValue.enumerated()), id: \.offset) { _, row in
                         VStack(alignment: .leading) {
                             Text(NativeFinanceContract.typeName(row["type"].stringValue ?? "") + " · " + (row["archived"].intValue == 1 ? "归档" : "未归档"))
-                            Text(row["origin"].stringValue == "baseline" ? "旧数据兼容基线；此前状态未知" : (row["effectiveFrom"].stringValue ?? "未知日期") + "起生效").font(.caption).foregroundStyle(.secondary)
+                            Text(row["origin"].stringValue == "baseline" ? "旧数据兼容基线；此前状态未知" : (row["effectiveFrom"].stringValue ?? "未知日期") + "起生效").font(.caption).foregroundStyle(NativePalette.muted)
                         }
                     }
                 }
-                }
+                }.listRowBackground(NativePalette.surface)
                 Section { DisclosureGroup("修改历史") {
                     ForEach(response["changes"].arrayValue, id: \.financeID) { row in
                         VStack(alignment: .leading) {
                             Text(row["action"].stringValue == "void" ? "作废余额" : "更正余额")
                             Text(row["reason"].stringValue ?? "").font(.callout)
-                            Text(row["createdAt"].stringValue ?? "").font(.caption).foregroundStyle(.secondary)
+                            Text(row["createdAt"].stringValue ?? "").font(.caption).foregroundStyle(NativePalette.muted)
                         }
                     }
                 }
-                }
+                }.listRowBackground(NativePalette.surface)
             }
         }
-        .navigationTitle(account["name"].stringValue ?? "账户详情")
+        .nativeGeometricPage().navigationTitle(account["name"].stringValue ?? "账户详情")
         .task(id: String(context.change) + context.scopeID) { await load() }
         .refreshable { await load() }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) { NavigationStack { NativeFinanceAccountForm(context: context, account: account) } }
@@ -984,14 +1016,14 @@ private struct NativeFinanceBalanceForm: View {
                 action = values["action"].stringValue ?? action; amount = values["amount"].stringValue ?? amount; date = values["date"].stringValue ?? date
                 note = values["note"].stringValue ?? note; reason = values["reason"].stringValue ?? reason; frozen = nil; preview = nil
             }
-            Section("账户") { Text(account["name"].stringValue ?? ""); LabeledContent("当前余额", value: NativeFinanceContract.money(account["balanceMinor"], currency: currency)); Text(account["asOfDate"].stringValue ?? "").font(.caption) }
+            Section("账户") { Text(account["name"].stringValue ?? ""); LabeledContent("当前余额", value: NativeFinanceContract.money(account["balanceMinor"], currency: currency)); Text(account["asOfDate"].stringValue ?? "").font(.caption) }.listRowBackground(NativePalette.surface)
             if let entry {
                 Section("原始与有效记录") {
                     LabeledContent("记录金额", value: NativeFinanceContract.money(entry["amountMinor"], currency: currency))
                     LabeledContent("日期", value: entry["asOfDate"].stringValue ?? "")
                     if let original = entry["originalAmountMinor"].stringValue { LabeledContent("原始金额", value: NativeFinanceContract.money(original, currency: currency)) }
                     Text(entry["changeReason"].stringValue ?? "").font(.caption)
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             if entry != nil { Picker("操作", selection: $action) { Text(entry?["status"].stringValue == "void" ? "恢复并更正" : "更正").tag("correct"); if entry?["status"].stringValue != "void" { Text("作废").tag("void") } }.disabled(frozen != nil || context.pending != nil) }
             Section(entry == nil ? "新余额" : "修改内容") {
@@ -1001,23 +1033,23 @@ private struct NativeFinanceBalanceForm: View {
                     TextField("说明", text: $note, axis: .vertical)
                 }
                 if entry != nil { TextField("修改原因（必填）", text: $reason, axis: .vertical) }
-            }.disabled(frozen != nil || context.pending != nil || context.busy)
+            }.listRowBackground(NativePalette.surface).disabled(frozen != nil || context.pending != nil || context.busy)
             if let preview {
                 Section("对当前余额的影响") {
                     LabeledContent("修改前", value: NativeFinanceContract.money(preview["currentBefore"]["amountMinor"], currency: currency))
                     LabeledContent("修改后", value: NativeFinanceContract.money(preview["currentAfter"]["amountMinor"], currency: currency))
                     LabeledContent("修改后日期", value: preview["currentAfter"]["asOfDate"].stringValue ?? "")
                     Text(preview["changesCurrentBalance"].boolValue == true ? "此操作将改变账户当前余额。" : "当前余额不变，历史记录将更新。")
-                }
+                }.listRowBackground(NativePalette.surface)
             }
             Section {
                 if entry != nil && frozen == nil { Button("预览影响") { Task { await makePreview() } }.disabled(!context.canWrite || previewing || account["archived"].boolValue == true) }
                 else { Button(entry == nil ? (onSaved == nil ? "保存余额" : "保存并核对下一项") : "确认修改") { if entry == nil { Task { await save() } } else { confirm = true } }.disabled(!context.canWrite || completing) }
                 if frozen != nil && context.pending == nil { Button("返回修改内容") { preview = nil; frozen = nil } }
                 if previewing { ProgressView("核对服务器预览…") }
-            }
+            }.listRowBackground(NativePalette.surface)
         }
-        .navigationTitle(entry == nil ? "记录余额" : "更正与作废")
+        .nativeGeometricPage().navigationTitle(entry == nil ? "记录余额" : "更正与作废")
         .modifier(NativeFinancePrivacy(context: context))
         .navigationBarBackButtonHidden(changed)
         .onChange(of: context.change) { _, _ in confirmedSave() }
@@ -1071,7 +1103,7 @@ private struct NativeFinanceBalanceCheck: View {
     private var checked: [NativeJSON] { accounts.filter { NativeFinanceContract.checkedThisMonth($0["asOfDate"].stringValue) } }
     var body: some View {
         checkList
-            .navigationTitle("本月余额核对")
+            .nativeGeometricPage().navigationTitle("本月余额核对")
             .modifier(NativeFinancePrivacy(context: context))
             .task(id: context.scopeID) { await load() }
             .refreshable { await load() }
@@ -1095,9 +1127,9 @@ private struct NativeFinanceBalanceCheck: View {
                 Button("核对下一项") { active = next; editing = true }.disabled(!context.canWrite)
             } else { Label("本月余额已记录", systemImage: "checkmark.circle").foregroundStyle(.green) }
             NavigationLink("查看本月回顾") { NativeFinanceReview(context: context, initialMonth: String(NativeFinanceContract.today().prefix(7))) }
-        }
-        if !unchecked.isEmpty { Section("待核对") { ForEach(unchecked, id: \.financeID) { account in accountButton(account) } } }
-        if !checked.isEmpty { Section { DisclosureGroup("已核对 · \(checked.count)") { ForEach(checked, id: \.financeID) { account in accountButton(account) } } } }
+        }.listRowBackground(NativePalette.surface)
+        if !unchecked.isEmpty { Section("待核对") { ForEach(unchecked, id: \.financeID) { account in accountButton(account) } }.listRowBackground(NativePalette.surface) }
+        if !checked.isEmpty { Section { DisclosureGroup("已核对 · \(checked.count)") { ForEach(checked, id: \.financeID) { account in accountButton(account) } } }.listRowBackground(NativePalette.surface) }
     }
     private var editor: some View {
         NavigationStack {
@@ -1112,7 +1144,7 @@ private struct NativeFinanceBalanceCheck: View {
         let amount: String = NativeFinanceContract.money(account["balanceMinor"], currency: context.currency)
         let date: String = account["asOfDate"].stringValue ?? "未知日期"
         return Button { active = account; editing = true } label: {
-            HStack { VStack(alignment: .leading) { Text(name).foregroundStyle(.primary); Text(date).font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(amount).monospacedDigit().foregroundStyle(.primary) }
+            HStack { VStack(alignment: .leading) { Text(name).foregroundStyle(NativePalette.ink); Text(date).font(.caption).foregroundStyle(NativePalette.muted) }; Spacer(); Text(amount).monospacedDigit().foregroundStyle(NativePalette.ink) }
         }.disabled(context.role == "viewer" || context.pending != nil)
     }
     private func load() async {
@@ -1144,8 +1176,8 @@ private struct NativeFinanceGoals: View {
             NativeFinanceStatus(context: context)
             NativeFinanceReadFeedback(state: state) { Task { await load() } }
             if state == .ready {
-            Section { Toggle("包括归档目标", isOn: $archived); Text("目标余额是所选账户的视图，不代表资金已预留或转账。") .font(.caption).foregroundStyle(.secondary) }
-            if response["goals"].arrayValue.isEmpty { Text("暂无当前币种的资金目标。") .foregroundStyle(.secondary) }
+            Section { Toggle("包括归档目标", isOn: $archived); Text("目标余额是所选账户的视图，不代表资金已预留或转账。") .font(.caption).foregroundStyle(NativePalette.muted) }.listRowBackground(NativePalette.surface)
+            if response["goals"].arrayValue.isEmpty { Text("暂无当前币种的资金目标。") .foregroundStyle(NativePalette.muted) }
             ForEach(response["goals"].arrayValue, id: \.financeID) { goal in
                 NavigationLink { NativeFinanceGoalDetail(context: context, initial: goal, available: response["accounts"].arrayValue) } label: {
                     VStack(alignment: .leading, spacing: 6) {
@@ -1153,14 +1185,14 @@ private struct NativeFinanceGoals: View {
                         Text("当前 " + NativeFinanceContract.money(goal["currentMinor"], currency: context.currency))
                         Text("目标 " + NativeFinanceContract.money(goal["targetMinor"], currency: context.currency)).font(.caption)
                         if let percent = goal["percent"].doubleValue { ProgressView(value: min(100, max(0, percent)), total: 100) }
-                        Text("截至 " + (goal["deadline"].stringValue ?? "未知")).font(.caption).foregroundStyle(.secondary)
+                        Text("截至 " + (goal["deadline"].stringValue ?? "未知")).font(.caption).foregroundStyle(NativePalette.muted)
                     }
                 }
             }
             Button("新增资金目标", systemImage: "plus") { add = true }.disabled(!context.canWrite)
             }
         }
-        .navigationTitle("资金目标")
+        .nativeGeometricPage().navigationTitle("资金目标")
         .modifier(NativeFinancePrivacy(context: context))
         .task(id: context.scopeID + String(context.change) + String(archived)) { await load() }.refreshable { await load() }
         .sheet(isPresented: $add, onDismiss: { Task { await load() } }) { NavigationStack { NativeFinanceGoalForm(context: context, initial: nil, available: response["accounts"].arrayValue) } }
@@ -1195,7 +1227,7 @@ private struct NativeFinanceGoalDetail: View {
     private func count(_ key: String) -> String { String(goal[key].intValue ?? 0) }
     var body: some View {
         goalList
-            .navigationTitle(title)
+            .nativeGeometricPage().navigationTitle(title)
             .modifier(NativeFinancePrivacy(context: context))
             .task(id: String(context.change)) { await load() }
             .refreshable { await load() }
@@ -1224,7 +1256,7 @@ private struct NativeFinanceGoalDetail: View {
             LabeledContent("每月参考", value: money("monthlyMinor"))
             LabeledContent("截止日", value: goal["deadline"].stringValue ?? "")
             LabeledContent("剩余天数", value: count("daysRemaining"))
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private var basisSection: some View {
         Section("计算依据") {
@@ -1233,14 +1265,14 @@ private struct NativeFinanceGoalDetail: View {
             LabeledContent("缺失或归档", value: count("missingCount"))
             Text(dateRange).font(.caption)
             Text("达成状态依赖当前余额；陈旧、缺失或归档的依据需重新核对。")
-                .font(.caption).foregroundStyle(.secondary)
-        }
+                .font(.caption).foregroundStyle(NativePalette.muted)
+        }.listRowBackground(NativePalette.surface)
     }
     private var actionSection: some View {
         Section {
             Button("编辑目标") { editing = true }.disabled(!context.canWrite)
             Button(archiveTitle, role: archiveRole) { archive = true }.disabled(!context.canWrite)
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private var editor: some View {
         NavigationStack { NativeFinanceGoalForm(context: context, initial: goal, available: available) }
@@ -1269,8 +1301,8 @@ private struct NativeFinanceSharing: View {
                         if account["includesRunway"].boolValue == true { Text("也用于应急储备").font(.caption) }
                     }
                 }
-                Text("同一余额可被多个目标引用，不能将目标进度相加。资金尚未分配或转账。") .font(.caption).foregroundStyle(.secondary)
-            }
+                Text("同一余额可被多个目标引用，不能将目标进度相加。资金尚未分配或转账。") .font(.caption).foregroundStyle(NativePalette.muted)
+            }.listRowBackground(NativePalette.surface)
         }
     }
 }
@@ -1324,7 +1356,7 @@ private struct NativeFinanceGoalForm: View {
     }
     private var monitoredForm: some View {
         goalForm
-            .navigationTitle(formTitle)
+            .nativeGeometricPage().navigationTitle(formTitle)
             .modifier(NativeFinancePrivacy(context: context))
             .onChange(of: context.change) { _, _ in confirmedCreation() }
             .toolbar { ToolbarItem(placement: .cancellationAction) { closeButton } }
@@ -1353,15 +1385,15 @@ private struct NativeFinanceGoalForm: View {
             TextField("目标名称", text: $name)
             NativeFinanceAmountField(title: "目标金额", currency: context.currency, value: $target, positive: true)
             NativeFinanceDateField(title: "截止日", value: $deadline, allowsFuture: true)
-        }.disabled(fieldsDisabled)
+        }.listRowBackground(NativePalette.surface).disabled(fieldsDisabled)
     }
     private var accountFields: some View {
         Section("关联资产账户") {
             ForEach(accounts, id: \.financeID) { account in accountToggle(account) }
             ForEach(missingIDs, id: \.self) { id in missingAccountToggle(id) }
             Text("仅选择同一账本、同币种的资产账户。关联不会预留资金。")
-                .font(.caption).foregroundStyle(.secondary)
-        }.disabled(fieldsDisabled)
+                .font(.caption).foregroundStyle(NativePalette.muted)
+        }.listRowBackground(NativePalette.surface).disabled(fieldsDisabled)
     }
     private func accountToggle(_ account: NativeJSON) -> some View {
         let id: String = account.financeID
@@ -1450,7 +1482,7 @@ private struct NativeFinanceRunway: View {
     }
     var body: some View {
         runwayForm
-            .navigationTitle("应急储备")
+            .nativeGeometricPage().navigationTitle("应急储备")
             .modifier(NativeFinancePrivacy(context: context))
             .modifier(NativeFinanceKeyboardDone())
             .navigationBarBackButtonHidden(dirty)
@@ -1471,9 +1503,9 @@ private struct NativeFinanceRunway: View {
             NativeFinanceReadFeedback(state: state) { Task { await load() } }
             if state == .ready {
                 draftRecovery
-                if response["settings"].isNull { Text("设置每月必要开支和储备账户").foregroundStyle(.secondary) }
+                if response["settings"].isNull { Text("设置每月必要开支和储备账户").foregroundStyle(NativePalette.muted) }
                 else { summary }
-                Section { DisclosureGroup(response["settings"].isNull ? "开始设置" : "调整设置", isExpanded: $editingSettings) { settingsFields } }
+                Section { DisclosureGroup(response["settings"].isNull ? "开始设置" : "调整设置", isExpanded: $editingSettings) { settingsFields } }.listRowBackground(NativePalette.surface)
             }
         }
     }
@@ -1496,7 +1528,7 @@ private struct NativeFinanceRunway: View {
                 LabeledContent("余额超过30天", value: String(response["progress"]["staleAccountCount"].intValue ?? 0))
             }
             if dirty { Text("有未保存调整，上方仍为已保存结果").font(.caption).foregroundStyle(.orange) }
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     @ViewBuilder private var settingsFields: some View {
         NativeFinanceAmountField(title: "每月必要开支", currency: context.currency, value: $expense, positive: true).onChange(of: expense) { _, _ in dirty = true }
@@ -1514,7 +1546,7 @@ private struct NativeFinanceRunway: View {
         let date: String = account["asOfDate"].stringValue ?? "未知日期"
         let selected = Binding<Bool>(get: { ids.contains(id) }, set: { value in if value { ids.insert(id) } else { ids.remove(id) }; dirty = true })
         return Toggle(isOn: selected) {
-            VStack(alignment: .leading) { Text(name); Text(amount).font(.caption); Text(classification + " · " + date).font(.caption).foregroundStyle(.secondary) }
+            VStack(alignment: .leading) { Text(name); Text(amount).font(.caption); Text(classification + " · " + date).font(.caption).foregroundStyle(NativePalette.muted) }
         }.disabled(!context.canWrite || revision == nil)
     }
     private func missingToggle(_ id: String) -> some View {
@@ -1567,7 +1599,7 @@ private struct NativeFinanceReview: View {
                     Label("已月结", systemImage: "checkmark.seal").foregroundStyle(.green)
                     Button("重新核对并月结") { draft = true }.disabled(!context.canWrite)
                 }
-            }
+            }.listRowBackground(NativePalette.surface)
             if loading { ProgressView("读取月度报表…") }
             if !context.blocked, !loading, response["month"].stringValue != nil {
                 closeSection
@@ -1588,10 +1620,10 @@ private struct NativeFinanceReview: View {
                             VStack(alignment: .leading) { Text(goal["name"].stringValue ?? "目标"); Text("目前缺口 " + NativeFinanceContract.money(goal["gapMinor"], currency: context.currency)).font(.caption) }
                         }
                         LabeledContent("当前应急月数", value: response["decisions"]["runway"]["runwayMonths"].stringValue ?? "尚未设置")
-                    }
+                    }.listRowBackground(NativePalette.surface)
                 }
             }
-        }.navigationTitle("月度回顾与月结").modifier(NativeFinancePrivacy(context: context))
+        }.nativeGeometricPage().navigationTitle("月度回顾与月结").modifier(NativeFinancePrivacy(context: context))
         .task(id: context.scopeID + String(draft) + String(context.change)) { await load() }
         .onChange(of: month) { _, value in requestedMonth = value; draft = false; reason = ""; Task { await load() } }
         .refreshable { await load() }
@@ -1605,8 +1637,8 @@ private struct NativeFinanceReview: View {
                     if response["close"]["canClose"].boolValue == true && response["close"]["previewHash"].stringValue != nil {
                         TextField((response["close"]["latestVersion"].intValue ?? 0) > 0 ? "重新月结原因（必填）" : "月结说明（可选）", text: $reason, axis: .vertical)
                         Button((response["close"]["latestVersion"].intValue ?? 0) > 0 ? "确认重新月结" : "确认月结") { confirm = true }.disabled(!context.canWrite)
-                    } else { Text(requestedMonth == String(NativeFinanceContract.today().prefix(7)) ? "本月结束后可月结" : "已保存的月结可在历史版本查看") .font(.caption).foregroundStyle(.secondary) }
-                }
+                    } else { Text(requestedMonth == String(NativeFinanceContract.today().prefix(7)) ? "本月结束后可月结" : "已保存的月结可在历史版本查看") .font(.caption).foregroundStyle(NativePalette.muted) }
+                }.listRowBackground(NativePalette.surface)
     }
     private func load() async {
         loading = true; response = .null; defer { loading = false }
@@ -1631,8 +1663,8 @@ private struct NativeFinanceClosedReport: View {
         List {
             NativeFinanceStatus(context: context)
             NativeFinanceReport(report: report, currency: context.currency)
-            Section("月结依据") { LabeledContent("版本", value: String(version)); Text(report["close"]["closedAt"].stringValue ?? ""); Text(report["close"]["reason"].stringValue ?? "") }
-        }.navigationTitle(month + " · v" + String(version)).modifier(NativeFinancePrivacy(context: context)).task {
+            Section("月结依据") { LabeledContent("版本", value: String(version)); Text(report["close"]["closedAt"].stringValue ?? ""); Text(report["close"]["reason"].stringValue ?? "") }.listRowBackground(NativePalette.surface)
+        }.nativeGeometricPage().navigationTitle(month + " · v" + String(version)).modifier(NativeFinancePrivacy(context: context)).task {
             do { report = try await context.read(context.path("finance/review", extra: ["currency": context.currency, "month": month, "version": String(version)])) } catch { report = .null; context.fail(error) }
         }
     }
@@ -1667,7 +1699,7 @@ private struct NativeFinanceReport: View {
             LabeledContent("净资产变化", value: money("change", "netMinor"))
             LabeledContent("沿用此前余额的账户", value: String(report["snapshot"]["carriedAccountCount"].intValue ?? 0))
             Text(dateRange).font(.caption)
-        }
+        }.listRowBackground(NativePalette.surface)
     }
     private var changeSection: some View {
         Section { DisclosureGroup("变化来源") {
@@ -1676,16 +1708,16 @@ private struct NativeFinanceReport: View {
             LabeledContent("分类变更影响", value: money("change", "reclassificationNetMinor"))
             LabeledContent("归档/恢复影响", value: money("change", "membershipNetMinor"))
             Text("各项由服务器按历史生效口径计算，不代表投资收益。")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(NativePalette.muted)
         }
-    }
+    }.listRowBackground(NativePalette.surface)
     }
     private var trendSection: some View {
         let trend: [NativeJSON] = report["trend"].arrayValue
         return Section { DisclosureGroup("近月精确明细") {
             ForEach(Array(trend.enumerated()), id: \.offset) { _, point in trendRow(point) }
         }
-    }
+    }.listRowBackground(NativePalette.surface)
     }
     private func trendRow(_ point: NativeJSON) -> some View {
         let month: String = point["month"].stringValue ?? "月份未知"
@@ -1697,7 +1729,7 @@ private struct NativeFinanceReport: View {
         return Section { DisclosureGroup("账户变化") {
             ForEach(accounts, id: \.financeID) { account in NativeFinanceReportAccountRow(account: account, currency: currency) }
         }
-        }
+        }.listRowBackground(NativePalette.surface)
     }
 }
 
@@ -1714,7 +1746,7 @@ private struct NativeFinanceReportAccountRow: View {
             Text(current)
             Text(previous).font(.caption)
             Text(change).font(.caption)
-            if account["carried"].boolValue == true { Text(carriedDate).font(.caption).foregroundStyle(.secondary) }
+            if account["carried"].boolValue == true { Text(carriedDate).font(.caption).foregroundStyle(NativePalette.muted) }
         }
     }
 }
@@ -1736,14 +1768,14 @@ private struct NativeFinanceMembers: View {
             NativeFinanceStatus(context: context, scopeOverride: "我的家庭账本")
             Section("我的家庭账本") {
                 Text(response["book"]["name"].stringValue ?? "我的家庭账本").font(.headline)
-                Text("只有拥有人可管理此处协作者；邀请不发送邮件，有效期为30天。网站准入与账本协作分别授权。") .font(.caption).foregroundStyle(.secondary)
-            }
+                Text("只有拥有人可管理此处协作者；邀请不发送邮件，有效期为30天。网站准入与账本协作分别授权。") .font(.caption).foregroundStyle(NativePalette.muted)
+            }.listRowBackground(NativePalette.surface)
             NativeFinanceDraftRecovery(context: context, scope: draftScope, values: draftValues, basis: .null, ready: true) { values in email = values["email"].stringValue ?? email; role = values["role"].stringValue ?? role }
             Section("邀请协作者") {
                 TextField("对方登录邮箱", text: $email).textInputAutocapitalization(.never).keyboardType(.emailAddress).autocorrectionDisabled()
                 Picker("邀请权限", selection: $role) { Text("可编辑").tag("editor"); Text("只读").tag("viewer") }
                 Button("创建站内邀请") { invite = true }.disabled(context.pending != nil || context.busy || email.isEmpty || context.blocked)
-            }
+            }.listRowBackground(NativePalette.surface)
             Section("成员与邀请") {
                 ForEach(response["members"].arrayValue, id: \.financeID) { member in
                     VStack(alignment: .leading, spacing: 6) {
@@ -1758,8 +1790,8 @@ private struct NativeFinanceMembers: View {
                         }
                     }
                 }
-            }
-        }.navigationTitle("家庭协作者").modifier(NativeFinancePrivacy(context: context))
+            }.listRowBackground(NativePalette.surface)
+        }.nativeGeometricPage().navigationTitle("家庭协作者").modifier(NativeFinancePrivacy(context: context))
         .task(id: String(context.change)) { await load() }.refreshable { await load() }
         .confirmationDialog("邀请此邮箱加入我的家庭账本？", isPresented: $invite, titleVisibility: .visible) { Button("确认邀请") { Task { await sendInvite() } } } message: { Text(email + " · " + NativeFinanceContract.roleName(role)) }
         .confirmationDialog(action == "revoke" ? "撤销此成员的访问？" : "更改此成员的角色？", isPresented: $confirmMember, titleVisibility: .visible) {
@@ -1789,17 +1821,17 @@ private struct NativeFinanceActivity: View {
         List {
             NativeFinanceStatus(context: context)
             NativeFinanceReadFeedback(state: state) { Task { await load(reset: true) } }
-            if items.isEmpty && !loading && state == .ready { Text("暂无当前家庭账本的协作动态。") .foregroundStyle(.secondary) }
+            if items.isEmpty && !loading && state == .ready { Text("暂无当前家庭账本的协作动态。") .foregroundStyle(NativePalette.muted) }
             ForEach(items, id: \.financeID) { item in
                 VStack(alignment: .leading, spacing: 5) {
                     Text((item["actorName"].stringValue ?? "成员") + (item["summary"].stringValue ?? "更新了账本"))
                     if let target = item["targetName"].stringValue { Text(target).font(.callout) }
-                    Text(item["createdAt"].stringValue ?? "").font(.caption).foregroundStyle(.secondary)
+                    Text(item["createdAt"].stringValue ?? "").font(.caption).foregroundStyle(NativePalette.muted)
                 }
             }
             if loading { ProgressView("读取协作动态…") }
             if hasMore { Button("更早动态") { Task { await load(reset: false) } }.disabled(loading) }
-        }.navigationTitle("协作动态").modifier(NativeFinancePrivacy(context: context)).task(id: context.scopeID) { await load(reset: true) }.refreshable { await load(reset: true) }
+        }.nativeGeometricPage().navigationTitle("协作动态").modifier(NativeFinancePrivacy(context: context)).task(id: context.scopeID) { await load(reset: true) }.refreshable { await load(reset: true) }
     }
     private func load(reset: Bool) async {
         guard !loading else { return }; loading = true; defer { loading = false }
@@ -1833,14 +1865,14 @@ private struct NativeFinanceDraftRecovery: View {
                 if candidate.basis != basis { Text("原记录已变化。恢复仅填入草稿，请重新核对当前记录与版本后保存。") .foregroundStyle(.orange) }
                 Button("核对并恢复填写") { restoreConfirm = true }.disabled(context.pending != nil || context.busy)
                 Button("放弃此草稿", role: .destructive) { discard() }.disabled(context.pending != nil || context.busy)
-            }
+            }.listRowBackground(NativePalette.surface)
             .confirmationDialog("恢复本机填写？", isPresented: $restoreConfirm, titleVisibility: .visible) {
                 Button("恢复填写，不提交") { restore(candidate.values); self.candidate = nil }
             } message: { Text("恢复不会自动提交，也不会恢复旧的余额预览或修改当前记录版本。") }
             .task(id: ready) { await prepare() }
             .onChange(of: values) { _, value in persist(value) }
         } else {
-            Text("未完成填写仅保存在当前手机；换设备不能恢复。") .font(.caption).foregroundStyle(.secondary)
+            Text("未完成填写仅保存在当前手机；换设备不能恢复。") .font(.caption).foregroundStyle(NativePalette.muted)
                 .task(id: ready) { await prepare() }
                 .onChange(of: values) { _, value in persist(value) }
         }
@@ -1885,7 +1917,7 @@ private struct NativeFinancePrivacy: ViewModifier {
                         Image(systemName: "lock.shield").font(.largeTitle)
                         Text("账本授权需要重新核对").font(.headline)
                         Text("请返回账本列表重新选择。原草稿及待确认操作仍属于原账户、原账本和原授权版本。") .multilineTextAlignment(.center)
-                    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+                    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(NativePalette.surface)
                 }
             }
     }
@@ -1922,7 +1954,7 @@ private struct NativeFinanceAmountField: View {
             HStack {
                 Text(title)
                 Spacer()
-                Text(currency).foregroundStyle(.secondary)
+                Text(currency).foregroundStyle(NativePalette.muted)
                 TextField("0", text: $value).keyboardType(currency == "JPY" ? .numberPad : .decimalPad)
                     .multilineTextAlignment(.trailing).monospacedDigit()
                     .accessibilityLabel(title + "，" + currency)
@@ -1983,13 +2015,13 @@ private struct NativeFinanceReadFeedback: View {
     let retry: () -> Void
     var body: some View {
         switch state {
-        case .loading: Section { ProgressView("正在读取…") }
+        case .loading: Section { ProgressView("正在读取…") }.listRowBackground(NativePalette.surface)
         case .failed(let message):
             Section {
                 Label("暂时无法读取", systemImage: "wifi.exclamationmark").font(.headline)
-                Text(message).font(.callout).foregroundStyle(.secondary)
+                Text(message).font(.callout).foregroundStyle(NativePalette.muted)
                 Button("重试", action: retry)
-            }
+            }.listRowBackground(NativePalette.surface)
         case .ready: EmptyView()
         }
     }

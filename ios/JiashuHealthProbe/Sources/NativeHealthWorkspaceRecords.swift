@@ -114,7 +114,7 @@ struct NativeHealthRecordsWorkspace: View {
             }
             if busy { ProgressView("正在核对记录…") }
             NativeHealthWorkspaceMessage(message:message)
-        }.navigationTitle("健康记录")
+        }.nativeGeometricPage().navigationTitle("健康记录")
             .environment(\.timeZone,NativeActionDates.timeZone)
             .task {
                 do {
@@ -154,7 +154,7 @@ struct NativeHealthRecordsWorkspace: View {
                 evidenceSection
                 historySection
             }
-            .navigationTitle("记录详情")
+            .nativeGeometricPage().navigationTitle("记录详情")
             .navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone,NativeActionDates.timeZone)
             .scrollDismissesKeyboard(.interactively)

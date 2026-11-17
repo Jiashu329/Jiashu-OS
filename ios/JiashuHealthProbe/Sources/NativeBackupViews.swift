@@ -220,7 +220,7 @@ struct NativeBackupView: View {
             }
             }
         }
-        .navigationTitle("备份与恢复").disabled(state.busy).task {
+        .nativeGeometricPage().navigationTitle("备份与恢复").disabled(state.busy).task {
             state.open(); if state.summary != nil || state.pendingRestore { mode = .restore }
         }.onDisappear { state.close() }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.json], allowsMultipleSelection: true) { result in
