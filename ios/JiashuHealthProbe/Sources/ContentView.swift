@@ -371,7 +371,7 @@ private struct NativeSettingsView: View {
                 }
                 if let session = model.session {
                     Section {
-                        NavigationLink("健康目标") { NativeGoalsView(api: model.api, token: session.accessToken) }
+                        NavigationLink("健康目标与历史") { NativeHealthGoalsWorkspace(api: model.api, token: session.accessToken, userID: session.user.id) }
                         NavigationLink("同步历史与诊断") { NativeHealthSyncWorkspace(api: model.api, token: session.accessToken, userID: session.user.id) }
                         NavigationLink("设置、数据与成员") { NativeSettingsWorkspaceRoot(api: model.api, token: session.accessToken, userID: session.user.id) }
                         NavigationLink("消息与提醒") { NativeNotificationsView(api: model.api, token: session.accessToken, userID: session.user.id) }

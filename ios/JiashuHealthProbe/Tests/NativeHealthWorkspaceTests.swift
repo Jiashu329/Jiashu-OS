@@ -17,7 +17,7 @@ final class NativeHealthWorkspaceTests: XCTestCase {
     }
 
     func testSleepCircularMeanDoesNotTurnMidnightIntoNoon() {
-        let mean = NativeWorkspaceSleepSummary.circular([23*60+50,10])
+        let mean = NativeWorkspaceSleepSummary.circular([1430.0,10.0])
         XCTAssertEqual(mean.0,"00:00"); XCTAssertEqual(mean.1!,10,accuracy:0.0001)
         XCTAssertNil(NativeWorkspaceSleepSummary.circular([60]).1)
         XCTAssertNil(NativeWorkspaceSleepSummary.circular([0,720]).0)
@@ -113,5 +113,64 @@ final class NativeHealthWorkspaceTests: XCTestCase {
         saved["targetWeight"] = .number(69)
         XCTAssertFalse(NativeWeightPlanRequest.matchesSaved(operation,response:.object(["settings":.object(saved)])))
         XCTAssertThrowsError(try NativeWeightPlanRequest.plan(baseline:"",target:"70",start:now,deadline:now.addingTimeInterval(86400),enabled:true,now:now))
+    }
+
+    func testWeeklyReviewInitialLinkAcceptsOnlyRealPastOrCurrentMondays() {
+        let now = date("2026-11-17T02:00:00Z")
+        XCTAssertEqual(NativeWeeklyReviewWeek.initial("2026-11-09",now:now),"2026-11-09")
+        XCTAssertEqual(NativeWeeklyReviewWeek.initial("2026-11-16",now:now),"2026-11-16")
+        for invalid in ["2026-11-17","2026-11-23","2026-02-30","2026-1-16","invalid"] {
+            XCTAssertEqual(NativeWeeklyReviewWeek.initial(invalid,now:now),"2026-11-16")
+        }
+        XCTAssertFalse(NativeWeeklyReviewWeek.isMonday("2026-11-17"))
+    }
+
+    func testWeeklyActionRecoveryKeepsOriginalOwnerWeekRevisionAndBytesAfterMonday() throws {
+        let sunday = date("2026-11-22T15:59:00Z"),monday = date("2026-11-22T16:01:00Z")
+        let oldWeek = NativeActionDates.day(NativeActionDates.monday(sunday))
+        XCTAssertNotEqual(oldWeek,NativeActionDates.day(NativeActionDates.monday(monday)))
+        let baseline = NativeWeeklyActionCommand(weekStart:oldWeek,text:"饭后走动",status:.planned,feedback:"",expectedRevision:6)
+        let original = NativeWeeklyActionCommand(weekStart:oldWeek,text:" 饭后走动三次 ",status:.completed,feedback:" 周末完成 ",expectedRevision:6)
+        let frozen = NativeWeeklyActionRecovery(ownerID:"owner-a",command:original,baseline:baseline,submitted:true)
+        let restored = try JSONDecoder().decode(NativeWeeklyActionRecovery.self,from:JSONEncoder().encode(frozen)).validated(ownerID:"owner-a")
+        XCTAssertTrue(restored.submitted); XCTAssertEqual(restored.command.weekStart,"2026-11-16")
+        XCTAssertEqual(restored.command.expectedRevision,6)
+        XCTAssertEqual(try restored.command.encodedBody(),try original.encodedBody())
+        XCTAssertThrowsError(try restored.validated(ownerID:"owner-b"))
+        XCTAssertEqual(NativeWeeklyReviewWeek.initial(restored.command.weekStart,now:monday),"2026-11-16")
+    }
+
+    func testWeeklyRecoverySeparatesUnsubmittedIncompleteFieldsFromFrozenRequest() throws {
+        let unfinished = NativeWeeklyActionCommand(weekStart:"2026-11-16",text:"",status:.planned,feedback:"尚未填写行动",expectedRevision:2)
+        let draft = NativeWeeklyActionRecovery(ownerID:"owner",command:unfinished,baseline:nil,submitted:false)
+        XCTAssertEqual(try draft.validated(ownerID:"owner").command,unfinished)
+        XCTAssertThrowsError(try unfinished.encodedBody())
+        XCTAssertThrowsError(try NativeWeeklyActionRecovery(ownerID:"owner",command:unfinished,baseline:nil,submitted:true).validated(ownerID:"owner"))
+    }
+
+    func testWeeklyLostResponseReconciliationRequiresNextRevisionAndExactSameWeekContent() {
+        let original = NativeWeeklyActionCommand(weekStart:"2026-11-16",text:" 走动三次 ",status:.completed,feedback:" 已完成 ",expectedRevision:4)
+        let matching = NativeWeeklyActionEntry(weekStart:"2026-11-16",text:"走动三次",status:.completed,feedback:"已完成",revision:5)
+        XCTAssertTrue(original.matchesSaved(matching)); XCTAssertFalse(original.matchesSaved(nil))
+        XCTAssertFalse(original.matchesSaved(NativeWeeklyActionEntry(weekStart:"2026-11-23",text:matching.text,status:matching.status,feedback:matching.feedback,revision:5)))
+        XCTAssertFalse(original.matchesSaved(NativeWeeklyActionEntry(weekStart:matching.weekStart,text:matching.text,status:matching.status,feedback:matching.feedback,revision:6)))
+        XCTAssertFalse(original.matchesSaved(NativeWeeklyActionEntry(weekStart:matching.weekStart,text:"另一设备的行动",status:matching.status,feedback:matching.feedback,revision:5)))
+    }
+
+    func testWeeklyUnfinishedRecoveryUsesEncryptedOwnerScopedPersistence() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let service = "weekly-recovery-tests-" + UUID().uuidString
+        let owner = NativeWorkspacePersistence(userID:"owner-a",scope:"weekly-health-action",directory:directory,service:service)
+        let other = NativeWorkspacePersistence(userID:"owner-b",scope:"weekly-health-action",directory:directory,service:service)
+        defer { try? owner.clear(); try? other.clear(); try? FileManager.default.removeItem(at:directory) }
+        let command = NativeWeeklyActionCommand(weekStart:"2026-11-16",text:"未提交的私密行动",status:.planned,feedback:"",expectedRevision:3)
+        let draft = NativeWeeklyActionRecovery(ownerID:"owner-a",command:command,baseline:nil,submitted:false)
+        try owner.save(draft)
+        XCTAssertEqual(try owner.load(NativeWeeklyActionRecovery.self),draft)
+        XCTAssertNil(try other.load(NativeWeeklyActionRecovery.self))
+        let files = try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
+        XCTAssertEqual(files.count,1)
+        let encrypted = try Data(contentsOf:files[0])
+        XCTAssertNil(encrypted.range(of:Data(command.text.utf8)))
     }
 }

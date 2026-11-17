@@ -6,6 +6,7 @@ import Charts
 
 @MainActor
 struct NativeNutritionRoot: View {
+    private let initialCompose: Bool
     @StateObject private var context: NativeNutritionContext
     @State private var date = Date()
     @State private var includeDeleted = false
@@ -14,7 +15,8 @@ struct NativeNutritionRoot: View {
     @State private var readError: String?
     @State private var editor: NutritionEditorPresentation?
     @State private var readID = UUID()
-    init(api: NativeAPI, token: String, userID: String) {
+    init(api: NativeAPI, token: String, userID: String, initialCompose: Bool = false) {
+        self.initialCompose = initialCompose
         _context = StateObject(wrappedValue: NativeNutritionContext(api: api, token: token, userID: userID))
     }
     private var day: String { NativeActionDates.day(date) }
@@ -81,7 +83,12 @@ struct NativeNutritionRoot: View {
         }
         .navigationTitle("饮食")
         .environment(\.timeZone, NativeActionDates.timeZone)
-        .task { context.restorePending() }
+        .task {
+            context.restorePending()
+            if initialCompose, context.pending == nil {
+                editor = NutritionEditorPresentation(rows: [.object(["date": .string(day), "meal": .string("lunch")])])
+            }
+        }
         .task(id: day + String(includeDeleted)) { await load() }
         .onChange(of: context.changes) { _, _ in Task { await load() } }
         .refreshable { await load() }
@@ -372,7 +379,8 @@ struct NativeNutritionRecognitionView: View {
                 DatePicker("记录日期", selection: $date, in: ...Date(), displayedComponents: .date)
                 Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
                 if usePhoto {
-                    PhotosPicker(selection: $photo, matching: .images) { Label(jpeg == nil ? "从相册选择食物照片" : "更换照片", systemImage: "photo") }
+                    let pickerTitle = jpeg == nil ? "从相册选择食物照片" : "更换照片"
+                    PhotosPicker(selection: $photo, matching: .images) { Label(pickerTitle, systemImage: "photo") }
                     if photoLoading { ProgressView("正在本机处理图片…") }
                     if let jpeg, let image = UIImage(data: jpeg) {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220)

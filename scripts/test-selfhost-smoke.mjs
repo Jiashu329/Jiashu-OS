@@ -107,7 +107,17 @@ class Browser {
 }
 
 async function json(response, status, label) {
-  assert.equal(response.status, status, label + ' status');
+  let code = '';
+  if (response.status !== status) {
+    // Log only fixed error-code families, never response bodies, credentials,
+    // filled form values or underlying provider/storage exception messages.
+    try {
+      const failure = await response.clone().json();
+      if (typeof failure?.code === 'string' && failure.code.length <= 96
+        && /^(?:(?:NATIVE|HEALTH|SYNC|DOUBAN|FINANCE|BACKUP|AI|TMDB|LOCAL|ACCOUNT)_[A-Z0-9_]+|INVALID_DOUBAN_INPUT|SIGN_IN_REQUIRED)$/.test(failure.code)) code = ' (' + failure.code + ')';
+    } catch { /* Non-JSON failures retain the safe status-only assertion. */ }
+  }
+  assert.equal(response.status, status, label + ' status' + code);
   assert.match(response.headers.get('content-type') ?? '', /application\/json/, label + ' content type');
   return response.json();
 }
@@ -537,8 +547,8 @@ async function nativeWorkspaceAcceptance(request, write, token, nativeDate, nutr
   const library = await json(await request('/life/douban?kind=book', token), 200, 'Native media library');
   assert.equal(library.items[0].title, item.title);
   const saved = await json(await write('/life/douban/library', token, { profileId: 'native-smoke', domain: 'book', subjectId: item.subjectId,
-    expectedDataEpoch: library.dataEpoch, expectedLocalRevision: library.items[0].localRevision, note: 'Native personal note', tags: ['synthetic'], hidden: false }, {}, 'PUT'), 200, 'Native media local organization');
-  assert.equal(saved.item.localNote, 'Native personal note');
+    expectedDataEpoch: library.dataEpoch, expectedLocalRevision: library.items[0].local.revision, note: 'Native personal note', tags: ['synthetic'], hidden: false }, {}, 'PUT'), 200, 'Native media local organization');
+  assert.equal(saved.item.local.note, 'Native personal note');
 
   const backupResponse = await request('/data/backup', token);
   assert.match(backupResponse.headers.get('content-disposition') ?? '', /attachment/);

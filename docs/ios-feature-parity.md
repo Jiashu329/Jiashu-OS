@@ -17,7 +17,7 @@
 | 健康记录查询、补录、人工更正、隐藏和恢复 | 健康工作区 → 健康记录与修改历史；`NativeHealthRecordsWorkspace`、`HealthQuickEntryView` | `health/records`、`health/records/{key}`、`…/history` | 过滤与分页；读取详情再修改；保留原因、记录修改版本与底层导入版本；冲突后保留填写并重新核对。 |
 | 每日目标、生效历史、达成日历 | 健康工作区 → 目标、生效历史与达成日历；`NativeHealthGoalsWorkspace` | `health/goals`、`health/goals/progress` | 清除目标发送显式空值；指定生效日期；保留历史目标；缺失记录不作为未达成。 |
 | 体重计划、开始和归档周期、历史周期 | 健康工作区 → 体重计划与历史周期；`NativeWeightPlanWorkspace` | `health/weight-plan`、`…/cycles` | 当前计划修改与新周期分别操作；版本冲突不覆盖；历史分页；最新实测只主动填入草稿，不自动修改计划。 |
-| 每周健康复盘、重点、下一周行动与反馈 | 复盘；`HealthWeeklyReviewView` | `health/review`、`health/actions` | 选择周、与上周比较、当前及前周行动、下一周行动、完成反馈；保留待确认的原保存。 |
+| 每周健康复盘、重点、下一周行动与反馈 | 首页与健康 → 每周复盘；`HealthWeeklyReviewView` | `health/review`、`health/actions` | 选择当前／前周／历史周、与上周比较、行动及完成反馈；未提交填写与待确认请求分别按账号加密恢复，跨周仍保留原周、原版本和原内容。 |
 | 健康助手、分享范围与连续问答 | 健康工作区 → 健康助手；`NativeHealthAssistantWorkspace` | `health/assistant` GET/POST | 先看所选日期和指标摘要，确认后才发送给 MiniMax；最多4轮近期问答；改变范围清空对话；有来源及额度、限流提示，不自动重发。 |
 | 健康范围 JSON 导出 | 自选日期页面 → 导出相同日期 | `health/export` | 使用已读取的范围；文件导出由系统文件界面完成；导出的业务格式可作为手动导入来源。 |
 | 同步诊断、逐指标覆盖、回执与尝试记录 | 健康工作区 → 同步诊断、文件导入与批次回退；`NativeHealthSyncWorkspace` | `sync/status`、`health/import`、`sync/channel` | 新鲜度按各指标真实记录日期；空批次或其他指标更新不会使本指标假装变新。 |
@@ -95,15 +95,15 @@
 | TMDB服务配置、测试和删除 | 设置 → 影视封面服务；同上 | `media/tmdb/settings`、`…/test` | 站点管理员权限；不在原生界面显示已存密钥；不因读取配置自动测试外部服务。 |
 | 使用名单管理 | 设置 → 允许访问的成员；`NativeAccessManagementView` | `access`、`access/{id}` | 添加邮箱、停用和恢复；状态变更附版本并确认；不发送邀请邮件。是否可用取决于部署的认证方式。 |
 | 自托管用户创建、邮箱／密码修改与停用 | 设置 → 登录用户管理；`NativeUsersManagementView` | `admin/users`、`…/{id}` | 管理员操作；管理员账号不能停用；修改登录资料会使旧会话失效，修改自身后需重新登录；初始密码由管理员自行传达。 |
-| 消息筛选、已读、全部已读及类别设置 | 设置 → 消息与提醒；`NativeNotificationsView` | `notifications`及其更新操作 | 原生入口与导航正在同批集成，需以最终提交的CI及页面操作核对；仍属站内消息，不宣称APNs或邮件推送。 |
-| 同步连接、设备、快捷指令模板与核对 | 设置 → 同步连接与设备；`NativeSyncConnectionsView` | `sync/config`、`sync/devices`、`sync/token`、`sync/template`、`sync/status` | 正在同批集成；原生Apple健康通道与旧快捷指令连接有各自授权状态。安装iCloud模板及iOS自动化配置仍是系统／Safari操作，不能称为App已经替用户完成。 |
+| 消息筛选、已读、全部已读及类别设置 | 设置 → 消息与提醒；`NativeNotificationsView` | `notifications`及其更新操作 | 首页与设置提供原生入口，消息目标走原生导航；仍属站内消息，不宣称APNs或邮件推送。 |
+| 同步连接、设备、快捷指令模板与核对 | 设置 → 同步连接与设备；`NativeSyncConnectionsView` | `sync/config`、`sync/devices`、`sync/template`、`sync/status` | 原生Apple健康通道与旧快捷指令连接有各自授权状态。安装iCloud模板及iOS自动化配置仍是系统／Safari操作，不能称为App已经替用户完成。 |
 | 单文件完整业务备份 | 设置 → 完整备份与恢复；`NativeBackupView` | `data/backup` GET | 健康、饮食、财务和书影音业务数据；系统分享保存；生成与本人确认保存是两步；密钥、登录凭据和同步连接不包含。 |
 | 分卷备份、全部文件保存确认 | 同上 | `data/backup?format=volumes` | 保存清单及全部分卷，记录生成及本人确认保存回执；App生成临时文件不等于文件已经安全保存。 |
 | 单文件／分卷恢复、冲突字段对照、原恢复继续确认 | 同上 | `data/backup` POST preview/restore | 保留原始备份字节，先服务器预览，显示新增／已存在／冲突；预览哈希再核对后事务恢复，不自动覆盖或合并冲突。单文件8MiB／20,000行，分卷组16MiB／40,000行。 |
 
 管理验证入口：`NativeAdministrationTests`、`NativeWorkspaceCoreTests`、`selfhost/native-auth.test.ts`、用户管理及备份API测试。网关拒绝未列入的路由／方法、身份头覆盖、跨站或浏览器Cookie身份混用；业务API继续独立验证当前身份、角色和CAS版本。
 
-## 未完成内容与恢复规则
+## 未完成填写与恢复规则
 
 这些是页面退出或网络结果未知后可继续的业务能力，不是一个供用户修改原始JSON的通用编辑器。
 
@@ -118,7 +118,7 @@
 
 `NativeWorkspacePersistence`使用设备Keychain中的专用密钥进行AES-GCM加密，文件按账号和功能命名并排除系统备份；不存访问令牌。退出不会把一个账号的草稿交给另一个账号。
 
-## 发布前必须补齐的证据
+## 自动验证与安装后验收
 
 1. 对最终提交运行 `.github/workflows/ios-healthkit.yml`：项目结构、真实Swift导出契约、`xcodebuild test`、XCTest工件与模拟器截图。Linux静态检查不能替代此项。
 2. 在有合成账号的模拟器检查：所有主要入口可到达、表单键盘可用、取消／返回／切换页面保留正确草稿、文件选择与系统分享可完成；同时检查owner／editor／viewer和普通成员界面。
@@ -126,4 +126,4 @@
 4. 真机安装需要Xcode签名运行、TestFlight或其他实际iOS分发方式。合并部署后端不会自动替换手机上已安装的二进制；需安装本次对应构建，再验证API兼容。
 5. 在实际部署核对用户管理、服务配置、备份及外部来源的可用性；测试替身不能证明生产密钥有效、豆瓣可访问或真实AI识别质量已通过。
 
-现有浏览器测试继续维护网页兼容，但浏览器移动视口通过不等于SwiftUI原生页面或iOS真机通过。完整迁移的交付应同时保留上述CI结果与真机核对记录。
+现有浏览器测试继续维护网页兼容，但浏览器移动视口通过不等于SwiftUI原生页面或iOS真机通过。发布记录保留自动CI结果；安装后的真机检查由实际测试结果记录，不能用合并或构建成功代替。

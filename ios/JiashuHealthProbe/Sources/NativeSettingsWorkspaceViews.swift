@@ -65,9 +65,9 @@ struct NativeWorkspaceDestinationView: View {
         Group {
             switch NativeWorkspaceLink(href) {
             case .finance(let path): NativeFinanceRoot(api: api, token: token, userID: userID, initialPath: path, embedded: true)
-            case .health: NativeHealthWorkspaceRoot(api: api, token: token, userID: userID)
-            case .nutrition: NativeNutritionRoot(api: api, token: token, userID: userID)
-            case .review: HealthWeeklyReviewView(api: api, token: token, userID: userID)
+            case .health: healthDestination
+            case .nutrition: NativeNutritionRoot(api: api, token: token, userID: userID, initialCompose: query("compose") == "1")
+            case .review: HealthWeeklyReviewView(api: api, token: token, userID: userID, initialWeek: query("week"))
             case .life: NativeLifeRoot(api: api, token: token, userID: userID)
             case .settings: NativeSettingsWorkspaceRoot(api: api, token: token, userID: userID)
             case .notifications: NativeNotificationsView(api: api, token: token, userID: userID)
@@ -75,6 +75,19 @@ struct NativeWorkspaceDestinationView: View {
             case .sync: NativeHealthSyncWorkspace(api: api, token: token, userID: userID)
             case nil: ContentUnavailableView("暂无对应入口", systemImage: "link", description: Text("请从 App 的健康、财务、书影音或设置入口查看当前资料。"))
             }
+        }
+    }
+    private func query(_ key: String) -> String? {
+        let items = URLComponents(string: href)?.queryItems?.filter { $0.name == key } ?? []
+        return items.count == 1 ? items[0].value : nil
+    }
+    @ViewBuilder private var healthDestination: some View {
+        switch URL(string: href, relativeTo: NativeAPI.websiteURL)?.path {
+        case "/health/records": NativeHealthRecordsWorkspace(api: api, token: token, userID: userID, initialMetric: query("metric"), compose: query("compose") == "1")
+        case "/health/goals": NativeHealthGoalsWorkspace(api: api, token: token, userID: userID)
+        case "/health/weight-plan": NativeWeightPlanWorkspace(api: api, token: token, userID: userID)
+        case "/health/assistant": NativeHealthAssistantWorkspace(api: api, token: token, userID: userID)
+        default: NativeHealthWorkspaceRoot(api: api, token: token, userID: userID)
         }
     }
 }

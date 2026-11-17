@@ -53,6 +53,11 @@ struct NativeHealthRecordsWorkspace: View {
     private var signature: String { NativeActionDates.day(from) + NativeActionDates.day(to) + metric + String(includeDeleted) }
     private var dirty: Bool { !reason.isEmpty || (selected["recordKey"].stringValue != nil && value != (selected["effective"]["value"].doubleValue.map { String($0) } ?? "")) || action != "correct" }
     private var draftSignature: String { (selected["recordKey"].stringValue ?? "") + action + value + reason }
+    init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil, compose: Bool = false) {
+        self.api = api; self.token = token; self.userID = userID
+        _metric = State(initialValue: initialMetric.flatMap(QuickEntryMetric.init(rawValue:))?.rawValue ?? "all")
+        _quickEntry = State(initialValue: compose)
+    }
     var body: some View {
         List {
             Section("筛选原始健康指标") {
@@ -108,7 +113,7 @@ struct NativeHealthRecordsWorkspace: View {
             }
             .onChange(of:draftSignature) { _,_ in saveDraft() }
             .onDisappear { saveDraft() }
-            .sheet(isPresented:$quickEntry) { HealthQuickEntryView(api:api,token:token,userID:userID) { await load(more:false) } }
+            .sheet(isPresented:$quickEntry) { HealthQuickEntryView(api:api,token:token,userID:userID,initialMetric:QuickEntryMetric(rawValue:metric) ?? .weight) { await load(more:false) } }
             .confirmationDialog("确认这次健康记录修改？",isPresented:$confirming,titleVisibility:.visible) {
                 Button(NativeHealthRecordRequest.actionLabel(action),role:action == "hide" ? .destructive:nil) { Task { await prepare() } }
                 Button("取消",role:.cancel) { }

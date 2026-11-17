@@ -22,20 +22,14 @@ struct NativeHomeWorkspaceCards: View {
                     VStack(alignment: .leading, spacing: 15) {
                         Text("今天值得留意").font(.title3.bold())
                         ForEach(overview.priorities) { priority in
-                            NavigationLink {
-                                NativeWorkspaceDestinationView(api: model.api, token: session.accessToken, userID: session.user.id, href: priority.href)
-                            } label: {
-                                HStack(alignment: .top, spacing: 12) {
-                                    Image(systemName: priority.tone == "attention" ? "exclamationmark.circle" : "arrow.up.right.circle")
-                                        .foregroundStyle(priority.tone == "attention" ? Color.orange : Color.indigo)
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(priority.title).font(.headline)
-                                        Text(priority.detail).font(.subheadline).foregroundStyle(.secondary)
-                                        Text(priority.actionLabel).font(.caption.weight(.semibold)).foregroundStyle(.indigo)
-                                    }
-                                    Spacer(); Image(systemName: "chevron.right").font(.caption)
-                                }
-                            }.buttonStyle(.plain)
+                            if priority.id == "health-setup" {
+                                Button { Task { await model.connectHealth() } } label: { NativeHomePriorityLabel(priority: priority) }
+                                    .buttonStyle(.plain).disabled(model.syncing || model.authorizingHealth || model.configuringChannel)
+                            } else {
+                                NavigationLink {
+                                    NativeWorkspaceDestinationView(api: model.api, token: session.accessToken, userID: session.user.id, href: priority.href)
+                                } label: { NativeHomePriorityLabel(priority: priority) }.buttonStyle(.plain)
+                            }
                         }
                     }.padding(18).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
                 }
@@ -90,6 +84,23 @@ struct NativeHomeWorkspaceCards: View {
         } catch {
             guard !Task.isCancelled, model.session?.user.id == owner, model.session?.accessToken == token else { return }
             notificationError = "消息摘要暂未读取，可进入消息中心重试。"
+        }
+    }
+}
+
+private struct NativeHomePriorityLabel: View {
+    let priority: NativePriority
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: priority.tone == "attention" ? "exclamationmark.circle" : "arrow.up.right.circle")
+                .foregroundStyle(priority.tone == "attention" ? Color.orange : Color.indigo)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(priority.title).font(.headline)
+                Text(priority.detail.replacingOccurrences(of: "运行对应快捷指令更新。", with: "可同步苹果健康，并核对各指标的最新记录。"))
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Text(priority.actionLabel).font(.caption.weight(.semibold)).foregroundStyle(.indigo)
+            }
+            Spacer(); Image(systemName: "chevron.right").font(.caption)
         }
     }
 }
