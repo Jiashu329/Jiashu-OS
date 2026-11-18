@@ -199,7 +199,6 @@ struct NativeHealthRangeWorkspace: View {
     let token: String
     let userID: String
     @Environment(\.dynamicTypeSize) private var typeSize
-    @ScaledMetric(relativeTo: .subheadline) private var rangeControlHeight: CGFloat = 44
     @State private var from = NativeActionDates.calendar.date(byAdding: .day, value: -29, to: Date())!
     @State private var to = Date()
     @State private var metric = "steps"
@@ -212,6 +211,7 @@ struct NativeHealthRangeWorkspace: View {
     @State private var exporting = false
     @State private var preparingExport = false
     @State private var editingRange = false
+    @State private var editingInspectedDay = false
     @State private var entryMetric: QuickEntryMetric?
     @State private var choosingEntryMetric = false
     @State private var inspectedDate: Date?
@@ -299,6 +299,9 @@ struct NativeHealthRangeWorkspace: View {
                 Task { await load() }
             }
         }
+        .sheet(isPresented: $editingInspectedDay) {
+            if hasCurrentRange, let range = loadedRange { inspectedDaySheet(range) }
+        }
         .sheet(item: $entryMetric) { selected in
             HealthQuickEntryView(api: api, token: token, userID: userID, initialMetric: selected,
                                  initialDate: hasCurrentRange ? selectedDate ?? min(to, Date()) : min(to, Date())) { await load() }
@@ -317,13 +320,26 @@ struct NativeHealthRangeWorkspace: View {
 
     private var rangeControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ScrollView(.horizontal) {
+            if typeSize.isAccessibilitySize {
+                Menu {
+                    rangeOptions([7, 30, 90, 180, 360])
+                } label: {
+                    Label(recentDaysLabel, systemImage: "calendar")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(12)
+                        .nativeGeometricCard(fill: NativePalette.surface, corner: 16, compactCorner: 7)
+                }.disabled(busy).accessibilityLabel("时间范围，" + recentDaysLabel)
+                VStack(alignment: .leading, spacing: 4) {
+                    metricMenu
+                    rangeLabel
+                }
+            } else {
+                HStack(spacing: 8) {
                     HStack(spacing: 4) {
                         ForEach([7, 30, 90], id: \.self) { days in
                             Button { selectRecentDays(days) } label: {
                                 Text("\(days)天").font(.subheadline.weight(.medium))
-                                    .padding(.horizontal, 17).frame(minHeight: rangeControlHeight)
+                                    .lineLimit(1).minimumScaleFactor(0.7)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
                                     .nativeGeometricCard(fill: isRecentSelection(days) ? NativePalette.soft : .clear, corner: 12, compactCorner: 6)
                             }
                             .buttonStyle(NativePressStyle())
@@ -331,31 +347,46 @@ struct NativeHealthRangeWorkspace: View {
                             .accessibilityAddTraits(isRecentSelection(days) ? .isSelected : [])
                         }
                     }.padding(3)
-                }
-                .scrollIndicators(.hidden).frame(height: rangeControlHeight + 6)
-                .nativeGeometricCard(fill: NativePalette.surface, corner: 16, compactCorner: 7)
-                Menu {
-                    ForEach([180, 360], id: \.self) { days in
-                        Button("最近\(days)天") { selectRecentDays(days) }
+                    .nativeGeometricCard(fill: NativePalette.surface, corner: 16, compactCorner: 7)
+                    Menu {
+                        rangeOptions([180, 360])
+                    } label: {
+                        Image(systemName: "calendar").frame(width: 44, height: 50)
+                            .nativeGeometricCard(fill: NativePalette.surface, corner: 15, compactCorner: 6)
+                    }.accessibilityLabel("更多时间范围")
+                }.disabled(busy)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        metricMenu
+                        Spacer(minLength: 0)
+                        rangeLabel
                     }
-                    Button("自定日期…") { editingRange = true }
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 44, height: rangeControlHeight + 6)
-                        .nativeGeometricCard(fill: NativePalette.surface, corner: 15, compactCorner: 6)
-                }.accessibilityLabel("更多时间范围")
-            }.disabled(busy)
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    metricMenu
-                    Spacer(minLength: 0)
-                    Text(requestedRange.map(compactRange) ?? "自定日期").font(.caption).foregroundStyle(NativePalette.muted)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    metricMenu
-                    Text(requestedRange.map(compactRange) ?? "自定日期").font(.caption).foregroundStyle(NativePalette.muted)
+                    VStack(alignment: .leading, spacing: 4) {
+                        metricMenu
+                        rangeLabel
+                    }
                 }
             }
         }.foregroundStyle(NativePalette.ink)
+    }
+
+    @ViewBuilder private func rangeOptions(_ days: [Int]) -> some View {
+        ForEach(days, id: \.self) { count in
+            Button("最近\(count)天") { selectRecentDays(count) }
+        }
+        Button("自定日期…") { editingRange = true }
+    }
+
+    private var recentDaysLabel: String {
+        guard let count = requestedRange?.days, [7, 30, 90, 180, 360].contains(count), isRecentSelection(count) else {
+            return "自定日期"
+        }
+        return "最近\(count)天"
+    }
+
+    private var rangeLabel: some View {
+        Text(requestedRange.map(compactRange) ?? "自定日期")
+            .font(.caption).foregroundStyle(NativePalette.muted)
     }
 
     private var metricMenu: some View {
@@ -448,13 +479,35 @@ struct NativeHealthRangeWorkspace: View {
         }.accessibilityElement(children: .combine)
     }
 
-    private func dayPicker(_ range: NativeHealthWorkspaceRange) -> some View {
+    @ViewBuilder private func dayPicker(_ range: NativeHealthWorkspaceRange) -> some View {
         let first = NativeHealthWorkspaceFormat.date(range.from)!
         let last = NativeHealthWorkspaceFormat.date(range.to)!
         let selection = Binding(get: { selectedDate ?? last }, set: { inspectedDate = $0 })
-        return DatePicker("查看日期", selection: selection, in: first...last, displayedComponents: .date)
-            .labelsHidden().datePickerStyle(.compact).fixedSize()
-            .accessibilityLabel("查看单日记录日期")
+        if typeSize.isAccessibilitySize {
+            Button { editingInspectedDay = true } label: {
+                Label(NativeActionDates.formatted(selection.wrappedValue, pattern: "M月d日"), systemImage: "calendar")
+                    .font(.subheadline).frame(minHeight: 44).padding(.horizontal, 9)
+                    .nativeGeometricCard(fill: NativePalette.surface, corner: 10, compactCorner: 5)
+            }.buttonStyle(NativePressStyle())
+                .accessibilityLabel("查看单日记录日期，" + NativeActionDates.day(selection.wrappedValue))
+        } else {
+            DatePicker("查看日期", selection: selection, in: first...last, displayedComponents: .date)
+                .labelsHidden().datePickerStyle(.compact).fixedSize()
+                .accessibilityLabel("查看单日记录日期")
+        }
+    }
+
+    private func inspectedDaySheet(_ range: NativeHealthWorkspaceRange) -> some View {
+        let first = NativeHealthWorkspaceFormat.date(range.from)!
+        let last = NativeHealthWorkspaceFormat.date(range.to)!
+        let selection = Binding(get: { selectedDate ?? last }, set: { inspectedDate = $0 })
+        return NavigationStack {
+            Form {
+                DatePicker("日期", selection: selection, in: first...last, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+            }.nativeGeometricPage().navigationTitle("查看日期")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { editingInspectedDay = false } } }
+        }
     }
 
     private func dayNavigation(_ range: NativeHealthWorkspaceRange) -> some View {

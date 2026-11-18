@@ -536,7 +536,10 @@ private struct NativeLifeRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(NativePalette.ink).lineLimit(3)
                 Text(item.kindLabel + (item.raw["markedDate"].stringValue.map { " · " + $0 } ?? "")).font(.caption).foregroundStyle(NativePalette.muted)
-                if let rating = item.raw["rating"].intValue { Text(String(repeating: "★", count: max(0, min(rating, 5)))).foregroundStyle(NativePalette.accent) }
+                if let rating = item.raw["rating"].intValue {
+                    Label("\(rating) 星", systemImage: "star.fill")
+                        .foregroundStyle(NativePalette.accent).accessibilityLabel("我的评分\(rating)星")
+                }
                 HStack { if let score = item.raw["details"]["doubanRating"].doubleValue { Text("豆瓣 \(score, specifier: "%.1f")") }; if let score = item.raw["imdb"]["rating"].doubleValue { Text("IMDb \(score, specifier: "%.1f")") } }.font(.caption2).foregroundStyle(NativePalette.muted)
                 if !item.tags.isEmpty { Text(item.tags.joined(separator: " · ")).font(.caption).foregroundStyle(NativePalette.accent) }
             }
