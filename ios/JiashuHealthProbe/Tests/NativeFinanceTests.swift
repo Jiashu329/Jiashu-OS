@@ -318,6 +318,210 @@ final class NativeFinanceTests: XCTestCase {
         XCTAssertEqual(requests.values.first?.operationID, operation.operationID)
         XCTAssertNil(try store.load())
     }
+
+    @MainActor
+    func testPersonalBalanceSheetSavesExactAmountAndConsumesOnlyItsReceiptOnce() async throws {
+        let owner = "synthetic-finance-form-" + UUID().uuidString
+        let host = "finance-form-" + UUID().uuidString.lowercased() + ".example"
+        let requests = RecordedPendingSubmissionRequests()
+        let account: NativeJSON = .object(["id": .string("12345678-1234-4123-8123-123456789abc"), "name": .string("合成个人账户"), "currency": .string("CNY")])
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? NativeFinancePendingStore(owner: owner).clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            _ = requests.record(request)
+            return (201, try financeBalanceReceipt(account: account, operationID: request.value(forHTTPHeaderField: "Idempotency-Key")!, amountMinor: "900719925474099312"))
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config), token: "synthetic-token", userID: owner)
+        let page = UUID(); let sheet = UUID()
+        context.showScreen(page); context.showScreen(sheet); context.hideScreen(page)
+        XCTAssertTrue(context.canWrite, "The visible sheet retains the context when its presenting page disappears")
+        let state = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        await state.save(amount: "9,007,199,254,740,993.12", date: "2026-01-01", note: "合成核对", previewBody: nil)
+        let receipt = try XCTUnwrap(state.receipt)
+        XCTAssertNil(state.error); XCTAssertNil(context.pending)
+        XCTAssertEqual(receipt.record["id"].stringValue, receipt.command.operationID)
+        XCTAssertEqual(receipt.response["account"]["id"].stringValue, account["id"].stringValue)
+        XCTAssertEqual(receipt.response["account"]["balanceMinor"].stringValue, "900719925474099312")
+        XCTAssertEqual(receipt.record["amountMinor"].stringValue, "900719925474099312")
+        let sent = try XCTUnwrap(requests.values.first)
+        XCTAssertEqual(sent.method, "POST")
+        XCTAssertEqual(sent.url, "https://" + host + "/api/native/finance/accounts/12345678-1234-4123-8123-123456789abc/balances?ledger=personal")
+        XCTAssertEqual(sent.operationID, receipt.command.operationID)
+        let body = try JSONDecoder().decode(NativeJSON.self, from: sent.body)
+        XCTAssertEqual(body["amount"].stringValue, "9007199254740993.12")
+        XCTAssertEqual(body["asOfDate"].stringValue, "2026-01-01")
+        XCTAssertEqual(body["note"].stringValue, "合成核对")
+        XCTAssertTrue(receipt.command.requiresBalanceReceipt == true)
+
+        XCTAssertNil(state.complete(cleanup: { throw NativeFinanceInputError("synthetic cleanup failure") }))
+        XCTAssertNotNil(state.cleanupWarning)
+        await state.save(amount: "1.00", date: "2026-01-01", note: "", previewBody: nil)
+        XCTAssertEqual(requests.values.count, 1, "A draft cleanup failure must never create another operation")
+        XCTAssertNotNil(state.complete(cleanup: {}, allowingCleanupFailure: true))
+        XCTAssertNil(state.complete(cleanup: {}), "Only one callback or dismiss may consume the receipt")
+        context.hideScreen(sheet)
+        XCTAssertFalse(context.canWrite)
+        do {
+            _ = try await context.write(title: "记录余额", path: context.path("finance/accounts/synthetic/balances"), method: "POST", body: body, idempotent: true)
+            XCTFail("An off-screen context submitted a write")
+        } catch is NativeFinanceInputError {}
+        XCTAssertEqual(requests.values.count, 1)
+    }
+
+    @MainActor
+    func testBalanceFormValidationStaysVisibleAfterBackgroundReadsAndRejectsChangedScope() async throws {
+        let owner = "synthetic-finance-validation-" + UUID().uuidString
+        let host = "finance-validation-" + UUID().uuidString.lowercased() + ".example"
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? NativeWorkspacePersistence(userID: owner, scope: "finance-selection").clear(); try? NativeFinancePendingStore(owner: owner).clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            _ = requests.record(request)
+            return (200, Data(#"{"accounts":[]}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config), token: "synthetic-token", userID: owner)
+        let account: NativeJSON = .object(["id": .string("synthetic"), "currency": .string("CNY")])
+        let state = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        await state.save(amount: "12.345", date: "2026-01-01", note: "", previewBody: nil)
+        let visibleError = try XCTUnwrap(state.error)
+        XCTAssertTrue(requests.values.isEmpty)
+        _ = try await context.read(context.path("finance"))
+        XCTAssertEqual(state.error, visibleError, "A successful background GET must not clear the form's validation error")
+        context.select(ledger: "family")
+        await state.save(amount: "12.34", date: "2026-01-01", note: "", previewBody: nil)
+        XCTAssertTrue(state.error?.contains("账本已变化") == true)
+        XCTAssertNil(context.pending)
+        XCTAssertEqual(requests.values.count, 1)
+    }
+
+    @MainActor
+    func testMissingBalanceReceiptRetainsOriginalKeyAcrossRetryAndRecovery() async throws {
+        let owner = "synthetic-finance-receipt-" + UUID().uuidString
+        let host = "finance-receipt-" + UUID().uuidString.lowercased() + ".example"
+        let account: NativeJSON = .object(["id": .string("12345678-1234-4123-8123-123456789abc"), "currency": .string("CNY")])
+        let requests = RecordedPendingSubmissionRequests()
+        let store = NativeFinancePendingStore(owner: owner)
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? store.clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            if requests.record(request) == 1 { return (201, try NativeJSON.object(["account": account, "balances": .array([])]).encodedData()) }
+            let key = request.value(forHTTPHeaderField: "Idempotency-Key") ?? requests.values.first!.operationID!
+            return (200, try financeBalanceReceipt(account: account, operationID: key))
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config), token: "synthetic-token", userID: owner)
+        let state = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        await state.save(amount: "12.34", date: "2026-01-01", note: "original", previewBody: nil)
+        XCTAssertNil(state.receipt); XCTAssertNotNil(state.error)
+        let original = try XCTUnwrap(context.pending)
+        XCTAssertEqual(try store.load(), original, "Receipt validation must occur before retiring persisted pending storage")
+        XCTAssertTrue(original.requiresBalanceReceipt == true)
+        await state.save(amount: "99.00", date: "2026-01-01", note: "replacement", previewBody: nil)
+        XCTAssertEqual(requests.values.count, 1)
+        await context.retryPending(original)
+        XCTAssertNil(context.pending); XCTAssertNil(try store.load())
+        await state.recoverConfirmedSave()
+        XCTAssertEqual(state.receipt?.record["id"].stringValue, original.operationID)
+        XCTAssertEqual(requests.values.count, 3)
+        XCTAssertEqual(requests.values[0], requests.values[1], "Explicit retry sends the same scoped URL, bytes and original key")
+        XCTAssertEqual(requests.values[2].method, "GET")
+        XCTAssertEqual(requests.values[2].url, "https://" + host + "/api/native/finance/accounts/12345678-1234-4123-8123-123456789abc?ledger=personal")
+    }
+
+    @MainActor
+    func testDefinitiveBalanceRetryRejectionReturnsToEditingWithoutSilentlyDroppingSave() async throws {
+        let owner = "synthetic-finance-rejected-" + UUID().uuidString
+        let host = "finance-rejected-" + UUID().uuidString.lowercased() + ".example"
+        let account: NativeJSON = .object(["id": .string("synthetic"), "currency": .string("CNY")])
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? NativeFinancePendingStore(owner: owner).clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            switch requests.record(request) {
+            case 1: return (503, Data(#"{"error":"synthetic unavailable"}"#.utf8))
+            case 2: return (422, Data(#"{"error":"余额日期需要重新核对"}"#.utf8))
+            default: return (201, try financeBalanceReceipt(account: account, operationID: request.value(forHTTPHeaderField: "Idempotency-Key")!))
+            }
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config), token: "synthetic-token", userID: owner)
+        let state = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        await state.save(amount: "12.34", date: "2026-01-01", note: "", previewBody: nil)
+        let original = try XCTUnwrap(context.pending)
+        await context.retryPending(original)
+        XCTAssertNil(context.pending)
+        await state.recoverConfirmedSave()
+        XCTAssertFalse(state.needsReceiptCheck)
+        XCTAssertTrue(state.error?.contains("余额日期需要重新核对") == true)
+        await state.save(amount: "12.34", date: "2026-01-01", note: "corrected", previewBody: nil)
+        XCTAssertNotNil(state.receipt)
+        XCTAssertNotEqual(state.receipt?.command.operationID, original.operationID)
+        XCTAssertEqual(requests.values.count, 3)
+        XCTAssertEqual(requests.values[0], requests.values[1])
+    }
+
+    @MainActor
+    func testBalanceCorrectionUsesFrozenPreviewVersionsAndVerifiesItsChangeReceipt() async throws {
+        let owner = "synthetic-finance-correction-" + UUID().uuidString
+        let host = "finance-correction-" + UUID().uuidString.lowercased() + ".example"
+        let account: NativeJSON = .object(["id": .string("synthetic"), "currency": .string("CNY"), "balanceRevision": .integer(12)])
+        let entry: NativeJSON = .object(["id": .string("initial:synthetic"), "revision": .integer(4)])
+        let frozen = try NativeFinanceContract.correctionBody(entry: entry, account: account, action: "correct", amount: "12.34", date: "2026-01-01", note: "", reason: "合成更正")
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? NativeFinancePendingStore(owner: owner).clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            _ = requests.record(request)
+            return (200, try financeBalanceReceipt(account: account, operationID: request.value(forHTTPHeaderField: "Idempotency-Key")!))
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let context = NativeFinanceContext(api: NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config), token: "synthetic-token", userID: owner)
+        let state = NativeFinanceBalanceSaveState(context: context, account: account, entry: entry)
+        await state.save(amount: "999.99", date: "2026-01-02", note: "later edit", previewBody: frozen)
+        let sent = try XCTUnwrap(requests.values.first)
+        XCTAssertEqual(try JSONDecoder().decode(NativeJSON.self, from: sent.body), frozen)
+        XCTAssertTrue(sent.url.contains("balances/initial:synthetic?ledger=personal"))
+        XCTAssertEqual(state.receipt?.record["id"].stringValue, sent.operationID)
+        XCTAssertEqual(state.receipt?.record["action"].stringValue, "correct")
+        XCTAssertNil(context.pending)
+    }
+
+    @MainActor
+    func testBalanceFormNeverWritesAfterDeactivationOrOwnerCredentialCancellation() async throws {
+        let owner = "synthetic-finance-closed-" + UUID().uuidString
+        let host = "finance-closed-" + UUID().uuidString.lowercased() + ".example"
+        let requests = RecordedPendingSubmissionRequests()
+        defer { PendingSubmissionURLProtocol.remove(host: host); try? NativeFinancePendingStore(owner: owner).clear() }
+        PendingSubmissionURLProtocol.register(host: host) { request in
+            _ = requests.record(request)
+            return (201, Data(#"{"account":{"id":"synthetic"}}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PendingSubmissionURLProtocol.self]
+        let api = NativeAPI(baseURL: URL(string: "https://" + host)!, configuration: config)
+        let context = NativeFinanceContext(api: api, token: "synthetic-token", userID: owner)
+        let account: NativeJSON = .object(["id": .string("synthetic"), "currency": .string("CNY")])
+        let closed = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        context.deactivate()
+        XCTAssertFalse(context.canWrite)
+        await closed.save(amount: "12.34", date: "2026-01-01", note: "", previewBody: nil)
+        XCTAssertNotNil(closed.error); XCTAssertNil(context.pending)
+        context.activate(); context.role = "viewer"
+        await closed.save(amount: "12.34", date: "2026-01-01", note: "", previewBody: nil)
+        XCTAssertNil(context.pending)
+        context.role = "owner"; api.endSession()
+        let oldOwner = NativeFinanceBalanceSaveState(context: context, account: account, entry: nil)
+        await oldOwner.save(amount: "12.34", date: "2026-01-01", note: "", previewBody: nil)
+        XCTAssertNil(oldOwner.receipt)
+        XCTAssertTrue(requests.values.isEmpty, "No transport is allowed after the current owner lease has ended")
+    }
+
+}
+
+private func financeBalanceReceipt(account: NativeJSON, operationID: String, amountMinor: String = "1234") throws -> Data {
+    var updated = account.objectValue
+    updated["balanceMinor"] = .string(amountMinor); updated["asOfDate"] = .string("2026-01-01")
+    return try NativeJSON.object([
+        "account": .object(updated),
+        "balances": .array([.object(["id": .string(operationID), "amountMinor": .string(amountMinor), "asOfDate": .string("2026-01-01")])]),
+        "changes": .array([.object(["id": .string(operationID), "action": .string("correct")])])
+    ]).encodedData()
 }
 
 final class RecordedPendingSubmissionRequests: @unchecked Sendable {

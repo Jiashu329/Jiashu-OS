@@ -33,18 +33,29 @@ final class NativeUXRenderingTests: XCTestCase {
         XCTAssertEqual(nutrition.summary.knownCalories, "1280.0")
         let firstMeals = scenario.completed("/api/native/health/nutrition")
         let firstLife = scenario.completed("/api/native/life/douban")
+        let firstWeightPlan = scenario.completed("/api/native/health/weight-plan")
 
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-light",
                           secondPageName: "SYNTHETIC-home-lower-light",
                           endPageName: "SYNTHETIC-home-media-light",
                           waitUntil: { scenario.completed("/api/native/notifications") > 0
                               && scenario.completed("/api/native/health/nutrition") > firstMeals
+                              && scenario.completed("/api/native/health/weight-plan") > firstWeightPlan
                               && scenario.completed("/api/native/life/douban") > firstLife },
                           waitAtEnd: { scenario.completed("/api/native/life/douban/cover") >= 6 })
         try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "steps", days: 30,
                                      name: "SYNTHETIC-health-light")
         try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "weight", days: 7,
                                      name: "SYNTHETIC-health-dark-accessibility", accessible: true)
+        let selectedRecordDay = scenario.day(offset: -3)
+        let recordQuery = ["from": selectedRecordDay, "to": selectedRecordDay, "metric": "weight", "includeDeleted": "1"]
+        let recordsBefore = scenario.completed("/api/native/health/records", matching: recordQuery)
+        try await capture(NavigationStack {
+            NativeHealthRecordsWorkspace(api: api, token: token, userID: scenario.userID, initialMetric: "weight",
+                                         initialFrom: scenario.day(offset: -6), initialTo: scenario.day, initialDay: selectedRecordDay)
+        }, name: "SYNTHETIC-health-selected-day-records-light", waitUntil: {
+            scenario.completed("/api/native/health/records", matching: recordQuery) > recordsBefore
+        })
         try await capture(NativeSettingsView(model: model), name: "SYNTHETIC-my-light")
         let channelsBefore = scenario.count("/api/native/sync/channel")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
@@ -70,6 +81,13 @@ final class NativeUXRenderingTests: XCTestCase {
         try await captureLifeShelf(api: api, token: token, scenario: scenario, name: "SYNTHETIC-life-shelf-light")
         try await captureLifeShelf(api: api, token: token, scenario: scenario,
                                    name: "SYNTHETIC-life-shelf-dark-accessibility", accessible: true)
+        let nutritionCardReads = scenario.completed("/api/native/health/nutrition")
+        try await capture(NavigationStack {
+            ScrollView { NativeHomeNutritionCard(model: model).padding(20) }
+                .nativeGeometricPage().navigationTitle("饮食")
+        }, name: "SYNTHETIC-home-nutrition-dark-accessibility",
+           size: CGSize(width: 320, height: 874), dark: true, large: true,
+           waitUntil: { scenario.completed("/api/native/health/nutrition") > nutritionCardReads })
         let darkMeals = scenario.completed("/api/native/health/nutrition")
         let darkLife = scenario.completed("/api/native/life/douban")
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-dark-accessibility",
@@ -344,6 +362,25 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                       "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
         case "/api/native/health/goals":
             result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
+        case "/api/native/health/records":
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let selected = self.day(offset: -3)
+            XCTAssertTrue(["from": selected, "to": selected, "metric": "weight", "includeDeleted": "1"]
+                .allSatisfy { query.contains(URLQueryItem(name: $0.key, value: $0.value)) },
+                "The selected Shanghai day must be read directly instead of paginating the preceding trend range")
+            let measurements: [[String: Any]] = [
+                ["recordKey": "weight:synthetic-morning", "metric": "weight", "day": selected, "revision": 0,
+                 "manual": true, "deleted": false, "effective": ["value": 61.8, "startDate": selected + "T08:00:00+08:00"]],
+                ["recordKey": "weight:synthetic-evening", "metric": "weight", "day": selected, "revision": 1,
+                 "manual": false, "deleted": true, "effective": ["value": 62.1, "startDate": selected + "T20:00:00+08:00"]]
+            ]
+            result = ["records": measurements, "today": day, "nextCursor": null, "hasMore": false]
+        case "/api/native/health/weight-plan":
+            result = ["today": day, "timezone": "Asia/Shanghai",
+                      "settings": ["enabled": true, "baselineWeight": 64, "targetWeight": 60,
+                                   "startDate": self.day(offset: -30), "deadline": self.day(offset: 45)],
+                      "observations": ["latestWeight": 61.6, "latestDate": day, "average7": 61.8, "recordedDays7": 4],
+                      "progress": ["direction": "loss", "status": "active", "progressPercent": 55]]
         case "/api/native/health/actions":
             let week = NativeActionDates.day(NativeActionDates.monday(Date()))
             result = ["action": ["weekStart": week, "text": "晚饭后散步15分钟", "status": "planned", "feedback": "", "revision": 1]]

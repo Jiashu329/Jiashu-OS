@@ -184,3 +184,25 @@ void test('authentication and body validation remain ahead of scoped writes', as
   f.signIn('member'); assert.equal((await f.create({ ...accountInput(), amount: '0.001' })).status, 400);
   assert.equal(f.scopeCalls.length, 0);
 });
+
+void test('personal balance save returns its exact operation receipt and replay never duplicates the balance', async (t) => {
+  const f = await fixture(t); f.signIn('owner');
+  const key = crypto.randomUUID();
+  const input = { amount: '9007199254740993.12', asOfDate: TODAY, note: 'native synthetic personal balance' };
+  const response = await f.append(OWNER_PERSONAL, input, key, '?ledger=personal');
+  assert.equal(response.status, 201);
+  const result = await response.json() as { account: { id: string; balanceMinor: string }; balances: { id: string; amountMinor: string; asOfDate: string }[] };
+  assert.equal(result.account.id, OWNER_PERSONAL);
+  assert.equal(result.account.balanceMinor, '900719925474099312');
+  const receipt = result.balances.find((entry) => entry.id === key);
+  assert.ok(receipt);
+  assert.equal(receipt.amountMinor, '900719925474099312');
+  assert.equal(receipt.asOfDate, TODAY);
+  const count = f.sqlite.prepare('SELECT COUNT(*) AS total FROM finance_balance_entries WHERE account_id=?').get(OWNER_PERSONAL)?.total;
+  assert.equal((await f.append(OWNER_PERSONAL, input, key, '?ledger=personal')).status, 201);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS total FROM finance_balance_entries WHERE account_id=?').get(OWNER_PERSONAL)?.total, count);
+  const current = await data(await f.get(OWNER_PERSONAL, '?ledger=personal'));
+  assert.equal(current.account.balanceMinor, '900719925474099312');
+  const write = f.scopeCalls.find((call) => call.options.write?.operationId === key);
+  assert.equal(write?.scope.ownerUserId, 'owner'); assert.equal(write?.scope.ledger, 'personal');
+});

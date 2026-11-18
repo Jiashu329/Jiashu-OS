@@ -215,6 +215,9 @@ struct NativeHealthRangeWorkspace: View {
     @State private var entryMetric: QuickEntryMetric?
     @State private var choosingEntryMetric = false
     @State private var inspectedDate: Date?
+    @State private var recordContext: NativeHealthRecordDayContext?
+    @State private var recordsPresented = false
+    @State private var needsRecordsRefresh = false
     @State private var goalSettings: NativeGoalSettings?
     @State private var goalMessage: String?
     @State private var comparison: NativeHealthPeriodComparisonSnapshot?
@@ -293,6 +296,19 @@ struct NativeHealthRangeWorkspace: View {
         .task { await refresh() }
         .refreshable { await refresh() }
         .onChange(of: metric) { _, _ in inspectedDate = nil; invalidateComparison() }
+        .onChange(of: recordsPresented) { wasPresented, isPresented in
+            if wasPresented, !isPresented { flushRecordsRefresh() }
+        }
+        .onChange(of: busy) { _, isBusy in
+            if !isBusy { flushRecordsRefresh() }
+        }
+        .navigationDestination(isPresented: $recordsPresented) {
+            if let context = recordContext {
+                NativeHealthRecordsWorkspace(api: api, token: token, userID: userID,
+                                             initialMetric: context.metric, initialFrom: context.trendRange.from,
+                                             initialTo: context.trendRange.to, initialDay: context.day)
+            }
+        }
         .sheet(isPresented: $editingRange) {
             NativeHealthDateRangeEditor(from: from, to: to) { first, last in
                 from = first; to = last
@@ -660,9 +676,9 @@ struct NativeHealthRangeWorkspace: View {
         if metric == "body_fat" {
             Button { showingPairing = true } label: { Label("估算依据", systemImage: "square.stack.3d.up").frame(minHeight: 44) }
         } else {
-            NavigationLink {
-                NativeHealthRecordsWorkspace(api: api, token: token, userID: userID, initialMetric: metric, initialFrom: range.from, initialTo: range.to)
-            } label: { Label("查看记录", systemImage: "list.bullet").frame(minHeight: 44) }
+            Button { openRecords(range) } label: {
+                Label("查看记录", systemImage: "list.bullet").frame(minHeight: 44)
+            }.disabled(busy)
             NavigationLink {
                 NativeHealthAssistantWorkspace(api: api, token: token, userID: userID, initialMetric: metric,
                                                initialFrom: range.from, initialTo: range.to, initialQuestion: "这段记录有哪些值得关注的变化？")
@@ -930,6 +946,20 @@ struct NativeHealthRangeWorkspace: View {
               let next = NativeActionDates.calendar.date(byAdding: .day, value: offset, to: date) else { return }
         inspectedDate = NativeHealthWorkspaceFormat.date(NativeHealthTrendSelection.day(next, points: points, range: range))
     }
+    private func openRecords(_ range: NativeHealthWorkspaceRange) {
+        guard !busy, hasCurrentRange, let day = selectedDay,
+              let context = NativeHealthRecordDayContext(day: day, metric: metric, trendRange: range) else { return }
+        // Freeze even a following-latest selection: hiding its last observation
+        // must return to this day rather than jump to a different sample.
+        inspectedDate = context.date
+        recordContext = context
+        needsRecordsRefresh = true
+        recordsPresented = true
+    }
+    private func flushRecordsRefresh() {
+        guard needsRecordsRefresh, !busy, !recordsPresented else { return }
+        Task { await load() }
+    }
     private func selectRecentDays(_ days: Int) {
         let end = Date()
         from = NativeActionDates.calendar.date(byAdding: .day, value: 1 - days, to: end)!
@@ -951,6 +981,7 @@ struct NativeHealthRangeWorkspace: View {
         comparisonGeneration = UUID(); comparison = nil; comparisonMessage = nil; comparing = false
     }
     private func refresh() async {
+        guard !recordsPresented else { return }
         await load()
         await loadCurrentGoals()
     }
@@ -967,9 +998,13 @@ struct NativeHealthRangeWorkspace: View {
             let accepted = try NativeHealthTrendSnapshot(response: result, range: range)
             let previousRange = loadedRange
             snapshot = accepted
+            if !recordsPresented { needsRecordsRefresh = false }
             if previousRange != range { inspectedDate = nil }
         } catch {
-            if readGeneration == generation, !Task.isCancelled { readMessage = error.localizedDescription }
+            if readGeneration == generation, !Task.isCancelled {
+                readMessage = error.localizedDescription
+                needsRecordsRefresh = false
+            }
         }
     }
     private func loadCurrentGoals() async {

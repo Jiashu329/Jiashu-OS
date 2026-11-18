@@ -60,6 +60,54 @@ final class NativeHealthWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored,operation); XCTAssertEqual(restored.requestHeaders["Idempotency-Key"],operation.id)
     }
 
+    func testTrendRecordDayFocusQueriesOneShanghaiDayAndRetainsTheOriginalRange() throws {
+        let now = date("2026-11-17T16:05:00Z")
+        let context = try XCTUnwrap(NativeHealthRecordDayContext.initial(day:"2026-11-17",metric:"weight",
+            from:"2026-11-01",to:"2026-11-18",now:now))
+        XCTAssertEqual(context.day,"2026-11-17")
+        XCTAssertEqual(context.date,date("2026-11-16T16:00:00Z"))
+        XCTAssertEqual(context.metric,"weight")
+        XCTAssertEqual(context.dayRange.days,1)
+        XCTAssertEqual(context.dayRange.query,[URLQueryItem(name:"from",value:"2026-11-17"),URLQueryItem(name:"to",value:"2026-11-17")])
+        XCTAssertEqual(context.trendRange.from,"2026-11-01")
+        XCTAssertEqual(context.trendRange.to,"2026-11-18")
+    }
+
+    func testRecordDayFocusRequiresAnExplicitValidDateWithoutChangingTheManagementDefault() {
+        let now = date("2026-11-18T02:00:00Z")
+        XCTAssertNil(NativeHealthRecordDayContext.initial(day:nil,metric:"weight",from:"2026-11-01",to:"2026-11-18",now:now))
+        for day in ["2026-10-31","2026-11-19","2026-02-30","2026-11-2","invalid"] {
+            XCTAssertNil(NativeHealthRecordDayContext.initial(day:day,metric:"weight",from:"2026-11-01",to:"2026-11-18",now:now),day)
+        }
+        XCTAssertNil(NativeHealthRecordDayContext.initial(day:"2026-11-17",metric:"body_fat",from:"2026-11-01",to:"2026-11-18",now:now))
+        XCTAssertNil(NativeHealthRecordDayContext.initial(day:"2026-11-17",metric:"all",from:"2026-11-01",to:"2026-11-18",now:now))
+        XCTAssertNil(NativeHealthRecordDayContext.initial(day:"2026-11-17",metric:"weight",from:nil,to:nil,now:now))
+        // A date with no observation is still the requested day; it must not
+        // jump to the latest record or silently widen the query.
+        XCTAssertEqual(NativeHealthRecordDayContext.initial(day:"2026-11-12",metric:"sleep",
+            from:"2026-11-01",to:"2026-11-18",now:now)?.dayRange.from,"2026-11-12")
+    }
+
+    func testReturningAfterHidingOrRestoringARecordKeepsTheInspectedDay() throws {
+        let now = date("2026-11-18T02:00:00Z")
+        let context = try XCTUnwrap(NativeHealthRecordDayContext.initial(day:"2026-11-17",metric:"weight",
+            from:"2026-11-01",to:"2026-11-18",now:now))
+        func point(_ day: String,_ value: Double) throws -> NativeWorkspaceHealthPoint {
+            try XCTUnwrap(NativeWorkspaceHealthPoint(.object(["day":.string(day),"value":.number(value)])))
+        }
+        let hidden = try [point("2026-11-16",62)]
+        let dayAfterHide = NativeHealthTrendSelection.day(context.date,points:hidden,range:context.trendRange)
+        XCTAssertEqual(dayAfterHide,context.day)
+        XCTAssertNil(hidden.first { $0.day == dayAfterHide })
+        XCTAssertEqual(NativeHealthTrendSelection.day(nil,points:hidden,range:context.trendRange),"2026-11-16")
+        let restored = try hidden + [point(context.day,61.5)]
+        let dayAfterRestore = NativeHealthTrendSelection.day(context.date,points:restored,range:context.trendRange)
+        XCTAssertEqual(dayAfterRestore,context.day)
+        XCTAssertEqual(restored.first { $0.day == dayAfterRestore }?.value,61.5)
+        XCTAssertEqual(context.trendRange.from,"2026-11-01")
+        XCTAssertEqual(context.trendRange.to,"2026-11-18")
+    }
+
     func testGoalReplacementContainsExplicitNullsAndStableEffectiveDate() throws {
         let now = date("2026-11-16T16:01:00Z")
         let body = try NativeHealthGoalRequest.body(fields:["steps":"8000","sleep":""],effectiveFrom:now,revision:3,now:now)

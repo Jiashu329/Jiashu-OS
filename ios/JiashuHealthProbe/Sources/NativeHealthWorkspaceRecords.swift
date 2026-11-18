@@ -22,11 +22,38 @@ enum NativeHealthRecordRequest {
     static func actionLabel(_ action: String) -> String { ["create":"补录","correct":"更正数值","hide":"屏蔽记录","restore":"恢复显示","reset":"恢复最新同步值"][action] ?? action }
 }
 
+/// The focused day changes only the list query, never a recovered edit or its
+/// original request. The chart's complete range remains available as context.
+struct NativeHealthRecordDayContext: Equatable {
+    let day: String
+    let date: Date
+    let metric: String
+    let trendRange: NativeHealthWorkspaceRange
+    let dayRange: NativeHealthWorkspaceRange
+
+    init?(day: String, metric: String, trendRange: NativeHealthWorkspaceRange, now: Date = Date()) {
+        guard QuickEntryMetric(rawValue: metric) != nil,
+              let date = NativeHealthWorkspaceFormat.date(day),
+              day >= trendRange.from, day <= trendRange.to,
+              let range = try? NativeHealthWorkspaceRange(from: date, to: date, now: now) else { return nil }
+        self.day = day; self.date = date; self.metric = metric
+        self.trendRange = trendRange; dayRange = range
+    }
+
+    static func initial(day: String?, metric: String, from: String?, to: String?, now: Date = Date()) -> Self? {
+        guard let day, let from = from.flatMap(NativeHealthWorkspaceFormat.date),
+              let to = to.flatMap(NativeHealthWorkspaceFormat.date),
+              let range = try? NativeHealthWorkspaceRange(from: from, to: to, now: now) else { return nil }
+        return Self(day: day, metric: metric, trendRange: range, now: now)
+    }
+}
+
 struct NativeHealthRecordsWorkspace: View {
     private enum EditingField: Hashable { case value, reason }
     let api: NativeAPI
     let token: String
     let userID: String
+    private let dayContext: NativeHealthRecordDayContext?
     @State private var from = NativeActionDates.calendar.date(byAdding:.day,value:-29,to:Date())!
     @State private var to = Date()
     @State private var metric = "all"
@@ -58,38 +85,61 @@ struct NativeHealthRecordsWorkspace: View {
     private var signature: String { NativeActionDates.day(from) + NativeActionDates.day(to) + metric + String(includeDeleted) }
     private var dirty: Bool { !reason.isEmpty || (selected["recordKey"].stringValue != nil && value != (selected["effective"]["value"].doubleValue.map { String($0) } ?? "")) || action != "correct" }
     private var draftSignature: String { (selected["recordKey"].stringValue ?? "") + action + value + reason }
+    private var viewingFocusedDay: Bool {
+        guard let dayContext else { return false }
+        return NativeActionDates.day(from) == dayContext.day && NativeActionDates.day(to) == dayContext.day && metric == dayContext.metric
+    }
+    private var queryDateLabel: String {
+        let first = NativeActionDates.day(from), last = NativeActionDates.day(to)
+        return first == last ? first : first + " — " + last
+    }
     init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil,
-         initialFrom: String? = nil, initialTo: String? = nil, compose: Bool = false) {
+         initialFrom: String? = nil, initialTo: String? = nil, initialDay: String? = nil, compose: Bool = false) {
         self.api = api; self.token = token; self.userID = userID
-        _metric = State(initialValue: initialMetric.flatMap(QuickEntryMetric.init(rawValue:))?.rawValue ?? "all")
+        let metric = initialMetric.flatMap(QuickEntryMetric.init(rawValue:))?.rawValue ?? "all"
+        let context = NativeHealthRecordDayContext.initial(day: initialDay, metric: metric, from: initialFrom, to: initialTo)
+        dayContext = context
+        _metric = State(initialValue: metric)
         if let date = initialFrom.flatMap(NativeHealthWorkspaceFormat.date),date <= Date() { _from = State(initialValue:date) }
         if let date = initialTo.flatMap(NativeHealthWorkspaceFormat.date),date <= Date() { _to = State(initialValue:date) }
+        if let context {
+            _from = State(initialValue: context.date); _to = State(initialValue: context.date)
+            _includeDeleted = State(initialValue: true)
+        }
         _quickEntry = State(initialValue: compose)
     }
     var body: some View {
         List {
             Section("查看记录") {
-                DatePicker("开始",selection:$from,in:...Date(),displayedComponents:.date)
-                DatePicker("结束",selection:$to,in:...Date(),displayedComponents:.date)
-                Picker("指标",selection:$metric) {
-                    Text("全部").tag("all")
-                    ForEach(NativeHealthWorkspaceFormat.metricKeys,id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) }
+                if let dayContext {
+                    Text(metric == "all" ? "全部指标" : NativeHealthWorkspaceFormat.metric(metric)).font(.headline)
+                    Text(queryDateLabel).font(.subheadline)
+                    Text("趋势范围 " + dayContext.trendRange.label).font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("调整范围与指标") { queryFields }
+                } else {
+                    queryFields
                 }
                 Toggle("包含已屏蔽",isOn:$includeDeleted)
                 Button("更新列表") { Task { await load(more:false) } }.disabled(busy)
-                Button("补记健康数据") { quickEntry = true }.disabled(busy || pending != nil)
+                Button(viewingFocusedDay ? "补记这天数据" : "补记健康数据") { quickEntry = true }.disabled(busy || pending != nil)
             }.disabled(busy)
             if let pending {
                 Section("保存结果待确认") {
                     Text(pending.label)
                     Text("填写已安全保留，查看后可继续确认保存。")
                         .font(.footnote).foregroundStyle(.secondary)
+                    if dayContext != nil {
+                        Text("上次操作仍对应原记录，不随日期筛选改变。").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("查看保存状态") { Task { await openPendingDetail(pending) } }.disabled(busy)
                 }
             }
             if pending == nil,selected["recordKey"].stringValue != nil,dirty {
                 Section("未完成的填写") {
                     Text(recordTitle(selected))
+                    if let dayContext, selected["day"].stringValue != dayContext.day {
+                        Text("这份草稿属于另一日期，仍保留原记录。").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("继续编辑") { showingDetail = true }
                     Button("放弃填写",role:.destructive) { confirmDiscardDraft = true }
                 }
@@ -102,14 +152,16 @@ struct NativeHealthRecordsWorkspace: View {
                     } label: {
                         HStack(spacing:12) {
                             VStack(alignment:.leading,spacing:6) {
-                                LabeledContent(recordTitle(record),value:recordValue(record))
-                                Text(origin(record) + (record["deleted"].boolValue == true ? " · 已屏蔽":"")).font(.caption).foregroundStyle(.secondary)
+                                LabeledContent(viewingFocusedDay ? recordClock(record) : recordTitle(record),value:recordValue(record))
+                                Text(listOrigin(record) + (record["deleted"].boolValue == true ? " · 已屏蔽":"")).font(.caption).foregroundStyle(.secondary)
                             }
                             Image(systemName:"chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                         }.foregroundStyle(.primary)
                     }.disabled(busy || pending != nil || loadedQuery != signature)
                 }
-                if records.isEmpty && loaded { Text("当前已读取范围没有记录，缺失不表示0。") }
+                if records.isEmpty && loadedQuery == signature && !busy {
+                    Text(viewingFocusedDay ? "这天没有记录" : "当前已读取范围没有记录，缺失不表示0。")
+                }
                 if cursor != nil { Button("读取更多记录") { Task { await load(more:true) } }.disabled(busy || loadedQuery != signature) }
             }
             if busy { ProgressView("正在核对记录…") }
@@ -130,7 +182,10 @@ struct NativeHealthRecordsWorkspace: View {
             }
             .onChange(of:draftSignature) { _,_ in saveDraft() }
             .onDisappear { saveDraft() }
-            .sheet(isPresented:$quickEntry) { HealthQuickEntryView(api:api,token:token,userID:userID,initialMetric:QuickEntryMetric(rawValue:metric) ?? .weight) { await load(more:false) } }
+            .sheet(isPresented:$quickEntry) {
+                HealthQuickEntryView(api:api,token:token,userID:userID,initialMetric:QuickEntryMetric(rawValue:metric) ?? .weight,
+                                     initialDate: viewingFocusedDay ? dayContext?.date ?? Date() : Date()) { await load(more:false) }
+            }
             .sheet(isPresented:$showingDetail) { detailSheet }
             .confirmationDialog("放弃这次未保存的填写？",isPresented:$confirmDiscardDraft,titleVisibility:.visible) {
                 Button("放弃填写",role:.destructive) { discardUnsentDraft() }
@@ -140,6 +195,14 @@ struct NativeHealthRecordsWorkspace: View {
                 Button("放弃填写并切换",role:.destructive) { Task { await read(pendingSelection,keepDraft:false) } }
                 Button("继续填写",role:.cancel) { }
             }
+    }
+    @ViewBuilder private var queryFields: some View {
+        DatePicker("开始",selection:$from,in:...Date(),displayedComponents:.date)
+        DatePicker("结束",selection:$to,in:...Date(),displayedComponents:.date)
+        Picker("指标",selection:$metric) {
+            Text("全部").tag("all")
+            ForEach(NativeHealthWorkspaceFormat.metricKeys,id:\.self) { Text(NativeHealthWorkspaceFormat.metric($0)).tag($0) }
+        }
     }
     private var detailSheet: some View {
         NavigationStack {
@@ -269,6 +332,17 @@ struct NativeHealthRecordsWorkspace: View {
     private func localTimestamp(_ value: String?) -> String {
         guard let value,let date = NativeDates.parse(value) else { return "时间未知" }
         return NativeActionDates.formatted(date,pattern:"yyyy-MM-dd HH:mm")
+    }
+    private func recordClock(_ record: NativeJSON) -> String {
+        let key = record["metric"].stringValue == "sleep" ? "endDate" : "startDate"
+        let stamp = record["effective"][key].stringValue ?? record["effective"]["startDate"].stringValue
+        guard let stamp, let date = NativeDates.parse(stamp) else { return "时间未知" }
+        return NativeActionDates.formatted(date,pattern:"HH:mm")
+    }
+    private func listOrigin(_ record: NativeJSON) -> String {
+        guard viewingFocusedDay, let source = record["effective"]["source"].stringValue, !source.isEmpty else { return origin(record) }
+        let provenance = origin(record)
+        return provenance == "同步记录" ? source : source + " · " + provenance
     }
     private var measurementPeriod: String {
         let start: String = localTimestamp(selected["effective"]["startDate"].stringValue)
