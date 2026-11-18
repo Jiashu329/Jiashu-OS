@@ -48,6 +48,34 @@ final class NativeNutritionTests: XCTestCase {
         }
     }
 
+    func testDietMealSubtotalsRespectMissingValuesAndDeletedEntries() {
+        let entries: [NativeJSON] = [
+            .object(["calories": .string("120.5")]),
+            .object(["calories": .string("0.0")]),
+            .object(["calories": .null]),
+            .object(["calories": .string("500.0"), "deleted": .bool(true)]),
+        ]
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: entries, skipped: false), "≥120.5 千卡")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[1]], skipped: false), "0 千卡")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[2]], skipped: false), "—")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[3]], skipped: true), "未进食")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [], skipped: false), "未记录")
+    }
+
+    func testDietActivityOnlyReadsTheSelectedDayAndPreservesZero() {
+        let previous = NativeTrendPoint(day: "2026-11-17", value: 280, measuredAt: "2026-11-17T08:00:00Z",
+                                        source: "fixture", sleepStages: nil)
+        let zero = NativeTrendPoint(day: "2026-11-18", value: 0, measuredAt: "2026-11-18T08:00:00Z",
+                                    source: "fixture", sleepStages: nil)
+        let metric = NativeMetricSummary(metric: "active_energy", label: "活动能量", unit: "kcal", latestValue: 280,
+                                         latestDate: previous.day, points: [previous, zero])
+        let response = NativeHealthResponse(summary: NativeHealthSummary(metrics: ["active_energy": metric], measurementCount: 2,
+                                                                          lastMeasurementAt: nil), measurements: [], lastSync: nil)
+        XCTAssertEqual(NativeDietActivity.value(in: response, date: zero.day), 0)
+        XCTAssertEqual(NativeDietActivity.value(in: response, date: previous.day), 280)
+        XCTAssertNil(NativeDietActivity.value(in: response, date: "2026-11-16"))
+    }
+
     func testChangingIdentityInvalidatesAIEstimatesAndCatalogSelection() throws {
         var raw = input(calories: .string("100")).objectValue
         raw["food"] = .object(["id": .string("official:food"), "amount": .number(1), "unit": .string("份"), "catalogRelease": .string("original-release")])

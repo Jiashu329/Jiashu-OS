@@ -12,6 +12,7 @@ struct NativeHomeNutritionCard: View {
     @State private var requestID = UUID()
     @State private var loading = false
     @State private var readError: String?
+    @State private var observedDayScope: Scope?
 
     private struct Scope: Equatable {
         let owner: String
@@ -32,6 +33,12 @@ struct NativeHomeNutritionCard: View {
                 .task(id: RefreshKey(owner: model.session?.user.id, day: day, overview: model.overview?.asOf)) {
                     await load(day: day)
                 }
+                // Independent of overview.asOf: completing this overview read
+                // may refresh the meal task, but cannot restart this one.
+                .task(id: RefreshKey(owner: model.session?.user.id, day: day, overview: nil)) {
+                    await refreshOverviewOnDayAdvance(day: day)
+                }
+                .onDisappear { observedDayScope = nil }
         }
     }
 
@@ -169,6 +176,35 @@ struct NativeHomeNutritionCard: View {
     private func dayStatus(_ data: NativeNutritionDay) -> String {
         if data.dayStatus.complete { return "已记完" }
         return data.summary.entryCount > 0 ? "记录中" : "未记录"
+    }
+
+    private func refreshOverviewOnDayAdvance(day: String) async {
+        guard let owner = model.session?.user.id else { observedDayScope = nil; return }
+        let selected = Scope(owner: owner, day: day)
+        let previous = observedDayScope
+        observedDayScope = selected
+        // Initial appearance and account changes retain the app's existing
+        // overview refresh. Only an observed forward day transition is ours.
+        guard let previous, previous.owner == owner, previous.day < day else { return }
+        await Task.yield()
+        do {
+            // A foreground or manual refresh already in flight gets to finish;
+            // never cancel it just to obtain the same new day's targets.
+            while model.overviewLoading {
+                guard acceptsRollover(selected) else { return }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard acceptsRollover(selected) else { return }
+            if let current = model.overview?.today, current >= day { return }
+            await model.reloadOverview(presentError: false)
+        } catch is CancellationError { return }
+        catch { return }
+    }
+
+    private func acceptsRollover(_ selected: Scope) -> Bool {
+        !Task.isCancelled && observedDayScope == selected
+            && model.session?.user.id == selected.owner
+            && NativeActionDates.day(Date()) == selected.day
     }
 
     private func load(day: String) async {

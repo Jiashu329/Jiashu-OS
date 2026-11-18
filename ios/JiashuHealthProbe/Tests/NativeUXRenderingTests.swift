@@ -48,10 +48,24 @@ final class NativeUXRenderingTests: XCTestCase {
         let channelsBefore = scenario.count("/api/native/sync/channel")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
                           waitUntil: { scenario.count("/api/native/sync/channel") > channelsBefore })
-        let mealsBefore = scenario.count("/api/native/health/nutrition")
+        let mealsBefore = scenario.completed("/api/native/health/nutrition")
+        let dietGoalsBefore = scenario.completed("/api/native/health/nutrition/goals")
+        let dietEnergyBefore = scenario.completed("/api/native/health")
         try await capture(NavigationStack {
             NativeNutritionRoot(api: api, token: token, userID: scenario.userID)
-        }, name: "SYNTHETIC-diet-light", waitUntil: { scenario.count("/api/native/health/nutrition") > mealsBefore })
+        }, name: "SYNTHETIC-diet-light", waitUntil: {
+            scenario.completed("/api/native/health/nutrition") > mealsBefore
+                && scenario.completed("/api/native/health/nutrition/goals") > dietGoalsBefore
+                && scenario.completed("/api/native/health") > dietEnergyBefore
+        })
+        let dietOnlyMeals = scenario.completed("/api/native/health/nutrition")
+        let dietOnlyGoals = scenario.completed("/api/native/health/nutrition/goals")
+        try await capture(NavigationStack {
+            NativeNutritionRoot(api: api, token: token, userID: scenario.userID)
+        }, name: "SYNTHETIC-diet-dark-accessibility",
+           size: CGSize(width: 320, height: 874), dark: true, large: true,
+           waitUntil: { scenario.completed("/api/native/health/nutrition") > dietOnlyMeals
+               && scenario.completed("/api/native/health/nutrition/goals") > dietOnlyGoals })
         let darkMeals = scenario.completed("/api/native/health/nutrition")
         let darkLife = scenario.completed("/api/native/life/douban")
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-dark-accessibility",
@@ -256,7 +270,9 @@ private final class NativeRenderingScenario: @unchecked Sendable {
             let stages: [String: Any] = ["unspecified": 0, "core": 4, "deep": 1.5, "rem": 1.75, "awake": 0.25, "inBed": 8]
             let sleep: [String: Any] = ["metric": "sleep", "label": "睡眠", "unit": "hours", "latestValue": 7.25,
                 "latestDate": day, "points": [["day": day, "value": 7.25, "source": "synthetic-watch", "measuredAt": now, "sleepStages": stages]]]
-            result = ["summary": ["metrics": ["steps": steps, "sleep": sleep], "measurementCount": 4, "lastMeasurementAt": now],
+            let energy: [String: Any] = ["metric": "active_energy", "label": "活动能量", "unit": "kcal", "latestValue": 285,
+                "latestDate": to, "points": [["day": to, "value": 285, "source": "synthetic-watch", "measuredAt": now]]]
+            result = ["summary": ["metrics": ["steps": steps, "sleep": sleep, "active_energy": energy], "measurementCount": 5, "lastMeasurementAt": now],
                       "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
         case "/api/native/health/goals":
             result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
@@ -267,6 +283,9 @@ private final class NativeRenderingScenario: @unchecked Sendable {
         case "/api/native/session": result = ["email": email, "isOwner": false]
         case "/api/native/sync/channel":
             result = ["revision": 0, "deviceId": null, "label": null, "updatedAt": null, "isCurrentDevice": false]
+        case "/api/native/health/nutrition/goals":
+            result = ["goals": ["calories": "1800.0", "carbs": "200.0", "protein": "115.0", "fat": "60.0",
+                                "revision": 1, "updatedAt": now, "createdAt": now], "weightPlan": null]
         case "/api/native/health/nutrition":
             let totals = ["calories": "1280.0", "carbs": "147.0", "protein": "74.0", "fat": "44.0"]
             let nutrients: [String: [String: Any]] = totals.mapValues { ["total": $0, "knownCount": 2, "unknownCount": 0] }
