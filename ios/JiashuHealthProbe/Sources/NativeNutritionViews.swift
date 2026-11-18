@@ -23,6 +23,7 @@ struct NativeNutritionRoot: View {
     @State private var composing = false
     @State private var openedInitialCompose = false
     @State private var readID = UUID()
+    @State private var supplementalReads: Task<Void, Never>?
 
     private struct ReadKey: Equatable {
         let day: String
@@ -71,6 +72,7 @@ struct NativeNutritionRoot: View {
                 if canRecord { composing = true }
             }
         }
+        .onDisappear { supplementalReads?.cancel() }
         .sheet(isPresented: $composing) {
             NavigationStack {
                 NativeNutritionEntryChooser(context: context, date: $date, meal: $meal) { composing = false }
@@ -286,8 +288,14 @@ struct NativeNutritionRoot: View {
         if goalDay != selected || selected != today { goals = nil }
         defer { if readID == identifier { loading = false } }
 
-        async let supplementalGoals: Void = readGoals(date: selected, today: today, identifier: identifier)
-        async let supplementalActivity: Void = readActivity(date: selected, identifier: identifier)
+        // The diary can finish loading or be retried even if the optional
+        // goals or Health read is still waiting on the network.
+        supplementalReads?.cancel()
+        supplementalReads = Task {
+            async let goal: Void = readGoals(date: selected, today: today, identifier: identifier)
+            await readActivity(date: selected, identifier: identifier)
+            await goal
+        }
         do {
             let path = "health/nutrition?" + NativeWorkspaceFormat.query(["date": selected, "includeDeleted": includesDeleted ? "1" : "0"])
             let result = try await context.api.json(path: path, token: context.token)
@@ -305,7 +313,6 @@ struct NativeNutritionRoot: View {
         } catch {
             if accepts(identifier, date: selected), !(error is CancellationError) { readError = error.localizedDescription }
         }
-        _ = await (supplementalGoals, supplementalActivity)
     }
 
     private func readGoals(date selected: String, today: String, identifier: UUID) async {
