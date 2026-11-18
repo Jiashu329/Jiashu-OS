@@ -1263,30 +1263,34 @@ private struct NativeFinanceBalanceForm: View {
         .toolbar { ToolbarItem(placement: .cancellationAction) { NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: account, changed: changed) { dismiss() } } }
         .modifier(NativeFinanceKeyboardDone())
         .interactiveDismissDisabled(changed || context.busy || context.pending != nil)
-        .task { if !initialized { initialized = true; amount = entry?["amount"].stringValue ?? account["amount"].stringValue ?? ""; date = entry?["asOfDate"].stringValue ?? NativeFinanceContract.today(); note = entry?["note"].stringValue ?? "" } }
+        .task {
+            if !initialized { initialized = true; amount = entry?["amount"].stringValue ?? account["amount"].stringValue ?? ""; date = entry?["asOfDate"].stringValue ?? NativeFinanceContract.today(); note = entry?["note"].stringValue ?? "" }
+            await saveState.recoverConfirmedSave()
+            finishSavedReceipt()
+        }
         .confirmationDialog(entry == nil ? "保存这笔余额？" : "确认按预览修改历史？", isPresented: $confirm, titleVisibility: .visible) { Button("确认保存", role: action == "void" && entry != nil ? .destructive : nil) { Task { await save() } } } message: { Text(context.scopeSummary + "\n" + (account["name"].stringValue ?? "账户") + "\n" + (entry?["asOfDate"].stringValue ?? date) + "\n原始记录和修改原因保留") }
     }
     private var saveSection: some View {
         Section {
-                if saveState.receipt != nil {
-                    Label("余额已保存", systemImage: "checkmark.circle").foregroundStyle(.green)
-                    if let warning = saveState.cleanupWarning { Text(warning).font(.caption).foregroundStyle(NativePalette.muted) }
-                    Button(saveAndAdvance ? "继续核对" : "完成") { finishSavedReceipt(allowingCleanupFailure: true) }
-                } else {
-                    if let error = saveState.error { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) }
-                    if let pending = context.pending {
-                        NavigationLink("核对保存结果") { NativeFinancePendingRecovery(context: context, pending: pending) }
-                    }
-                    if saveState.needsReceiptCheck {
-                        Text("原保存结果待核对").font(.caption).foregroundStyle(NativePalette.muted)
-                        Button("核对保存结果") { Task { await saveState.recoverConfirmedSave(); finishSavedReceipt() } }.disabled(saveState.saving || context.busy)
-                    } else if entry != nil && frozen == nil { Button("预览影响") { Task { await makePreview() } }.disabled(!context.canWrite || previewing || account["archived"].boolValue == true) }
-                    else { Button(entry == nil ? (saveAndAdvance ? "保存并核对下一项" : "保存余额") : "确认修改") { if entry == nil { Task { await save() } } else { confirm = true } }.disabled(!context.canWrite || saveState.saving) }
-                    if frozen != nil && context.pending == nil { Button("返回修改内容") { preview = nil; frozen = nil } }
-                    if previewing { ProgressView("核对服务器预览…") }
-                    if saveState.saving { ProgressView("保存余额…") }
+            if saveState.receipt != nil {
+                Label("余额已保存", systemImage: "checkmark.circle").foregroundStyle(.green)
+                if let warning = saveState.cleanupWarning { Text(warning).font(.caption).foregroundStyle(NativePalette.muted) }
+                Button(saveAndAdvance ? "继续核对" : "完成") { finishSavedReceipt(allowingCleanupFailure: true) }
+            } else {
+                if let error = saveState.error { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) }
+                if let pending = context.pending {
+                    NavigationLink("核对保存结果") { NativeFinancePendingRecovery(context: context, pending: pending) }
                 }
-            }.listRowBackground(NativePalette.surface)
+                if saveState.needsReceiptCheck {
+                    Text("原保存结果待核对").font(.caption).foregroundStyle(NativePalette.muted)
+                    Button("核对保存结果") { Task { await saveState.recoverConfirmedSave(); finishSavedReceipt() } }.disabled(saveState.saving || context.busy)
+                } else if entry != nil && frozen == nil { Button("预览影响") { Task { await makePreview() } }.disabled(!context.canWrite || previewing || account["archived"].boolValue == true) }
+                else { Button(entry == nil ? (saveAndAdvance ? "保存并核对下一项" : "保存余额") : "确认修改") { if entry == nil { Task { await save() } } else { confirm = true } }.disabled(!context.canWrite || saveState.saving) }
+                if frozen != nil && context.pending == nil { Button("返回修改内容") { preview = nil; frozen = nil } }
+                if previewing { ProgressView("核对服务器预览…") }
+                if saveState.saving { ProgressView("保存余额…") }
+            }
+        }.listRowBackground(NativePalette.surface)
     }
     private func finishSavedReceipt(allowingCleanupFailure: Bool = false) {
         guard let result = saveState.complete(cleanup: {
