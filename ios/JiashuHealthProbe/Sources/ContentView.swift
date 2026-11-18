@@ -165,7 +165,6 @@ private struct NativeHealthView: View {
         NavigationStack {
             if let session = model.session {
                 NativeHealthRangeWorkspace(api: model.api, token: session.accessToken, userID: session.user.id, initialMetric: initialMetric)
-                    .navigationTitle("健康")
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Menu {

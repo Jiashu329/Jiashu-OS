@@ -41,9 +41,10 @@ final class NativeUXRenderingTests: XCTestCase {
                               && scenario.completed("/api/native/health/nutrition") > firstMeals
                               && scenario.completed("/api/native/life/douban") > firstLife },
                           waitAtEnd: { scenario.completed("/api/native/life/douban/cover") >= 6 })
-        let goalsBefore = scenario.count("/api/native/health/goals")
-        try await capture(NavigationStack { NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID) },
-                          name: "SYNTHETIC-health-light", waitUntil: { scenario.count("/api/native/health/goals") > goalsBefore })
+        try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "steps", days: 30,
+                                     name: "SYNTHETIC-health-light")
+        try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "weight", days: 7,
+                                     name: "SYNTHETIC-health-dark-accessibility", accessible: true)
         try await capture(NativeSettingsView(model: model), name: "SYNTHETIC-my-light")
         let channelsBefore = scenario.count("/api/native/sync/channel")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
@@ -66,6 +67,9 @@ final class NativeUXRenderingTests: XCTestCase {
            size: CGSize(width: 320, height: 874), dark: true, large: true,
            waitUntil: { scenario.completed("/api/native/health/nutrition") > dietOnlyMeals
                && scenario.completed("/api/native/health/nutrition/goals") > dietOnlyGoals })
+        try await captureLifeShelf(api: api, token: token, scenario: scenario, name: "SYNTHETIC-life-shelf-light")
+        try await captureLifeShelf(api: api, token: token, scenario: scenario,
+                                   name: "SYNTHETIC-life-shelf-dark-accessibility", accessible: true)
         let darkMeals = scenario.completed("/api/native/health/nutrition")
         let darkLife = scenario.completed("/api/native/life/douban")
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-dark-accessibility",
@@ -78,6 +82,43 @@ final class NativeUXRenderingTests: XCTestCase {
         XCTAssertGreaterThan(scenario.count("/api/native/health/goals"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/health/nutrition"), 0)
         XCTAssertGreaterThan(scenario.count("/api/native/sync/channel"), 0)
+    }
+
+    @MainActor
+    private func captureHealthTrend(api: NativeAPI, token: String, scenario: NativeRenderingScenario,
+                                    metric: String, days: Int, name: String, accessible: Bool = false) async throws {
+        let from = scenario.day(offset: 1 - days), to = scenario.day
+        let range = ["from": from, "to": to]
+        let rangeReads = scenario.completed("/api/native/health", matching: range)
+        let goalReads = scenario.completed("/api/native/health/goals")
+        try await capture(NavigationStack {
+            NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID,
+                                       initialMetric: metric, initialFrom: from, initialTo: to)
+        }, name: name, size: accessible ? CGSize(width: 320, height: 874) : CGSize(width: 390, height: 844),
+           dark: accessible, large: accessible, waitUntil: {
+               scenario.completed("/api/native/health", matching: range) > rangeReads
+                   && scenario.completed("/api/native/health/goals") > goalReads
+           })
+    }
+
+    @MainActor
+    private func captureLifeShelf(api: NativeAPI, token: String, scenario: NativeRenderingScenario,
+                                  name: String, accessible: Bool = false) async throws {
+        let preferences = "synthetic.native-rendering.life." + scenario.userID
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: preferences))
+        defer { defaults.removePersistentDomain(forName: preferences) }
+        let collection = ["kind": "all", "limit": "24", "offset": "0", "profile": "all", "sort": "date-desc"]
+        let firstCover = ["profileId": scenario.userID, "domain": "screen", "subjectId": "100001"]
+        let shelfReads = scenario.completed("/api/native/life/douban", matching: collection)
+        let coverReads = scenario.completed("/api/native/life/douban/cover", matching: firstCover)
+        try await capture(NavigationStack {
+            NativeLifeRoot(api: api, token: token, userID: scenario.userID)
+        }.defaultAppStorage(defaults), name: name,
+           size: accessible ? CGSize(width: 320, height: 874) : CGSize(width: 390, height: 844),
+           dark: accessible, large: accessible, waitUntil: {
+               scenario.completed("/api/native/life/douban", matching: collection) > shelfReads
+                   && scenario.completed("/api/native/life/douban/cover", matching: firstCover) > coverReads
+           })
     }
 
     @MainActor
@@ -188,7 +229,7 @@ private final class NativeRenderingScenario: @unchecked Sendable {
     private let referenceDate = Date()
     private let lock = NSLock()
     private var requests: [String: Int] = [:]
-    private var responses: [String: Int] = [:]
+    private var replies: [URL] = []
 
     var day: String { NativeActionDates.day(referenceDate) }
 
@@ -197,17 +238,22 @@ private final class NativeRenderingScenario: @unchecked Sendable {
         return requests[path] ?? 0
     }
 
-    func completed(_ path: String) -> Int {
+    func completed(_ path: String, matching query: [String: String] = [:]) -> Int {
         lock.lock(); defer { lock.unlock() }
-        return responses[path] ?? 0
+        return replies.filter { url in
+            guard url.path == path else { return false }
+            if query.isEmpty { return true }
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return query.allSatisfy { name, value in items.contains(URLQueryItem(name: name, value: value)) }
+        }.count
     }
 
-    func didComplete(_ path: String) {
+    func didComplete(_ url: URL) {
         lock.lock(); defer { lock.unlock() }
-        responses[path, default: 0] += 1
+        replies.append(url)
     }
 
-    private func day(offset: Int) -> String {
+    func day(offset: Int) -> String {
         NativeActionDates.day(NativeActionDates.calendar.date(byAdding: .day, value: offset, to: referenceDate)!)
     }
 
@@ -227,6 +273,37 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                 metric("weight", "体重", "kg", 61.6, points: weight),
                 metric("lean_body_mass", "去脂体重", "kg", 46.2, offset: -1, points: [["day": day(offset: -1), "value": 46.2]]),
                 metric("body_fat", "估算体脂", "%", 25, offset: -2, points: [["day": day(offset: -2), "value": 25]])]
+    }
+
+    private func healthMetrics(from: String, to: String) -> [String: [String: Any]] {
+        func point(_ offset: Int, _ value: Double, source: String = "synthetic-watch") -> [String: Any] {
+            let recordedDay = day(offset: offset)
+            return ["day": recordedDay, "value": value, "source": source, "measuredAt": recordedDay + "T00:00:00Z"]
+        }
+        func metric(_ key: String, _ label: String, _ unit: String, _ points: [[String: Any]]) -> [String: Any] {
+            let inRange = points.filter { point in
+                guard let day = point["day"] as? String else { return false }
+                return day >= from && day <= to
+            }
+            return ["metric": key, "label": label, "unit": unit, "points": inRange,
+                    "latestValue": inRange.last?["value"] ?? NSNull(), "latestDate": inRange.last?["day"] ?? NSNull()]
+        }
+
+        let steps: [Double?] = [6140, 8358, 7930, 9480, 6712, 5430, nil, 8460, 7230, 9820,
+                                8174, 7350, 6877, 8942, 5520, 9103, nil, 7458, 8873, 10348,
+                                7454, 6913, 8832, 4955, 8612, 9242, nil, 7161, 8053, 6240]
+        let stepPoints = steps.enumerated().compactMap { index, total in
+            total.map { point(index + 1 - steps.count, $0) }
+        }
+        let weights: [(Int, Double)] = [(-6, 61.9), (-5, 62.2), (-3, 61.8), (-2, 61.65), (-1, 61.85), (0, 61.6)]
+        let weightPoints = weights.map { point($0.0, $0.1, source: "synthetic-scale") }
+        var sleep = point(0, 7.25)
+        let stages: [String: Double] = ["unspecified": 0, "core": 4, "deep": 1.5, "rem": 1.75, "awake": 0.25, "inBed": 8]
+        sleep["sleepStages"] = stages
+        return ["steps": metric("steps", "步数", "count", stepPoints),
+                "weight": metric("weight", "体重", "kg", weightPoints),
+                "sleep": metric("sleep", "睡眠", "hours", [sleep]),
+                "active_energy": metric("active_energy", "活动能量", "kcal", [point(0, 285)])]
     }
 
     func reply(_ request: URLRequest) throws -> Data {
@@ -259,20 +336,11 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                               "targets": ["calories": "1800.0", "carbs": "200.0", "protein": "115.0", "fat": "60.0"]]]
         case "/api/native/health":
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            let from = query.first(where: { $0.name == "from" })?.value ?? NativeActionDates.day(NativeActionDates.calendar.date(byAdding: .day, value: -29, to: Date())!)
+            let from = query.first(where: { $0.name == "from" })?.value ?? self.day(offset: -29)
             let to = query.first(where: { $0.name == "to" })?.value ?? day
-            let points: [[String: Any]] = (0..<3).map { offset in
-                let date = NativeActionDates.calendar.date(byAdding: .day, value: -offset, to: Date())!
-                let recordedDay = NativeActionDates.day(date)
-                return ["day": recordedDay, "value": 6240 - offset * 700, "source": "manual", "measuredAt": recordedDay + "T00:00:00Z"]
-            }
-            let steps: [String: Any] = ["metric": "steps", "label": "步数", "unit": "步", "latestValue": 6240, "latestDate": day, "points": points]
-            let stages: [String: Any] = ["unspecified": 0, "core": 4, "deep": 1.5, "rem": 1.75, "awake": 0.25, "inBed": 8]
-            let sleep: [String: Any] = ["metric": "sleep", "label": "睡眠", "unit": "hours", "latestValue": 7.25,
-                "latestDate": day, "points": [["day": day, "value": 7.25, "source": "synthetic-watch", "measuredAt": now, "sleepStages": stages]]]
-            let energy: [String: Any] = ["metric": "active_energy", "label": "活动能量", "unit": "kcal", "latestValue": 285,
-                "latestDate": to, "points": [["day": to, "value": 285, "source": "synthetic-watch", "measuredAt": now]]]
-            result = ["summary": ["metrics": ["steps": steps, "sleep": sleep, "active_energy": energy], "measurementCount": 5, "lastMeasurementAt": now],
+            let metrics = healthMetrics(from: from, to: to)
+            let recordedDays = metrics.values.reduce(0) { $0 + (($1["points"] as? [[String: Any]])?.count ?? 0) }
+            result = ["summary": ["metrics": metrics, "measurementCount": recordedDays, "lastMeasurementAt": now],
                       "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
         case "/api/native/health/goals":
             result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
@@ -299,30 +367,37 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                 "knownCalories": "1280.0", "nutrients": nutrients],
                 "dayStatus": ["complete": false, "meals": ["breakfast": "recorded", "lunch": "recorded", "dinner": "unrecorded", "snack": "unrecorded"]]]
         case "/api/native/life/douban":
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            XCTAssertEqual(query?.first(where: { $0.name == "limit" })?.value, "9")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let limit = query.first(where: { $0.name == "limit" })?.value.flatMap { Int($0) }
+            XCTAssertTrue(limit == 9 || limit == 24, "The Today shelf and collection request distinct page sizes")
+            XCTAssertEqual(query.first(where: { $0.name == "hidden" })?.value, "visible")
             func item(_ domain: String, _ id: String, _ title: String, _ kind: String, _ offset: Int) -> [String: Any] {
                 let host = domain == "screen" ? "movie.douban.com" : domain == "book" ? "book.douban.com" : "music.douban.com"
                 let cover: Any = offset == -5 ? null : "https://img1.doubanio.com/view/subject/l/public/synthetic-\(id).jpg" as Any
+                let rating: Any = offset == -5 ? null : (offset % 2 == 0 ? 4 : 5) as Any
                 return ["profileId": userID, "domain": domain, "subjectId": id, "title": title, "kind": kind,
-                        "url": "https://" + host + "/subject/" + id + "/", "coverUrl": cover, "rating": 4,
+                        "url": "https://" + host + "/subject/" + id + "/", "coverUrl": cover, "rating": rating,
                         "markedDate": self.day(offset: offset), "source": "import", "updatedAt": now,
                         "local": ["note": "", "tags": [], "hidden": false, "revision": 0]]
             }
-            result = ["items": [item("screen", "100001", "示例电影", "movie", 0),
-                                item("book", "100002", "示例阅读", "book", -1),
-                                item("music", "100003", "示例原声", "music", -2),
-                                item("screen", "100004", "示例剧集", "series", -3),
-                                item("book", "100005", "示例随笔", "book", -4),
-                                item("music", "100006", "示例唱片", "music", -5),
-                                item("screen", "100007", "示例纪录片", "movie", -6),
-                                item("book", "100008", "示例小说", "book", -7),
-                                item("music", "100009", "示例精选", "music", -8)]]
+            let items = [item("screen", "100001", "示例电影", "movie", 0),
+                         item("book", "100002", "示例阅读", "book", -1),
+                         item("music", "100003", "示例原声", "music", -2),
+                         item("screen", "100004", "示例剧集", "series", -3),
+                         item("book", "100005", "示例随笔", "book", -4),
+                         item("music", "100006", "示例唱片", "music", -5),
+                         item("screen", "100007", "示例纪录片", "movie", -6),
+                         item("book", "100008", "示例小说", "book", -7),
+                         item("music", "100009", "示例精选", "music", -8)]
+            result = ["items": items, "total": items.count, "limit": limit ?? items.count, "offset": 0, "hasMore": false,
+                      "counts": ["all": items.count, "movie": 2, "series": 1, "screen": 0, "book": 3, "music": 3],
+                      "dataEpoch": 1, "years": [NativeActionDates.calendar.component(.year, from: referenceDate)], "tags": [],
+                      "features": ["ratings": true], "lastRun": null]
         case "/api/native/life/douban/cover":
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
             XCTAssertEqual(query?.first(where: { $0.name == "profileId" })?.value, userID)
             let domain = query?.first(where: { $0.name == "domain" })?.value
-            return syntheticCover(domain: domain)
+            return syntheticCover(domain: domain, subject: query?.first(where: { $0.name == "subjectId" })?.value)
         default:
             XCTFail("Missing synthetic rendering response: " + path)
             throw URLError(.unsupportedURL)
@@ -330,9 +405,9 @@ private final class NativeRenderingScenario: @unchecked Sendable {
         return try JSONSerialization.data(withJSONObject: result)
     }
 
-    private func syntheticCover(domain: String?) -> Data {
-        let size = domain == "screen" ? CGSize(width: 240, height: 94)
-            : domain == "book" ? CGSize(width: 95, height: 230) : CGSize(width: 150, height: 150)
+    private func syntheticCover(domain: String?, subject: String?) -> Data {
+        let size = subject == "100004" ? CGSize(width: 240, height: 94)
+            : domain == "music" ? CGSize(width: 150, height: 150) : CGSize(width: 144, height: 192)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
@@ -367,7 +442,7 @@ private final class NativeRenderingProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
-            scenario.didComplete(url.path)
+            scenario.didComplete(url)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() { }

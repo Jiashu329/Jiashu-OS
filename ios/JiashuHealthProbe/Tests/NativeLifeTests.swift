@@ -137,6 +137,33 @@ final class NativeLifeTests: XCTestCase {
         XCTAssertEqual(components.queryItems?.first(where: { $0.name == "offset" })?.value, "24")
         XCTAssertEqual(components.queryItems?.first(where: { $0.name == "missing" })?.value, "1")
     }
+    @MainActor
+    func testShelfKeepsThreeColumnsForPhoneAndMakesRoomForLongTitlesAndLargerText() {
+        let phoneWidth: CGFloat = 390 - 36
+        XCTAssertEqual(NativeLifeShelfMetrics.columnCount(availableWidth: phoneWidth, titlePointSize: 14,
+                                                          prefersTwoColumns: false, titles: ["合成电影", "合成书籍", "合成专辑"]), 3)
+        XCTAssertEqual(NativeLifeShelfMetrics.columnCount(availableWidth: 320 - 36, titlePointSize: 14,
+                                                          prefersTwoColumns: false, titles: ["合成电影"]), 2)
+        XCTAssertEqual(NativeLifeShelfMetrics.columnCount(availableWidth: phoneWidth, titlePointSize: 14,
+                                                          prefersTwoColumns: false, titles: [String(repeating: "宽标题", count: 10)]), 2)
+        XCTAssertEqual(NativeLifeShelfMetrics.columnCount(availableWidth: phoneWidth, titlePointSize: 14,
+                                                          prefersTwoColumns: false, titles: [String(repeating: "W", count: 30)]), 2)
+        XCTAssertEqual(NativeLifeShelfMetrics.columnCount(availableWidth: phoneWidth, titlePointSize: 20,
+                                                          prefersTwoColumns: true, titles: ["合成电影"]), 2)
+    }
+    func testShelfRetainsPortraitAndSquareArtworkAndNeverInventsUnknownMarkingDate() {
+        let book = NativeLifeShelfMetrics.artworkSize(width: 108, domain: "book")
+        let film = NativeLifeShelfMetrics.artworkSize(width: 108, domain: "screen")
+        let album = NativeLifeShelfMetrics.artworkSize(width: 108, domain: "music")
+        XCTAssertEqual(book.width, 108)
+        XCTAssertEqual(book.height, 144)
+        XCTAssertEqual(film, book)
+        XCTAssertEqual(album.width, album.height)
+        XCTAssertEqual(book.height - album.height, 36)
+        XCTAssertEqual(NativeLifeShelfMetrics.markingDate("2026-11-18"), "11/18")
+        XCTAssertEqual(NativeLifeShelfMetrics.markingDate(nil), "日期未知")
+        XCTAssertEqual(NativeLifeShelfMetrics.markingDate("  "), "日期未知")
+    }
     func testLocalUpdateIncludesOwnerKeyEpochAndCASWithoutImportedFields() throws {
         let body = try NativeLifeContract.localBody(item: item, epoch: 3, note: "新备注", tags: ["新标签"], hidden: true)
         XCTAssertEqual(body["expectedLocalRevision"].intValue, 7)
