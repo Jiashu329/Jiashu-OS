@@ -23,6 +23,21 @@ enum NativeHomeFinanceCardRules {
         return values.first { $0.currency == currency }
     }
 
+    /// Replace only the known, matching currency prefix. The server's digits,
+    /// grouping and decimal places remain strings, including values beyond 2^53.
+    static func amountText(_ formatted: String, currency: String, hidden: Bool = false) -> String {
+        if hidden { return "••••••" }
+        if formatted.isEmpty { return "暂无记录" }
+        let symbols = ["CNY": "¥", "JPY": "¥", "USD": "$", "HKD": "HK$", "SGD": "S$",
+                       "AUD": "A$", "CAD": "C$", "EUR": "€", "GBP": "£", "RUB": "₽"]
+        let prefix = currency + " "
+        guard let symbol = symbols[currency], formatted.hasPrefix(prefix) else { return formatted }
+        let amount = String(formatted.dropFirst(prefix.count))
+        guard !amount.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+              amount.range(of: "^-?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\\.[0-9]+)?$", options: .regularExpression) != nil else { return formatted }
+        return amount.hasPrefix("-") ? "-" + symbol + String(amount.dropFirst()) : symbol + amount
+    }
+
     static func balanceDateCaption(_ finance: NativeOverviewFinance, now: Date = Date()) -> String? {
         guard finance.status == "ready", let oldest = balanceDay(finance.oldestBalanceDate),
               let latest = balanceDay(finance.latestBalanceDate), oldest.iso <= latest.iso else { return nil }
@@ -254,33 +269,33 @@ struct NativeHomeFinanceCard: View {
                 Text("净资产").font(.caption).foregroundStyle(NativePalette.muted)
                 Image(systemName: "arrow.up.right").font(.caption2).foregroundStyle(NativePalette.muted)
             }
-            moneyText(values.netFormatted, title: "净资产", prominent: true)
+            moneyText(values.netFormatted, currency: values.currency, title: "净资产", prominent: true)
         }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
 
     private func assetValue(_ values: NativeOverviewCurrency) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("资产").font(.caption).foregroundStyle(NativePalette.muted)
-            moneyText(values.assetsFormatted, title: "资产")
+            moneyText(values.assetsFormatted, currency: values.currency, title: "资产")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func liabilityValue(_ values: NativeOverviewCurrency) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("负债").font(.caption).foregroundStyle(NativePalette.muted)
-            moneyText(values.liabilitiesFormatted, title: "负债")
+            moneyText(values.liabilitiesFormatted, currency: values.currency, title: "负债")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func moneyText(_ formatted: String, title: String, prominent: Bool = false) -> some View {
-        let shown: String = moneyHidden ? "••••••" : (formatted.isEmpty ? "暂无记录" : formatted)
+    private func moneyText(_ formatted: String, currency: String, title: String, prominent: Bool = false) -> some View {
+        let shown = NativeHomeFinanceCardRules.amountText(formatted, currency: currency, hidden: moneyHidden)
         return Text(shown)
             .font(prominent ? .largeTitle.weight(.semibold) : .body.weight(.medium))
             .monospacedDigit()
             .foregroundStyle(NativePalette.ink)
             .fixedSize(horizontal: false, vertical: true)
             .privacySensitive()
-            .accessibilityLabel(title + "，" + (moneyHidden ? "金额已隐藏" : shown))
+            .accessibilityLabel(title + "，" + (moneyHidden ? "金额已隐藏" : currency + " " + shown))
     }
 
     private func balanceAge(_ finance: NativeOverviewFinance) -> some View {

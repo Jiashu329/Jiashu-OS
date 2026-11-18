@@ -16,9 +16,9 @@ final class NativeHomeLifeModel: ObservableObject {
         if ownerID != owner { items = []; error = nil }
         ownerID = owner; loading = true
         do {
-            let value = try await api.json(path: "life/douban?kind=all&sort=date-desc&hidden=visible&limit=3", token: session.accessToken)
+            let value = try await api.json(path: "life/douban?kind=all&sort=date-desc&hidden=visible&limit=9", token: session.accessToken)
             guard generation == request, ownerID == owner, !Task.isCancelled else { return }
-            guard case .array(let records) = value["items"], records.count <= 3 else { throw NativeAPIError.invalidResponse }
+            guard case .array(let records) = value["items"], records.count <= 9 else { throw NativeAPIError.invalidResponse }
             let recent = records.map { NativeLifeItem(raw: $0) }
             guard recent.allSatisfy({ !$0.profile.isEmpty && !$0.subjectID.isEmpty && $0.raw["title"].stringValue?.isEmpty == false && ["screen", "book", "music"].contains($0.domain) && $0.raw["local"]["hidden"].boolValue != true }),
                   Set(recent.map(\.id)).count == recent.count else { throw NativeAPIError.invalidResponse }
@@ -38,6 +38,9 @@ struct NativeHomeLifeCard: View {
     @ObservedObject var model: NativeAppModel
     @StateObject private var recent = NativeHomeLifeModel()
     @Environment(\.dynamicTypeSize) private var typeSize
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 0), spacing: 10, alignment: .topLeading), count: 3)
+    }
 
     var body: some View {
         if let session = model.session {
@@ -61,7 +64,7 @@ struct NativeHomeLifeCard: View {
                                     NativeLifeDetailDestination(api: model.api, token: session.accessToken, userID: session.user.id, item: item)
                                 } label: {
                                     HStack(alignment: .center, spacing: 14) {
-                                        artwork(item, session: session).frame(width: 82, height: 110)
+                                        artwork(item, session: session, height: 110).frame(width: 82)
                                         VStack(alignment: .leading, spacing: 7) {
                                             Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.ink)
                                             Text(item.kindLabel + " · " + markingDate(item)).font(.caption).foregroundStyle(NativePalette.muted)
@@ -71,14 +74,13 @@ struct NativeHomeLifeCard: View {
                             }
                         }
                     } else {
-                        HStack(alignment: .top, spacing: 10) {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
                             ForEach(recent.items) { item in
                                 NavigationLink {
                                     NativeLifeDetailDestination(api: model.api, token: session.accessToken, userID: session.user.id, item: item)
                                 } label: {
                                     VStack(alignment: .leading, spacing: 7) {
-                                        artwork(item, session: session)
-                                            .frame(height: item.domain == "book" ? 110 : item.domain == "music" ? 116 : 122)
+                                        artwork(item, session: session, height: item.domain == "book" ? 110 : item.domain == "music" ? 116 : 122)
                                             .padding(.top, item.domain == "book" ? 12 : item.domain == "music" ? 6 : 0)
                                         Text(item.title).font(.caption.weight(.medium)).foregroundStyle(NativePalette.ink).lineLimit(2)
                                             .frame(minHeight: 30, alignment: .topLeading)
@@ -89,8 +91,8 @@ struct NativeHomeLifeCard: View {
                         }
                     }
                 } else if recent.loading || recent.ownerID != session.user.id {
-                    HStack(spacing: 10) {
-                        ForEach(0..<3, id: \.self) { index in
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+                        ForEach(0..<9, id: \.self) { index in
                             Color.clear.frame(maxWidth: .infinity).frame(height: 116)
                                 .nativeGeometricCard(fill: index == 1 ? NativePalette.peach.opacity(0.45) : NativePalette.soft.opacity(0.6), corner: 18, compactCorner: 6)
                         }
@@ -115,9 +117,10 @@ struct NativeHomeLifeCard: View {
             .onDisappear { recent.invalidate() }
         }
     }
-    private func artwork(_ item: NativeLifeItem, session: NativeSession) -> some View {
-        NativeLifeCover(api: model.api, token: session.accessToken, item: item)
+    private func artwork(_ item: NativeLifeItem, session: NativeSession, height: CGFloat) -> some View {
+        NativeLifeCover(api: model.api, token: session.accessToken, item: item, contentMode: .fill)
             .id(session.user.id + ":" + item.id)
+            .frame(height: height)
             .clipShape(UnevenRoundedRectangle(topLeadingRadius: item.domain == "book" ? 6 : 18,
                                                bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18))
             .accessibilityHidden(true)

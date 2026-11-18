@@ -415,6 +415,7 @@ struct NativeLifeCover: View {
     let api: NativeAPI
     let token: String
     let item: NativeLifeItem
+    var contentMode: ContentMode = .fit
     @State private var image: UIImage?
     @State private var failed = false
     @State private var retry = 0
@@ -424,20 +425,30 @@ struct NativeLifeCover: View {
         return url?.host == "image.tmdb.org" ? url : nil
     }
     var body: some View {
-        ZStack {
-            NativePalette.soft
-            if let publicURL {
-                // AsyncImage has no authenticated headers. Never pass API tokens
-                // to user-selected images or TMDB's public image host.
-                AsyncImage(url: publicURL) { phase in
-                    if let image = phase.image { image.resizable().scaledToFit() }
-                    else if phase.error != nil { placeholder }
-                    else { ProgressView() }
-                }
-            } else if let image { Image(uiImage: image).resizable().scaledToFit() }
-            else if failed { placeholder.overlay(alignment: .bottomTrailing) { Button { retry += 1 } label: { Image(systemName: "arrow.clockwise").font(.caption).foregroundStyle(NativePalette.ink).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("重试封面") } }
-            else if item.raw["coverUrl"].stringValue != nil { ProgressView() }
-            else { placeholder }
+        GeometryReader { geometry in
+            ZStack {
+                NativePalette.soft
+                if let publicURL {
+                    // AsyncImage has no authenticated headers. Never pass API tokens
+                    // to user-selected images or TMDB's public image host.
+                    AsyncImage(url: publicURL) { phase in
+                        if let image = phase.image {
+                            image.resizable().aspectRatio(contentMode: contentMode)
+                                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                        } else if phase.error != nil { placeholder }
+                        else { ProgressView() }
+                    }
+                } else if let image {
+                    Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                } else if failed { placeholder.overlay(alignment: .bottomTrailing) { Button { retry += 1 } label: { Image(systemName: "arrow.clockwise").font(.caption).foregroundStyle(NativePalette.ink).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("重试封面") } }
+                else if item.raw["coverUrl"].stringValue != nil { ProgressView() }
+                else { placeholder }
+            }
+            // The caller's asymmetric mask is applied to these exact bounds,
+            // after images, loading and fallback share one clipping rectangle.
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
         .task(id: item.id + ":" + item.updatedAt + ":" + String(retry)) {
             guard publicURL == nil, item.raw["coverUrl"].stringValue != nil else { return }

@@ -12,11 +12,26 @@ struct NativeNutritionRoot: View {
     @State private var meal: String
     @State private var includeDeleted = false
     @State private var data: NativeJSON = .null
+    @State private var goals: NativeJSON?
+    @State private var goalDay: String?
+    @State private var activity: Double?
+    @State private var activityDay: String?
+    @State private var expandedMeals: Set<QuickEntryMeal> = []
+    @State private var expansionDay: String?
     @State private var loading = false
     @State private var readError: String?
     @State private var composing = false
     @State private var openedInitialCompose = false
     @State private var readID = UUID()
+    @State private var supplementalReads: Task<Void, Never>?
+
+    private struct ReadKey: Equatable {
+        let day: String
+        let today: String
+        let includeDeleted: Bool
+        let mutation: Int
+    }
+
     init(api: NativeAPI, token: String, userID: String, initialCompose: Bool = false,
          initialDate: Date = Date(), initialMeal: String? = nil) {
         self.initialCompose = initialCompose
@@ -24,99 +39,328 @@ struct NativeNutritionRoot: View {
         _meal = State(initialValue: initialMeal ?? NativeNutritionEntrySelection.suggestedMeal())
         _context = StateObject(wrappedValue: NativeNutritionContext(api: api, token: token, userID: userID))
     }
+
     private var day: String { NativeActionDates.day(date) }
+    private var diary: NativeJSON { data["date"].stringValue == day ? data : .null }
+    private var canRecord: Bool { context.pending == nil && !context.busy }
+
     var body: some View {
-        List {
-            pendingSection
-            NativeNutritionErrorRow(text: context.error)
-            Section {
-                DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
-                Button("记一餐", systemImage: "plus.circle.fill") { composing = true }
-                    .font(.headline).padding(.vertical, 5)
-                    .disabled(context.pending != nil || context.busy)
-            }.listRowBackground(NativePalette.surface)
-            if loading { Section { ProgressView("读取饮食记录…") }.listRowBackground(NativePalette.surface) }
-            if let readError { Section { NativeNutritionErrorRow(text: readError); Button("重试") { Task { await load() } } }.listRowBackground(NativePalette.surface) }
-            if data != .null {
-                Section("当天记录") {
-                    NativeNutritionTotals(nutrients: data["summary"]["nutrients"], compact: true)
-                    NavigationLink {
-                        NativeNutritionStatusView(context: context, initial: data["dayStatus"], date: day)
-                    } label: {
-                        Label(data["dayStatus"]["complete"].boolValue == true ? "已记完 · 餐次状态" : "确认当天记录",
-                              systemImage: data["dayStatus"]["complete"].boolValue == true ? "checkmark.circle.fill" : "circle")
-                    }.padding(.vertical, 5)
-                }.listRowBackground(NativePalette.surface)
-                ForEach(QuickEntryMeal.allCases) { meal in mealSection(meal) }
-                Section { Toggle("显示已删除记录", isOn: $includeDeleted) }.listRowBackground(NativePalette.surface)
-            }
-            Section("回顾与目标") {
-                NavigationLink("饮食回顾") { NativeNutritionReviewView(context: context, initialDate: date) }
-                NavigationLink("营养目标与需求") { NativeNutritionGoalsView(context: context) }
-            }.listRowBackground(NativePalette.surface)
+        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            let today = NativeActionDates.day(timeline.date)
+            page(now: timeline.date, today: today)
+                .task(id: ReadKey(day: day, today: today, includeDeleted: includeDeleted, mutation: context.changes)) {
+                    await load(today: today)
+                }
         }
-        .nativeGeometricPage().navigationTitle("饮食")
+        .nativeGeometricPage()
+        .navigationTitle("饮食")
         .environment(\.timeZone, NativeActionDates.timeZone)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                NavigationLink { NativeNutritionGoalsView(context: context) } label: {
+                    Label("目标", systemImage: "slider.horizontal.3").labelStyle(.titleOnly)
+                }
+                Menu {
+                    Toggle("显示已删除记录", isOn: $includeDeleted)
+                } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("饮食选项") }
+            }
+        }
         .task {
             context.restorePending()
             if initialCompose, !openedInitialCompose {
                 openedInitialCompose = true
-                if context.pending == nil { composing = true }
+                if canRecord { composing = true }
             }
         }
-        .task(id: day + String(includeDeleted)) { await load() }
-        .onChange(of: context.changes) { _, _ in Task { await load() } }
-        .refreshable { await load() }
+        .onDisappear { supplementalReads?.cancel() }
         .sheet(isPresented: $composing) {
             NavigationStack {
                 NativeNutritionEntryChooser(context: context, date: $date, meal: $meal) { composing = false }
             }
+            .environment(\.timeZone, NativeActionDates.timeZone)
         }
     }
-    @ViewBuilder private var pendingSection: some View {
-        if let pending = context.pending {
-            Section("上次保存待确认") {
-                Text(pending.title)
-                Text("继续核对会重试原操作，不会重复记录。").font(.footnote).foregroundStyle(NativePalette.muted)
-                Button("继续核对") { Task { await context.retry(pending); await load() } }.disabled(context.busy)
-            }.listRowBackground(NativePalette.surface)
-        }
-    }
-    private func mealSection(_ selectedMeal: QuickEntryMeal) -> some View {
-        Section {
-            let rows = data["entries"].arrayValue.filter { $0["meal"].stringValue == selectedMeal.rawValue }
-            if rows.isEmpty {
-                Text(data["dayStatus"]["meals"][selectedMeal.rawValue].stringValue == "skipped" ? "已确认未进食" : "暂无记录").foregroundStyle(NativePalette.muted)
-            }
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                NavigationLink { NativeNutritionEntryDetail(context: context, initial: row) } label: {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(row["name"].stringValue ?? "食物").strikethrough(row["deleted"].boolValue == true)
-                            .font(.body.weight(.medium)).foregroundStyle(NativePalette.ink)
-                        Text((row["portion"].stringValue ?? "") + " · " + NativeNutritionFields.value(row["calories"], unit: "千卡"))
-                            .font(.footnote).foregroundStyle(NativePalette.muted)
-                        if row["deleted"].boolValue == true { Text("已删除").font(.caption).foregroundStyle(NativePalette.muted) }
-                    }.padding(.vertical, 6)
+
+    private func page(now: Date, today: String) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                dateNavigation(now: now)
+                pendingSection
+                NativeNutritionErrorRow(text: context.error)
+                if let readError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        NativeNutritionErrorRow(text: readError)
+                        Button("重试") { Task { await load(today: today) } }.disabled(loading)
+                    }
+                }
+                if diary != .null {
+                    NativeDietEnergyOverview(nutrients: diary["summary"]["nutrients"],
+                                             targets: day == today && goalDay == day ? goals : nil)
+                    activitySummary
+                    mealJournal
+                } else if loading || readError == nil {
+                    ProgressView("读取饮食…").frame(maxWidth: .infinity, minHeight: 116)
                 }
             }
-        } header: {
-            HStack {
-                Text(selectedMeal.title); Spacer()
-                Button("添加") { meal = selectedMeal.rawValue; composing = true }
-                    .disabled(context.pending != nil || context.busy)
-            }
-        }.listRowBackground(NativePalette.surface)
+            .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 14)
+            .frame(maxWidth: 620).frame(maxWidth: .infinity)
+        }
+        .refreshable { await load(today: today) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { actions }
     }
-    private func load() async {
-        let selected = day, identifier = UUID(); readID = identifier
-        loading = true; readError = nil; data = .null
+
+    private func dateNavigation(now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            DatePicker("饮食日期", selection: $date, in: ...now, displayedComponents: .date)
+                .datePickerStyle(.compact).labelsHidden()
+                .accessibilityIdentifier("diet-date-picker")
+            NativeDietWeekStrip(date: $date, now: now)
+        }
+    }
+
+    @ViewBuilder private var pendingSection: some View {
+        if let pending = context.pending {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("保存待确认").font(.headline)
+                Text(pending.title).font(.subheadline).foregroundStyle(NativePalette.muted)
+                Button("继续核对") { Task { await context.retry(pending) } }
+                    .frame(minHeight: 44).disabled(context.busy)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            .nativeGeometricCard(corner: 18, compactCorner: 7)
+        }
+    }
+
+    private var activitySummary: some View {
+        let value = activityDay == day ? activity : nil
+        return HStack(spacing: 8) {
+            Image(systemName: "waveform.path").foregroundStyle(NativePalette.accent).accessibilityHidden(true)
+            Text("活动能量")
+            Spacer(minLength: 6)
+            Text(value.map { $0.formatted(.number.precision(.fractionLength(0...1))) + " 千卡" } ?? "—")
+                .monospacedDigit().foregroundStyle(NativePalette.muted)
+        }
+        .font(.subheadline).foregroundStyle(NativePalette.ink)
+        .padding(.horizontal, 3).frame(minHeight: 30)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("活动能量")
+        .accessibilityValue(value.map { $0.formatted(.number.precision(.fractionLength(0...1))) + " 千卡" } ?? "暂无记录")
+    }
+
+    private var mealJournal: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("餐次").font(.headline).foregroundStyle(NativePalette.ink)
+                Spacer(minLength: 8)
+                NavigationLink {
+                    NativeNutritionStatusView(context: context, initial: diary["dayStatus"], date: day)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(diary["dayStatus"]["complete"].boolValue == true ? "已记完"
+                             : diary["summary"]["entryCount"].intValue == 0 ? "未记录" : "记录中")
+                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                    }
+                    .font(.subheadline).foregroundStyle(NativePalette.accent).frame(minHeight: 44)
+                }
+                .buttonStyle(NativePressStyle())
+                .accessibilityHint("查看并确认餐次状态")
+            }
+            ForEach(QuickEntryMeal.allCases) { selectedMeal in mealCard(selectedMeal) }
+        }
+    }
+
+    private func mealCard(_ selectedMeal: QuickEntryMeal) -> some View {
+        let mealKey = selectedMeal.rawValue
+        let rows = diary["entries"].arrayValue.filter {
+            $0["meal"].stringValue == mealKey && (includeDeleted || $0["deleted"].boolValue != true)
+        }
+        let expanded = expansionDay == day && expandedMeals.contains(selectedMeal)
+        let total = NativeDietMealSubtotal.label(entries: rows,
+            skipped: diary["dayStatus"]["meals"][mealKey].stringValue == "skipped")
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 2) {
+                Button {
+                    if rows.isEmpty { startRecording(selectedMeal) }
+                    else if expanded { expandedMeals.remove(selectedMeal) }
+                    else { expandedMeals.insert(selectedMeal) }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: mealIcon(selectedMeal)).font(.subheadline)
+                            .foregroundStyle(NativePalette.accent).accessibilityHidden(true)
+                        Text(selectedMeal.title).font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 4)
+                        Text(total).font(.caption).monospacedDigit().foregroundStyle(NativePalette.muted)
+                        if !rows.isEmpty {
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2.weight(.medium)).foregroundStyle(NativePalette.accent)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .foregroundStyle(NativePalette.ink).multilineTextAlignment(.leading)
+                    .frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(NativePressStyle())
+                .disabled(rows.isEmpty && !canRecord)
+                .accessibilityHint(rows.isEmpty ? "添加记录" : expanded ? "收起食物明细" : "展开食物明细")
+                Button { startRecording(selectedMeal) } label: {
+                    Image(systemName: "plus").font(.body).foregroundStyle(NativePalette.accent)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(NativePressStyle()).disabled(!canRecord)
+                .accessibilityLabel("添加" + selectedMeal.title)
+            }
+            if expanded {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
+                    Divider()
+                    NavigationLink { NativeNutritionEntryDetail(context: context, initial: entry) } label: {
+                        foodRow(entry)
+                    }.buttonStyle(NativePressStyle())
+                }
+            }
+        }
+        .padding(.leading, 11).padding(.trailing, 4)
+        .nativeGeometricCard(corner: 18, compactCorner: 7)
+    }
+
+    private func foodRow(_ entry: NativeJSON) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry["name"].stringValue ?? "食物")
+                    .strikethrough(entry["deleted"].boolValue == true)
+                if let portion = entry["portion"].stringValue, !portion.isEmpty {
+                    Text(portion).font(.caption).foregroundStyle(NativePalette.muted)
+                }
+                if entry["deleted"].boolValue == true {
+                    Text("已删除").font(.caption).foregroundStyle(NativePalette.muted)
+                }
+            }
+            Spacer(minLength: 2)
+            Text(NativeNutritionFields.value(entry["calories"], unit: "千卡"))
+                .font(.caption).monospacedDigit().foregroundStyle(NativePalette.muted)
+        }
+        .font(.subheadline).foregroundStyle(NativePalette.ink)
+        .padding(.vertical, 7).padding(.trailing, 10)
+        .frame(minHeight: 44).contentShape(Rectangle())
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            Button { startRecording() } label: {
+                Label("记一餐", systemImage: "plus")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(NativePalette.onAccent)
+                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 44)
+                    .nativeGeometricCard(fill: NativePalette.accent, corner: 18, compactCorner: 7, compactAt: .bottomTrailing)
+            }
+            .buttonStyle(NativePressStyle()).disabled(!canRecord)
+            NavigationLink { NativeNutritionReviewView(context: context, initialDate: date) } label: {
+                Label("回顾", systemImage: "calendar")
+                    .font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.accent)
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    .nativeGeometricCard(corner: 18, compactCorner: 7, compactAt: .topLeading)
+            }.buttonStyle(NativePressStyle())
+        }
+        .padding(.horizontal, 16).padding(.vertical, 7)
+        .frame(maxWidth: 620).frame(maxWidth: .infinity)
+        .background(NativePalette.canvas)
+    }
+
+    private func startRecording(_ selected: QuickEntryMeal? = nil) {
+        guard canRecord else { return }
+        if let selected { meal = selected.rawValue }
+        composing = true
+    }
+
+    private func mealIcon(_ selectedMeal: QuickEntryMeal) -> String {
+        switch selectedMeal.rawValue {
+        case "breakfast": return "cup.and.saucer"
+        case "lunch": return "sun.max"
+        case "dinner": return "moon"
+        default: return "carrot"
+        }
+    }
+
+    private func load(today: String) async {
+        let selected = day, identifier = UUID(), includesDeleted = includeDeleted
+        readID = identifier
+        loading = true; readError = nil
+        if activityDay != selected { activity = nil }
+        if goalDay != selected || selected != today { goals = nil }
+        defer { if readID == identifier { loading = false } }
+
+        // The diary can finish loading or be retried even if the optional
+        // goals or Health read is still waiting on the network.
+        supplementalReads?.cancel()
+        supplementalReads = Task {
+            async let goal: Void = readGoals(date: selected, today: today, identifier: identifier)
+            await readActivity(date: selected, identifier: identifier)
+            await goal
+        }
         do {
-            let result = try await context.api.json(path: "health/nutrition?" + NativeWorkspaceFormat.query(["date": selected, "includeDeleted": includeDeleted ? "1" : "0"]), token: context.token)
-            guard !Task.isCancelled, readID == identifier, day == selected else { return }
+            let path = "health/nutrition?" + NativeWorkspaceFormat.query(["date": selected, "includeDeleted": includesDeleted ? "1" : "0"])
+            let result = try await context.api.json(path: path, token: context.token)
+            guard accepts(identifier, date: selected) else { return }
             guard result["date"].stringValue == selected else { throw NativeAPIError.invalidResponse }
             data = result
-        } catch { if !Task.isCancelled && readID == identifier { readError = error.localizedDescription } }
-        if readID == identifier { loading = false }
+            if expansionDay != selected {
+                let rows = result["entries"].arrayValue
+                let first = QuickEntryMeal.allCases.first { meal in
+                    rows.contains { $0["meal"].stringValue == meal.rawValue && $0["deleted"].boolValue != true }
+                }
+                expandedMeals = first.map { Set([$0]) } ?? []
+                expansionDay = selected
+            }
+        } catch {
+            if accepts(identifier, date: selected), !(error is CancellationError) { readError = error.localizedDescription }
+        }
+    }
+
+    private func readGoals(date selected: String, today: String, identifier: UUID) async {
+        guard selected == today else { return }
+        let result = try? await context.api.json(path: "health/nutrition/goals", token: context.token)
+        guard accepts(identifier, date: selected), NativeActionDates.day(Date()) == today else { return }
+        goalDay = selected
+        if let result, case .object = result["goals"] { goals = result["goals"] }
+        else { goals = nil }
+    }
+
+    private func readActivity(date selected: String, identifier: UUID) async {
+        let path = "health?" + NativeWorkspaceFormat.query(["from": selected, "to": selected])
+        let result: NativeHealthResponse? = try? await context.api.request(
+            path: path, token: context.token, reportWorkspaceFailure: true)
+        guard accepts(identifier, date: selected) else { return }
+        activityDay = selected
+        activity = result.flatMap { NativeDietActivity.value(in: $0, date: selected) }
+    }
+
+    private func accepts(_ identifier: UUID, date selected: String) -> Bool {
+        !Task.isCancelled && readID == identifier && day == selected
+    }
+}
+
+enum NativeDietActivity {
+    static func value(in response: NativeHealthResponse, date: String) -> Double? {
+        guard let metric = response.summary.metrics["active_energy"], metric.unit == "kcal",
+              let point = metric.points.first(where: { $0.day == date }), point.value.isFinite, point.value >= 0 else {
+            return nil
+        }
+        return point.value
+    }
+}
+
+enum NativeDietMealSubtotal {
+    static func label(entries: [NativeJSON], skipped: Bool) -> String {
+        let active = entries.filter { $0["deleted"].boolValue != true }
+        guard !active.isEmpty else { return skipped ? "未进食" : "未记录" }
+        let amounts = active.compactMap { entry -> Decimal? in
+            guard let text = entry["calories"].stringValue, !text.isEmpty,
+                  let value = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")),
+                  !value.isNaN, value >= 0 else { return nil }
+            return value
+        }
+        guard !amounts.isEmpty else { return "—" }
+        let value = NSDecimalNumber(decimal: amounts.reduce(Decimal.zero, +)).stringValue
+        return (amounts.count < active.count ? "≥" : "") + value + " 千卡"
     }
 }
 

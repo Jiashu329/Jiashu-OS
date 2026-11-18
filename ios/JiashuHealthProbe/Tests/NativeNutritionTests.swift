@@ -23,6 +23,59 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertThrowsError(try NativeNutritionFields.nullable("-1"))
     }
 
+    func testHomeProgressDistinguishesMissingPartialZeroAndExceededIntake() {
+        let missing = NativeHomeNutrient("脂肪", unit: "g", total: nil, knownCount: 0, unknownCount: 2, target: "60.0")
+        XCTAssertEqual(missing.quantity, "— / 60 g")
+        XCTAssertNil(missing.fraction)
+        XCTAssertFalse(missing.isPartial)
+
+        let partial = NativeHomeNutrient("蛋白质", unit: "g", total: "25.5", knownCount: 1, unknownCount: 1, target: "51.0")
+        XCTAssertEqual(partial.quantity, "≥25.5 / 51 g")
+        XCTAssertEqual(partial.fraction, 0.5)
+        XCTAssertTrue(partial.accessibilityValue.contains("已知小计"))
+
+        let zero = NativeHomeNutrient("能量", unit: "千卡", total: "0.0", knownCount: 1, unknownCount: 0, target: "1800.0")
+        XCTAssertEqual(zero.quantity, "0 / 1800 千卡")
+        XCTAssertEqual(zero.fraction, 0)
+
+        let exceeded = NativeHomeNutrient("碳水", unit: "g", total: "245.0", knownCount: 2, unknownCount: 0, target: "200.0")
+        XCTAssertEqual(exceeded.quantity, "245 / 200 g")
+        XCTAssertEqual(exceeded.fraction, 1)
+
+        for goal in [nil, "0.0", "invalid"] as [String?] {
+            let value = NativeHomeNutrient("脂肪", unit: "g", total: "25.0", knownCount: 1, unknownCount: 0, target: goal)
+            XCTAssertNil(value.fraction)
+        }
+    }
+
+    func testDietMealSubtotalsRespectMissingValuesAndDeletedEntries() {
+        let entries: [NativeJSON] = [
+            .object(["calories": .string("120.5")]),
+            .object(["calories": .string("0.0")]),
+            .object(["calories": .null]),
+            .object(["calories": .string("500.0"), "deleted": .bool(true)]),
+        ]
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: entries, skipped: false), "≥120.5 千卡")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[1]], skipped: false), "0 千卡")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[2]], skipped: false), "—")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [entries[3]], skipped: true), "未进食")
+        XCTAssertEqual(NativeDietMealSubtotal.label(entries: [], skipped: false), "未记录")
+    }
+
+    func testDietActivityOnlyReadsTheSelectedDayAndPreservesZero() {
+        let previous = NativeTrendPoint(day: "2026-11-17", value: 280, measuredAt: "2026-11-17T08:00:00Z",
+                                        source: "fixture", sleepStages: nil)
+        let zero = NativeTrendPoint(day: "2026-11-18", value: 0, measuredAt: "2026-11-18T08:00:00Z",
+                                    source: "fixture", sleepStages: nil)
+        let metric = NativeMetricSummary(metric: "active_energy", label: "活动能量", unit: "kcal", latestValue: 280,
+                                         latestDate: previous.day, points: [previous, zero])
+        let response = NativeHealthResponse(summary: NativeHealthSummary(metrics: ["active_energy": metric], measurementCount: 2,
+                                                                          lastMeasurementAt: nil), measurements: [], lastSync: nil)
+        XCTAssertEqual(NativeDietActivity.value(in: response, date: zero.day), 0)
+        XCTAssertEqual(NativeDietActivity.value(in: response, date: previous.day), 280)
+        XCTAssertNil(NativeDietActivity.value(in: response, date: "2026-11-16"))
+    }
+
     func testChangingIdentityInvalidatesAIEstimatesAndCatalogSelection() throws {
         var raw = input(calories: .string("100")).objectValue
         raw["food"] = .object(["id": .string("official:food"), "amount": .number(1), "unit": .string("份"), "catalogRelease": .string("original-release")])

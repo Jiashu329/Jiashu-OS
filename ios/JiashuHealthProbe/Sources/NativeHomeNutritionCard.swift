@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The home summary is a read-only view of today's recorded, known nutrients.
+/// Compare recorded intake with the user's reference targets for this date.
 /// Opening it retains the nutrition workspace's own entry and recovery flow.
 @MainActor
 struct NativeHomeNutritionCard: View {
@@ -12,6 +12,7 @@ struct NativeHomeNutritionCard: View {
     @State private var requestID = UUID()
     @State private var loading = false
     @State private var readError: String?
+    @State private var observedDayScope: Scope?
 
     private struct Scope: Equatable {
         let owner: String
@@ -32,6 +33,12 @@ struct NativeHomeNutritionCard: View {
                 .task(id: RefreshKey(owner: model.session?.user.id, day: day, overview: model.overview?.asOf)) {
                     await load(day: day)
                 }
+                // Independent of overview.asOf: completing this overview read
+                // may refresh the meal task, but cannot restart this one.
+                .task(id: RefreshKey(owner: model.session?.user.id, day: day, overview: nil)) {
+                    await refreshOverviewOnDayAdvance(day: day)
+                }
+                .onDisappear { observedDayScope = nil }
         }
     }
 
@@ -47,7 +54,7 @@ struct NativeHomeNutritionCard: View {
                     VStack(alignment: .leading, spacing: 13) {
                         heading(data)
                         if let data {
-                            totals(data)
+                            totals(data, targets: targets(for: day))
                         } else {
                             placeholder(isLoading: !current || loading)
                         }
@@ -74,58 +81,71 @@ struct NativeHomeNutritionCard: View {
                 .foregroundStyle(NativePalette.muted).accessibilityHidden(true)
             Spacer(minLength: 4)
             if let data {
-                Text(mealCaption(data)).font(.caption).foregroundStyle(NativePalette.muted)
+                Text(dayStatus(data)).font(.caption).foregroundStyle(NativePalette.muted)
                     .multilineTextAlignment(.trailing)
             }
         }
     }
 
-    private func totals(_ data: NativeNutritionDay) -> some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(NativeHomeNutritionValue.display(data.summary.knownCalories,
-                                                       knownCount: data.summary.knownCount))
-                    .font(.system(size: calorieSize, weight: .semibold, design: .rounded))
-                    .monospacedDigit().foregroundStyle(NativePalette.ink)
-                Text("千卡").font(.caption).foregroundStyle(NativePalette.muted)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(calorieAccessibility(data))
+    private func targets(for day: String) -> NativeJSON? {
+        guard let overview = model.overview, overview.today == day,
+              let nutrition = overview.nutrition, nutrition["status"].stringValue == "ready",
+              nutrition["date"].stringValue == day,
+              case .object = nutrition["targets"] else { return nil }
+        return nutrition["targets"]
+    }
 
-            Text(coverageCaption(data)).font(.caption).foregroundStyle(NativePalette.muted)
-                .fixedSize(horizontal: false, vertical: true)
+    private func totals(_ data: NativeNutritionDay, targets: NativeJSON?) -> some View {
+        let nutrients = [
+            NativeHomeNutrient("能量", unit: "千卡", total: data.summary.knownCalories,
+                               knownCount: data.summary.knownCount, unknownCount: data.summary.unknownCount,
+                               target: targets?["calories"].stringValue),
+            macro("碳水", key: "carbs", data: data, targets: targets),
+            macro("蛋白质", key: "protein", data: data, targets: targets),
+            macro("脂肪", key: "fat", data: data, targets: targets),
+        ]
 
+        return VStack(alignment: .leading, spacing: 10) {
             if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 12) { macroValues(data) }
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(nutrients) { nutrient in nutrientCell(nutrient) }
+                }
             } else {
-                HStack(alignment: .top, spacing: 10) { macroValues(data) }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible())],
+                          alignment: .leading, spacing: 13) {
+                    ForEach(nutrients) { nutrient in nutrientCell(nutrient) }
+                }
+            }
+            if nutrients.contains(where: \.isPartial) {
+                Text("≥ 为已知小计").font(.caption2).foregroundStyle(NativePalette.muted)
+            }
+            if let targets, !targets.objectValue.isEmpty, nutrients.allSatisfy({ $0.target == nil }) {
+                Text("未设每日目标").font(.caption2).foregroundStyle(NativePalette.muted)
             }
         }
     }
 
-    @ViewBuilder private func macroValues(_ data: NativeNutritionDay) -> some View {
-        macro("碳水", key: "carbs", data: data)
-        macro("蛋白质", key: "protein", data: data)
-        macro("脂肪", key: "fat", data: data)
+    private func macro(_ title: String, key: String, data: NativeNutritionDay, targets: NativeJSON?) -> NativeHomeNutrient {
+        let value = data.summary.nutrients[key]
+        return NativeHomeNutrient(title, unit: "g", total: value?.total, knownCount: value?.knownCount ?? 0,
+                                  unknownCount: value?.unknownCount ?? data.summary.entryCount,
+                                  target: targets?[key].stringValue)
     }
 
-    private func macro(_ title: String, key: String, data: NativeNutritionDay) -> some View {
-        let nutrient = data.summary.nutrients[key]
-        let known = nutrient?.knownCount ?? 0
-        let unknown = nutrient?.unknownCount ?? data.summary.entryCount
-        let value = NativeHomeNutritionValue.display(nutrient?.total, knownCount: known)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(NativePalette.muted)
-            (Text(value).font(.title3.weight(.medium)) + Text(" g").font(.caption))
-                .foregroundStyle(NativePalette.ink).monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
-            if unknown > 0 {
-                Text("\(unknown)项未知").font(.caption2).foregroundStyle(NativePalette.muted)
+    private func nutrientCell(_ nutrient: NativeHomeNutrient) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(nutrient.title).font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.muted)
+            Text(nutrient.quantity).font(.callout.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(NativePalette.ink).fixedSize(horizontal: false, vertical: true)
+            if let fraction = nutrient.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear).tint(NativePalette.accent)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title)，\(known > 0 && nutrient?.total != nil ? value + "克已知小计" : "暂无已知数值")，\(unknown)项未知")
+        .accessibilityLabel(nutrient.title)
+        .accessibilityValue(nutrient.accessibilityValue)
     }
 
     private func placeholder(isLoading: Bool) -> some View {
@@ -153,24 +173,38 @@ struct NativeHomeNutritionCard: View {
         }
     }
 
-    private func mealCaption(_ data: NativeNutritionDay) -> String {
-        let meals = Set(data.entries.filter { !$0.deleted }.map(\.meal)).count
-        return meals > 0 ? "已记录\(meals)餐" : "暂无食物记录"
+    private func dayStatus(_ data: NativeNutritionDay) -> String {
+        if data.dayStatus.complete { return "已记完" }
+        return data.summary.entryCount > 0 ? "记录中" : "未记录"
     }
 
-    private func coverageCaption(_ data: NativeNutritionDay) -> String {
-        let completeness = data.dayStatus.complete ? "当天已记完" : "记录中"
-        if data.summary.entryCount == 0 { return "暂无食物记录 · " + completeness }
-        let unknown = data.summary.unknownCount
-        let basis = data.summary.knownCount > 0 ? "已知小计" : "热量未填"
-        return basis + (unknown > 0 ? " · \(unknown)项热量未知" : "") + " · " + completeness
+    private func refreshOverviewOnDayAdvance(day: String) async {
+        guard let owner = model.session?.user.id else { observedDayScope = nil; return }
+        let selected = Scope(owner: owner, day: day)
+        let previous = observedDayScope
+        observedDayScope = selected
+        // Initial appearance and account changes retain the app's existing
+        // overview refresh. Only an observed forward day transition is ours.
+        guard let previous, previous.owner == owner, previous.day < day else { return }
+        await Task.yield()
+        do {
+            // A foreground or manual refresh already in flight gets to finish;
+            // never cancel it just to obtain the same new day's targets.
+            while model.overviewLoading {
+                guard acceptsRollover(selected) else { return }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard acceptsRollover(selected) else { return }
+            if let current = model.overview?.today, current >= day { return }
+            await model.reloadOverview(presentError: false)
+        } catch is CancellationError { return }
+        catch { return }
     }
 
-    private func calorieAccessibility(_ data: NativeNutritionDay) -> String {
-        let known = data.summary.knownCount
-        let value = NativeHomeNutritionValue.display(data.summary.knownCalories, knownCount: known)
-        let amount = known > 0 && data.summary.knownCalories != nil ? value + "千卡已知小计" : "暂无已知热量"
-        return amount + "，" + coverageCaption(data) + "。未填写的数值不计为零。"
+    private func acceptsRollover(_ selected: Scope) -> Bool {
+        !Task.isCancelled && observedDayScope == selected
+            && model.session?.user.id == selected.owner
+            && NativeActionDates.day(Date()) == selected.day
     }
 
     private func load(day: String) async {
@@ -202,10 +236,48 @@ struct NativeHomeNutritionCard: View {
     }
 }
 
-/// Keep the API's exact decimal string; absence is never turned into a zero.
-enum NativeHomeNutritionValue {
-    static func display(_ total: String?, knownCount: Int) -> String {
-        guard knownCount > 0, let total else { return "—" }
-        return total.hasSuffix(".0") ? String(total.dropLast(2)) : total
+struct NativeHomeNutrient: Identifiable {
+    let title: String
+    let unit: String
+    let current: String?
+    let target: String?
+    let isPartial: Bool
+    let fraction: Double?
+    var id: String { title }
+
+    init(_ title: String, unit: String, total: String?, knownCount: Int, unknownCount: Int, target: String?) {
+        self.title = title
+        self.unit = unit
+        let observed = knownCount > 0 ? Self.validAmount(total) : nil
+        let goal = Self.validAmount(target)
+        current = observed.map(Self.display)
+        self.target = goal.map(Self.display)
+        isPartial = observed != nil && unknownCount > 0
+        if let observed, let goal, let currentNumber = Double(observed), let targetNumber = Double(goal),
+           currentNumber.isFinite, targetNumber.isFinite, targetNumber > 0 {
+            fraction = min(1, currentNumber / targetNumber)
+        } else {
+            fraction = nil
+        }
+    }
+
+    var quantity: String {
+        let amount = (isPartial ? "≥" : "") + (current ?? "—")
+        return amount + (target.map { " / " + $0 } ?? "") + " " + unit
+    }
+
+    var accessibilityValue: String {
+        let spokenUnit = unit == "g" ? "克" : unit
+        let amount = current.map { (isPartial ? "已知小计 " : "") + $0 + spokenUnit } ?? "暂无数值"
+        return amount + (target.map { "，目标 " + $0 + spokenUnit } ?? "")
+    }
+
+    private static func validAmount(_ value: String?) -> String? {
+        guard let value, value.range(of: #"^[0-9]+(?:\.[0-9])?$"#, options: .regularExpression) != nil else { return nil }
+        return value
+    }
+
+    private static func display(_ value: String) -> String {
+        value.hasSuffix(".0") ? String(value.dropLast(2)) : value
     }
 }

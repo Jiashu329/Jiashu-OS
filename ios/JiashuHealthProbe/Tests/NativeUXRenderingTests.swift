@@ -36,9 +36,11 @@ final class NativeUXRenderingTests: XCTestCase {
 
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-light",
                           secondPageName: "SYNTHETIC-home-lower-light",
+                          endPageName: "SYNTHETIC-home-media-light",
                           waitUntil: { scenario.completed("/api/native/notifications") > 0
                               && scenario.completed("/api/native/health/nutrition") > firstMeals
-                              && scenario.completed("/api/native/life/douban") > firstLife })
+                              && scenario.completed("/api/native/life/douban") > firstLife },
+                          waitAtEnd: { scenario.completed("/api/native/life/douban/cover") >= 6 })
         let goalsBefore = scenario.count("/api/native/health/goals")
         try await capture(NavigationStack { NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID) },
                           name: "SYNTHETIC-health-light", waitUntil: { scenario.count("/api/native/health/goals") > goalsBefore })
@@ -46,10 +48,24 @@ final class NativeUXRenderingTests: XCTestCase {
         let channelsBefore = scenario.count("/api/native/sync/channel")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
                           waitUntil: { scenario.count("/api/native/sync/channel") > channelsBefore })
-        let mealsBefore = scenario.count("/api/native/health/nutrition")
+        let mealsBefore = scenario.completed("/api/native/health/nutrition")
+        let dietGoalsBefore = scenario.completed("/api/native/health/nutrition/goals")
+        let dietEnergyBefore = scenario.completed("/api/native/health")
         try await capture(NavigationStack {
             NativeNutritionRoot(api: api, token: token, userID: scenario.userID)
-        }, name: "SYNTHETIC-diet-light", waitUntil: { scenario.count("/api/native/health/nutrition") > mealsBefore })
+        }, name: "SYNTHETIC-diet-light", waitUntil: {
+            scenario.completed("/api/native/health/nutrition") > mealsBefore
+                && scenario.completed("/api/native/health/nutrition/goals") > dietGoalsBefore
+                && scenario.completed("/api/native/health") > dietEnergyBefore
+        })
+        let dietOnlyMeals = scenario.completed("/api/native/health/nutrition")
+        let dietOnlyGoals = scenario.completed("/api/native/health/nutrition/goals")
+        try await capture(NavigationStack {
+            NativeNutritionRoot(api: api, token: token, userID: scenario.userID)
+        }, name: "SYNTHETIC-diet-dark-accessibility",
+           size: CGSize(width: 320, height: 874), dark: true, large: true,
+           waitUntil: { scenario.completed("/api/native/health/nutrition") > dietOnlyMeals
+               && scenario.completed("/api/native/health/nutrition/goals") > dietOnlyGoals })
         let darkMeals = scenario.completed("/api/native/health/nutrition")
         let darkLife = scenario.completed("/api/native/life/douban")
         try await capture(ContentView(model: model), name: "SYNTHETIC-home-dark-accessibility",
@@ -69,7 +85,9 @@ final class NativeUXRenderingTests: XCTestCase {
                                       size: CGSize = CGSize(width: 390, height: 844),
                                       dark: Bool = false, large: Bool = false,
                                       secondPageName: String? = nil,
-                                      waitUntil: (() -> Bool)? = nil) async throws {
+                                      endPageName: String? = nil,
+                                      waitUntil: (() -> Bool)? = nil,
+                                      waitAtEnd: (() -> Bool)? = nil) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
@@ -111,13 +129,25 @@ final class NativeUXRenderingTests: XCTestCase {
             }), "Expected a visible, vertically scrollable home")
             let maximum = scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom
             let before = scroll.contentOffset.y
-            let target = min(maximum, before + scroll.bounds.height * 0.85)
+            let target = min(maximum, before + scroll.bounds.height * 0.55)
             XCTAssertGreaterThan(target - before, 80, "Lower-home evidence must move the actual scroll view")
             scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: target), animated: false)
             try await Task.sleep(nanoseconds: 150_000_000)
             hosting.view.layoutIfNeeded()
             XCTAssertGreaterThan(scroll.contentOffset.y - before, 80)
             attach(hosting.view, name: secondPageName)
+            if let endPageName {
+                let end = scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: end), animated: false)
+                if let waitAtEnd {
+                    let deadline = Date().addingTimeInterval(5)
+                    while !waitAtEnd(), Date() < deadline { try await Task.sleep(nanoseconds: 25_000_000) }
+                    XCTAssertTrue(waitAtEnd(), "The shelf must load its synthetic cover images")
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+                hosting.view.layoutIfNeeded()
+                attach(hosting.view, name: endPageName)
+            }
         }
     }
 
@@ -225,7 +255,8 @@ private final class NativeRenderingScenario: @unchecked Sendable {
             result = ["asOf": now, "today": day, "health": ["status": "ready", "lastSync": now, "recordedMetricCount": 6,
                 "metrics": overviewMetrics()],
                 "priorities": [], "finance": ["personal": finance, "family": finance],
-                "nutrition": ["status": "ready", "entryCount": 1, "complete": false]]
+                "nutrition": ["status": "ready", "date": day, "entryCount": 2, "complete": false,
+                              "targets": ["calories": "1800.0", "carbs": "200.0", "protein": "115.0", "fat": "60.0"]]]
         case "/api/native/health":
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let from = query.first(where: { $0.name == "from" })?.value ?? NativeActionDates.day(NativeActionDates.calendar.date(byAdding: .day, value: -29, to: Date())!)
@@ -239,7 +270,9 @@ private final class NativeRenderingScenario: @unchecked Sendable {
             let stages: [String: Any] = ["unspecified": 0, "core": 4, "deep": 1.5, "rem": 1.75, "awake": 0.25, "inBed": 8]
             let sleep: [String: Any] = ["metric": "sleep", "label": "睡眠", "unit": "hours", "latestValue": 7.25,
                 "latestDate": day, "points": [["day": day, "value": 7.25, "source": "synthetic-watch", "measuredAt": now, "sleepStages": stages]]]
-            result = ["summary": ["metrics": ["steps": steps, "sleep": sleep], "measurementCount": 4, "lastMeasurementAt": now],
+            let energy: [String: Any] = ["metric": "active_energy", "label": "活动能量", "unit": "kcal", "latestValue": 285,
+                "latestDate": to, "points": [["day": to, "value": 285, "source": "synthetic-watch", "measuredAt": now]]]
+            result = ["summary": ["metrics": ["steps": steps, "sleep": sleep, "active_energy": energy], "measurementCount": 5, "lastMeasurementAt": now],
                       "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
         case "/api/native/health/goals":
             result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
@@ -250,6 +283,9 @@ private final class NativeRenderingScenario: @unchecked Sendable {
         case "/api/native/session": result = ["email": email, "isOwner": false]
         case "/api/native/sync/channel":
             result = ["revision": 0, "deviceId": null, "label": null, "updatedAt": null, "isCurrentDevice": false]
+        case "/api/native/health/nutrition/goals":
+            result = ["goals": ["calories": "1800.0", "carbs": "200.0", "protein": "115.0", "fat": "60.0",
+                                "revision": 1, "updatedAt": now, "createdAt": now], "weightPlan": null]
         case "/api/native/health/nutrition":
             let totals = ["calories": "1280.0", "carbs": "147.0", "protein": "74.0", "fat": "44.0"]
             let nutrients: [String: [String: Any]] = totals.mapValues { ["total": $0, "knownCount": 2, "unknownCount": 0] }
@@ -263,21 +299,51 @@ private final class NativeRenderingScenario: @unchecked Sendable {
                 "knownCalories": "1280.0", "nutrients": nutrients],
                 "dayStatus": ["complete": false, "meals": ["breakfast": "recorded", "lunch": "recorded", "dinner": "unrecorded", "snack": "unrecorded"]]]
         case "/api/native/life/douban":
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "limit" })?.value, "9")
             func item(_ domain: String, _ id: String, _ title: String, _ kind: String, _ offset: Int) -> [String: Any] {
                 let host = domain == "screen" ? "movie.douban.com" : domain == "book" ? "book.douban.com" : "music.douban.com"
+                let cover: Any = offset == -5 ? null : "https://img1.doubanio.com/view/subject/l/public/synthetic-\(id).jpg" as Any
                 return ["profileId": userID, "domain": domain, "subjectId": id, "title": title, "kind": kind,
-                        "url": "https://" + host + "/subject/" + id + "/", "coverUrl": null, "rating": 4,
+                        "url": "https://" + host + "/subject/" + id + "/", "coverUrl": cover, "rating": 4,
                         "markedDate": self.day(offset: offset), "source": "import", "updatedAt": now,
                         "local": ["note": "", "tags": [], "hidden": false, "revision": 0]]
             }
             result = ["items": [item("screen", "100001", "示例电影", "movie", 0),
-                                item("book", "100002", "示例阅读", "book", -2),
-                                item("music", "100003", "示例原声", "music", -4)]]
+                                item("book", "100002", "示例阅读", "book", -1),
+                                item("music", "100003", "示例原声", "music", -2),
+                                item("screen", "100004", "示例剧集", "series", -3),
+                                item("book", "100005", "示例随笔", "book", -4),
+                                item("music", "100006", "示例唱片", "music", -5),
+                                item("screen", "100007", "示例纪录片", "movie", -6),
+                                item("book", "100008", "示例小说", "book", -7),
+                                item("music", "100009", "示例精选", "music", -8)]]
+        case "/api/native/life/douban/cover":
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "profileId" })?.value, userID)
+            let domain = query?.first(where: { $0.name == "domain" })?.value
+            return syntheticCover(domain: domain)
         default:
             XCTFail("Missing synthetic rendering response: " + path)
             throw URLError(.unsupportedURL)
         }
         return try JSONSerialization.data(withJSONObject: result)
+    }
+
+    private func syntheticCover(domain: String?) -> Data {
+        let size = domain == "screen" ? CGSize(width: 240, height: 94)
+            : domain == "book" ? CGSize(width: 95, height: 230) : CGSize(width: 150, height: 150)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.pngData { context in
+            let base: UIColor = domain == "screen" ? .systemIndigo : domain == "book" ? .systemOrange : .systemTeal
+            base.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor.white.withAlphaComponent(0.45).setFill()
+            context.cgContext.fillEllipse(in: CGRect(x: size.width * 0.28, y: size.height * 0.24,
+                                                       width: size.width * 0.44, height: size.height * 0.52))
+        }
     }
 }
 
@@ -295,8 +361,9 @@ private final class NativeRenderingProtocol: URLProtocol, @unchecked Sendable {
         do {
             guard let scenario, let url = request.url else { throw URLError(.unsupportedURL) }
             let data = try scenario.reply(request)
+            let mime = url.path == "/api/native/life/douban/cover" ? "image/png" : "application/json"
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-                                           headerFields: ["Content-Type": "application/json"])!
+                                           headerFields: ["Content-Type": mime])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)

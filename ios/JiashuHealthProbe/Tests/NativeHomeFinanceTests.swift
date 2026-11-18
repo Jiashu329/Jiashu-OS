@@ -11,6 +11,26 @@ final class NativeHomeFinanceTests: XCTestCase {
                               staleAccountCount: 0, uncheckedAccountCount: unchecked, pendingBalanceCount: unchecked)
     }
 
+    func testCurrencySymbolsPreserveServerPrecisionGroupingAndNegativeAmounts() {
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("CNY 123,456.70", currency: "CNY"), "¥123,456.70")
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("USD -9,007,199,254,740,993.12", currency: "USD"), "-$9,007,199,254,740,993.12")
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("JPY 999,999,999,999,999,999", currency: "JPY"), "¥999,999,999,999,999,999")
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("EUR 1.2300", currency: "EUR"), "€1.2300")
+        for (code, symbol) in [("HKD", "HK$"), ("SGD", "S$"), ("AUD", "A$"), ("CAD", "C$"), ("GBP", "£"), ("RUB", "₽")] {
+            XCTAssertEqual(NativeHomeFinanceCardRules.amountText(code + " 0.00", currency: code), symbol + "0.00")
+        }
+        XCTAssertEqual(usd.currency, "USD", "The picker keeps the code that disambiguates the symbol")
+    }
+
+    func testCurrencySymbolFallbacksAndHiddenAmountsDoNotInventOrExposeValues() {
+        for (formatted, currency) in [("XYZ 123.00", "XYZ"), ("USD 123.00", "CNY"), ("USD 暂无记录", "USD"), ("USD 1,00.00", "USD"), ("USD 1.00\n", "USD"), ("$1.00", "USD")] {
+            XCTAssertEqual(NativeHomeFinanceCardRules.amountText(formatted, currency: currency), formatted)
+        }
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("", currency: "CNY"), "暂无记录")
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText(usd.netFormatted, currency: "USD", hidden: true), "••••••")
+        XCTAssertEqual(NativeHomeFinanceCardRules.amountText("XYZ 987654321.00", currency: "XYZ", hidden: true), "••••••")
+    }
+
     func testMultipleCurrenciesNeverPresentLedgerCountsAsCurrencyProgress() {
         let multiCurrency = finance([cny, usd])
         XCTAssertNil(NativeHomeFinanceCardRules.checkProgress(multiCurrency))

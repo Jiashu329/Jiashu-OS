@@ -194,16 +194,16 @@ struct NativeHomeHealthCards: View {
         return VStack(alignment: .leading, spacing: 12) {
             Button { showHealth("steps") } label: {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(steps.day == data.today ? "今天步数" : "最近步数").font(.subheadline)
+                    Text("步数").font(.subheadline)
                     Text(NativeHomeHealthData.number(steps.value)).font(.largeTitle.weight(.semibold)).monospacedDigit()
-                    HStack(spacing: 6) {
-                        Text("步")
-                        if steps.day != data.today { Text(NativeHomeHealthData.dateLabel(steps.day, today: data.today)) }
-                    }.font(.caption)
+                        .accessibilityLabel(steps.value == nil ? "暂无步数记录" : NativeHomeHealthData.number(steps.value) + "步")
+                    if steps.day != data.today {
+                        Text(NativeHomeHealthData.dateLabel(steps.day, today: data.today)).font(.caption)
+                    }
                     if let average = steps.average7 {
-                        Text("有记录日均 " + NativeHomeHealthData.number(average) + "步")
+                        Text("近7日记录均值 " + NativeHomeHealthData.number(average))
                             .font(.caption).padding(.top, 5)
-                        Text(coverage(steps, data: data)).font(.caption)
+                        if data.windowEnd != data.today { Text(rangeLabel(data)).font(.caption) }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
@@ -213,7 +213,9 @@ struct NativeHomeHealthCards: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("活动能量").font(.caption)
                     metricValue(energy.value, unit: "千卡", decimals: 0, font: .title3)
-                    Text(NativeHomeHealthData.dateLabel(energy.day, today: data.today)).font(.caption)
+                    if energy.day != data.today {
+                        Text(NativeHomeHealthData.dateLabel(energy.day, today: data.today)).font(.caption)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
                 .accessibilityHint("查看活动能量趋势")
@@ -230,14 +232,15 @@ struct NativeHomeHealthCards: View {
                 Text("睡眠").font(.subheadline)
                 Text(NativeHomeHealthData.duration(sleep.value)).font(.title2.weight(.semibold)).monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
-                Text(sleepDate(sleep, data: data)).font(.caption).foregroundStyle(NativePalette.muted)
+                if sleep.day != data.today {
+                    Text(sleepDate(sleep, data: data)).font(.caption).foregroundStyle(NativePalette.muted)
+                }
                 VStack(alignment: .leading, spacing: 7) {
                     if let deep = data.sleepDeepHours {
                         Text("深睡 " + NativeHomeHealthData.duration(deep)).font(.subheadline)
                     } else {
                         Text("暂无睡眠分期").font(.caption).foregroundStyle(NativePalette.muted)
                     }
-                    Text(coverage(sleep, data: data)).font(.caption).foregroundStyle(NativePalette.muted)
                 }.padding(.top, 10)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
                 .nativeGeometricCard(fill: NativePalette.peach, compactAt: .topLeading)
@@ -279,7 +282,9 @@ struct NativeHomeHealthCards: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title).font(.caption).foregroundStyle(NativePalette.muted)
                 metricValue(metric.value, unit: unit, decimals: 1, font: .title3)
-                Text(NativeHomeHealthData.dateLabel(metric.day, today: data.today)).font(.caption).foregroundStyle(NativePalette.muted)
+                if metric.day != data.today {
+                    Text(NativeHomeHealthData.dateLabel(metric.day, today: data.today)).font(.caption).foregroundStyle(NativePalette.muted)
+                }
             }.frame(minHeight: 44, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
             .accessibilityHint(hint)
@@ -308,8 +313,9 @@ struct NativeHomeHealthCards: View {
     private func trendDescription(_ data: NativeHomeHealthSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("近7日体重").font(.subheadline)
-            Text(trendCoverage(data)).font(.caption).foregroundStyle(NativePalette.muted)
-            Text(rangeLabel(data)).font(.caption2).foregroundStyle(NativePalette.muted)
+            if data.windowEnd != data.today {
+                Text(rangeLabel(data)).font(.caption2).foregroundStyle(NativePalette.muted)
+            }
         }
     }
 
@@ -327,12 +333,6 @@ struct NativeHomeHealthCards: View {
             Text(NativeHomeHealthData.number(value, decimals: decimals)).font(font.weight(.semibold)).monospacedDigit()
             Text(unit).font(.caption)
         }
-    }
-
-    private func coverage(_ metric: NativeHomeMetric, data: NativeHomeHealthSnapshot) -> String {
-        guard data.hasSource else { return "记录天数未知" }
-        let prefix = data.windowEnd == data.today ? "近7日" : "截至" + NativeHomeHealthData.dateLabel(data.windowEnd, today: data.today) + "的7日"
-        return prefix + " · \(metric.observedDays7)/7天有记录"
     }
 
     private func sleepDate(_ metric: NativeHomeMetric, data: NativeHomeHealthSnapshot) -> String {
