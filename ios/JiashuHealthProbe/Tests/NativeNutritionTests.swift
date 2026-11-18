@@ -23,6 +23,31 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertThrowsError(try NativeNutritionFields.nullable("-1"))
     }
 
+    func testHomeProgressDistinguishesMissingPartialZeroAndExceededIntake() {
+        let missing = NativeHomeNutrient("脂肪", unit: "g", total: nil, knownCount: 0, unknownCount: 2, target: "60.0")
+        XCTAssertEqual(missing.quantity, "— / 60 g")
+        XCTAssertNil(missing.fraction)
+        XCTAssertFalse(missing.isPartial)
+
+        let partial = NativeHomeNutrient("蛋白质", unit: "g", total: "25.5", knownCount: 1, unknownCount: 1, target: "51.0")
+        XCTAssertEqual(partial.quantity, "≥25.5 / 51 g")
+        XCTAssertEqual(partial.fraction, 0.5)
+        XCTAssertTrue(partial.accessibilityValue.contains("已知小计"))
+
+        let zero = NativeHomeNutrient("能量", unit: "千卡", total: "0.0", knownCount: 1, unknownCount: 0, target: "1800.0")
+        XCTAssertEqual(zero.quantity, "0 / 1800 千卡")
+        XCTAssertEqual(zero.fraction, 0)
+
+        let exceeded = NativeHomeNutrient("碳水", unit: "g", total: "245.0", knownCount: 2, unknownCount: 0, target: "200.0")
+        XCTAssertEqual(exceeded.quantity, "245 / 200 g")
+        XCTAssertEqual(exceeded.fraction, 1)
+
+        for goal in [nil, "0.0", "invalid"] as [String?] {
+            let value = NativeHomeNutrient("脂肪", unit: "g", total: "25.0", knownCount: 1, unknownCount: 0, target: goal)
+            XCTAssertNil(value.fraction)
+        }
+    }
+
     func testChangingIdentityInvalidatesAIEstimatesAndCatalogSelection() throws {
         var raw = input(calories: .string("100")).objectValue
         raw["food"] = .object(["id": .string("official:food"), "amount": .number(1), "unit": .string("份"), "catalogRelease": .string("original-release")])
