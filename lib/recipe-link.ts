@@ -15,6 +15,7 @@ export interface RecipeLinkPreview {
 }
 
 const XIAOHONGSHU_HOSTS = new Set(['xiaohongshu.com', 'www.xiaohongshu.com', 'm.xiaohongshu.com']);
+const REDNOTE_HOSTS = new Set(['rednote.com', 'www.rednote.com']);
 const XIAOHONGSHU_SHARE_HOSTS = new Set(['xhslink.com', 'www.xhslink.com', 'xhslink.cn', 'www.xhslink.cn']);
 const XIACHUFANG_HOSTS = new Set(['xiachufang.com', 'www.xiachufang.com', 'm.xiachufang.com', 'mip.xiachufang.com']);
 const MAX_URL_LENGTH = 2048;
@@ -54,8 +55,10 @@ function sourceUrl(raw: string): RecipeLinkSource | null {
     return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:share${path}` };
   }
 
-  if (!XIAOHONGSHU_HOSTS.has(url.hostname)) return null;
-  const id = /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i.exec(url.pathname)?.[1];
+  const notePath = XIAOHONGSHU_HOSTS.has(url.hostname)
+    ? /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i
+    : REDNOTE_HOSTS.has(url.hostname) ? /^\/(?:(?:en|zh)\/)?(?:explore|discovery\/item)\/([a-f0-9]{24})\/?$/i : null;
+  const id = notePath?.exec(url.pathname)?.[1];
   if (!id) return null;
   url.pathname = url.pathname.replace(/\/$/, '');
   const token = url.searchParams.get('xsec_token');
@@ -217,24 +220,24 @@ async function readPreview(initial: RecipeLinkSource, transport: typeof fetch, s
     const response = await transport(link.url, { method: 'GET', redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer', signal,
       headers: { Accept: 'text/html, application/xhtml+xml', 'Accept-Language': 'zh-CN,zh;q=0.9' } });
     if (signal.aborted || response.redirected) { cancel(response); return null; }
-    const shortLink = link.key.startsWith('xiaohongshu:share/');
     if (REDIRECT_CODES.has(response.status)) {
       const target = response.headers.get('location');
       cancel(response);
       const resolved = target ? reference(target, link) : null;
-      if (!resolved || resolved.source !== initial.source || (!shortLink && resolved.key !== link.key)) return null;
+      if (!resolved || resolved.source !== 'xiachufang' || resolved.key !== link.key) return null;
       link = resolved;
       continue;
     }
-    if (shortLink) { cancel(response); return null; }
     const html = await readHtml(response, signal);
     return html === null ? null : parsePreview(html, link);
   }
   return null;
 }
 
-/** Best-effort anonymous preview. Its failure never invalidates the source link. */
+/** Best-effort public Xiachufang preview. Source links can be saved independently. */
 export async function fetchRecipeLinkPreview(link: RecipeLinkSource, options: { fetch?: typeof fetch } = {}): Promise<RecipeLinkPreview | null> {
+  // The iPhone app reads Xiaohongshu notes in its browser when the user asks to import one.
+  if (link.source !== 'xiachufang') return null;
   const normalized = sourceUrl(link.url);
   if (!normalized || normalized.source !== link.source || normalized.key !== link.key) return null;
   const controller = new AbortController();

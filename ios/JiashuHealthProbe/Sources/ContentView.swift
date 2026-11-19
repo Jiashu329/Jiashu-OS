@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum NativeTab: Hashable { case today, health, finance, life, settings }
+enum NativeTab: Hashable { case today, health, finance, life, applications }
 
 struct ContentView: View {
     @ObservedObject var model: NativeAppModel
@@ -23,8 +23,8 @@ struct ContentView: View {
                         .tabItem { Label("财务", systemImage: "chart.bar.xaxis") }.tag(NativeTab.finance)
                     NavigationStack { NativeLifeRoot(api: model.api, token: session.accessToken, userID: session.user.id) }
                         .tabItem { Label("书影音", systemImage: "books.vertical") }.tag(NativeTab.life)
-                    NativeSettingsView(model: model)
-                        .tabItem { Label("我的", systemImage: "person.crop.circle") }.tag(NativeTab.settings)
+                    NativeApplicationDirectory(model: model, session: session)
+                        .tabItem { Label("应用", systemImage: "square.grid.2x2") }.tag(NativeTab.applications)
                 }.id(session.user.id)
             } else { NativeLoginView(model: model) }
         }
@@ -170,41 +170,32 @@ struct NativeSettingsView: View {
     @State private var signingOut = false
     @State private var signOutError: String?
     var body: some View {
-        NavigationStack {
-            List {
-                if let session = model.session {
-                    Section {
-                        HStack(spacing: 14) {
-                            Image(systemName: "person.crop.circle.fill").font(.system(size: 36))
-                                .foregroundStyle(NativePalette.accent)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Jiashu OS").font(.headline)
-                                Text(session.user.email).font(.subheadline).foregroundStyle(NativePalette.muted)
-                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }.padding(.vertical, 8)
-                    }.listRowBackground(NativePalette.surface)
-                    Section {
-                        NavigationLink { NativeSyncCenter(model: model) } label: { Label("同步中心", systemImage: "arrow.triangle.2.circlepath") }
-                        NavigationLink { NativeFinanceRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialPath: "/finance?ledger=family", embedded: true) } label: { Label("家庭与账本", systemImage: "person.2") }
-                        NavigationLink { NativeNotificationsView(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("消息与提醒", systemImage: "bell") }
-                    }
-                    Section {
-                        NavigationLink { NativeBackupView(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("备份与恢复", systemImage: "externaldrive") }
-                        NavigationLink { NativeSettingsWorkspaceRoot(api: model.api, token: session.accessToken, userID: session.user.id) } label: { Label("账号与服务", systemImage: "gearshape") }
-                    }
-                }
-                if let signOutError { NativeInlineNotice(signOutError, tone: .error) }
-                Section { Button("退出登录", role: .destructive) { signingOut = true } }
-            }.nativeGeometricPage().navigationTitle("我的")
-                .confirmationDialog("退出此账号？", isPresented: $signingOut, titleVisibility: .visible) {
-                    Button("退出登录", role: .destructive) {
-                        Task {
-                            model.errorMessage = nil; await model.signOut()
-                            if model.session != nil { signOutError = model.errorMessage }
+        List {
+            if let session = model.session {
+                Section {
+                    HStack(spacing: 14) {
+                        Image(systemName: "person.crop.circle.fill").font(.system(size: 36))
+                            .foregroundStyle(NativePalette.accent)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Jiashu OS").font(.headline)
+                            Text(session.user.email).font(.subheadline).foregroundStyle(NativePalette.muted)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         }
-                    }
+                    }.padding(.vertical, 8)
+                }.listRowBackground(NativePalette.surface)
+            }
+            if let signOutError { NativeInlineNotice(signOutError, tone: .error) }
+            Section { Button("退出登录", role: .destructive) { signingOut = true } }
+        }
+        .nativeGeometricPage().navigationTitle("我的").navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("退出此账号？", isPresented: $signingOut, titleVisibility: .visible) {
+            Button("退出登录", role: .destructive) {
+                Task {
+                    model.errorMessage = nil
+                    await model.signOut()
+                    if model.session != nil { signOutError = model.errorMessage }
                 }
+            }
         }
     }
 }

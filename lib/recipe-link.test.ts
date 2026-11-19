@@ -4,6 +4,8 @@ import { fetchRecipeLinkPreview, normalizeRecipeLink } from './recipe-link.ts';
 
 const NOTE_ID = '67abcdef1234567890abcdef';
 const XHS_URL = `https://www.xiaohongshu.com/explore/${NOTE_ID}`;
+const XHS_SHORT_CODE = '99ExampleAb';
+const XHS_SHORT_URL = `https://xhslink.cn/o/${XHS_SHORT_CODE}`;
 const RECIPE_URL = 'https://www.xiachufang.com/recipe/107111111/';
 const HEAD = '<title>菌菇汤 · 下厨房</title><meta name="author" content="厨房朋友">';
 
@@ -25,10 +27,16 @@ void test('recognizes copied share text and preserves the parameters needed to o
     source: 'xiaohongshu', url: `${XHS_URL}?xsec_token=AB%2Bcd%3D&xsec_source=app_share`, key: `xiaohongshu:${NOTE_ID}`,
   });
   assert.equal(link(`https://m.xiaohongshu.com/discovery/item/${NOTE_ID}`).key, link(XHS_URL).key);
+  assert.deepEqual(link(`https://www.rednote.com/zh/discovery/item/${NOTE_ID}?xsec_token=example&track_code=remove-me`), {
+    source: 'xiaohongshu', url: `https://www.rednote.com/zh/discovery/item/${NOTE_ID}?xsec_token=example`, key: `xiaohongshu:${NOTE_ID}`,
+  });
   assert.deepEqual(normalizeRecipeLink('2 【点开笔记】 http://xhslink.com/o/Abcd23456，复制本条信息'), {
     source: 'xiaohongshu', url: 'https://xhslink.com/o/Abcd23456', key: 'xiaohongshu:share/o/Abcd23456',
   });
   assert.equal(link('https://xhslink.cn/a/Abcd23456').key, link('https://xhslink.com/a/Abcd23456').key);
+  assert.deepEqual(normalizeRecipeLink(`【菌菇汤】 ${XHS_SHORT_URL} 复制分享链接`), {
+    source: 'xiaohongshu', url: XHS_SHORT_URL, key: `xiaohongshu:share/o/${XHS_SHORT_CODE}`,
+  });
 });
 
 void test('uses one recipe identity across Xiachufang mobile, desktop and tracked links', () => {
@@ -50,6 +58,7 @@ void test('rejects unsupported hosts, authority tricks, paths outside the suppor
     `https://example.org?next=${XHS_URL}`,
     'https://www.xiachufang.com/cook/107111111/',
     'https://www.xiaohongshu.com/explore',
+    'https://www.rednote.com/login',
     'https://xhslink.com/not/a/share',
     `${'大'.repeat(8193)} ${RECIPE_URL}`,
     {},
@@ -88,10 +97,27 @@ void test('reads recipe microdata and ignores unstructured body and script data'
   assert.deepEqual(result, { title: '菌菇汤', author: '厨房朋友', ingredients: ['菌菇 100 克'], steps: ['加水煮。'] });
 });
 
-void test('resolves only bounded redirects within the platform and keeps network requests anonymous', async () => {
-  const short = link('https://xhslink.com/a/Abcd23456');
+void test('does not request Xiaohongshu notes or shared redirects for a preview', async () => {
+  let requests = 0;
+  const transport = async () => { requests++; return html(); };
+  const short = link(XHS_SHORT_URL);
+  for (const source of [
+    short,
+    link('https://xhslink.com/a/Abcd23456'),
+    link(`${XHS_URL}?xsec_token=example`),
+    link(`https://www.rednote.com/discovery/item/${NOTE_ID}`),
+    { ...short, source: 'xiachufang' as const },
+    { ...link(RECIPE_URL), url: XHS_URL },
+  ]) assert.equal(await fetchRecipeLinkPreview(source, { fetch: transport }), null);
+  assert.equal(requests, 0);
+});
+
+void test('follows only bounded same-recipe Xiachufang redirects with anonymous requests', async () => {
+  const first = link('https://m.xiachufang.com/recipe/107111111/');
+  const sameRecipe = [first.url, 'https://mip.xiachufang.com/recipe/107111111/',
+    'https://xiachufang.com/recipe/107111111/', RECIPE_URL];
   const requests: string[] = [];
-  const preview = await fetchRecipeLinkPreview(short, { fetch: async (url, init) => {
+  const preview = await fetchRecipeLinkPreview(first, { fetch: async (url, init) => {
     assert.equal(typeof url, 'string');
     if (typeof url === 'string') requests.push(url);
     assert.equal(init?.method, 'GET');
@@ -100,22 +126,25 @@ void test('resolves only bounded redirects within the platform and keeps network
     assert.equal(init?.referrerPolicy, 'no-referrer');
     assert.equal(new Headers(init?.headers).get('cookie'), null);
     assert.equal(new Headers(init?.headers).get('authorization'), null);
-    if (requests.length === 1) return Response.redirect(XHS_URL, 302);
-    return html('<meta property="og:title" content="菌菇汤"><meta property="og:description" content="试试这碗汤">');
+    if (requests.length < sameRecipe.length) {
+      return new Response(null, { status: 302, headers: { location: sameRecipe[requests.length].replace('https:', '') } });
+    }
+    return html();
   } });
-  assert.deepEqual(requests, [short.url, XHS_URL]);
-  assert.deepEqual(preview, { title: '菌菇汤', description: '试试这碗汤' });
+  assert.deepEqual(requests, sameRecipe);
+  assert.deepEqual(preview, { title: '菌菇汤 · 下厨房', author: '厨房朋友' });
 
-  for (const target of ['https://example.org', 'https://127.0.0.1/recipe/107111111/', RECIPE_URL, short.url]) {
+  for (const target of ['https://example.org', 'https://127.0.0.1/recipe/107111111/',
+    'https://www.xiachufang.com/recipe/107222222/', XHS_URL, XHS_SHORT_URL, first.url]) {
     let calls = 0;
-    assert.equal(await fetchRecipeLinkPreview(short, { fetch: async () => { calls++; return Response.redirect(target, 302); } }), null);
+    assert.equal(await fetchRecipeLinkPreview(first, { fetch: async () => { calls++; return Response.redirect(target, 302); } }), null);
     assert.equal(calls, 1);
   }
   let calls = 0;
-  assert.equal(await fetchRecipeLinkPreview(short, { fetch: async () => {
-    return Response.redirect(`https://xhslink.com/o/Zzzz${++calls}`, 302);
+  assert.equal(await fetchRecipeLinkPreview(first, { fetch: async () => {
+    return Response.redirect(sameRecipe[++calls % sameRecipe.length], 302);
   } }), null);
-  assert.equal(calls, 4);
+  assert.equal(calls, sameRecipe.length);
 });
 
 void test('treats access restrictions, unsupported bodies, and length violations as unavailable previews', async () => {
