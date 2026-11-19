@@ -8,7 +8,7 @@ import { renderAccountIdentityScript, renderAccountRecovery } from './account-ui
 import { renderAccountSessionScript } from './account-session.ts';
 import { renderNotificationsBadgeScript } from './notifications-ui.ts';
 
-type AppPage = 'home' | 'health' | 'nutrition' | 'foods' | 'finance' | 'sync' | 'account' | 'notifications' | 'douban';
+type AppPage = 'home' | 'health' | 'nutrition' | 'foods' | 'recipes' | 'finance' | 'sync' | 'account' | 'notifications' | 'douban';
 
 // Keep the shell and its breakpoints shared by every full application page.
 export const APP_SIDEBAR_CSS = String.raw`
@@ -76,7 +76,7 @@ ${APP_PAGE_UX_CSS}
 
 const contextNavigation = {
   health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
-  nutrition: { label: '饮食管理', links: [['/health/nutrition', '饮食记录'], ['/health/foods', '食物库']] },
+  nutrition: { label: '饮食管理', links: [['/health/nutrition', '饮食记录'], ['/health/foods', '食物库'], ['/health/nutrition/recipes', '我的菜谱']] },
   douban: { label: '书影音分类', links: [['/life/douban', '全部收藏'], ['/life/douban?kind=movie', '电影'], ['/life/douban?kind=series', '电视剧'], ['/life/douban?kind=book', '书籍'], ['/life/douban?kind=music', '音乐'], ['/life/douban?kind=screen', '待分类']] },
   finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾'], ['/finance/activity', '协作动态']] },
   sync: { label: '数据连接', links: [['/sync', '连接与导入'], ['/sync/templates', '快捷指令模板'], ['/data', '数据备份'], ['/sync-guide', '同步指南'], ['/connect-steps', '步数与活动'], ['/connect-sleep', '睡眠同步'], ['/connect-weight', '体重同步']] },
@@ -92,11 +92,12 @@ const navigation = [
 ] as const;
 
 export function renderAppSidebar(activePage: AppPage, options: { healthNavigation?: boolean; doubanKind?: string } = {}): string {
-  const activeGroup = activePage === 'foods' ? 'nutrition' : activePage;
+  const nutritionSubpage = activePage === 'foods' ? '/health/foods' : activePage === 'recipes' ? '/health/nutrition/recipes' : null;
+  const activeGroup = nutritionSubpage ? 'nutrition' : activePage;
   const doubanKind = ['movie', 'series', 'book', 'music', 'screen'].includes(options.doubanKind ?? '') ? options.doubanKind : 'all';
   const items = navigation.map(({ page, label, href, shape }) => {
     const active = page === activeGroup;
-    const attributes = `class="nav-link${active ? ' active' : ''}" data-navigation-page="${page}"${active ? ` aria-current="${activePage === 'foods' ? 'true' : 'page'}"` : ''}`;
+    const attributes = `class="nav-link${active ? ' active' : ''}" data-navigation-page="${page}"${active ? ` aria-current="${nutritionSubpage ? 'true' : 'page'}"` : ''}`;
     const icon = `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${shape}</svg>`;
     if (options.healthNavigation && (page === 'health' || page === 'sync')) {
       return `<button type="button" ${attributes} data-page="${page === 'health' ? 'overview' : 'sync'}">${icon}${label}</button>`;
@@ -106,7 +107,7 @@ export function renderAppSidebar(activePage: AppPage, options: { healthNavigatio
 
   const sections = Object.entries(contextNavigation).map(([group, section]) => `<section class="sidebar-context" data-navigation-group="${group}"${activeGroup !== group ? ' hidden' : ''}><p class="sidebar-context-title">${section.label}</p><nav class="context-nav" aria-label="${section.label}">${section.links.map(([href, label]) => {
     const [path, search] = href.split('?'), kind = group === 'douban' ? new URLSearchParams(search).get('kind') ?? 'all' : null;
-    const active = activePage === 'foods' && path === '/health/foods' || activePage === 'douban' && group === 'douban' && kind === doubanKind;
+    const active = path === nutritionSubpage || activePage === 'douban' && group === 'douban' && kind === doubanKind;
     return `<a class="context-link${active ? ' active' : ''}" href="${href}" data-context-path="${path}"${kind === null ? '' : ` data-context-kind="${kind}"`}${active ? ' aria-current="page"' : ''}>${label}</a>`;
   }).join('')}</nav></section>`).join('');
   return `${renderAccountSessionScript()}<aside class="sidebar" data-app-sidebar aria-label="主导航"><a class="brand" href="/" aria-label="Jiashu OS 首页"><img class="brand-mark" src="${APP_LOGO_SRC}" width="36" height="36" alt="" aria-hidden="true" decoding="async"><span>Jiashu OS</span></a><div class="workspace-label">我的空间</div><nav class="nav" aria-label="主要页面">${items}</nav>${sections}<div class="sidebar-tools" role="group" aria-label="消息与账户"><div class="sidebar-utilities"><a class="sidebar-notifications${activePage === 'notifications' ? ' active' : ''}" href="/notifications" data-context-path="/notifications"${activePage === 'notifications' ? ' aria-current="page"' : ''}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>消息中心<span data-notification-unread hidden>0</span></a></div><a class="sidebar-foot sidebar-account${activePage === 'account' ? ' active' : ''}" href="/account" aria-label="查看当前账户与切换登录"${activePage === 'account' ? ' aria-current="page"' : ''}><span class="space-avatar" data-current-account-avatar aria-hidden="true">我</span><div class="account-copy"><strong data-current-account-name>当前账户</strong><small data-current-account-hint>账户与切换登录</small></div><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 5 7 7-7 7"/></svg></a><button class="sidebar-account-retry" type="button" data-account-retry data-account-sidebar-retry hidden>重新确认账户</button></div></aside>${renderAccountRecovery()}<script>${DURABLE_DRAFTS_SCRIPT}${DRAFT_GUARD_SCRIPT}</script>${renderHealthAssistantWidget()}${renderAppNavigationScript()}${renderAccountIdentityScript()}${renderNotificationsBadgeScript()}`;

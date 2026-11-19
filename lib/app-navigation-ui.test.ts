@@ -36,17 +36,23 @@ void test('nutrition exposes its food library, and health/sync contexts restore 
   assert.equal(f.sidebar.querySelectorAll('[data-navigation-group]:not([hidden])').length, 0);
 });
 
-void test('the food library has a direct contextual entry and retains the nutrition module through navigation', () => {
-  const { document } = parseHTML(renderAppSidebar('foods'));
-  assert.equal(document.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
-  assert.equal(document.querySelector('[data-context-path="/health/foods"]')!.getAttribute('aria-current'), 'page');
-  assert.equal(document.querySelector('[data-navigation-group="nutrition"]')!.hasAttribute('hidden'), false);
+void test('the food library and recipes retain the nutrition module through navigation', () => {
+  for (const [page, path] of [['foods', '/health/foods'], ['recipes', '/health/nutrition/recipes']] as const) {
+    const { document } = parseHTML(renderAppSidebar(page));
+    assert.equal(document.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
+    assert.equal(document.querySelector(`[data-context-path="${path}"]`)!.getAttribute('aria-current'), 'page');
+    assert.equal(document.querySelector('[data-navigation-group="nutrition"]')!.hasAttribute('hidden'), false);
+  }
   const f = fixture('/health/foods', '?q=巨无霸&category=汉堡');
   assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
   assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.getAttribute('aria-current'), 'page');
+  f.navigate('/health/nutrition/recipes');
+  assert.equal(f.sidebar.querySelector('[data-navigation-page="nutrition"]')!.getAttribute('aria-current'), 'true');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/nutrition/recipes"]')!.getAttribute('aria-current'), 'page');
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.hasAttribute('aria-current'), false);
   f.navigate('/health/nutrition');
   assert.equal(f.sidebar.querySelector('[data-context-path="/health/nutrition"]')!.getAttribute('aria-current'), 'page');
-  assert.equal(f.sidebar.querySelector('[data-context-path="/health/foods"]')!.hasAttribute('aria-current'), false);
+  assert.equal(f.sidebar.querySelector('[data-context-path="/health/nutrition/recipes"]')!.hasAttribute('aria-current'), false);
 });
 
 void test('every application shell offers six direct primary destinations including media before scripts run', () => {
