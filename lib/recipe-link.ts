@@ -15,6 +15,7 @@ export interface RecipeLinkPreview {
 }
 
 const XIAOHONGSHU_HOSTS = new Set(['xiaohongshu.com', 'www.xiaohongshu.com', 'm.xiaohongshu.com']);
+const REDNOTE_HOSTS = new Set(['rednote.com', 'www.rednote.com']);
 const XIAOHONGSHU_SHARE_HOSTS = new Set(['xhslink.com', 'www.xhslink.com', 'xhslink.cn', 'www.xhslink.cn']);
 const XIACHUFANG_HOSTS = new Set(['xiachufang.com', 'www.xiachufang.com', 'm.xiachufang.com', 'mip.xiachufang.com']);
 const MAX_URL_LENGTH = 2048;
@@ -54,8 +55,10 @@ function sourceUrl(raw: string): RecipeLinkSource | null {
     return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:share${path}` };
   }
 
-  if (!XIAOHONGSHU_HOSTS.has(url.hostname)) return null;
-  const id = /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i.exec(url.pathname)?.[1];
+  const notePath = XIAOHONGSHU_HOSTS.has(url.hostname)
+    ? /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i
+    : REDNOTE_HOSTS.has(url.hostname) ? /^\/(?:(?:en|zh)\/)?(?:explore|discovery\/item)\/([a-f0-9]{24})\/?$/i : null;
+  const id = notePath?.exec(url.pathname)?.[1];
   if (!id) return null;
   url.pathname = url.pathname.replace(/\/$/, '');
   const token = url.searchParams.get('xsec_token');
@@ -233,7 +236,7 @@ async function readPreview(initial: RecipeLinkSource, transport: typeof fetch, s
 
 /** Best-effort public Xiachufang preview. Source links can be saved independently. */
 export async function fetchRecipeLinkPreview(link: RecipeLinkSource, options: { fetch?: typeof fetch } = {}): Promise<RecipeLinkPreview | null> {
-  // Xiaohongshu note paths disallow automated reads. Keep its source links available to open in the app or browser.
+  // The iPhone app reads Xiaohongshu notes in its browser when the user asks to import one.
   if (link.source !== 'xiachufang') return null;
   const normalized = sourceUrl(link.url);
   if (!normalized || normalized.source !== link.source || normalized.key !== link.key) return null;

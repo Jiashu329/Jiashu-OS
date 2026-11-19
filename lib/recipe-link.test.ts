@@ -27,6 +27,9 @@ void test('recognizes copied share text and preserves the parameters needed to o
     source: 'xiaohongshu', url: `${XHS_URL}?xsec_token=AB%2Bcd%3D&xsec_source=app_share`, key: `xiaohongshu:${NOTE_ID}`,
   });
   assert.equal(link(`https://m.xiaohongshu.com/discovery/item/${NOTE_ID}`).key, link(XHS_URL).key);
+  assert.deepEqual(link(`https://www.rednote.com/zh/discovery/item/${NOTE_ID}?xsec_token=example&track_code=remove-me`), {
+    source: 'xiaohongshu', url: `https://www.rednote.com/zh/discovery/item/${NOTE_ID}?xsec_token=example`, key: `xiaohongshu:${NOTE_ID}`,
+  });
   assert.deepEqual(normalizeRecipeLink('2 【点开笔记】 http://xhslink.com/o/Abcd23456，复制本条信息'), {
     source: 'xiaohongshu', url: 'https://xhslink.com/o/Abcd23456', key: 'xiaohongshu:share/o/Abcd23456',
   });
@@ -55,6 +58,7 @@ void test('rejects unsupported hosts, authority tricks, paths outside the suppor
     `https://example.org?next=${XHS_URL}`,
     'https://www.xiachufang.com/cook/107111111/',
     'https://www.xiaohongshu.com/explore',
+    'https://www.rednote.com/login',
     'https://xhslink.com/not/a/share',
     `${'大'.repeat(8193)} ${RECIPE_URL}`,
     {},
@@ -101,6 +105,7 @@ void test('does not request Xiaohongshu notes or shared redirects for a preview'
     short,
     link('https://xhslink.com/a/Abcd23456'),
     link(`${XHS_URL}?xsec_token=example`),
+    link(`https://www.rednote.com/discovery/item/${NOTE_ID}`),
     { ...short, source: 'xiachufang' as const },
     { ...link(RECIPE_URL), url: XHS_URL },
   ]) assert.equal(await fetchRecipeLinkPreview(source, { fetch: transport }), null);

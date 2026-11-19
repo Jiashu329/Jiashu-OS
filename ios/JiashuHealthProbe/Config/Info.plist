@@ -28,6 +28,13 @@
     <string>Jiashu OS 仅读取你允许的健康数据，不请求写入或修改苹果健康记录。</string>
     <key>NSCameraUsageDescription</key>
     <string>拍摄餐食照片供你选择识别，也可拍摄自制菜并保存到你的私人菜谱。</string>
+    <key>WKAppBoundDomains</key>
+    <array>
+        <string>xiaohongshu.com</string>
+        <string>xhslink.com</string>
+        <string>xhslink.cn</string>
+        <string>rednote.com</string>
+    </array>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>

@@ -42,7 +42,7 @@
 | 常吃、最近记录、收藏与取消收藏 | 饮食 → 常吃、最近与复制餐次；`NativeNutritionReuseView` | `health/nutrition/reuse`、`…/favorites` | 复用先生成可编辑明细；保留原目录版本、来源及未知值，不自动新增记录。 |
 | 复制某天的一餐 | 常吃 → 复制某天的一餐；`NativeNutritionMealCopyView` | `health/nutrition/copy` | 核对源日期、餐次及目标位置，选择后带入草稿；不直接保存第二份记录。 |
 | 自建食物、食谱与整餐模板 | 饮食 → 自建食物、食谱与整餐模板；`NativeNutritionTemplatesView`、`NativeNutritionTemplateEditor` | `health/nutrition/templates`、`…/{id}` | 新建、编辑、归档、复制为新模板；成分与来源为结构化表单；从已记录餐次整理模板。 |
-| 我的菜谱、制作笔记与成品照 | 应用首项或饮食 → 我的菜谱（`NativeRecipesRoot`） | `health/nutrition/recipes`、`…/preview`、`…/{id}/cookings` | 小红书分享文案可带入菜名和摘录，也可只收藏链接并打开原文。下厨房支持可用的公开预览。成品照可加到独立自制菜谱或已收藏菜谱。记录按账号存储，照片单独鉴权读取。记餐仍由饮食表单确认。 |
+| 我的菜谱、制作笔记与成品照 | 应用首项或饮食 → 我的菜谱（`NativeRecipesRoot`） | `health/nutrition/recipes`、`…/preview`、`…/{id}/cookings` | 小红书链接可在 App 内浏览器读取可见正文，将明确标注的食材和做法带入可编辑草稿。分享文案仍可带入摘录，支持仅收藏链接。下厨房支持可用的公开预览。成品照可加到独立自制菜谱或已收藏菜谱。记录按账号存储，照片单独鉴权读取。记餐仍由饮食表单确认。 |
 | 模板按份数或成品重量换算 | 模板详情；`NativeNutritionTemplateDetail` | `health/nutrition/templates/{id}/preview` | 预览请求带模板版本、日期餐次和换算量；输入变化清除预览；已归档模板不可用于新记录。 |
 | 每日营养目标、体重计划提示 | 饮食 → 每日营养目标与需求测算；`NativeNutritionGoalsView` | `health/nutrition/goals` | 读取并更新版本；空值仍为空；测算结果只填入目标草稿，保存是另一项明确操作。 |
 | 营养需求公式与AI解读 | 营养目标 → AI测算；`NativeNutritionNeedsView` | `health/nutrition/needs` | 主动填写公式所需身体参数；点击才发送；公式参考、方法与来源可核对；参数不存为个人档案。 |

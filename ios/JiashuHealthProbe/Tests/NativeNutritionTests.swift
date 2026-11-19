@@ -16,6 +16,8 @@ final class NativeNutritionTests: XCTestCase {
         let short = try XCTUnwrap(NativeRecipeSource.link("家常菜 https://xhslink.cn/a/Abcd1234，复制这条消息打开小红书"))
         XCTAssertEqual(short.absoluteString, "https://xhslink.cn/a/Abcd1234")
         XCTAssertEqual(NativeRecipeSource.platform(for: short), .xiaohongshu)
+        let redNote = try XCTUnwrap(NativeRecipeSource.link("https://www.rednote.com/zh/discovery/item/67abcdef1234567890abcdef"))
+        XCTAssertEqual(NativeRecipeSource.platform(for: redNote), .xiaohongshu)
         let recipe = try XCTUnwrap(NativeRecipeSource.link("https://example.com/docs\n〈千层豆腐〉http://www.xiachufang.com/recipe/123456/（下厨房）"))
         XCTAssertEqual(recipe.absoluteString, "https://www.xiachufang.com/recipe/123456/")
         XCTAssertEqual(NativeRecipeSource.platform(for: recipe), .xiachufang)
@@ -27,6 +29,7 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertNil(NativeRecipeSource.link("https://name@www.xiachufang.com/recipe/123456/"))
         XCTAssertNil(NativeRecipeSource.link("https://www.xiachufang.com:443/recipe/123456/"))
         XCTAssertNil(NativeRecipeSource.link("myapp://www.xiachufang.com/recipe/123456/"))
+        XCTAssertNil(NativeRecipeSource.link("https://www.rednote.com/login"))
     }
 
     func testXiaohongshuShareCopyKeepsAnIncompleteRecipeAsAnExcerpt() throws {
@@ -46,6 +49,50 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertNil(NativeRecipeSource.sharedText(in: "某用户发布了一篇小红书笔记，快来看吧！ \(shortLink)"))
         XCTAssertNil(NativeRecipeSource.sharedText(in: "蘑菇汤 https://www.xiachufang.com/recipe/123456/"))
         XCTAssertNil(NativeRecipeSource.sharedText(in: "https://example.com/recipe \(shortLink)"))
+    }
+
+    func testXiaohongshuCaptionExtractsExplicitIngredientsAndNumberedSteps() {
+        let caption = [
+            "像在家做的一碗蘑菇饭", "准备材料：米饭一碗、\u{00a0}香菇两朵、青葱少许", "具体步骤：",
+            "\u{3000}1️⃣ 切好香菇。", "2️⃣热锅加油。", "3️⃣加入米饭。", "4️⃣调味。", "5️⃣拌匀。#家常菜[话题]#", "",
+            "作者：今天也吃得开心。", "6️⃣ 这是想说的话。", "#蘑菇饭[话题]#",
+        ].joined(separator: "\r\n")
+        let recipe = NativeXiaohongshuRecipeDraft(noteBody: caption)
+        XCTAssertEqual(recipe.ingredients, "米饭一碗\n香菇两朵\n青葱少许")
+        XCTAssertEqual(recipe.steps, "切好香菇。\n热锅加油。\n加入米饭。\n调味。\n拌匀。")
+    }
+
+    func testXiaohongshuCaptionRequiresExplicitSectionsAndStopsAtComments() {
+        let plain = NativeXiaohongshuRecipeDraft(noteBody: "香菇、米饭。\n1️⃣ 热锅。\n2️⃣ 调味。")
+        XCTAssertNil(plain.ingredients)
+        XCTAssertNil(plain.steps)
+
+        let caption = "\u{FEFF}食材：\u{2028}香菇\u{200B} 2 朵\u{2028}米饭一碗\u{2028}做法： １．热锅。\u{2028}2⃣ 炒匀。\u{2028}作者说，欢迎留言。\u{2028}3️⃣ 评论内容"
+        let recipe = NativeXiaohongshuRecipeDraft(noteBody: caption)
+        XCTAssertEqual(recipe.ingredients, "香菇 2 朵\n米饭一碗")
+        XCTAssertEqual(recipe.steps, "热锅。\n炒匀。")
+
+        let empty = NativeXiaohongshuRecipeDraft(noteBody: "做法：\n#笔记[话题]#\n1️⃣ 评论内容")
+        XCTAssertNil(empty.steps)
+
+        let separated = NativeXiaohongshuRecipeDraft(noteBody: "步骤：\n1️⃣ 热锅。\n\n2️⃣ 评论内容")
+        XCTAssertEqual(separated.steps, "热锅。")
+
+        let inline = NativeXiaohongshuRecipeDraft(noteBody: "食材：面条\n做法：煮面后拌入葱油\n作者：欢迎留言。")
+        XCTAssertEqual(inline.ingredients, "面条")
+        XCTAssertEqual(inline.steps, "煮面后拌入葱油")
+    }
+
+    func testXiaohongshuCaptionBoundsEditableFieldsAtWholeCharacters() throws {
+        let grapheme = "👩🏽‍🍳"
+        let line = String(repeating: grapheme, count: 1_200)
+        let recipe = NativeXiaohongshuRecipeDraft(noteBody: "食材：\(line)\n步骤：\n1️⃣ \(line)")
+        let ingredients = try XCTUnwrap(recipe.ingredients)
+        let steps = try XCTUnwrap(recipe.steps)
+        XCTAssertLessThanOrEqual(ingredients.utf16.count, 3_000)
+        XCTAssertLessThanOrEqual(steps.utf16.count, 6_000)
+        XCTAssertEqual(ingredients, String(repeating: grapheme, count: 3_000 / grapheme.utf16.count))
+        XCTAssertEqual(steps, String(repeating: grapheme, count: 6_000 / grapheme.utf16.count))
     }
 
     func testUnknownNutrientsStayUnknownAndRealZeroStaysZero() throws {
