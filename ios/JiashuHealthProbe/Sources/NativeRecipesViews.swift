@@ -16,6 +16,15 @@ enum NativeRecipeSource: String, Decodable {
     }
 
     static func link(_ input: String) -> URL? {
+        supportedLink(in: input)?.url
+    }
+
+    static func sharedText(in input: String) -> NativeRecipeSharedText? {
+        guard let match = supportedLink(in: input), platform(for: match.url) == .xiaohongshu else { return nil }
+        return NativeRecipeSharedText(copy: String(input[..<match.start]))
+    }
+
+    private static func supportedLink(in input: String) -> (url: URL, start: String.Index)? {
         guard input.utf16.count <= 8192,
               let regex = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9_+.:/=-])https?://[^\s<>\"'“”‘’《》〈〉【】（）。，、；：！？]+"#,
                                                    options: .caseInsensitive) else { return nil }
@@ -25,7 +34,7 @@ enum NativeRecipeSource: String, Decodable {
             while let last = text.last, ".!?,;:)]}".contains(last) { text.removeLast() }
             guard text.utf16.count <= 2048, !text.contains("\\"), var parts = URLComponents(string: text) else { continue }
             parts.scheme = "https"
-            if let url = parts.url, platform(for: url) != nil { return url }
+            if let url = parts.url, platform(for: url) != nil { return (url, range.lowerBound) }
         }
         return nil
     }
@@ -49,6 +58,30 @@ enum NativeRecipeSource: String, Decodable {
             return nil
         }
         return url.path.range(of: pattern, options: [.regularExpression, .caseInsensitive]) == nil ? nil : source
+    }
+}
+
+/// Keeps the user's pasted share copy separate from verified ingredient and step fields.
+struct NativeRecipeSharedText: Equatable {
+    let title: String
+    let excerpt: String?
+
+    init?(copy: String) {
+        let cleaned = copy.replacingOccurrences(
+            of: #"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]"#,
+            with: "", options: .regularExpression)
+        let lines = cleaned.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let first = lines.first, !first.contains("://"),
+              first.range(of: #"发布了(?:一篇|一条)小红书笔记|复制(?:这段话|本条信息)|^(?:打开|去)[【\[]?小红书|^小红书分享[：:]?$"#,
+                          options: .regularExpression) == nil else { return nil }
+        let marker = first.range(of: #"(?:准备材料|食材|用料|做法|步骤)\s*[：:]"#, options: .regularExpression)
+        let name = String(first[..<(marker?.lowerBound ?? first.endIndex)]).trimmingCharacters(in: .whitespaces)
+        guard name.rangeOfCharacter(from: .letters) != nil else { return nil }
+        title = recipeTextPrefix(name, limit: 100)
+        let initial = marker.map { [String(first[$0.lowerBound...])] } ?? []
+        let details = (initial + Array(lines.dropFirst())).joined(separator: "\n")
+        excerpt = details.isEmpty ? nil : recipeTextPrefix(details, limit: 960)
     }
 }
 
@@ -711,6 +744,7 @@ private struct NativeRecipeEditor: View {
     @State private var linkText = ""
     @State private var sourcePreview: NativeRecipePreviewEnvelope.Preview?
     @State private var appliedTitle: String?
+    @State private var appliedShareNote: String?
     @State private var appliedIngredients: String?
     @State private var appliedSteps: String?
     @State private var previewMessage: String?
@@ -792,6 +826,7 @@ private struct NativeRecipeEditor: View {
                 .accessibilityIdentifier("recipe-link")
                 .onChange(of: linkText) { old, new in
                     if NativeRecipeSource.link(old) != NativeRecipeSource.link(new) { clearPreview() }
+                    applyShareText(new)
                 }
             if !linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                NativeRecipeSource.link(linkText) == nil {
@@ -802,14 +837,25 @@ private struct NativeRecipeEditor: View {
     }
 
     @ViewBuilder private var previewControls: some View {
-        Button("读取可用菜谱资料") { Task { await readPreview() } }
-            .disabled(previewURL == nil || readingPreview)
-        if readingPreview { ProgressView("读取原文资料…") }
-        if let previewMessage { NativeInlineNotice(previewMessage) }
+        if let url = previewURL, NativeRecipeSource.platform(for: url) == .xiaohongshu {
+            Link(destination: url) { Label("打开小红书原文", systemImage: "arrow.up.right.square") }
+            if isLink && (appliedTitle != nil || appliedShareNote != nil) {
+                NativeInlineNotice("已带入分享文案中的菜名或摘录。食材和做法可从原文复制到下方。")
+            } else if isLink {
+                NativeInlineNotice("粘贴完整分享文案可带入菜名和摘录。食材和做法可打开原文后补充。")
+            } else {
+                NativeInlineNotice("打开小红书原文后，可以把食材和做法补充到下方。")
+            }
+        } else {
+            Button("读取可用菜谱资料") { Task { await readPreview() } }
+                .disabled(previewURL == nil || readingPreview)
+            if readingPreview { ProgressView("读取原文资料…") }
+            if let previewMessage { NativeInlineNotice(previewMessage) }
+        }
     }
 
     private func readPreview() async {
-        guard !readingPreview, let url = previewURL else { return }
+        guard !readingPreview, let url = previewURL, NativeRecipeSource.platform(for: url) == .xiachufang else { return }
         readingPreview = true
         previewMessage = nil
         defer { readingPreview = false }
@@ -844,13 +890,28 @@ private struct NativeRecipeEditor: View {
 
     private func clearPreview() {
         if let appliedTitle, fields.title == appliedTitle { fields.title = "" }
+        if let appliedShareNote, fields.note == appliedShareNote { fields.note = "" }
         if let appliedIngredients, fields.ingredients == appliedIngredients { fields.ingredients = "" }
         if let appliedSteps, fields.steps == appliedSteps { fields.steps = "" }
         appliedTitle = nil
+        appliedShareNote = nil
         appliedIngredients = nil
         appliedSteps = nil
         sourcePreview = nil
         previewMessage = nil
+    }
+
+    private func applyShareText(_ input: String) {
+        guard let url = NativeRecipeSource.link(input), NativeRecipeSource.platform(for: url) == .xiaohongshu else { return }
+        let shared = NativeRecipeSource.sharedText(in: input)
+        if fields.title.isEmpty || appliedTitle == fields.title {
+            appliedTitle = shared?.title
+            fields.title = appliedTitle ?? ""
+        }
+        if fields.note.isEmpty || appliedShareNote == fields.note {
+            appliedShareNote = shared.flatMap(\.excerpt).map { "分享文案摘录\n" + $0 }
+            fields.note = appliedShareNote ?? ""
+        }
     }
 
     private func save() async {

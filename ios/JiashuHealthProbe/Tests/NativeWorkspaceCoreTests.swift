@@ -3,6 +3,31 @@ import XCTest
 @testable import JiashuHealthProbe
 
 final class NativeWorkspaceCoreTests: XCTestCase {
+    func testApplicationDirectoryPinsRecipesAndLinksToExistingNativeWorkspaces() {
+        let sections = NativeApplicationSection.matching(" ")
+        let entries = sections.flatMap(\.entries)
+        XCTAssertEqual(entries.first?.destination, .recipes)
+        XCTAssertEqual(Set(entries.map(\.id)).count, entries.count)
+        XCTAssertEqual(entries.first { $0.id == "family-ledger" }?.destination, .workspace("/finance?ledger=family"))
+        XCTAssertEqual(entries.first { $0.id == "sync-center" }?.destination, .workspace("/sync"))
+        XCTAssertEqual(entries.first { $0.id == "account-services" }?.destination, .workspace("/account"))
+        for entry in entries {
+            if case .workspace(let path) = entry.destination {
+                XCTAssertNotNil(NativeWorkspaceLink(path), "Unmapped application: \(entry.id)")
+            }
+        }
+    }
+
+    func testApplicationDirectorySearchPreservesRankingAndMatchesFeatureAliases() {
+        let recipes = NativeApplicationSection.matching("  小红书  食谱 ").flatMap(\.entries)
+        XCTAssertEqual(recipes.map(\.id), ["recipes"])
+        let sync = NativeApplicationSection.matching("apple health").flatMap(\.entries)
+        XCTAssertEqual(sync.map(\.id), ["sync-center"])
+        let weight = NativeApplicationSection.matching("体重").flatMap(\.entries)
+        XCTAssertEqual(weight.map(\.id), ["health-records", "weight-plan"])
+        XCTAssertTrue(NativeApplicationSection.matching("不存在的入口").isEmpty)
+    }
+
     func testJSONRoundTripPreservesUnknownZeroFalseAndExactMoneyStrings() throws {
         let original: NativeJSON = .object([
             "unknown": .null, "zero": .number(0), "enabled": .bool(false),

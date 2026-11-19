@@ -29,6 +29,25 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertNil(NativeRecipeSource.link("myapp://www.xiachufang.com/recipe/123456/"))
     }
 
+    func testXiaohongshuShareCopyKeepsAnIncompleteRecipeAsAnExcerpt() throws {
+        let pasted = "家常打抛饭教程 准备材料：小米辣... https://xhslink.cn/o/Synthetic123 复制这段话，然后去【小红书】查看。"
+        let share = try XCTUnwrap(NativeRecipeSource.sharedText(in: pasted))
+        XCTAssertEqual(share.title, "家常打抛饭教程")
+        XCTAssertEqual(share.excerpt, "准备材料：小米辣...")
+        XCTAssertEqual(NativeRecipeSource.link(pasted)?.absoluteString, "https://xhslink.cn/o/Synthetic123")
+        let multiline = "番茄炖牛腩\n牛腩炖至软烂再收汁。\nhttps://xhslink.com/a/Synthetic123"
+        XCTAssertEqual(NativeRecipeSource.sharedText(in: multiline)?.title, "番茄炖牛腩")
+        XCTAssertEqual(NativeRecipeSource.sharedText(in: multiline)?.excerpt, "牛腩炖至软烂再收汁。")
+    }
+
+    func testShareCopyIgnoresPlatformWrappersAndUnrelatedSources() {
+        let shortLink = "https://xhslink.cn/o/Synthetic123"
+        XCTAssertNil(NativeRecipeSource.sharedText(in: shortLink))
+        XCTAssertNil(NativeRecipeSource.sharedText(in: "某用户发布了一篇小红书笔记，快来看吧！ \(shortLink)"))
+        XCTAssertNil(NativeRecipeSource.sharedText(in: "蘑菇汤 https://www.xiachufang.com/recipe/123456/"))
+        XCTAssertNil(NativeRecipeSource.sharedText(in: "https://example.com/recipe \(shortLink)"))
+    }
+
     func testUnknownNutrientsStayUnknownAndRealZeroStaysZero() throws {
         let result = try NativeNutritionDraft(input(calories: .string("0"))).payload()
         XCTAssertEqual(result["calories"], .string("0"))

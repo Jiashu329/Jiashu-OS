@@ -6,12 +6,14 @@
 
 ## 账户、首页与健康
 
+底部「应用」打开可搜索的目录，首项直达「我的菜谱」。右上角「我的」进入登录账号与退出页面。「同步中心」「账号与服务」等位于目录的「设置与数据」分组。
+
 | 网页功能 | 原生入口与实现 | 主要请求 | 核对内容与边界 |
 | --- | --- | --- | --- |
 | 登录、恢复登录、退出与切换账号 | `ContentView`、`NativeAppModel`、`NativeSessionStore` | `auth/login`、`auth/refresh`、`auth/logout`、`session` | 邮箱密码登录；密码不持久保存；会话存入设备 Keychain。认证失效清空当前身份及已显示业务数据，旧账号的迟到响应不能覆盖新账号。 |
 | 今天首页、健康概览、快捷记录 | `NativeTodayView`、`NativeHomeHealthCards`、`NativeHealthView` | `overview`、`health`、`health/weight-plan`、`health/nutrition`、`…/reuse`、`…/copy` | 首页「体重／体脂」卡显示最近的体重、估算体脂及体重计划。日常体重通过 Apple 健康自动同步，人工补录从「健康 → 记录管理」进入。「记一餐」可把常吃或前一天同餐带入可编辑草稿，确认保存后刷新。 |
 | 从首页继续记录和周行动 | 今天 → `NativeHomeFollowThrough` | `overview`、`health/actions`、`finance/books` | 恢复饮食原日期、餐次和原保存请求。余额恢复核对原账本、币种和当前编辑权限。周复盘与执行周分别按北京时间计算。 |
-| Apple 健康授权与日常同步设备 | 既有健康同步卡、`NativeAppModel`、`HealthKitReader` | `sync/channel`、`health/import/preview`、`health/import` | 用户先完成系统健康授权，再明确选择日常同步设备；后续选定设备上传无需逐批确认来源。设备被替换时暂停；人工更正保留。 |
+| Apple 健康授权与日常同步设备 | 应用 → 同步中心（`NativeSyncCenter`、`NativeAppModel`、`HealthKitReader`） | `sync/channel`、`health/import/preview`、`health/import` | 用户先完成系统健康授权，再明确选择日常同步设备。后续选定设备上传无需逐批确认来源。设备被替换时暂停，人工更正保留。 |
 | 健康指标趋势、自选日期、真实来源 | 健康工作区 → 自选日期、来源与睡眠分析；`NativeHealthRangeWorkspace` | `health?from=…&to=…` | 体重、去脂体重、步数、活动能量、睡眠；北京时间，包含首尾日期，最多360天；无记录日期不补零。 |
 | 睡眠分期、真实入睡与起床、分周规律 | 同上，选择睡眠；`NativeWorkspaceSleepSummary` | 同一健康范围响应 | 分期按实际时长汇总；跨午夜使用圆周平均；截断窗口与只有总时长的旧记录不参与作息规律推断。 |
 | 估算体脂及配对依据 | 同上，选择估算体脂率 | 健康响应 `bodyComposition` | 仅同来源、相同测量时刻的体重与去脂体重配对；展示未配对和无效配对数。不是健康 App 的直接体脂测量。 |
@@ -21,7 +23,7 @@
 | 每周健康复盘、重点、下一周行动与反馈 | 首页与健康 → 每周复盘；`HealthWeeklyReviewView` | `health/review`、`health/actions` | 选择当前／前周／历史周、与上周比较、行动及完成反馈；未提交填写与待确认请求分别按账号加密恢复，跨周仍保留原周、原版本和原内容。 |
 | 健康助手、分享范围与连续问答 | 健康工作区 → 健康助手；`NativeHealthAssistantWorkspace` | `health/assistant` GET/POST | 先看所选日期和指标摘要，确认后才发送给 MiniMax；最多4轮近期问答；改变范围清空对话；有来源及额度、限流提示，不自动重发。 |
 | 健康范围 JSON 导出 | 自选日期页面 → 导出相同日期 | `health/export` | 使用已读取的范围；文件导出由系统文件界面完成；导出的业务格式可作为手动导入来源。 |
-| 同步诊断、逐指标覆盖、回执与尝试记录 | 健康工作区 → 同步诊断、文件导入与批次回退；`NativeHealthSyncWorkspace` | `sync/status`、`health/import`、`sync/channel` | 新鲜度按各指标真实记录日期；空批次或其他指标更新不会使本指标假装变新。 |
+| 同步诊断、逐指标覆盖、回执与尝试记录 | 应用 → 同步中心 → 健康历史与诊断（`NativeHealthSyncWorkspace`） | `sync/status`、`health/import`、`sync/channel` | 新鲜度按各指标真实记录日期。空批次或其他指标更新不会刷新本指标的日期。 |
 | 健康文件预览、来源替换确认、导入及整批回退 | 同上 | `health/import/preview`、`health/import`、`health/import/{id}/revert` | 文件上限512KiB／1000条；先服务器预览；手动来源变化须明确确认；选定日常设备通道期间暂停手动文件导入。回退需原因并展示批次影响。 |
 
 健康相关验证入口：`NativeAPITests`、`NativeAppModelTests`、`NativeHealthWorkspaceTests`、`HealthSyncTests` 与现有健康动作测试。重点包括真实零值与空数据、时间边界、未知权限、人工更正、版本冲突、账号切换和自动同步失败不弹窗。
@@ -40,7 +42,7 @@
 | 常吃、最近记录、收藏与取消收藏 | 饮食 → 常吃、最近与复制餐次；`NativeNutritionReuseView` | `health/nutrition/reuse`、`…/favorites` | 复用先生成可编辑明细；保留原目录版本、来源及未知值，不自动新增记录。 |
 | 复制某天的一餐 | 常吃 → 复制某天的一餐；`NativeNutritionMealCopyView` | `health/nutrition/copy` | 核对源日期、餐次及目标位置，选择后带入草稿；不直接保存第二份记录。 |
 | 自建食物、食谱与整餐模板 | 饮食 → 自建食物、食谱与整餐模板；`NativeNutritionTemplatesView`、`NativeNutritionTemplateEditor` | `health/nutrition/templates`、`…/{id}` | 新建、编辑、归档、复制为新模板；成分与来源为结构化表单；从已记录餐次整理模板。 |
-| 我的菜谱、制作笔记与成品照 | 饮食 → 我的菜谱；`NativeRecipesRoot` | `health/nutrition/recipes`、`…/preview`、`…/{id}/cookings` | 收藏小红书和下厨房链接，可从公开预览带入可取得的内容。成品照可加到独立自制菜谱或已收藏菜谱。记录按账号存储，照片单独鉴权读取。记餐仍由饮食表单确认。 |
+| 我的菜谱、制作笔记与成品照 | 应用首项或饮食 → 我的菜谱（`NativeRecipesRoot`） | `health/nutrition/recipes`、`…/preview`、`…/{id}/cookings` | 小红书分享文案可带入菜名和摘录，也可只收藏链接并打开原文。下厨房支持可用的公开预览。成品照可加到独立自制菜谱或已收藏菜谱。记录按账号存储，照片单独鉴权读取。记餐仍由饮食表单确认。 |
 | 模板按份数或成品重量换算 | 模板详情；`NativeNutritionTemplateDetail` | `health/nutrition/templates/{id}/preview` | 预览请求带模板版本、日期餐次和换算量；输入变化清除预览；已归档模板不可用于新记录。 |
 | 每日营养目标、体重计划提示 | 饮食 → 每日营养目标与需求测算；`NativeNutritionGoalsView` | `health/nutrition/goals` | 读取并更新版本；空值仍为空；测算结果只填入目标草稿，保存是另一项明确操作。 |
 | 营养需求公式与AI解读 | 营养目标 → AI测算；`NativeNutritionNeedsView` | `health/nutrition/needs` | 主动填写公式所需身体参数；点击才发送；公式参考、方法与来源可核对；参数不存为个人档案。 |
@@ -92,14 +94,14 @@
 
 | 网页功能 | 原生入口与实现 | 主要请求 | 核对内容与边界 |
 | --- | --- | --- | --- |
-| 设置与当前身份 | 我的 → 设置与数据；`NativeSettingsWorkspaceRoot` | `session` | 显示当前邮箱与站点权限；根据当前服务端身份显示管理入口，不能由本机自行授予权限。 |
-| AI配置、测试、删除 | 设置 → AI服务设置；`NativeProviderSettingsView` | `ai/settings`、`…/test` | 站点级管理员配置；密钥只输入不回显；留空保留；修改附版本；测试明确确认固定测试内容与调用费用。 |
-| TMDB服务配置、测试和删除 | 设置 → 影视封面服务；同上 | `media/tmdb/settings`、`…/test` | 站点管理员权限；不在原生界面显示已存密钥；不因读取配置自动测试外部服务。 |
-| 使用名单管理 | 设置 → 允许访问的成员；`NativeAccessManagementView` | `access`、`access/{id}` | 添加邮箱、停用和恢复；状态变更附版本并确认；不发送邀请邮件。是否可用取决于部署的认证方式。 |
-| 自托管用户创建、邮箱／密码修改与停用 | 设置 → 登录用户管理；`NativeUsersManagementView` | `admin/users`、`…/{id}` | 管理员操作；管理员账号不能停用；修改登录资料会使旧会话失效，修改自身后需重新登录；初始密码由管理员自行传达。 |
-| 消息筛选、已读、全部已读及类别设置 | 设置 → 消息与提醒；`NativeNotificationsView` | `notifications`及其更新操作 | 首页与设置提供原生入口，消息目标走原生导航；仍属站内消息，不宣称APNs或邮件推送。 |
-| 同步连接、设备、快捷指令模板与核对 | 设置 → 同步连接与设备；`NativeSyncConnectionsView` | `sync/config`、`sync/devices`、`sync/template`、`sync/status` | 原生Apple健康通道与旧快捷指令连接有各自授权状态。安装iCloud模板及iOS自动化配置仍是系统／Safari操作，不能称为App已经替用户完成。 |
-| 单文件完整业务备份 | 设置 → 完整备份与恢复；`NativeBackupView` | `data/backup` GET | 健康、饮食、财务和书影音业务数据；系统分享保存；生成与本人确认保存是两步；密钥、登录凭据和同步连接不包含。 |
+| 设置与当前身份 | 应用 → 账号与服务（`NativeSettingsWorkspaceRoot`） | `session` | 显示当前邮箱与站点权限。管理入口以服务端身份为准。 |
+| AI配置、测试、删除 | 账号与服务 → AI 服务（`NativeProviderSettingsView`） | `ai/settings`、`…/test` | 站点级管理员配置。密钥只输入不回显，留空保留原值。修改附版本。测试需确认固定测试内容与调用费用。 |
+| TMDB服务配置、测试和删除 | 账号与服务 → 影视资料服务（同上） | `media/tmdb/settings`、`…/test` | 站点管理员权限。已存密钥不会在界面回显。测试由管理员主动启动。 |
+| 使用名单管理 | 账号与服务 → 站点访问名单（`NativeAccessManagementView`） | `access`、`access/{id}` | 添加邮箱、停用和恢复。状态变更附版本并确认。是否可用取决于部署的认证方式。邀请邮件由管理员自行处理。 |
+| 自托管用户创建、邮箱／密码修改与停用 | 账号与服务 → 登录用户（`NativeUsersManagementView`） | `admin/users`、`…/{id}` | 管理员操作。管理员账号不能停用。修改登录资料会使旧会话失效，修改自身后需重新登录。初始密码由管理员自行传达。 |
+| 消息筛选、已读、全部已读及类别设置 | 应用 → 消息与提醒，或首页铃铛（`NativeNotificationsView`） | `notifications`及其更新操作 | 站内消息通过原生导航打开对应页面。 |
+| 同步连接、设备、快捷指令模板与核对 | 应用 → 同步中心 → 其他接入方式（`NativeSyncConnectionsView`） | `sync/config`、`sync/devices`、`sync/template`、`sync/status` | 原生 Apple 健康通道与旧快捷指令连接有各自授权状态。用户在系统或 Safari 中安装 iCloud 模板及配置 iOS 自动化。 |
+| 单文件完整业务备份 | 应用 → 备份与恢复（`NativeBackupView`） | `data/backup` GET | 健康、饮食、财务和书影音业务数据通过系统分享保存。生成与本人确认保存是两步。密钥、登录凭据和同步连接不包含。 |
 | 分卷备份、全部文件保存确认 | 同上 | `data/backup?format=volumes` | 保存清单及全部分卷，记录生成及本人确认保存回执；App生成临时文件不等于文件已经安全保存。 |
 | 单文件／分卷恢复、冲突字段对照、原恢复继续确认 | 同上 | `data/backup` POST preview/restore | 保留原始备份字节，先服务器预览，显示新增／已存在／冲突；预览哈希再核对后事务恢复，不自动覆盖或合并冲突。单文件8MiB／20,000行，分卷组16MiB／40,000行。 |
 

@@ -217,24 +217,24 @@ async function readPreview(initial: RecipeLinkSource, transport: typeof fetch, s
     const response = await transport(link.url, { method: 'GET', redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer', signal,
       headers: { Accept: 'text/html, application/xhtml+xml', 'Accept-Language': 'zh-CN,zh;q=0.9' } });
     if (signal.aborted || response.redirected) { cancel(response); return null; }
-    const shortLink = link.key.startsWith('xiaohongshu:share/');
     if (REDIRECT_CODES.has(response.status)) {
       const target = response.headers.get('location');
       cancel(response);
       const resolved = target ? reference(target, link) : null;
-      if (!resolved || resolved.source !== initial.source || (!shortLink && resolved.key !== link.key)) return null;
+      if (!resolved || resolved.source !== 'xiachufang' || resolved.key !== link.key) return null;
       link = resolved;
       continue;
     }
-    if (shortLink) { cancel(response); return null; }
     const html = await readHtml(response, signal);
     return html === null ? null : parsePreview(html, link);
   }
   return null;
 }
 
-/** Best-effort anonymous preview. Its failure never invalidates the source link. */
+/** Best-effort public Xiachufang preview. Source links can be saved independently. */
 export async function fetchRecipeLinkPreview(link: RecipeLinkSource, options: { fetch?: typeof fetch } = {}): Promise<RecipeLinkPreview | null> {
+  // Xiaohongshu note paths disallow automated reads. Keep its source links available to open in the app or browser.
+  if (link.source !== 'xiachufang') return null;
   const normalized = sourceUrl(link.url);
   if (!normalized || normalized.source !== link.source || normalized.key !== link.key) return null;
   const controller = new AbortController();

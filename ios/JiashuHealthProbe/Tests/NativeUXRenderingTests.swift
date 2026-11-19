@@ -56,7 +56,10 @@ final class NativeUXRenderingTests: XCTestCase {
         }, name: "SYNTHETIC-health-selected-day-records-light", waitUntil: {
             scenario.completed("/api/native/health/records", matching: recordQuery) > recordsBefore
         })
-        try await capture(NativeSettingsView(model: model), name: "SYNTHETIC-my-light")
+        let directorySession = try XCTUnwrap(model.session)
+        try await capture(NativeApplicationDirectory(model: model, session: directorySession).environmentObject(model),
+                          name: "SYNTHETIC-applications-light")
+        try await capture(NavigationStack { NativeSettingsView(model: model) }, name: "SYNTHETIC-my-light")
         let channelsBefore = scenario.count("/api/native/sync/channel")
         try await capture(NavigationStack { NativeSyncCenter(model: model) }, name: "SYNTHETIC-sync-center-light",
                           waitUntil: { scenario.count("/api/native/sync/channel") > channelsBefore })
