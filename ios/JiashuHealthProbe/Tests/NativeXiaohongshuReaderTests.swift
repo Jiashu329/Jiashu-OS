@@ -88,6 +88,19 @@ final class NativeXiaohongshuReaderTests: XCTestCase {
             contentWorld: NativeXiaohongshuVisibleText.world)
         XCTAssertEqual((withTabTitle as? [String: Any])?["title"] as? String, "葱油拌面")
 
+        let installObstructions = [
+            #"document.body.insertAdjacentHTML('beforeend', '<div id="obstruction" role="dialog" aria-modal="true">请登录</div>')"#,
+            #"document.querySelector('#detail-desc').insertAdjacentHTML('beforeend', '<span id="obstruction" style="opacity:0">未展示正文</span>')"#,
+        ]
+        for install in installObstructions {
+            _ = try await page.evaluateJavaScript(install, in: nil, contentWorld: .page)
+            let blocked = try await page.callAsyncJavaScript(NativeXiaohongshuVisibleText.script,
+                arguments: ["bodyLimit": NativeXiaohongshuNote.bodyLimit], in: nil,
+                contentWorld: NativeXiaohongshuVisibleText.world)
+            XCTAssertNil(blocked as? [String: Any])
+            _ = try await page.evaluateJavaScript("document.querySelector('#obstruction').remove()", in: nil, contentWorld: .page)
+        }
+
         _ = try await page.evaluateJavaScript("document.querySelector('#detail-desc').hidden = true", in: nil, contentWorld: .page)
         let withoutVisibleBody = try await page.callAsyncJavaScript(NativeXiaohongshuVisibleText.script,
             arguments: ["bodyLimit": NativeXiaohongshuNote.bodyLimit], in: nil,

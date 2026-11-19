@@ -75,8 +75,8 @@ final class NativeNutritionTests: XCTestCase {
         let empty = NativeXiaohongshuRecipeDraft(noteBody: "做法：\n#笔记[话题]#\n1️⃣ 评论内容")
         XCTAssertNil(empty.steps)
 
-        let separated = NativeXiaohongshuRecipeDraft(noteBody: "步骤：\n1️⃣ 热锅。\n\n2️⃣ 评论内容")
-        XCTAssertEqual(separated.steps, "热锅。")
+        let separated = NativeXiaohongshuRecipeDraft(noteBody: "步骤：\n1️⃣ 热锅。\n\n2️⃣ 调味。\n\n作者：欢迎留言。\n3️⃣ 评论内容")
+        XCTAssertEqual(separated.steps, "热锅。\n调味。")
 
         let inline = NativeXiaohongshuRecipeDraft(noteBody: "食材：面条\n做法：煮面后拌入葱油\n作者：欢迎留言。")
         XCTAssertEqual(inline.ingredients, "面条")

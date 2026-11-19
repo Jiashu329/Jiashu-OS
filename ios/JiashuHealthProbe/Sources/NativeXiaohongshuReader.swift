@@ -355,23 +355,38 @@ enum NativeXiaohongshuVisibleText {
     const note = document.querySelector("#noteContainer");
     if (!note) return null;
 
-    function visibleText(element) {
-      if (!element || !element.isConnected || element.closest("[hidden], [aria-hidden='true']")) return "";
+    function isDisplayed(element) {
+      if (!element || !element.isConnected || element.closest("[hidden], [aria-hidden='true']")) return false;
       for (let node = element; node; node = node.parentElement) {
         const style = getComputedStyle(node);
         if (style.display === "none" || style.contentVisibility === "hidden" || style.visibility === "hidden" ||
-            style.visibility === "collapse" || Number(style.opacity) === 0) return "";
+            style.visibility === "collapse" || Number(style.opacity) === 0) return false;
       }
-      if (!Array.from(element.getClientRects()).some(rect => rect.width > 0 && rect.height > 0)) return "";
-      return element.innerText.trim();
+      return Array.from(element.getClientRects()).some(rect => rect.width > 0 && rect.height > 0);
     }
 
-    const body = visibleText(note.querySelector("#detail-desc"));
+    const dialogs = document.querySelectorAll('dialog[open], [role="dialog"][aria-modal="true"]');
+    if (Array.from(dialogs).some(dialog => !dialog.contains(note) && isDisplayed(dialog))) return null;
+
+    const caption = note.querySelector("#detail-desc");
+    if (!isDisplayed(caption)) return null;
+    for (let node = caption; note.contains(node); node = node.parentElement) {
+      const style = getComputedStyle(node);
+      const clipped = node === caption && (style.overflowY === "hidden" || style.overflowY === "clip");
+      if ((clipped || parseInt(style.webkitLineClamp, 10) > 0) && node.scrollHeight > node.clientHeight + 1) return null;
+    }
+    // innerText excludes display:none, but can include text under opacity:0.
+    for (const element of caption.querySelectorAll("*")) {
+      if (element.getClientRects().length && element.textContent.trim() &&
+          (Number(getComputedStyle(element).opacity) === 0 || element.getAttribute("aria-hidden") === "true")) return null;
+    }
+    const body = caption.innerText.trim();
     if (!body || body.length > bodyLimit) return null;
     const platformSuffix = /\\s+[-|·]\\s+(?:小红书|rednote)$/i;
     const pageTitle = document.title.trim();
     const tabTitle = platformSuffix.test(pageTitle) ? pageTitle.replace(platformSuffix, "").trim() : "";
-    const title = (visibleText(note.querySelector("#detail-title")) || tabTitle).slice(0, 400);
+    const heading = note.querySelector("#detail-title");
+    const title = (isDisplayed(heading) ? heading.innerText.trim() || tabTitle : tabTitle).slice(0, 400);
     return {url: location.href, title, body};
     """
 }

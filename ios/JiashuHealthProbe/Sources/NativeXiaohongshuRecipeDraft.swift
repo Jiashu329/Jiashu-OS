@@ -40,7 +40,7 @@ struct NativeXiaohongshuRecipeDraft: Equatable {
                 continue
             }
             if line.isEmpty {
-                if (section == .ingredients && !ingredientLines.isEmpty) || (section == .steps && !stepLines.isEmpty) {
+                if section == .ingredients && !ingredientLines.isEmpty {
                     section = nil
                 }
                 continue
