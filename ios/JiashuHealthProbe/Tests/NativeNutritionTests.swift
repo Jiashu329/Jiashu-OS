@@ -35,8 +35,8 @@ final class NativeNutritionTests: XCTestCase {
         XCTAssertEqual(share.title, "家常打抛饭教程")
         XCTAssertEqual(share.excerpt, "准备材料：小米辣...")
         XCTAssertEqual(NativeRecipeSource.link(pasted)?.absoluteString, "https://xhslink.cn/o/Synthetic123")
-        let multiline = "番茄炖牛腩\n牛腩炖至软烂再收汁。\nhttps://xhslink.com/a/Synthetic123"
-        XCTAssertEqual(NativeRecipeSource.sharedText(in: multiline)?.title, "番茄炖牛腩")
+        let multiline = "番茄炖牛腩\t家常版\n牛腩炖至软烂再收汁。\nhttps://xhslink.com/a/Synthetic123"
+        XCTAssertEqual(NativeRecipeSource.sharedText(in: multiline)?.title, "番茄炖牛腩 家常版")
         XCTAssertEqual(NativeRecipeSource.sharedText(in: multiline)?.excerpt, "牛腩炖至软烂再收汁。")
     }
 

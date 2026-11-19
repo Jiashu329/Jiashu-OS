@@ -76,7 +76,8 @@ struct NativeRecipeSharedText: Equatable {
               first.range(of: #"发布了(?:一篇|一条)小红书笔记|复制(?:这段话|本条信息)|^(?:打开|去)[【\[]?小红书|^小红书分享[：:]?$"#,
                           options: .regularExpression) == nil else { return nil }
         let marker = first.range(of: #"(?:准备材料|食材|用料|做法|步骤)\s*[：:]"#, options: .regularExpression)
-        let name = String(first[..<(marker?.lowerBound ?? first.endIndex)]).trimmingCharacters(in: .whitespaces)
+        let name = String(first[..<(marker?.lowerBound ?? first.endIndex)])
+            .replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces)
         guard name.rangeOfCharacter(from: .letters) != nil else { return nil }
         title = recipeTextPrefix(name, limit: 100)
         let initial = marker.map { [String(first[$0.lowerBound...])] } ?? []

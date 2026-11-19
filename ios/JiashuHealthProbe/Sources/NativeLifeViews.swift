@@ -862,7 +862,7 @@ private struct NativeLifeArtworkEditor: View {
 }
 
 /// The only native surface for Douban connection and public synchronization.
-/// The containing app links here from 我的 → 同步中心.
+/// The containing app links here from 应用 → 同步中心.
 struct NativeLifeSyncCenter: View {
     let api: NativeAPI
     let token: String
