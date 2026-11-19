@@ -40,9 +40,9 @@ final class NativeUXRenderingTests: XCTestCase {
                           endPageName: "SYNTHETIC-home-media-light",
                           waitUntil: { scenario.completed("/api/native/notifications") > 0
                               && scenario.completed("/api/native/health/nutrition") > firstMeals
+                              && scenario.completed("/api/native/health/weight-plan") > firstWeightPlan
                               && scenario.completed("/api/native/life/douban") > firstLife },
                           waitAtEnd: { scenario.completed("/api/native/life/douban/cover") >= 6 })
-        XCTAssertEqual(scenario.completed("/api/native/health/weight-plan"), firstWeightPlan)
         try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "steps", days: 30,
                                      name: "SYNTHETIC-health-light")
         try await captureHealthTrend(api: api, token: token, scenario: scenario, metric: "weight", days: 7,

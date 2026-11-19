@@ -9,7 +9,7 @@
 | 网页功能 | 原生入口与实现 | 主要请求 | 核对内容与边界 |
 | --- | --- | --- | --- |
 | 登录、恢复登录、退出与切换账号 | `ContentView`、`NativeAppModel`、`NativeSessionStore` | `auth/login`、`auth/refresh`、`auth/logout`、`session` | 邮箱密码登录；密码不持久保存；会话存入设备 Keychain。认证失效清空当前身份及已显示业务数据，旧账号的迟到响应不能覆盖新账号。 |
-| 今天首页、健康概览、快捷记录 | `NativeTodayView`、`NativeHealthView` | `overview`、`health/nutrition`、`…/reuse`、`…/copy` | 首页「记一餐」可把常吃或前一天同餐带入可编辑草稿，确认保存后刷新。自动同步的体重和体成分在健康页查看。 |
+| 今天首页、健康概览、快捷记录 | `NativeTodayView`、`NativeHomeHealthCards`、`NativeHealthView` | `overview`、`health`、`health/weight-plan`、`health/nutrition`、`…/reuse`、`…/copy` | 首页「体重／体脂」卡显示最近的体重、估算体脂及体重计划。日常体重通过 Apple 健康自动同步，人工补录从「健康 → 记录管理」进入。「记一餐」可把常吃或前一天同餐带入可编辑草稿，确认保存后刷新。 |
 | 从首页继续记录和周行动 | 今天 → `NativeHomeFollowThrough` | `overview`、`health/actions`、`finance/books` | 恢复饮食原日期、餐次和原保存请求。余额恢复核对原账本、币种和当前编辑权限。周复盘与执行周分别按北京时间计算。 |
 | Apple 健康授权与日常同步设备 | 既有健康同步卡、`NativeAppModel`、`HealthKitReader` | `sync/channel`、`health/import/preview`、`health/import` | 用户先完成系统健康授权，再明确选择日常同步设备；后续选定设备上传无需逐批确认来源。设备被替换时暂停；人工更正保留。 |
 | 健康指标趋势、自选日期、真实来源 | 健康工作区 → 自选日期、来源与睡眠分析；`NativeHealthRangeWorkspace` | `health?from=…&to=…` | 体重、去脂体重、步数、活动能量、睡眠；北京时间，包含首尾日期，最多360天；无记录日期不补零。 |
