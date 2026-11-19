@@ -228,6 +228,21 @@ void test('weekly review and nutrition actions clear when the saved next action 
   assert.deepEqual(buildHomeOverview(input, NOW).priorities, []);
 });
 
+void test('weekly evidence stays available when other home priorities fill the list', () => {
+  const actions = readyActions({
+    weekly: { weekStart: '2026-11-09', previousWeekStart: '2026-11-02', previousHasRecords: true, reviewed: false },
+  });
+  const input = readySources(actions);
+  input.personal = { accounts: [account('personal', { asOfDate: '2026-09-01' })] };
+  input.family = { accounts: [account('family', { asOfDate: '2026-09-01' })] };
+  input.nutrition = null;
+  const result = buildHomeOverview(input, NOW);
+  assert.equal(result.priorities.length, 3);
+  assert.ok(!result.priorities.some((priority) => priority.id === 'weekly-review'));
+  assert.deepEqual(result.weekly, actions.weekly);
+  assert.equal(buildHomeOverview(readySources(null), NOW).weekly, null);
+});
+
 void test('due goals and runway shortages become scoped actions without rounding money or mixing ledgers', () => {
   const output = buildHomeOverview(readySources(readyActions({ decisions: [{
     ledger: 'family', currency: 'CNY', goals: [

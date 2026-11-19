@@ -12,6 +12,23 @@ final class NativeNutritionTests: XCTestCase {
             "carbs": .null, "protein": .string("0"), "fat": .null])
     }
 
+    func testRecipeLinkFindsSupportedURLInsideShareText() throws {
+        let short = try XCTUnwrap(NativeRecipeSource.link("家常菜 https://xhslink.cn/a/Abcd1234，复制这条消息打开小红书"))
+        XCTAssertEqual(short.absoluteString, "https://xhslink.cn/a/Abcd1234")
+        XCTAssertEqual(NativeRecipeSource.platform(for: short), .xiaohongshu)
+        let recipe = try XCTUnwrap(NativeRecipeSource.link("https://example.com/docs\n〈千层豆腐〉http://www.xiachufang.com/recipe/123456/（下厨房）"))
+        XCTAssertEqual(recipe.absoluteString, "https://www.xiachufang.com/recipe/123456/")
+        XCTAssertEqual(NativeRecipeSource.platform(for: recipe), .xiachufang)
+    }
+
+    func testRecipeLinkRejectsUnsupportedHostsPathsAndUserInfo() {
+        XCTAssertNil(NativeRecipeSource.link("https://www.xiachufang.com.example.org/recipe/123456/"))
+        XCTAssertNil(NativeRecipeSource.link("https://www.xiachufang.com/category/123456/"))
+        XCTAssertNil(NativeRecipeSource.link("https://name@www.xiachufang.com/recipe/123456/"))
+        XCTAssertNil(NativeRecipeSource.link("https://www.xiachufang.com:443/recipe/123456/"))
+        XCTAssertNil(NativeRecipeSource.link("myapp://www.xiachufang.com/recipe/123456/"))
+    }
+
     func testUnknownNutrientsStayUnknownAndRealZeroStaysZero() throws {
         let result = try NativeNutritionDraft(input(calories: .string("0"))).payload()
         XCTAssertEqual(result["calories"], .string("0"))

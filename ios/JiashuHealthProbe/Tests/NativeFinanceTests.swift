@@ -56,6 +56,30 @@ final class NativeFinanceTests: XCTestCase {
         XCTAssertFalse(NativeFinanceSelection(ledger: "personal", book: "own", currency: "XXX").isValid)
     }
 
+    func testHomeRecoveryRequiresTheOriginalWritableBookGrant() throws {
+        let account = "ee4d002f-9ffb-48ac-bc6e-8427ab089870"
+        let book = "12345678-1234-4123-8123-123456789abc"
+        func command(path: String) -> NativeFinancePending {
+            NativeFinancePending(owner: "owner-a", title: "记录余额", path: path, method: "POST", body: Data(),
+                                 operationID: UUID().uuidString, createdAt: Date())
+        }
+        let resource = "finance/accounts/" + account + "/balances"
+        let pending = command(path: NativeFinanceContract.scoped(resource, ledger: "family", book: book, revision: 8))
+        let scope = try XCTUnwrap(NativeBalanceRecoveryScope(pending, owner: "owner-a"))
+        func membership(_ id: String, _ revision: Int, _ role: String, _ canWrite: Bool) -> NativeJSON {
+            .object(["id": .string(id), "accessRevision": .number(Double(revision)), "role": .string(role), "canWrite": .bool(canWrite)])
+        }
+        XCTAssertTrue(scope.isAuthorized(in: [membership(book, 8, "editor", true)]))
+        XCTAssertFalse(scope.isAuthorized(in: []))
+        XCTAssertFalse(scope.isAuthorized(in: [membership("own", 8, "editor", true)]))
+        XCTAssertFalse(scope.isAuthorized(in: [membership(book, 9, "editor", true)]))
+        XCTAssertFalse(scope.isAuthorized(in: [membership(book, 8, "viewer", false)]))
+        XCTAssertNil(NativeBalanceRecoveryScope(pending, owner: "owner-b"))
+        XCTAssertNil(NativeBalanceRecoveryScope(command(path: "finance/accounts?ledger=personal"), owner: "owner-a"))
+        let own = try XCTUnwrap(NativeBalanceRecoveryScope(command(path: resource + "?ledger=personal"), owner: "owner-a"))
+        XCTAssertTrue(own.isAuthorized(in: []))
+    }
+
     func testPercentUsesExactBasisPointsAndDateUsesShanghaiDay() throws {
         XCTAssertEqual(try NativeFinanceContract.basisPoints("12.34"), 1234)
         XCTAssertEqual(try NativeFinanceContract.basisPoints("100"), 10000)

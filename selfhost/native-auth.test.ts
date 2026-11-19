@@ -118,7 +118,8 @@ void test('native API methods and paths are explicitly allowlisted and write req
   const f = await fixture(t, { downstream(req, res) {
     const chunks: Buffer[] = []; req.on('data', value => chunks.push(Buffer.from(value))); req.on('end', () => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ path: req.url, body: Buffer.concat(chunks).toString(), operation: req.headers['x-request-id'], owner: req.headers['x-page-owner'] }));
+    res.end(JSON.stringify({ path: req.url, body: Buffer.concat(chunks).toString(), operation: req.headers['x-request-id'],
+      idempotency: req.headers['idempotency-key'], owner: req.headers['x-page-owner'] }));
     });
   } }), session = await f.login();
   for (const path of ['/api/native/admin/secrets', '/api/native/finance/unknown', '/api/native/health/records/arbitrary', '/api/native/health/', '/api/native/auth/unknown']) {
@@ -133,6 +134,15 @@ void test('native API methods and paths are explicitly allowlisted and write req
   const response = await f.call('/api/native/health/records', 'POST', { ...bearer(session), 'X-Request-ID': 'synthetic-operation' }, command);
   assert.equal(response.status, 200); assert.equal(response.data.path, '/api/health/records');
   assert.equal(response.data.body, command); assert.equal(response.data.operation, 'synthetic-operation'); assert.equal(response.data.owner, config.ownerId);
+  const id = '10000000-0000-4000-8000-000000000001';
+  const recipeBody = JSON.stringify({ title: 'Synthetic supper', sourceUrl: 'https://www.xiachufang.com/recipe/107271414/' });
+  const recipe = await f.call('/api/native/health/nutrition/recipes', 'POST', { ...bearer(session), 'Idempotency-Key': id }, recipeBody);
+  assert.equal(recipe.status, 200); assert.equal(recipe.data.body, recipeBody); assert.equal(recipe.data.idempotency, id);
+  assert.equal(recipe.data.path, '/api/health/nutrition/recipes'); assert.equal(recipe.data.owner, config.ownerId);
+  const photo = '/api/native/health/nutrition/recipes/' + id + '/cookings/' + id + '/photo';
+  assert.equal((await f.call(photo, 'GET')).status, 401);
+  assert.equal((await f.call(photo, 'PUT', bearer(session))).status, 405);
+  assert.equal((await f.call(photo.replace(id, 'invalid-recipe'), 'GET', bearer(session))).status, 404);
 });
 
 void test('every existing web API has an explicitly reviewed native method mapping without a wildcard proxy', () => {
@@ -147,7 +157,7 @@ void test('every existing web API has an explicitly reviewed native method mappi
       if (/export\s*\{\s*GET,\s*POST\s*\}/.test(source)) methods.push('GET', 'POST');
       const path = '/api/native/' + relative.replace(/\/$/, '')
         .replace('[key]', 'weight%3Asynthetic%2Fscale')
-        .replace(/\[(?:id|bookId|memberId|entryId)\]/g, relative.startsWith('health/import/') ? 'a'.repeat(64) : '10000000-0000-4000-8000-000000000001');
+        .replace(/\[(?:id|bookId|memberId|entryId|cookingId)\]/g, relative.startsWith('health/import/') ? 'a'.repeat(64) : '10000000-0000-4000-8000-000000000001');
       const expected = [...new Set(methods)].sort((left, right) => left.localeCompare(right));
       assert.deepEqual([...(nativeAPIMethods(path) ?? [])].sort((left, right) => left.localeCompare(right)), expected, path);
     }

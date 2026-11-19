@@ -33,6 +33,13 @@ struct NativeOverview: Codable, Sendable {
     let finance: [String: NativeOverviewFinance]?
     let nutrition: NativeJSON?
     let modules: NativeJSON?
+    var weekly: NativeOverviewWeeklyEvidence? = nil
+}
+
+struct NativeOverviewWeeklyEvidence: Codable, Sendable {
+    let weekStart: String
+    let previousWeekStart: String
+    let previousHasRecords: Bool
 }
 
 struct NativeOverviewFinance: Codable, Sendable {
