@@ -440,12 +440,17 @@ function recipesClient(parseText: typeof parseRecipeTextDraft, approvedLink: typ
     });
   }
   document.addEventListener('jiashu-work-changed', () => { if (!saving && ready) syncPending(); });
-  void page.JiashuDrafts?.ready().then(owner => {
-    ready = Boolean(owner);
-    syncPending();
-    if (ready) void loadList();
-    else status(listStatus, page.JiashuDrafts?.problem || '请刷新页面或重新登录后重试。', true);
-  });
+  function initialize() {
+    void page.JiashuDrafts?.ready().then(owner => {
+      ready = Boolean(owner);
+      syncPending();
+      if (ready) void loadList();
+      else status(listStatus, page.JiashuDrafts?.problem || '请刷新页面或重新登录后重试。', true);
+    });
+  }
+  // Join the account check after the sidebar's deferred identity script starts it.
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
+  else initialize();
 }
 
 export function renderRecipesScript(): string {
