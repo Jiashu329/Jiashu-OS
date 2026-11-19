@@ -1,4 +1,4 @@
-import { DOMParser } from 'linkedom/worker';
+import type { DOMParser } from 'linkedom/worker';
 
 export interface RecipeLinkSource {
   source: 'xiaohongshu' | 'xiachufang';
@@ -150,10 +150,11 @@ function excludesPreview(raw: string | null | undefined): boolean {
   return /(?:^|[\s,:])(?:none|nosnippet|noarchive|max-snippet\s*:\s*0)(?:$|[\s,;])/i.test(raw ?? '');
 }
 
-function parsePreview(html: string, link: RecipeLinkSource): RecipeLinkPreview | null {
+async function parsePreview(html: string, link: RecipeLinkSource): Promise<RecipeLinkPreview | null> {
   if (!html.trim() || /<!ENTITY\b|<!DOCTYPE(?!\s+html\s*>)/i.test(html)) return null;
   let tags = 0;
   for (const _ of html.matchAll(/</g)) if (++tags > 25000) return null;
+  const { DOMParser } = await import('linkedom/worker');
   const document = new DOMParser().parseFromString(html, 'text/html');
   const meta = (selector: string) => document.querySelector(`meta[${selector}]`)?.getAttribute('content');
   if (excludesPreview(meta('name="robots"')) || document.querySelector('meta[http-equiv="refresh" i]')) return null;
