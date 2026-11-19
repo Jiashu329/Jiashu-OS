@@ -375,6 +375,36 @@ export const nutritionTemplateOperations = sqliteTable('nutrition_template_opera
   check('nutrition_template_operations_action', sql`${table.action} IN ('create','edit','archive')`),
 ]);
 
+export const nutritionRecipes = sqliteTable('nutrition_recipes', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), source: text('source').notNull(),
+  sourceUrl: text('source_url'), sourceKey: text('source_key'), sourceTitle: text('source_title'), sourceAuthor: text('source_author'),
+  title: text('title').notNull(), note: text('note').notNull(), ingredients: text('ingredients').notNull(),
+  steps: text('steps').notNull(), servings: text('servings').notNull(), revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), archivedAt: text('archived_at'),
+}, (table) => [
+  index('nutrition_recipes_owner_archive_updated_idx').on(table.userId, table.archivedAt, table.updatedAt),
+  uniqueIndex('nutrition_recipes_owner_source_idx').on(table.userId, table.sourceKey).where(sql`${table.archivedAt} IS NULL AND ${table.sourceKey} IS NOT NULL`),
+  check('nutrition_recipes_source', sql`(${table.source} = 'own' AND ${table.sourceUrl} IS NULL AND ${table.sourceKey} IS NULL AND ${table.sourceTitle} IS NULL AND ${table.sourceAuthor} IS NULL) OR (${table.source} IN ('xiaohongshu','xiachufang') AND ${table.sourceUrl} IS NOT NULL AND ${table.sourceKey} IS NOT NULL)`),
+]);
+
+export const nutritionRecipeCookings = sqliteTable('nutrition_recipe_cookings', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), recipeId: text('recipe_id').notNull(),
+  note: text('note').notNull(), photoDataUrl: text('photo_data_url'), revision: integer('revision').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(), archivedAt: text('archived_at'),
+}, (table) => [
+  index('nutrition_recipe_cookings_owner_recipe_idx').on(table.userId, table.recipeId, table.archivedAt, table.createdAt),
+  check('nutrition_recipe_cookings_archived_photo', sql`${table.archivedAt} IS NULL OR ${table.photoDataUrl} IS NULL`),
+]);
+
+export const nutritionRecipeOperations = sqliteTable('nutrition_recipe_operations', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), recipeId: text('recipe_id').notNull(),
+  cookingId: text('cooking_id'), action: text('action').notNull(), requestHash: text('request_hash').notNull(),
+  resultJson: text('result_json').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('nutrition_recipe_operations_owner_created_idx').on(table.userId, table.createdAt),
+  check('nutrition_recipe_operations_action', sql`${table.action} IN ('create','edit','archive','cook','edit-cooking','delete-cooking')`),
+]);
+
 export const nutritionDayStatus = sqliteTable('nutrition_day_status', {
   userId: text('user_id').notNull(),
   date: text('date').notNull(),

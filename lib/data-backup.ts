@@ -16,6 +16,7 @@ import { parseDoubanDetails } from './douban-details.ts';
 import { normalizeUserCoverUrl } from './douban-cover-selection.ts';
 import { parseTMDBCover, tmdbCoverUrl } from './tmdb-cover.ts';
 import { parseIMDbRating } from './imdb-rating.ts';
+import { MAX_RECIPE_PHOTO_STORAGE_CHARS, parseRecipeCookingNote, parseRecipeDefinition, parseRecipePhoto, parseRecipePreview, parseRecipeSourceAuthor, parseRecipeSourceTitle } from './nutrition-recipes.ts';
 
 export const BACKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const BACKUP_MAX_ROWS = 20000;
@@ -58,6 +59,9 @@ export const BACKUP_TABLES = {
   health_weekly_actions: { label: '每周行动与反馈', columns: ['week_start','text','status','feedback','revision','created_at','updated_at'], keys: ['week_start'] },
   finance_month_closes: { label: '已确认月结与重结历史', columns: ['ledger','currency','month','version','operation_id','request_hash','snapshot_json','reason','closed_at'], keys: ['ledger','currency','month','version'] },
   douban_items: { label: '豆瓣书影音收藏', columns: ['profile_id','domain','subject_id','kind','title','url','cover_url','rating','marked_date','comment','published_at','source','details_json','local_note','local_tags_json','local_hidden','local_revision','local_cover_url','tmdb_cover_json','tmdb_cover_url','imdb_rating_json','observed_at','created_at','updated_at'], keys: ['profile_id','domain','subject_id'] },
+  nutrition_recipes: { label: '我的菜谱', columns: ['id','source','source_url','source_key','source_title','source_author','title','note','ingredients','steps','servings','revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
+  nutrition_recipe_cookings: { label: '制作笔记与成品照', columns: ['id','recipe_id','note','photo_data_url','revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
+  nutrition_recipe_operations: { label: '菜谱保存回执', columns: ['id','recipe_id','cooking_id','action','request_hash','result_json','created_at'], keys: ['id'], globalId: true },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
@@ -72,6 +76,9 @@ export const BACKUP_PRE_DOUBAN_V2_TABLE_NAMES = [
   'nutrition_template_operations','nutrition_day_status','nutrition_batches','nutrition_copy_operations','finance_accounts','finance_account_classifications',
   'finance_balance_entries','finance_balance_changes','finance_goal_plans','finance_runway_settings','health_sync_diagnostics','health_weekly_actions','finance_month_closes',
 ] as const satisfies readonly BackupTable[];
+/** The signed v2 shape published before private recipes and cooking photos. */
+export const BACKUP_PRE_RECIPES_V2_TABLE_NAMES = [...BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, 'douban_items'] as const satisfies readonly BackupTable[];
+const RECIPE_BACKUP_TABLE_NAMES = ['nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations'] as const satisfies readonly BackupTable[];
 /** Published v2 volume sets used these 27 tables; their signed shape must remain verifiable. */
 export const BACKUP_PREVIOUS_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !(ACTION_BACKUP_TABLES as readonly string[]).includes(table));
 const BACKUP_LEGACY_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !([...P1_BACKUP_TABLES,...P2_BACKUP_TABLES,...ACTION_BACKUP_TABLES] as readonly string[]).includes(table));
@@ -98,6 +105,10 @@ function timestamp(value: unknown, nullable = false) { if (value === null && nul
 function day(value: unknown) { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !normalizeTimestamp(value + 'T12:00:00Z')) backupFail('备份日期无效。'); }
 function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER) { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) backupFail('备份整数无效。'); }
 function id(value: unknown, initial = false) { if (typeof value !== 'string' || !(initial ? /^(?:initial:)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i : /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i).test(value)) backupFail('备份记录标识无效。'); }
+function recipeBackupId(value: unknown) {
+  id(value);
+  if (String(value) !== String(value).toLowerCase()) backupFail('菜谱备份记录标识不是规范格式。');
+}
 function hash(value: unknown, nullable = false) { if (nullable && value === null) return; if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) backupFail('备份摘要无效。'); }
 function minor(value: unknown, positive = false) { if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,17})$/.test(value) || (positive && value === '0')) backupFail('备份金额无效。'); }
 function parsedJson(value: unknown) { text(value, 2 * 1024 * 1024, false); try { return JSON.parse(value as string) as unknown; } catch { return backupFail('备份内嵌 JSON 无效。'); } }
@@ -189,7 +200,39 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     if (value !== null && !['string','number'].includes(typeof value)) backupFail('备份数据库字段类型无效。');
     if (typeof value === 'number' && !Number.isFinite(value)) backupFail('备份中含无效数字。');
     if (key.endsWith('_at')) { timestamp(value, ['archived_at','deleted_at','reverted_at','published_at'].includes(key)); if (value !== null && Date.parse(value as string) > now + 5*60000) backupFail('备份记录时间不能晚于当前时间。'); }
-    if (['note','reason','revert_reason'].includes(key) && value !== null) text(value);
+    if (['note','reason','revert_reason'].includes(key) && value !== null && table !== 'nutrition_recipes' && table !== 'nutrition_recipe_cookings') text(value);
+  }
+  if (table === 'nutrition_recipes') {
+    recipeBackupId(r.id); integer(r.revision, 1);
+    const fields = { title: r.title, note: r.note, ingredients: r.ingredients, steps: r.steps, servings: r.servings };
+    const parsed = parseRecipeDefinition(fields);
+    if (canonical(fields) !== canonical(parsed)) backupFail('菜谱文字字段不是规范格式。');
+    if (r.source === 'own') {
+      if ([r.source_url,r.source_key,r.source_title,r.source_author].some(value => value !== null)) backupFail('自制菜谱不能携带第三方来源资料。');
+    } else {
+      const link = parseRecipePreview({ sourceUrl: r.source_url });
+      if (link.source !== r.source || link.url !== r.source_url || link.key !== r.source_key
+        || parseRecipeSourceTitle(r.source_title) !== r.source_title || parseRecipeSourceAuthor(r.source_author) !== r.source_author) {
+        backupFail('菜谱来源与链接不一致。');
+      }
+    }
+  }
+  if (table === 'nutrition_recipe_cookings') {
+    recipeBackupId(r.id); recipeBackupId(r.recipe_id); integer(r.revision, 1);
+    if (parseRecipeCookingNote(r.note) !== r.note || parseRecipePhoto(r.photo_data_url) !== r.photo_data_url
+      || (r.archived_at !== null && r.photo_data_url !== null)) backupFail('制作笔记或成品照无效。');
+  }
+  if (table === 'nutrition_recipe_operations') {
+    recipeBackupId(r.id); recipeBackupId(r.recipe_id); hash(r.request_hash);
+    const cooking = ['cook','edit-cooking','delete-cooking'].includes(String(r.action));
+    if (!cooking && !['create','edit','archive'].includes(String(r.action))) backupFail('菜谱操作回执类型无效。');
+    if (r.cooking_id !== null) recipeBackupId(r.cooking_id);
+    if ((cooking && r.cooking_id === null) || (r.action === 'create' && (r.id !== r.recipe_id || (r.cooking_id !== null && r.cooking_id !== r.id)))
+      || (r.action === 'cook' && r.id !== r.cooking_id) || (['edit','archive'].includes(String(r.action)) && r.cooking_id !== null)) {
+      backupFail('菜谱回执的记录标识无效。');
+    }
+    const result = exact(parsedJson(r.result_json), ['recipeId','cookingId']);
+    if (result.recipeId !== r.recipe_id || result.cookingId !== r.cooking_id) backupFail('菜谱回执与保存结果不一致。');
   }
   if (table === 'douban_items') {
     const profile = parseDoubanProfile(r.profile_id);
@@ -370,6 +413,8 @@ export function parseDataBackup(input: unknown, now = Date.now(), limits: Backup
     if (Date.parse(raw.exportedAt as string) > now + 5*60000) backupFail('备份导出时间不能晚于当前时间。');
     const sourceTables = object(raw.tables);
     if(raw.version===2&&(BACKUP_LEGACY_V2_TABLE_NAMES.some((table)=>!Object.hasOwn(sourceTables,table))||Object.keys(sourceTables).some((table)=>!BACKUP_TABLE_NAMES.includes(table as BackupTable))))backupFail('备份含有缺失或不支持的数据表。');
+    const recipeTablesPresent = RECIPE_BACKUP_TABLE_NAMES.filter(table => Object.hasOwn(sourceTables, table));
+    if (recipeTablesPresent.length > 0 && recipeTablesPresent.length !== RECIPE_BACKUP_TABLE_NAMES.length) backupFail('菜谱备份缺少关联的数据表。');
     const hadNutritionHistory=Object.hasOwn(sourceTables,'nutrition_entry_history');
     const hadFinanceClassifications=Object.hasOwn(sourceTables,'finance_account_classifications');
     const optionalV1=['nutrition_favorites','nutrition_day_status','nutrition_batches'];
@@ -415,6 +460,26 @@ export function parseDataBackup(input: unknown, now = Date.now(), limits: Backup
 }
 function validateBackupRelations(backup: DataBackup) {
   const t = backup.tables; const accounts = new Map(t.finance_accounts.map((r) => [r.id,r]));
+  const recipes = new Map(t.nutrition_recipes.map(row => [row.id,row]));
+  const cookings = new Map(t.nutrition_recipe_cookings.map(row => [row.id,row]));
+  const sources = new Set<BackupRow[string]>();
+  for (const row of recipes.values()) {
+    if (row.archived_at !== null || row.source_key === null) continue;
+    if (sources.has(row.source_key)) backupFail('菜谱备份中含有重复的收藏链接。');
+    sources.add(row.source_key);
+  }
+  let recipePhotoChars = 0;
+  for (const row of cookings.values()) {
+    const recipe = recipes.get(row.recipe_id);
+    if (!recipe || (recipe.archived_at !== null && row.archived_at === null)) backupFail('制作记录缺少有效的菜谱。');
+    if (typeof row.photo_data_url === 'string') recipePhotoChars += row.photo_data_url.length;
+  }
+  if (recipePhotoChars > MAX_RECIPE_PHOTO_STORAGE_CHARS) backupFail('成品照超过菜谱照片的储存容量。');
+  for (const row of t.nutrition_recipe_operations) {
+    if (!recipes.has(row.recipe_id) || (row.cooking_id !== null && cookings.get(row.cooking_id)?.recipe_id !== row.recipe_id)) {
+      backupFail('菜谱回执缺少对应的菜谱或制作记录。');
+    }
+  }
   const monthVersions=new Map<string,BackupRow[]>(),closeOperations=new Set<string>();
   for(const row of t.finance_month_closes){
     if(closeOperations.has(String(row.operation_id)))backupFail('月结操作标识重复。');closeOperations.add(String(row.operation_id));

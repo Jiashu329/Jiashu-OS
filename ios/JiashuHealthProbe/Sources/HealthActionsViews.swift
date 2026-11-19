@@ -454,13 +454,13 @@ struct HealthWeeklyReviewView: View {
     private enum ActionField: Hashable { case text, feedback }
     @FocusState private var actionFocus: ActionField?
 
-    init(api: NativeAPI, token: String, userID: String, initialWeek: String? = nil) {
+    init(api: NativeAPI, token: String, userID: String, initialWeek: String? = nil, initialActionWeek: String? = nil) {
         self.api = api; self.token = token; self.userID = userID
         let now = Date(), monday = NativeActionDates.monday(now)
         let current = NativeActionDates.day(monday)
         let previous = NativeActionDates.day(NativeActionDates.calendar.date(byAdding:.day,value:-7,to:monday)!)
         let selected = NativeWeeklyReviewWeek.initial(initialWeek,now:now)
-        _actionWeek = State(initialValue:selected)
+        _actionWeek = State(initialValue: initialActionWeek.map { NativeWeeklyReviewWeek.initial($0, now: now) } ?? selected)
         _period = State(initialValue:selected == current ? .current:selected == previous ? .previous:.custom)
         _historicalDate = State(initialValue:NativeWeeklyReviewWeek.date(selected) ?? monday)
     }

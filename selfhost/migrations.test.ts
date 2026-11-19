@@ -36,6 +36,7 @@ void test('all current migrations initialize an empty database once, before owne
       assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM app_owner_identity').first('count'), 0);
       assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM douban_items').first('count'), 0);
       assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM douban_data_resets').first('count'), 0);
+      assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM nutrition_recipes').first('count'), 0);
       assert.equal(checkDatabase(db).schemaReady, true);
     } finally { db.close(); }
     const again = await migrateDatabase({ path: f.path, directory: resolve('drizzle') });
@@ -85,7 +86,7 @@ void test('session revocation upgrade preserves existing business records, crede
 });
 
 void test('native channel upgrade is additive and preserves existing health rows, device credentials and session revocations', async () => {
-  const f = fixture(), current = loadMigrations(resolve('drizzle'));
+  const f = fixture(), current = loadMigrations(resolve('drizzle')).filter(migration => migration.idx <= 36);
   try {
     assert.equal(current.at(-1)?.idx, 36);
     f.migrations(current.slice(0, -1).map(migration => migration.sql));
@@ -113,6 +114,31 @@ void test('native channel upgrade is additive and preserves existing health rows
     const snapshot = new DatabaseSync(result.backupPath, { readOnly: true });
     try { assert.equal(snapshot.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='native_health_channels'").get()!.n, 0); }
     finally { snapshot.close(); }
+  } finally { f.cleanup(); }
+});
+
+void test('recipe migration adds private recipe storage without modifying existing nutrition templates', async () => {
+  const f = fixture(), current = loadMigrations(resolve('drizzle')).filter(migration => migration.idx <= 37);
+  try {
+    assert.equal(current.at(-1)?.tag, '0037_nutrition_recipes');
+    f.migrations(current.slice(0, -1).map(migration => migration.sql));
+    await migrateDatabase(f);
+    const before = new SQLiteD1Database(f.path);
+    try {
+      before.sqlite.prepare(`INSERT INTO nutrition_templates(id,user_id,kind,name,template_json,creation_hash,revision,created_at,updated_at)
+        VALUES('existing-template','existing-owner','recipe','Existing recipe template','{}','existing-hash',2,'2026-11-18','2026-11-18')`).run();
+    } finally { before.close(); }
+    f.migrations(current.map(migration => migration.sql));
+    const migrated = await migrateDatabase(f);
+    assert.equal(migrated.changed, 1);
+    assert.ok(migrated.backupPath);
+    const db = new SQLiteD1Database(f.path);
+    try {
+      assert.equal(await db.prepare('SELECT name FROM nutrition_templates WHERE id=?').bind('existing-template').first('name'), 'Existing recipe template');
+      for (const table of ['nutrition_recipes', 'nutrition_recipe_cookings', 'nutrition_recipe_operations']) {
+        assert.equal(await db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first('count'), 0);
+      }
+    } finally { db.close(); }
   } finally { f.cleanup(); }
 });
 

@@ -211,6 +211,31 @@ struct NativeFinanceSelection: Codable, Equatable {
     }
 }
 
+struct NativeBalanceRecoveryScope {
+    let book: String
+    let revision: Int
+
+    init?(_ command: NativeFinancePending, owner: String) {
+        guard command.owner == owner, command.method == "POST", let operationID = command.operationID,
+              UUID(uuidString: operationID) != nil, let path = URLComponents(string: command.path),
+              path.scheme == nil, path.host == nil, path.fragment == nil,
+              let recoveryPath = command.recoveryPath, let target = NativeFinanceNavigation(recoveryPath) else { return nil }
+        let parts = path.path.split(separator: "/")
+        guard (4...5).contains(parts.count), parts[0] == "finance", parts[1] == "accounts", parts[3] == "balances",
+              UUID(uuidString: String(parts[2])) != nil, target.destination == "account:" + String(parts[2]),
+              target.book != "own" || target.revision == 0 else { return nil }
+        book = target.book
+        revision = target.revision
+    }
+
+    func isAuthorized(in books: [NativeJSON]) -> Bool {
+        book == "own" || books.contains {
+            $0["id"].stringValue == book && $0["accessRevision"].intValue == revision
+                && $0["role"].stringValue == "editor" && $0["canWrite"].boolValue == true
+        }
+    }
+}
+
 private enum NativeFinanceReadState: Equatable { case loading, ready, failed(String) }
 
 @MainActor
@@ -390,6 +415,13 @@ final class NativeFinanceContext: ObservableObject {
         guard command.operationID != nil else { return }
         do { _ = try await send(command, retrying: true) } catch { fail(error) }
     }
+    func canRecoverBalance(_ command: NativeFinancePending) async throws -> Bool {
+        guard pending == command, let scope = NativeBalanceRecoveryScope(command, owner: userID) else { return false }
+        if scope.book == "own" { return true }
+        let response = try await api.json(path: "finance/books", token: token)
+        try Task.checkCancellation()
+        return pending == command && scope.isAuthorized(in: response["books"].arrayValue)
+    }
     @discardableResult func reconcilePending(_ command: NativeFinancePending) -> Bool {
         guard valid else { return false }
         do {
@@ -497,40 +529,83 @@ private struct NativeFinanceStatus: View {
     }
 }
 
-private struct NativeFinancePendingRecovery: View {
+struct NativeFinancePendingRecovery: View {
     @ObservedObject var context: NativeFinanceContext
     let pending: NativeFinancePending
+    var requiresCurrentBalanceGrant = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var result: NativeJSON = .null
     @State private var state: NativeFinanceReadState = .loading
+    @State private var grantChecked = false
     @State private var finish = false
     private var currency: String { pending.currency ?? pending.requestBody["currency"].stringValue ?? "CNY" }
     private var canResolve: Bool { !context.busy && context.pending == pending }
+    private var canShowDetails: Bool {
+        !requiresCurrentBalanceGrant || (grantChecked && scenePhase == .active && context.pending == pending && !context.blocked)
+    }
     var body: some View {
         List {
-            Section("原保存内容") {
-                Text(pending.title).font(.headline)
-                ForEach(Array(pending.summaryLines.enumerated()), id: \.offset) { _, line in Text(line) }
-            }.listRowBackground(NativePalette.surface)
+            if canShowDetails {
+                Section("原保存内容") {
+                    Text(pending.title).font(.headline)
+                    ForEach(Array(pending.summaryLines.enumerated()), id: \.offset) { _, line in Text(line) }
+                }.listRowBackground(NativePalette.surface)
+            }
             NativeFinanceReadFeedback(state: state) { Task { await load() } }
-            if state == .ready { currentResult }
-            Section {
-                if pending.operationID != nil { Button("继续确认原保存") { Task { await context.retryPending(pending); if context.pending != pending { dismiss() } } }.disabled(!canResolve) }
-                DisclosureGroup("已自行核对") {
-                    Text("结束核对不会撤销已保存的记录").font(.caption).foregroundStyle(NativePalette.muted)
-                    Button("结束此项待确认") { finish = true }.disabled(!canResolve || state != .ready)
+            if canShowDetails {
+                if state == .ready { currentResult }
+                if requiresCurrentBalanceGrant, let error = context.error {
+                    Text(error).font(.callout).foregroundStyle(.red)
                 }
-            }.listRowBackground(NativePalette.surface)
+                Section {
+                    if pending.operationID != nil {
+                        Button("继续确认原保存") { Task { await retry() } }.disabled(!canResolve)
+                    }
+                    DisclosureGroup("已自行核对") {
+                        Text("结束核对不会撤销已保存的记录").font(.caption).foregroundStyle(NativePalette.muted)
+                        Button("结束此项待确认") { finish = true }.disabled(!canResolve || state != .ready)
+                    }
+                }.listRowBackground(NativePalette.surface)
+            }
         }
         .nativeGeometricPage().navigationTitle("核对保存结果")
         .modifier(NativeFinanceScreenLifetime(context: context))
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-        .task { await load() }
+        .task(id: requiresCurrentBalanceGrant ? scenePhase : .active) {
+            if !requiresCurrentBalanceGrant || scenePhase == .active { await load() }
+            else { grantChecked = false; result = .null }
+        }
         .confirmationDialog("已核对原保存结果？", isPresented: $finish, titleVisibility: .visible) {
             Button("已核对，结束待确认") {
-                if context.reconcilePending(pending) || context.pending != pending { dismiss() }
+                Task { await finishRecovery() }
             }
         }
+    }
+    private func checkGrant() async throws {
+        guard requiresCurrentBalanceGrant else { return }
+        grantChecked = false
+        guard try await context.canRecoverBalance(pending), scenePhase == .active else {
+            throw NativeFinanceInputError("暂时无法确认原账本的编辑权限，原提交仍保留。")
+        }
+        grantChecked = true
+    }
+    private func retry() async {
+        do {
+            try await checkGrant()
+            await context.retryPending(pending)
+            if context.pending != pending { dismiss() }
+            else if requiresCurrentBalanceGrant && context.blocked {
+                grantChecked = false; result = .null
+                state = .failed(context.error ?? "暂时无法核对原账本。")
+            }
+        } catch is CancellationError {} catch { state = .failed(error.localizedDescription) }
+    }
+    private func finishRecovery() async {
+        do {
+            try await checkGrant()
+            if context.reconcilePending(pending) || context.pending != pending { dismiss() }
+        } catch is CancellationError {} catch { state = .failed(error.localizedDescription) }
     }
     @ViewBuilder private var currentResult: some View {
         if result["account"]["id"].stringValue != nil {
@@ -562,6 +637,7 @@ private struct NativeFinancePendingRecovery: View {
         guard let path = pending.recoveryPath else { state = .failed("请返回对应记录核对"); return }
         state = .loading
         do {
+            try await checkGrant()
             result = try await context.api.json(path: path, token: context.token); try Task.checkCancellation()
             let account: Bool = result["account"]["id"].stringValue != nil
             let goal: Bool = result["goal"]["id"].stringValue != nil
@@ -571,7 +647,15 @@ private struct NativeFinancePendingRecovery: View {
             guard account || goal || report || settings || members else { throw NativeAPIError.invalidResponse }
             state = .ready
         }
-        catch is CancellationError {} catch { result = .null; state = .failed(error.localizedDescription) }
+        catch is CancellationError {} catch {
+            if requiresCurrentBalanceGrant, let failure = error as? NativeAPIError,
+               case .server(let status, let code, _, _) = failure,
+               [401, 403, 404].contains(status) || code == "FINANCE_BOOK_ACCESS_CHANGED" {
+                grantChecked = false
+                context.readFailed(error)
+            }
+            result = .null; state = .failed(error.localizedDescription)
+        }
     }
 }
 

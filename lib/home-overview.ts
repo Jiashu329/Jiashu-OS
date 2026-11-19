@@ -79,6 +79,7 @@ export interface HomeOverview {
   finance: Record<LedgerKind, HomeFinance>;
   nutrition: HomeNutrition;
   actionsStatus: 'ready' | 'partial' | 'unavailable' | 'not-requested';
+  weekly: HomeActionsInput['weekly'];
   priorities: HomePriority[];
 }
 
@@ -245,5 +246,5 @@ export function buildHomeOverview(sources: HomeOverviewSources, now: Date | stri
     : [actions.nutrition, actions.weekly, actions.decisions].some((part) => part === null) ? 'partial' : 'ready';
   const toneOrder = { attention: 0, action: 1, setup: 2, neutral: 3 } as const;
   priorities.sort((left, right) => toneOrder[left.tone] - toneOrder[right.tone]);
-  return { asOf, today, health, finance, nutrition, actionsStatus, priorities: priorities.slice(0, 3) };
+  return { asOf, today, health, finance, nutrition, actionsStatus, weekly: actions?.weekly ?? null, priorities: priorities.slice(0, 3) };
 }

@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { TINY_JPEG_DATA_URL } from '../tests/fixtures/nutrition-photo.ts';
 
 // This is a production-HTTP acceptance test for GitHub Actions or an explicitly
 // selected standalone machine. Managed Sites previews must use their own server.
@@ -114,7 +115,7 @@ async function json(response, status, label) {
     try {
       const failure = await response.clone().json();
       if (typeof failure?.code === 'string' && failure.code.length <= 96
-        && /^(?:(?:NATIVE|HEALTH|SYNC|DOUBAN|FINANCE|BACKUP|AI|TMDB|LOCAL|ACCOUNT)_[A-Z0-9_]+|INVALID_DOUBAN_INPUT|SIGN_IN_REQUIRED)$/.test(failure.code)) code = ' (' + failure.code + ')';
+        && /^(?:(?:NATIVE|HEALTH|SYNC|DOUBAN|FINANCE|BACKUP|AI|TMDB|LOCAL|ACCOUNT|RECIPE)_[A-Z0-9_]+|INVALID_DOUBAN_INPUT|SIGN_IN_REQUIRED)$/.test(failure.code)) code = ' (' + failure.code + ')';
     } catch { /* Non-JSON failures retain the safe status-only assertion. */ }
   }
   assert.equal(response.status, status, label + ' status' + code);
@@ -249,6 +250,9 @@ async function familyBookAcceptance(administrator, memberSession, member, member
   const session = await json(await native('/auth/login', null, { email: member.email, password: memberPassword }), 200, 'Native local editor login');
   assert.equal(session.user.id, member.id);
   const token = session.accessToken;
+  const recipes = await json(await native('/health/nutrition/recipes', token), 200, 'Native local member recipe isolation');
+  assert.deepEqual(recipes.recipes, []);
+  await json(await native('/health/nutrition/recipes?sourceUrl=' + encodeURIComponent('https://www.xiachufang.com/recipe/107271414/'), token), 404, 'Native local member cannot look up another account recipe by source');
   const pending = (await json(await native('/finance/books', token), 200, 'Native editor lists pending invitations')).invitations.find(item => item.id === invited.member.id);
   assert.ok(pending);
   const accepted = await json(await native('/finance/books/invitations/' + pending.id + '/respond', token, { action: 'accept', expectedRevision: pending.revision }), 200, 'Native editor accepts invitation');
@@ -546,6 +550,28 @@ async function nativeWorkspaceAcceptance(request, write, token, nativeDate, nutr
   await json(await request('/health/nutrition/reuse', token), 200, 'Native nutrition reuse');
   const nutritionHistory = await json(await request('/health/nutrition/' + encodeURIComponent(nutritionId) + '/history', token), 200, 'Native nutrition record history');
   assert.ok(nutritionHistory);
+  const recipesPath = '/health/nutrition/recipes', recipeKey = randomUUID();
+  const recipeInput = { title: 'Native synthetic supper', sourceUrl: 'https://www.xiachufang.com/recipe/107271414/', ingredients: 'Synthetic ingredients' };
+  const createdRecipe = await json(await write(recipesPath, token, recipeInput, { 'Idempotency-Key': recipeKey }), 200, 'Native saves a recipe link');
+  assert.equal(createdRecipe.recipe.source, 'xiachufang');
+  assert.equal(createdRecipe.recipe.ingredients, recipeInput.ingredients);
+  const recipeRetry = await json(await write(recipesPath, token, recipeInput, { 'Idempotency-Key': recipeKey }), 200, 'Native retries original recipe link save');
+  assert.equal(recipeRetry.replayed, true);
+  const duplicate = await json(await write(recipesPath, token, { ...recipeInput, sourceUrl: 'https://m.xiachufang.com/recipe/107271414/?tracking=test' }, { 'Idempotency-Key': randomUUID() }), 409, 'Native rejects a duplicate recipe link');
+  assert.equal(duplicate.code, 'RECIPE_ALREADY_SAVED');
+  const existingRecipe = await json(await request(recipesPath + '?sourceUrl=' + encodeURIComponent('https://m.xiachufang.com/recipe/107271414/?tracking=test'), token), 200, 'Native opens the already saved recipe');
+  assert.equal(existingRecipe.recipe.id, recipeKey);
+  const cookingKey = randomUUID(), cookingPath = recipesPath + '/' + recipeKey + '/cookings';
+  const cooking = await json(await write(cookingPath, token, { note: 'Synthetic cooking record', photoDataUrl: TINY_JPEG_DATA_URL }, { 'Idempotency-Key': cookingKey }), 200, 'Native saves a private recipe photo');
+  assert.equal(cooking.recipe.coverCookingId, cookingKey);
+  assert.equal(cooking.recipe.cookings[0].hasPhoto, true);
+  assert.equal(cooking.recipe.cookings[0].photoDataUrl, undefined);
+  const photoResponse = await request(cookingPath + '/' + cookingKey + '/photo', token);
+  assert.equal(photoResponse.headers.get('cache-control'), 'no-store');
+  assert.equal((await json(photoResponse, 200, 'Native reads its own recipe photo')).photoDataUrl, TINY_JPEG_DATA_URL);
+  await json(await request(cookingPath + '/' + cookingKey + '/photo', null), 401, 'Native photo needs an account');
+  const cookedRecipes = await json(await request(recipesPath + '?cooked=1&q=supper', token), 200, 'Native searches cooked recipes');
+  assert.deepEqual(cookedRecipes.recipes.map(item => item.id), [recipeKey]);
   const nativeRecords = await json(await request('/health/records?from=' + nativeDate + '&to=' + nativeDate, token), 200, 'Native health record workspace');
   const recordKey = (nativeRecords.records.find(row => row.recordKey.includes('/')) ?? nativeRecords.records[0]).recordKey;
   const detail = await json(await request('/health/records/' + encodeURIComponent(recordKey), token), 200, 'Native encoded health resource detail');
@@ -597,6 +623,7 @@ async function nativeWorkspaceAcceptance(request, write, token, nativeDate, nutr
   assert.match(backupResponse.headers.get('content-disposition') ?? '', /attachment/);
   const backup = await json(backupResponse, 200, 'Native complete backup download');
   assert.equal(backup.version, 2);
+  assert.equal(backup.tables.nutrition_recipe_cookings.find(item => item.id === cookingKey)?.photo_data_url, TINY_JPEG_DATA_URL);
   const restorePreview = await json(await write('/data/backup', token, { action: 'preview', backup }), 200, 'Native complete backup restore preview');
   assert.equal(restorePreview.total.conflicts, 0);
   const restored = await json(await write('/data/backup', token, { action: 'restore', backup, previewHash: restorePreview.previewHash }), 200, 'Native explicitly confirmed backup restore');

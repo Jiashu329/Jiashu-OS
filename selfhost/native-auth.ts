@@ -43,6 +43,8 @@ export const NATIVE_API_ROUTES: Readonly<Record<string, readonly string[]>> = {
   '/api/native/health/nutrition/needs': ['POST'],
   '/api/native/health/nutrition/parse': ['POST'],
   '/api/native/health/nutrition/photo': ['POST'],
+  '/api/native/health/nutrition/recipes': ['GET', 'POST'],
+  '/api/native/health/nutrition/recipes/preview': ['POST'],
   '/api/native/health/nutrition/reuse': ['GET', 'POST'],
   '/api/native/health/nutrition/review': ['GET'],
   '/api/native/health/nutrition/status': ['GET', 'PATCH'],
@@ -75,7 +77,7 @@ export const NATIVE_API_ROUTES: Readonly<Record<string, readonly string[]>> = {
   '/api/native/sync/template': ['GET'],
 };
 const AUTH_PATHS = ['/api/native/auth/login', '/api/native/auth/refresh', '/api/native/auth/logout'];
-type NativeParameter = 'id' | 'record' | 'hash';
+type NativeParameter = 'id' | 'record' | 'hash' | 'recipe';
 const DYNAMIC_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly string[]; parameters: readonly NativeParameter[] }> = [
   { pattern: /^\/api\/native\/access\/([^/]+)$/, methods: ['PATCH'], parameters: ['id'] },
   { pattern: /^\/api\/native\/admin\/users\/([^/]+)$/, methods: ['PATCH'], parameters: ['id'] },
@@ -93,6 +95,10 @@ const DYNAMIC_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly string[
   { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['id'] },
   { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)\/history$/, methods: ['GET'], parameters: ['id'] },
   { pattern: /^\/api\/native\/health\/nutrition\/([^/]+)\/restore$/, methods: ['POST'], parameters: ['id'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/recipes\/([^/]+)$/, methods: ['DELETE', 'GET', 'PATCH'], parameters: ['recipe'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/recipes\/([^/]+)\/cookings$/, methods: ['POST'], parameters: ['recipe'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/recipes\/([^/]+)\/cookings\/([^/]+)$/, methods: ['DELETE', 'PATCH'], parameters: ['recipe', 'recipe'] },
+  { pattern: /^\/api\/native\/health\/nutrition\/recipes\/([^/]+)\/cookings\/([^/]+)\/photo$/, methods: ['GET'], parameters: ['recipe', 'recipe'] },
   { pattern: /^\/api\/native\/health\/nutrition\/templates\/([^/]+)$/, methods: ['GET', 'PUT', 'DELETE'], parameters: ['id'] },
   { pattern: /^\/api\/native\/health\/nutrition\/templates\/([^/]+)\/preview$/, methods: ['POST'], parameters: ['id'] },
   { pattern: /^\/api\/native\/health\/records\/([^/]+)$/, methods: ['GET', 'PATCH'], parameters: ['record'] },
@@ -106,6 +112,7 @@ function validParameter(raw: string, kind: NativeParameter): boolean {
   if (!value || value.length > 512 || /[\u0000-\u001f\u007f%\\?#]/.test(value)
     || value.split('/').some(part => part === '.' || part === '..')) return false;
   if (kind === 'hash') return /^[a-f0-9]{64}$/.test(value);
+  if (kind === 'recipe') return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   if (kind === 'record') return /^(steps|sleep|active_energy):\d{4}-\d{2}-\d{2}$/.test(value)
     || /^(weight|lean_body_mass):[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,159}$/.test(value);
   return !value.includes('/') && value === value.trim();

@@ -53,6 +53,22 @@ final class NativeBackupTests: XCTestCase {
         XCTAssertEqual(try NativeBackupCodec.value("backup", in: NativeBackupCodec.request(action: "preview", backup: assembled)), raw)
     }
 
+    func testRecipeRowsAndPhotoDataKeepSignedVolumeBytes() throws {
+        let setID = String(repeating: "a", count: 64)
+        let photo = "data:image/jpeg;base64," + Data(repeating: 0xff, count: 256 * 1024).base64EncodedString()
+        let tables = #"{"nutrition_recipes":[{"title":"\u756a茄"}],"nutrition_recipe_cookings":[{"photo_data_url":"\#(photo)"}],"nutrition_recipe_operations":[]}"#
+        let part = Data(#"{"kind":"jiashu-os-backup-volume","version":1,"setId":"\#(setID)","exportedAt":"\#(timestamp)","partIndex":1,"totalParts":1,"tables":\#(tables)}"#.utf8)
+        let manifest = Data(#"{"kind":"jiashu-os-backup-manifest","version":1,"backupVersion":2,"setId":"\#(setID)","exportedAt":"\#(timestamp)","totalRows":2,"volumes":[{"partIndex":1,"rowCount":2,"byteLength":\#(part.count),"sha256":"\#(setID)"}]}"#.utf8)
+        let backup = try NativeBackupCodec.assemble([
+            NativeBackupFile(name: "part.json", data: part),
+            NativeBackupFile(name: "manifest.json", data: manifest),
+        ])
+        XCTAssertEqual(try NativeBackupCodec.inspect(backup).rows, 2)
+        XCTAssertEqual(try NativeBackupCodec.split(backup).map(\.data), [manifest, part])
+        let preview = try NativeBackupCodec.request(action: "preview", backup: backup)
+        XCTAssertEqual(try NativeBackupCodec.value("backup", in: preview), backup)
+    }
+
     func testMissingDuplicateAndMixedVolumesCannotBeAssembled() throws {
         let (_, files) = group()
         XCTAssertThrowsError(try NativeBackupCodec.assemble([files[0], files[1]]))

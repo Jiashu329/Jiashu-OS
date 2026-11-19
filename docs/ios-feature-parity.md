@@ -9,7 +9,8 @@
 | 网页功能 | 原生入口与实现 | 主要请求 | 核对内容与边界 |
 | --- | --- | --- | --- |
 | 登录、恢复登录、退出与切换账号 | `ContentView`、`NativeAppModel`、`NativeSessionStore` | `auth/login`、`auth/refresh`、`auth/logout`、`session` | 邮箱密码登录；密码不持久保存；会话存入设备 Keychain。认证失效清空当前身份及已显示业务数据，旧账号的迟到响应不能覆盖新账号。 |
-| 今天首页、健康概览、快捷记录 | `NativeTodayView`、`NativeHealthView`；`HealthQuickEntryView` | `overview`、`health/records`、`health/nutrition` | 显示真实记录日期；缺失与实际零值分开；补录后刷新。首页摘要不代替详细健康及饮食工作区。 |
+| 今天首页、健康概览、快捷记录 | `NativeTodayView`、`NativeHealthView` | `overview`、`health/nutrition`、`…/reuse`、`…/copy` | 首页「记一餐」可把常吃或前一天同餐带入可编辑草稿，确认保存后刷新。自动同步的体重和体成分在健康页查看。 |
+| 从首页继续记录和周行动 | 今天 → `NativeHomeFollowThrough` | `overview`、`health/actions`、`finance/books` | 恢复饮食原日期、餐次和原保存请求。余额恢复核对原账本、币种和当前编辑权限。周复盘与执行周分别按北京时间计算。 |
 | Apple 健康授权与日常同步设备 | 既有健康同步卡、`NativeAppModel`、`HealthKitReader` | `sync/channel`、`health/import/preview`、`health/import` | 用户先完成系统健康授权，再明确选择日常同步设备；后续选定设备上传无需逐批确认来源。设备被替换时暂停；人工更正保留。 |
 | 健康指标趋势、自选日期、真实来源 | 健康工作区 → 自选日期、来源与睡眠分析；`NativeHealthRangeWorkspace` | `health?from=…&to=…` | 体重、去脂体重、步数、活动能量、睡眠；北京时间，包含首尾日期，最多360天；无记录日期不补零。 |
 | 睡眠分期、真实入睡与起床、分周规律 | 同上，选择睡眠；`NativeWorkspaceSleepSummary` | 同一健康范围响应 | 分期按实际时长汇总；跨午夜使用圆周平均；截断窗口与只有总时长的旧记录不参与作息规律推断。 |
@@ -39,6 +40,7 @@
 | 常吃、最近记录、收藏与取消收藏 | 饮食 → 常吃、最近与复制餐次；`NativeNutritionReuseView` | `health/nutrition/reuse`、`…/favorites` | 复用先生成可编辑明细；保留原目录版本、来源及未知值，不自动新增记录。 |
 | 复制某天的一餐 | 常吃 → 复制某天的一餐；`NativeNutritionMealCopyView` | `health/nutrition/copy` | 核对源日期、餐次及目标位置，选择后带入草稿；不直接保存第二份记录。 |
 | 自建食物、食谱与整餐模板 | 饮食 → 自建食物、食谱与整餐模板；`NativeNutritionTemplatesView`、`NativeNutritionTemplateEditor` | `health/nutrition/templates`、`…/{id}` | 新建、编辑、归档、复制为新模板；成分与来源为结构化表单；从已记录餐次整理模板。 |
+| 我的菜谱、制作笔记与成品照 | 饮食 → 我的菜谱；`NativeRecipesRoot` | `health/nutrition/recipes`、`…/preview`、`…/{id}/cookings` | 收藏小红书和下厨房链接，可从公开预览带入可取得的内容。成品照可加到独立自制菜谱或已收藏菜谱。记录按账号存储，照片单独鉴权读取。记餐仍由饮食表单确认。 |
 | 模板按份数或成品重量换算 | 模板详情；`NativeNutritionTemplateDetail` | `health/nutrition/templates/{id}/preview` | 预览请求带模板版本、日期餐次和换算量；输入变化清除预览；已归档模板不可用于新记录。 |
 | 每日营养目标、体重计划提示 | 饮食 → 每日营养目标与需求测算；`NativeNutritionGoalsView` | `health/nutrition/goals` | 读取并更新版本；空值仍为空；测算结果只填入目标草稿，保存是另一项明确操作。 |
 | 营养需求公式与AI解读 | 营养目标 → AI测算；`NativeNutritionNeedsView` | `health/nutrition/needs` | 主动填写公式所需身体参数；点击才发送；公式参考、方法与来源可核对；参数不存为个人档案。 |

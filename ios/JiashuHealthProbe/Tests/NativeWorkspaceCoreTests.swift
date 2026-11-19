@@ -37,6 +37,31 @@ final class NativeWorkspaceCoreTests: XCTestCase {
         XCTAssertEqual(path, "weight%3Ascale%2Fa%2Bb")
     }
 
+    func testHomeRecoveryRestoresTheOriginalMealAndExcludesTemplateChanges() throws {
+        let pending = NativeNutritionCommand(path: "health/nutrition/batch", title: "原餐次", body: .object([
+            "entries": .array([.object(["date": .string("2025-11-18"), "meal": .string("lunch")])])
+        ]))
+        let recovery = try XCTUnwrap(NativeHomeMealRecovery(pending))
+        XCTAssertEqual(recovery.date.map(NativeActionDates.day), "2025-11-18")
+        XCTAssertEqual(recovery.meal, "lunch")
+        let copy = NativeNutritionCommand(path: "health/nutrition/copy", title: "复制餐次", body: .object([
+            "action": .string("copy"), "fromDate": .string("2025-11-18"), "toDate": .string("2025-11-19"), "toMeal": .string("dinner")
+        ]))
+        XCTAssertEqual(NativeHomeMealRecovery(copy)?.date.map(NativeActionDates.day), "2025-11-19")
+        XCTAssertEqual(NativeHomeMealRecovery(copy)?.meal, "dinner")
+        let template = NativeNutritionCommand(path: "health/nutrition/templates", title: "保存模板", body: .null)
+        XCTAssertNil(NativeHomeMealRecovery(template))
+    }
+
+    func testHomeWeeksRollOverAtMondayInShanghai() throws {
+        let parser = ISO8601DateFormatter()
+        let before = NativeHomeWeeks(now: try XCTUnwrap(parser.date(from: "2026-11-22T15:59:59Z")))
+        let after = NativeHomeWeeks(now: try XCTUnwrap(parser.date(from: "2026-11-22T16:00:00Z")))
+        XCTAssertEqual(before.current, "2026-11-16")
+        XCTAssertEqual(after.current, "2026-11-23")
+        XCTAssertEqual(after.previous, before.current)
+    }
+
     @MainActor
     func testAccountResetFencesAnUncooperativeLateOperationAndItsBusyState() async {
         let store = NativeFeatureStore(api: NativeAPI(), token: "old-token", userID: "owner-a")

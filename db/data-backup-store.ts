@@ -103,6 +103,8 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
   const summaries: BackupTablePreview[] = [];
   for (const table of BACKUP_TABLE_NAMES) {
     const incoming = backup.tables[table]; const existing = new Map(current[table].map((row) => [backupRowKey(table,row),row]));
+    const activeRecipeSources = table === 'nutrition_recipes' ? new Set(current.nutrition_recipes
+      .filter(row => row.archived_at === null && row.source_key !== null).map(row => row.source_key)) : null;
     let skipped = 0; let conflicts = 0;
     const conflictExamples: BackupTablePreview['conflictExamples'] = [];
     const describe = (row: BackupRow, reason: string) => {
@@ -114,13 +116,17 @@ async function planRestore(db: BackupDatabase, userId: string, backup: DataBacku
     const candidates: BackupRow[] = [];
     for (const row of incoming) {
       const prior = existing.get(backupRowKey(table,row));
-      if (!prior) candidates.push(row);
+      if (!prior && row.archived_at === null && activeRecipeSources?.has(row.source_key)) {
+        conflicts++; describe(row,'同一来源链接已收藏，请先核对已有菜谱。');
+      }
+      else if (!prior) candidates.push(row);
       else if (comparableBackupRow(table,prior) === comparableBackupRow(table,row) || table === 'douban_items' && retainsRicherDoubanData(prior,row)) skipped++;
       else {
         conflicts++;const example=describe(row,'已有记录内容不同，需要先核对当前记录。');
         if(example) {
           const display=(value:BackupRow[string])=>value===null?'未填写':String(value).slice(0,240)+(String(value).length>240?'…':'');
-          example.differences=spec.columns.filter((field)=>field!=='sequence'&&prior[field]!==row[field]).slice(0,8).map((field)=>({field,current:display(prior[field]),incoming:display(row[field])}));
+          const describeValue = (field: string, value: BackupRow[string]) => field === 'photo_data_url' && value !== null ? '有照片' : display(value);
+          example.differences=spec.columns.filter((field)=>field!=='sequence'&&prior[field]!==row[field]).slice(0,8).map((field)=>({field,current:describeValue(field, prior[field]),incoming:describeValue(field, row[field])}));
         }
       }
     }

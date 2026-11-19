@@ -96,7 +96,6 @@ private struct NativeLoginView: View {
 private struct NativeTodayView: View {
     @ObservedObject var model: NativeAppModel
     let showHealth: (String) -> Void
-    @State private var quickWeight = false
     @State private var hasShownHome = false
     private var dateLabel: String {
         let now = Date()
@@ -113,32 +112,23 @@ private struct NativeTodayView: View {
                     if let error = model.sessionError, error != model.overviewError {
                         NativeInlineNotice(error, tone: .attention)
                     }
+                    NativeHomeFollowThrough(model: model)
                     NativeHomeHealthCards(model: model, showHealth: showHealth)
                     NativeHomeWorkspaceCards(model: model)
-                    if let session = model.session {
-                        NavigationLink {
-                            HealthWeeklyReviewView(api: model.api, token: session.accessToken, userID: session.user.id)
-                        } label: {
-                            HStack {
-                                Text("本周行动").font(.subheadline)
-                                Spacer()
-                                Image(systemName: "arrow.up.right").font(.caption)
-                            }.foregroundStyle(NativePalette.muted).frame(minHeight: 44)
-                        }.buttonStyle(NativePressStyle())
-                    }
                 }.padding(.horizontal, 22).padding(.top, 8).padding(.bottom, 24)
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }.nativeGeometricPage().navigationTitle("今天")
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         if let session = model.session {
-                            Menu {
-                                NavigationLink {
-                                    NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id, initialCompose: true)
-                                } label: { Label("记一餐", systemImage: "fork.knife") }
-                                Button { quickWeight = true } label: { Label("记体重", systemImage: "scalemass") }
-                            } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
-                                .accessibilityLabel("新增记录")
+                            NavigationLink {
+                                NativeNutritionRoot(api: model.api, token: session.accessToken, userID: session.user.id,
+                                                    initialCompose: true, quickSuggestions: true) {
+                                    await model.reloadOverview(presentError: false)
+                                }
+                            } label: {
+                                Text("记一餐").frame(minHeight: 44)
+                            }.accessibilityIdentifier("today-record-meal")
                         }
                         NativeHomeInboxButton(model: model)
                     }
@@ -147,12 +137,6 @@ private struct NativeTodayView: View {
                 .task {
                     if hasShownHome { await model.reload(presentError: false) }
                     else { hasShownHome = true }
-                }
-                .sheet(isPresented: $quickWeight) {
-                    if let session = model.session {
-                        HealthQuickEntryView(api: model.api, token: session.accessToken, userID: session.user.id,
-                                             initialMetric: .weight) { await model.reload() }
-                    }
                 }
         }
     }

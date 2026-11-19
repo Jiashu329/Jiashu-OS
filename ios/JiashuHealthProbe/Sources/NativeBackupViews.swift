@@ -166,7 +166,7 @@ struct NativeBackupView: View {
                 if let text = state.receiptText { Text(text).font(.footnote).foregroundStyle(.secondary) }
                 DisclosureGroup("格式与范围") {
                     Button("仅生成单文件") { Task { await state.export(volumes: false) } }
-                    Text("完整备份含清单及全部分卷。健康、饮食、财务和书影音记录包含在内，登录凭据与服务密钥不包含。")
+                    Text("完整备份含清单及全部分卷。健康、饮食、菜谱与成品照、财务和书影音记录包含在内，登录凭据与服务密钥不包含。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } }

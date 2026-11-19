@@ -26,11 +26,9 @@ struct NativeHomeHealthSnapshot {
             let raw: NativeHomeMetric?
             if ready {
                 raw = overview?.health.metrics.first { $0.metric == key }
-            } else if key != "body_fat", let summary = health?.summary.metrics[key] {
+            } else if let summary = health?.summary.metrics[key] {
                 raw = NativeHomeHealthData.homeMetric(summary)
             } else {
-                // Body fat is supplied by the server's exact source/time pairing.
-                // Independent latest weight and lean-mass values are never paired here.
                 raw = nil
             }
             result[key] = NativeHomeHealthData.sanitized(raw, key: key, end: end, today: today)
@@ -44,7 +42,7 @@ struct NativeHomeHealthSnapshot {
 }
 
 enum NativeHomeHealthData {
-    static let metricKeys = ["steps", "active_energy", "sleep", "weight", "body_fat"]
+    static let metricKeys = ["steps", "active_energy", "sleep"]
 
     static func validDay(_ value: String) -> Bool {
         guard let date = NativeChartDates.parse(value) else { return false }
@@ -54,9 +52,7 @@ enum NativeHomeHealthData {
     static func validValue(_ value: Double, key: String) -> Bool {
         guard value.isFinite else { return false }
         switch key {
-        case "weight": return value > 0
         case "sleep": return (0...24).contains(value)
-        case "body_fat": return (0...100).contains(value)
         default: return value >= 0
         }
     }
@@ -126,90 +122,11 @@ enum NativeHomeHealthData {
     }
 }
 
-enum NativeHomeWeightAttainment: Equatable {
-    enum Status: String, Decodable, Equatable {
-        case active, achieved, ended, missing
-    }
-
-    case noPlan, disabled, gain, maintain, missingWeight, unavailable
-    case measured(percent: Double, status: Status)
-
-    static func displayPercent(_ percent: Double) -> Double {
-        percent < 100 ? min(percent, 99.9) : percent
-    }
-}
-
-/// Uses the existing Weight Plan review's calculation from the saved baseline,
-/// target and seven-day mean of recorded daily weights.
-struct NativeHomeWeightPlanReview: Decodable {
-    private struct Settings: Decodable { let enabled: Bool }
-    private struct Observations: Decodable { let average7: Double? }
-    private struct Progress: Decodable {
-        enum Direction: String, Decodable { case loss, gain, maintain }
-        let direction: Direction
-        let status: NativeHomeWeightAttainment.Status
-        let progressPercent: Double?
-    }
-
-    private let today: String
-    private let settings: Settings?
-    private let observations: Observations
-    private let progress: Progress?
-
-    private enum CodingKeys: String, CodingKey { case today, settings, observations, progress }
-
-    init(from decoder: Decoder) throws {
-        let fields = try decoder.container(keyedBy: CodingKeys.self)
-        today = try fields.decode(String.self, forKey: .today)
-        settings = try fields.decode(Settings?.self, forKey: .settings)
-        observations = try fields.decode(Observations.self, forKey: .observations)
-        progress = try fields.decode(Progress?.self, forKey: .progress)
-    }
-
-    func attainment(for day: String) throws -> NativeHomeWeightAttainment {
-        guard today == day else { throw NativeAPIError.invalidResponse }
-        guard let settings else { return .noPlan }
-        guard settings.enabled else { return .disabled }
-        guard let progress else { throw NativeAPIError.invalidResponse }
-        switch progress.direction {
-        case .gain: return .gain
-        case .maintain: return .maintain
-        case .loss:
-            guard let average = observations.average7 else {
-                guard progress.progressPercent == nil else { throw NativeAPIError.invalidResponse }
-                return .missingWeight
-            }
-            guard NativeHomeHealthData.validValue(average, key: "weight"),
-                  let percent = progress.progressPercent, (0...100).contains(percent),
-                  progress.status != .missing else { throw NativeAPIError.invalidResponse }
-            return .measured(percent: percent, status: progress.status)
-        }
-    }
-}
-
 @MainActor
 struct NativeHomeHealthCards: View {
     @ObservedObject var model: NativeAppModel
     let showHealth: (String) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var weightPlan: WeightPlanDisplay?
-    @State private var weightPlanRequest = UUID()
-
-    private struct WeightPlanScope: Equatable {
-        let owner: String
-        let day: String
-    }
-
-    private struct WeightPlanRefresh: Equatable {
-        let scope: WeightPlanScope
-        let overviewUpdatedAt: Date?
-    }
-
-    private struct WeightPlanDisplay {
-        let scope: WeightPlanScope
-        let attainment: NativeHomeWeightAttainment
-    }
-
     private var snapshot: NativeHomeHealthSnapshot {
         NativeHomeHealthSnapshot(overview: model.overview, health: model.health, healthUpdatedAt: model.healthUpdatedAt)
     }
@@ -218,7 +135,6 @@ struct NativeHomeHealthCards: View {
         let data = snapshot
         VStack(alignment: .leading, spacing: 16) {
             primaryCards(data)
-            compositionCard(data)
             if let notice = sourceNotice(data) {
                 Text(notice).font(.caption).foregroundStyle(NativePalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -292,119 +208,6 @@ struct NativeHomeHealthCards: View {
                 .nativeGeometricCard(fill: NativePalette.peach, compactAt: .topLeading)
         }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
             .accessibilityHint("查看睡眠详情")
-    }
-
-    private func compositionCard(_ data: NativeHomeHealthSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("体重/体脂").font(.headline)
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 16) {
-                    compositionMetric("weight", title: "体重", unit: "kg", data: data).fixedSize(horizontal: true, vertical: false)
-                    Spacer(minLength: 8)
-                    compositionMetric("body_fat", title: "体脂率（估算）", unit: "%", data: data).fixedSize(horizontal: true, vertical: false)
-                    Spacer(minLength: 8)
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    compositionMetric("weight", title: "体重", unit: "kg", data: data)
-                    compositionMetric("body_fat", title: "体脂率（估算）", unit: "%", data: data)
-                }
-            }
-            Divider().overlay(NativePalette.muted.opacity(0.15))
-            weightPlanRow
-        }.padding(18).foregroundStyle(NativePalette.ink)
-            .nativeGeometricCard(fill: NativePalette.surface)
-    }
-
-    private func compositionMetric(_ key: String, title: String, unit: String, data: NativeHomeHealthSnapshot) -> some View {
-        let metric = data.metric(key)
-        let hint: String = key == "body_fat" ? "由同次、同源测量配对估算，查看体脂趋势" : "查看" + title + "趋势"
-        return Button { showHealth(key) } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.caption).foregroundStyle(NativePalette.muted)
-                metricValue(metric.value, unit: unit, decimals: 1, font: .title3)
-                if metric.day != data.today {
-                    Text(NativeHomeHealthData.dateLabel(metric.day, today: data.today)).font(.caption).foregroundStyle(NativePalette.muted)
-                }
-            }.frame(minHeight: 44, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
-            .accessibilityHint(hint)
-    }
-
-    @ViewBuilder private var weightPlanRow: some View {
-        if let session = model.session {
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                let scope = WeightPlanScope(owner: session.user.id, day: NativeActionDates.day(timeline.date))
-                let refresh = WeightPlanRefresh(scope: scope, overviewUpdatedAt: model.overviewUpdatedAt)
-                let attainment = weightPlan?.scope == scope ? weightPlan?.attainment : nil
-                NavigationLink {
-                    NativeWeightPlanWorkspace(api: model.api, token: session.accessToken, userID: session.user.id)
-                } label: {
-                    attainmentRow(attainment)
-                }.buttonStyle(NativePressStyle())
-                    .accessibilityElement(children: .combine)
-                    .accessibilityHint(attainmentHint(attainment))
-                    .task(id: refresh) { await loadAttainment(for: scope) }
-            }
-        }
-    }
-
-    private func attainmentRow(_ attainment: NativeHomeWeightAttainment?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("减重达成率").font(.subheadline)
-                Spacer(minLength: 4)
-                Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(NativePalette.muted)
-                    .accessibilityHidden(true)
-            }
-            if case .some(.measured(let percent, let status)) = attainment {
-                Text(NativeHomeWeightAttainment.displayPercent(percent).formatted(.number.precision(.fractionLength(0...1))) + "%")
-                    .font(.title3.weight(.semibold)).monospacedDigit()
-                ProgressView(value: percent, total: 100).tint(NativePalette.accent).accessibilityHidden(true)
-                if status == .achieved || status == .ended {
-                    Text(status == .achieved ? "达到目标" : "日期已过")
-                        .font(.caption).foregroundStyle(NativePalette.muted)
-                }
-            } else {
-                Text(attainmentPlaceholder(attainment)).font(.caption).foregroundStyle(NativePalette.muted)
-            }
-        }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
-    }
-
-    private func attainmentHint(_ attainment: NativeHomeWeightAttainment?) -> String {
-        if case .some(.measured) = attainment { return "按近7日记录日均计算。查看体重计划" }
-        return "查看体重计划"
-    }
-
-    private func attainmentPlaceholder(_ attainment: NativeHomeWeightAttainment?) -> String {
-        switch attainment {
-        case .none: return "正在读取计划…"
-        case .some(.noPlan): return "尚未设置体重计划"
-        case .some(.disabled): return "计划未启用"
-        case .some(.gain): return "当前计划为增重"
-        case .some(.maintain): return "当前计划为维持"
-        case .some(.missingWeight): return "暂无近7日体重记录"
-        case .some(.unavailable): return "暂时无法读取计划"
-        case .some(.measured): return ""
-        }
-    }
-
-    private func loadAttainment(for scope: WeightPlanScope) async {
-        guard !Task.isCancelled, let session = model.session, session.user.id == scope.owner else { return }
-        let request = UUID()
-        weightPlanRequest = request
-        let attainment: NativeHomeWeightAttainment
-        do {
-            let review: NativeHomeWeightPlanReview = try await model.api.request(
-                path: "health/weight-plan", token: session.accessToken, reportWorkspaceFailure: true)
-            attainment = try review.attainment(for: scope.day)
-        } catch is CancellationError {
-            return
-        } catch {
-            attainment = .unavailable
-        }
-        guard !Task.isCancelled, weightPlanRequest == request,
-              model.session?.user.id == scope.owner, NativeActionDates.day(Date()) == scope.day else { return }
-        weightPlan = WeightPlanDisplay(scope: scope, attainment: attainment)
     }
 
     private func metricValue(_ value: Double?, unit: String, decimals: Int, font: Font) -> some View {

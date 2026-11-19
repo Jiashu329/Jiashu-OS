@@ -7,6 +7,8 @@ import Charts
 @MainActor
 struct NativeNutritionRoot: View {
     private let initialCompose: Bool
+    private let quickSuggestions: Bool
+    private let onMutation: (() async -> Void)?
     @StateObject private var context: NativeNutritionContext
     @State private var date: Date
     @State private var meal: String
@@ -33,8 +35,11 @@ struct NativeNutritionRoot: View {
     }
 
     init(api: NativeAPI, token: String, userID: String, initialCompose: Bool = false,
-         initialDate: Date = Date(), initialMeal: String? = nil) {
+         initialDate: Date = Date(), initialMeal: String? = nil, quickSuggestions: Bool = false,
+         onMutation: (() async -> Void)? = nil) {
         self.initialCompose = initialCompose
+        self.quickSuggestions = quickSuggestions
+        self.onMutation = onMutation
         _date = State(initialValue: initialDate)
         _meal = State(initialValue: initialMeal ?? NativeNutritionEntrySelection.suggestedMeal())
         _context = StateObject(wrappedValue: NativeNutritionContext(api: api, token: token, userID: userID))
@@ -73,9 +78,13 @@ struct NativeNutritionRoot: View {
             }
         }
         .onDisappear { supplementalReads?.cancel() }
+        .onChange(of: context.changes) { _, _ in
+            if let onMutation { Task { await onMutation() } }
+        }
         .sheet(isPresented: $composing) {
             NavigationStack {
-                NativeNutritionEntryChooser(context: context, date: $date, meal: $meal) { composing = false }
+                NativeNutritionEntryChooser(context: context, date: $date, meal: $meal,
+                                            quickSuggestions: quickSuggestions) { composing = false }
             }
             .environment(\.timeZone, NativeActionDates.timeZone)
         }
@@ -85,6 +94,20 @@ struct NativeNutritionRoot: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 dateNavigation(now: now)
+                NavigationLink {
+                    NativeRecipesRoot(api: context.api, token: context.token, userID: context.userID)
+                } label: {
+                    HStack {
+                        Label("我的菜谱", systemImage: "book.closed")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).accessibilityHidden(true)
+                    }
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(NativePalette.ink)
+                    .padding(.horizontal, 14).frame(minHeight: 44)
+                    .nativeGeometricCard(fill: NativePalette.surface, corner: 16, compactCorner: 7)
+                }
+                .buttonStyle(NativePressStyle())
+                .accessibilityIdentifier("diet-my-recipes")
                 pendingSection
                 NativeNutritionErrorRow(text: context.error)
                 if let readError {
@@ -369,9 +392,13 @@ private struct NativeNutritionEntryChooser: View {
     @ObservedObject var context: NativeNutritionContext
     @Binding var date: Date
     @Binding var meal: String
+    let quickSuggestions: Bool
     let onSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var editor: NutritionEditorPresentation?
+    @State private var favorites: [NativeJSON] = []
+    @State private var loadingPreviousMeal = false
+    @State private var suggestionError: String?
     private var selection: NativeNutritionEntrySelection { NativeNutritionEntrySelection(date: NativeActionDates.day(date), meal: meal) }
     var body: some View {
         List {
@@ -379,6 +406,7 @@ private struct NativeNutritionEntryChooser: View {
                 DatePicker("日期", selection: $date, in: ...Date(), displayedComponents: .date)
                 Picker("餐次", selection: $meal) { ForEach(QuickEntryMeal.allCases) { Text($0.title).tag($0.rawValue) } }
             }.listRowBackground(NativePalette.surface)
+            if quickSuggestions { suggestions }
             Section("怎么记录这餐？") {
                 NavigationLink { NativeNutritionReuseView(context: context, date: selection.date, initialMeal: meal, onDraft: adopt) } label: { Label("常吃与最近", systemImage: "heart") }
                 NavigationLink { NativeNutritionRecognitionView(context: context, date: selection.date, meal: meal, usePhoto: true, onSaved: onSaved) } label: { Label("拍照记录", systemImage: "camera") }
@@ -398,8 +426,67 @@ private struct NativeNutritionEntryChooser: View {
         .nativeGeometricPage().navigationTitle("记一餐").navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone, NativeActionDates.timeZone)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        .task { if quickSuggestions { await loadFavorites() } }
         .sheet(item: $editor) { value in NavigationStack { NativeNutritionBatchEditor(context: context, rows: value.rows, onSaved: onSaved) } }
     }
+
+    private var suggestions: some View {
+        Section("快速带入") {
+            ForEach(Array(favorites.enumerated()), id: \.offset) { _, item in
+                if let name = item["name"].stringValue {
+                    Button {
+                        adoptSuggestion(item)
+                    } label: { Label(name, systemImage: "heart") }
+                    .accessibilityHint("将常吃食物带入可编辑的记录草稿")
+                }
+            }
+            Button {
+                Task { await adoptPreviousMeal() }
+            } label: {
+                Label(selection.date == NativeActionDates.day(Date()) ? "昨天同餐" : "前一天同餐",
+                      systemImage: "arrow.uturn.backward")
+            }
+            if loadingPreviousMeal { ProgressView("读取前一天的记录…") }
+            NativeNutritionErrorRow(text: suggestionError)
+        }.listRowBackground(NativePalette.surface).labelStyle(NativeNutritionEntryLabelStyle())
+            .disabled(context.busy || context.pending != nil || loadingPreviousMeal)
+    }
+
+    private func loadFavorites() async {
+        do {
+            let response = try await context.api.json(path: "health/nutrition/reuse", token: context.token)
+            guard !Task.isCancelled else { return }
+            favorites = Array(response["favorites"].arrayValue.prefix(3))
+        } catch {
+            // The full reuse screen owns its own load and retry controls.
+        }
+    }
+
+    private func adoptSuggestion(_ item: NativeJSON) {
+        suggestionError = nil
+        do { adopt([try NativeNutritionReuseDraft.make(item, date: selection.date, meal: selection.meal)]) }
+        catch { suggestionError = error.localizedDescription }
+    }
+
+    private func adoptPreviousMeal() async {
+        guard !loadingPreviousMeal, let previous = NativeActionDates.calendar.date(byAdding: .day, value: -1, to: date) else { return }
+        loadingPreviousMeal = true
+        suggestionError = nil
+        defer { loadingPreviousMeal = false }
+        let target = selection
+        let body: NativeJSON = .object(["action": .string("preview"), "fromDate": .string(NativeActionDates.day(previous)),
+            "fromMeal": .string(target.meal), "toDate": .string(target.date), "toMeal": .string(target.meal)])
+        do {
+            let response = try await context.api.json(path: "health/nutrition/copy", method: "POST", token: context.token, body: body)
+            guard !Task.isCancelled, selection == target, context.pending == nil else { return }
+            let entries = response["preview"]["entries"].arrayValue
+            guard !entries.isEmpty else { suggestionError = "前一天这个餐次没有可复制的记录。"; return }
+            adopt(try entries.map { try NativeNutritionReuseDraft.make($0, date: target.date, meal: target.meal) })
+        } catch {
+            if !Task.isCancelled, selection == target { suggestionError = error.localizedDescription }
+        }
+    }
+
     private func adopt(_ rows: [NativeJSON]) { editor = NutritionEditorPresentation(rows: rows) }
 }
 
