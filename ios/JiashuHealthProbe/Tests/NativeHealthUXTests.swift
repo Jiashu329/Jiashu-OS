@@ -112,4 +112,77 @@ final class NativeHealthUXTests: XCTestCase {
         XCTAssertEqual(NativeHealthChartCalendar.ticks(range), [date])
         XCTAssertEqual(NativeHealthChartCalendar.domain(range).upperBound.timeIntervalSince(date), 86400)
     }
+
+    func testMassLinesBreakAtMissingShanghaiDaysAndRetainSinglePoints() throws {
+        let points = try [trendPoint("2024-02-28", 62), trendPoint("2024-02-29", 61.8),
+                          trendPoint("2024-03-02", 61.7), trendPoint("2024-03-04", 61.6)]
+        let segments = NativeHealthTrendSelection.segments(Array(points.reversed()))
+        XCTAssertEqual(segments.map { $0.map(\.day) },
+                       [["2024-02-28", "2024-02-29"], ["2024-03-02"], ["2024-03-04"]])
+        XCTAssertEqual(segments.flatMap { $0 }.count, 4)
+        XCTAssertTrue(NativeHealthTrendSelection.segments([]).isEmpty)
+    }
+
+    func testInspectingAMissingDayDoesNotSelectANearbySampleAndClampsChartEnd() throws {
+        let first = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-01"))
+        let last = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-03"))
+        let missing = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-02"))
+        let range = try NativeHealthWorkspaceRange(from: first, to: last, now: now)
+        let points = try [trendPoint("2026-11-01", 0), trendPoint("2026-11-03", 6000)]
+        let selectedMissing = NativeHealthTrendSelection.day(missing, points: points, range: range)
+        XCTAssertEqual(selectedMissing, "2026-11-02")
+        XCTAssertNil(points.first { $0.day == selectedMissing })
+        let selectedZero = NativeHealthTrendSelection.day(first, points: points, range: range)
+        XCTAssertEqual(points.first { $0.day == selectedZero }?.value, 0)
+        XCTAssertEqual(NativeHealthTrendSelection.day(NativeHealthChartCalendar.domain(range).upperBound,
+                                                       points: points, range: range), range.to)
+        XCTAssertEqual(NativeHealthTrendSelection.day(first.addingTimeInterval(-1), points: points, range: range), range.from)
+        XCTAssertEqual(NativeHealthTrendSelection.day(nil, points: points, range: range), range.to)
+        XCTAssertEqual(NativeHealthTrendSelection.day(nil, points: [], range: range), range.to)
+    }
+
+    func testAcceptedTrendSnapshotRejectsAnotherPeriodAndKeepsOnlyItsOwnDailyPoints() throws {
+        let first = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-01"))
+        let last = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-03"))
+        let range = try NativeHealthWorkspaceRange(from: first, to: last, now: now)
+        let rows: [NativeJSON] = [
+            .object(["day": .string("2026-10-31"), "value": .number(90)]),
+            .object(["day": .string("2026-11-01"), "value": .number(61)]),
+            .object(["day": .string("2026-11-01"), "value": .number(62)]),
+            .object(["day": .string("2026-11-03"), "value": .number(60)]),
+            .object(["day": .string("2026-11-04"), "value": .number(91)])
+        ]
+        func response(from: String) -> NativeJSON {
+            .object(["range": .object(["from": .string(from), "to": .string(range.to)]),
+                     "summary": .object(["metrics": .object(["weight": .object(["points": .array(rows)])])])])
+        }
+        XCTAssertThrowsError(try NativeHealthTrendSnapshot(response: response(from: "2026-10-31"), range: range))
+        let snapshot = try NativeHealthTrendSnapshot(response: response(from: range.from), range: range)
+        XCTAssertEqual(snapshot.range, range)
+        XCTAssertEqual(snapshot.points(metric: "weight").map(\.day), ["2026-11-01", "2026-11-03"])
+        XCTAssertEqual(snapshot.points(metric: "weight").map(\.value), [62, 60])
+        XCTAssertTrue(snapshot.points(metric: "sleep").isEmpty)
+    }
+
+    func testBodyFatChartUsesOnlyAuthoritativePairPointsInsteadOfLatestMassValues() throws {
+        let first = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-01"))
+        let last = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2026-11-03"))
+        let range = try NativeHealthWorkspaceRange(from: first, to: last, now: now)
+        let response = NativeJSON.object([
+            "range": .object(["from": .string(range.from), "to": .string(range.to)]),
+            "summary": .object(["metrics": .object([
+                "weight": .object(["points": .array([.object(["day": .string(range.to), "value": .number(60)])])]),
+                "lean_body_mass": .object(["points": .array([.object(["day": .string(range.to), "value": .number(45)])])])
+            ])]),
+            "bodyComposition": .object(["points": .array([.object(["day": .string(range.from), "value": .number(22.5)])])])
+        ])
+        let snapshot = try NativeHealthTrendSnapshot(response: response, range: range)
+        XCTAssertEqual(snapshot.points(metric: "body_fat").map(\.day), [range.from])
+        XCTAssertEqual(snapshot.points(metric: "body_fat").map(\.value), [22.5])
+        XCTAssertNil(snapshot.points(metric: "body_fat").first { $0.day == range.to })
+    }
+
+    private func trendPoint(_ day: String, _ value: Double) throws -> NativeWorkspaceHealthPoint {
+        try XCTUnwrap(NativeWorkspaceHealthPoint(.object(["day": .string(day), "value": .number(value)])))
+    }
 }

@@ -25,7 +25,6 @@ final class NativeHomeHealthCardsTests: XCTestCase {
                      metric("body_fat", value: 22.5, day: "2026-11-15")]
         let loaded = NativeHomeHealthSnapshot(overview: overview(input), health: nil, now: now)
         XCTAssertEqual(loaded.metric("weight").day, "2026-11-17")
-        XCTAssertEqual(loaded.metric("lean_body_mass").day, "2026-11-16")
         XCTAssertEqual(loaded.metric("body_fat").day, "2026-11-15")
         XCTAssertEqual(loaded.metric("body_fat").value, 22.5)
         let unpaired = NativeHomeHealthSnapshot(overview: overview(Array(input.prefix(2))), health: nil, now: now)
@@ -47,8 +46,8 @@ final class NativeHomeHealthCardsTests: XCTestCase {
         XCTAssertEqual(loaded.metric("steps").points.map(\.day), ["2026-11-11", "2026-11-17"])
         XCTAssertEqual(loaded.metric("steps").average7, 4)
         XCTAssertEqual(loaded.metric("steps").observedDays7, 2)
-        XCTAssertEqual(loaded.weightTrend.slots.first?.day, "2026-11-11")
-        XCTAssertEqual(loaded.weightTrend.slots.last?.day, "2026-11-17")
+        XCTAssertEqual(NativeHomeHealthData.recentDays(ending: loaded.windowEnd).first, "2026-11-11")
+        XCTAssertEqual(NativeHomeHealthData.recentDays(ending: loaded.windowEnd).last, "2026-11-17")
     }
 
     func testDeepSleepRequiresTheSameRecordedDayTotalAndValidStageSum() {
@@ -67,28 +66,62 @@ final class NativeHomeHealthCardsTests: XCTestCase {
         XCTAssertEqual(deep([point("2026-11-17", 7, stages: zeroDeep)]), 0)
     }
 
-    func testTrendLeavesMissingDaysEmptyAndNeverBridgesTheirSegments() {
-        let points = [("2026-11-11", 62.0), ("2026-11-12", 61.9), ("2026-11-14", 61.7),
-                      ("2026-11-15", 0.0), ("2026-11-17", 61.6), ("2026-11-10", 80.0)]
-        let trend = NativeHomeWeightTrend(points: points.map { NativeDayPoint(day: $0.0, value: $0.1) }, end: "2026-11-17")
-        XCTAssertEqual(trend.slots.count, 7)
-        XCTAssertEqual(trend.recordedDays, 4)
-        XCTAssertNil(trend.slots.first(where: { $0.day == "2026-11-13" })?.value)
-        XCTAssertNil(trend.slots.first(where: { $0.day == "2026-11-15" })?.value)
-        XCTAssertEqual(trend.segments.map { $0.map(\.day) }, [["2026-11-11", "2026-11-12"], ["2026-11-14"], ["2026-11-17"]])
+    func testWeightAttainmentUsesTheServerPercentageAndStatus() throws {
+        let day = "2026-11-17"
+        XCTAssertEqual(try plan(average: 61.8, percent: 55).attainment(for: day), .measured(percent: 55, status: .active))
+        XCTAssertEqual(try plan(average: 65, percent: 0).attainment(for: day), .measured(percent: 0, status: .active))
+        XCTAssertEqual(try plan(average: 59, percent: 100, status: "achieved").attainment(for: day),
+                       .measured(percent: 100, status: .achieved))
+        XCTAssertEqual(try plan(average: 62, percent: 50, status: "ended").attainment(for: day),
+                       .measured(percent: 50, status: .ended))
+        XCTAssertEqual(NativeHomeWeightAttainment.displayPercent(99.95), 99.9)
+        XCTAssertEqual(NativeHomeWeightAttainment.displayPercent(100), 100)
+    }
+
+    func testWeightAttainmentDistinguishesNoPlanDisabledAndMissingMeasurements() throws {
+        let day = "2026-11-17"
+        XCTAssertEqual(try plan(enabled: nil).attainment(for: day), .noPlan)
+        XCTAssertEqual(try plan(enabled: false).attainment(for: day), .disabled)
+        XCTAssertEqual(try plan(status: "missing").attainment(for: day), .missingWeight)
+        XCTAssertEqual(try plan(status: "ended").attainment(for: day), .missingWeight)
+        XCTAssertEqual(try plan(direction: "gain", average: 66, percent: 50).attainment(for: day), .gain)
+        XCTAssertEqual(try plan(direction: "maintain", average: 64).attainment(for: day), .maintain)
+    }
+
+    func testWeightAttainmentRejectsStaleAndInconsistentResponses() throws {
+        XCTAssertThrowsError(try plan(average: 61.8, percent: 55).attainment(for: "2026-11-18"))
+        XCTAssertThrowsError(try plan(average: 59, percent: 105).attainment(for: "2026-11-17"))
+        XCTAssertThrowsError(try plan(average: 61.8).attainment(for: "2026-11-17"))
+        XCTAssertThrowsError(try plan(percent: 0).attainment(for: "2026-11-17"))
+        let malformed = Data(#"{"today":"2026-11-17","observations":{"average7":null},"progress":null}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeHomeWeightPlanReview.self, from: malformed))
     }
 
     func testInvalidAndUndatedLatestValuesCannotAppearAsMeasurements() {
         let inputs = [metric("steps", value: .infinity, day: "2026-11-17"),
                       metric("sleep", value: 25, day: "2026-11-17"),
                       metric("weight", value: 62, day: nil),
-                      metric("body_fat", value: 23, day: "2026-11-18"),
-                      metric("lean_body_mass", value: 45, day: "2026-02-30")]
+                      metric("body_fat", value: 23, day: "2026-11-18")]
         let loaded = NativeHomeHealthSnapshot(overview: overview(inputs), health: nil, now: now)
-        for key in ["steps", "sleep", "weight", "body_fat", "lean_body_mass"] {
+        for key in ["steps", "sleep", "weight", "body_fat"] {
             XCTAssertNil(loaded.metric(key).value, key)
             XCTAssertNil(loaded.metric(key).day, key)
         }
+        let invalidDay = overview([metric("weight", value: 62, day: "2026-02-30")])
+        XCTAssertNil(NativeHomeHealthSnapshot(overview: invalidDay, health: nil, now: now).metric("weight").value)
+    }
+
+    private func plan(enabled: Bool? = true, direction: String = "loss", average: Double? = nil,
+                      percent: Double? = nil, status: String = "active") throws -> NativeHomeWeightPlanReview {
+        let target = direction == "gain" ? 68 : direction == "maintain" ? 64 : 60
+        let planSettings: [String: Any]? = enabled.map { ["enabled": $0, "baselineWeight": 64, "targetWeight": target] }
+        let settings = planSettings.map { $0 as Any } ?? NSNull()
+        let progress: Any = enabled == true
+            ? ["direction": direction, "progressPercent": percent.map { $0 as Any } ?? NSNull(), "status": status]
+            : NSNull()
+        let response: [String: Any] = ["today": "2026-11-17", "settings": settings, "progress": progress,
+                                      "observations": ["latestWeight": 57, "average7": average.map { $0 as Any } ?? NSNull()]]
+        return try JSONDecoder().decode(NativeHomeWeightPlanReview.self, from: JSONSerialization.data(withJSONObject: response))
     }
 
     private func metric(_ key: String, value: Double?, day: String?, points: [(String, Double)] = []) -> NativeHomeMetric {

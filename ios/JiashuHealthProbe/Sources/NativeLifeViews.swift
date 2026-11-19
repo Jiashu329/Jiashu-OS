@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct NativeLifePending: Codable {
     let owner: String
@@ -198,12 +199,49 @@ final class NativeLifeStore: ObservableObject {
     }
 }
 
+/// Layout decisions are local to the shelf and never start another API read.
+enum NativeLifeShelfMetrics {
+    static let spacing: CGFloat = 14
+    static let portraitRatio: CGFloat = 3.0 / 4.0
+
+    static func columnCount(availableWidth: CGFloat, titlePointSize: CGFloat,
+                            prefersTwoColumns: Bool, titles: [String]) -> Int {
+        guard availableWidth.isFinite, availableWidth >= 96 * 3 + spacing * 2,
+              !prefersTwoColumns else { return 2 }
+        let width = (availableWidth - spacing * 2) / 3
+        let font = UIFont.systemFont(ofSize: max(1, titlePointSize), weight: .medium)
+        let titlesFit = titles.allSatisfy { title in
+            let bounds = (title as NSString).boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font], context: nil)
+            return ceil(bounds.height) <= ceil(font.lineHeight * 2)
+        }
+        return titlesFit ? 3 : 2
+    }
+
+    static func artworkSize(width: CGFloat, domain: String) -> CGSize {
+        let safeWidth = width.isFinite ? max(0, width) : 0
+        return CGSize(width: safeWidth, height: domain == "music" ? safeWidth : safeWidth / portraitRatio)
+    }
+
+    static func markingDate(_ value: String?) -> String {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "日期未知" }
+        if value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            return String(value.suffix(5)).replacingOccurrences(of: "-", with: "/")
+        }
+        return value
+    }
+}
+
 struct NativeLifeRoot: View {
     let api: NativeAPI
     let token: String
     let userID: String
     @StateObject private var store: NativeLifeStore
     @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .subheadline) private var shelfTitleSize: CGFloat = 14
+    @FocusState private var searchFocused: Bool
     @AppStorage("jiashu.life.listLayout") private var listLayout = false
     @State private var filtersVisible = false
     @State private var importVisible = false
@@ -219,17 +257,29 @@ struct NativeLifeRoot: View {
         guard let pending = store.pending, !["life/douban/sync", "life/douban/connection"].contains(pending.path) else { return nil }
         return pending
     }
+    private var hasBrowseCriteria: Bool {
+        store.filters.kind != "all" || !store.filters.query.isEmpty || !store.filters.activeChips.isEmpty
+    }
+    private var browseChips: [(key: String, title: String)] {
+        var values = store.filters.activeChips.filter { $0.key != "sort" }
+        if store.filters.kind == "screen" { values.insert(("kind", "待分类影视"), at: 0) }
+        return values
+    }
+    private var searchText: Binding<String> {
+        Binding(get: { store.filters.query }, set: { value in
+            let wasEmpty = store.filters.query.isEmpty
+            store.filters.query = value
+            if value.isEmpty && !wasEmpty { selected.removeAll(); Task { await store.load() } }
+        })
+    }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+        GeometryReader { geometry in
+          ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                searchBar
                 categoryBar
-                if !store.filters.activeChips.isEmpty { filterChips }
-                HStack {
-                    Text("\(store.total) 部收藏").font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.muted)
-                    Spacer()
-                    Button { filtersVisible = true } label: { Label("筛选", systemImage: "line.3.horizontal.decrease.circle") }
-                        .font(.subheadline).foregroundStyle(NativePalette.accent)
-                }
+                browseControls
+                if !browseChips.isEmpty { filterChips }
                 if let pending = contentPending {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("保存结果待确认", systemImage: "clock.arrow.circlepath").font(.headline)
@@ -247,9 +297,9 @@ struct NativeLifeRoot: View {
                 if store.loading && store.items.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(40) }
                 else if store.items.isEmpty {
                     ContentUnavailableView {
-                        Label(store.filters.activeChips.isEmpty && store.filters.query.isEmpty ? "收藏从这里开始" : "没有找到作品", systemImage: "books.vertical")
-                    } description: { Text(store.filters.activeChips.isEmpty ? "导入看过、读过和听过的作品。" : "试试调整筛选条件。") } actions: {
-                        if store.filters.activeChips.isEmpty { Button("导入收藏") { importVisible = true } }
+                        Label(hasBrowseCriteria ? "没有找到作品" : "收藏从这里开始", systemImage: "books.vertical")
+                    } description: { Text(hasBrowseCriteria ? "试试调整筛选条件。" : "导入看过、读过和听过的作品。") } actions: {
+                        if !hasBrowseCriteria { Button("导入收藏") { importVisible = true } }
                         else { Button("清除筛选") { store.filters = NativeLifeFilters(); Task { await store.load() } } }
                     }
                 } else if listLayout || typeSize.isAccessibilitySize {
@@ -263,25 +313,16 @@ struct NativeLifeRoot: View {
                         }
                     }
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 240), spacing: 14, alignment: .topLeading)], alignment: .leading, spacing: 24) {
-                        ForEach(store.items) { item in
-                            NavigationLink { NativeLifeDetail(store: store, initial: item) } label: { NativeLifePoster(store: store, item: item) }
-                                .buttonStyle(NativePressStyle())
-                                .overlay(alignment: .topTrailing) {
-                                    if organizing && item.domain == "screen" { selectionButton(item).padding(8).background(.regularMaterial, in: Circle()).padding(5) }
-                                }
-                        }
-                    }
+                    shelf(availableWidth: max(0, geometry.size.width - 36))
                 }
                 if store.response["hasMore"].boolValue == true { Button { Task { await store.load(more: true) } } label: { if store.loading { ProgressView() } else { Text("加载更多") } }.frame(maxWidth: .infinity).padding(.vertical, 8).disabled(store.loading) }
                 if store.completing { HStack { ProgressView(); Text("正在更新作品资料").font(.subheadline); Spacer(); Button("暂停") { store.pause() } } }
-            }.padding(20)
+            }.padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 20)
+          }
+          .scrollDismissesKeyboard(.interactively)
         }
         .nativeGeometricPage()
         .navigationTitle("书影音")
-        .searchable(text: $store.filters.query, prompt: "搜索作品、创作者或标签")
-        .onSubmit(of: .search) { selected.removeAll(); Task { await store.load() } }
-        .onChange(of: store.filters.query) { _, value in if value.isEmpty { Task { await store.load() } } }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -320,15 +361,88 @@ struct NativeLifeRoot: View {
         .onChange(of: token) { _, value in store.updateCredential(token: value, userID: userID) }
         .onDisappear { store.pause() }
     }
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(NativePalette.muted).accessibilityHidden(true)
+            TextField("作品、创作者或标签", text: searchText)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false; selected.removeAll(); Task { await store.load() } }
+                .accessibilityLabel("搜索作品、创作者或标签")
+            if !store.filters.query.isEmpty {
+                Button { searchText.wrappedValue = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(NativePalette.muted).frame(minWidth: 44, minHeight: 44)
+                }.buttonStyle(.plain).accessibilityLabel("清除搜索")
+            }
+        }.font(.subheadline).padding(.leading, 12).padding(.trailing, store.filters.query.isEmpty ? 12 : 0)
+            .frame(minHeight: 46)
+            .nativeGeometricCard(fill: NativePalette.surface, corner: 15, compactCorner: 6, compactAt: .bottomTrailing)
+    }
+    private var browseControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { collectionCount; Spacer(minLength: 8); sortMenu; filterButton }
+            VStack(alignment: .leading, spacing: 0) {
+                collectionCount
+                sortMenu
+                filterButton
+            }
+        }.font(.caption).foregroundStyle(NativePalette.muted)
+    }
+    private var collectionCount: some View {
+        Text("\(store.total) 部收藏").monospacedDigit().fixedSize(horizontal: true, vertical: false)
+    }
+    private var sortMenu: some View {
+        Menu {
+            Picker("排序", selection: Binding(get: { store.filters.sort }, set: { value in
+                guard value != store.filters.sort else { return }
+                store.filters.sort = value; selected.removeAll(); Task { await store.load() }
+            })) {
+                Text("标记日期从近到远").tag("date-desc")
+                Text("标记日期从远到近").tag("date-asc")
+                Text("个人评分从高到低").tag("rating-desc")
+                Text("个人评分从低到高").tag("rating-asc")
+            }
+        } label: {
+            Label(sortLabel, systemImage: "arrow.up.arrow.down").frame(minHeight: 44).fixedSize()
+        }.foregroundStyle(NativePalette.accent).accessibilityLabel("排序：" + sortLabel)
+    }
+    private var sortLabel: String {
+        ["date-desc": "最近标记", "date-asc": "最早标记", "rating-desc": "评分优先", "rating-asc": "评分从低到高"][store.filters.sort] ?? "排序"
+    }
+    private var filterButton: some View {
+        Button { selected.removeAll(); searchFocused = false; filtersVisible = true } label: {
+            Label(browseChips.isEmpty ? "筛选" : "筛选 · \(browseChips.count)", systemImage: "slider.horizontal.3")
+                .frame(minHeight: 44).fixedSize()
+        }.foregroundStyle(NativePalette.accent)
+    }
+    private func shelf(availableWidth: CGFloat) -> some View {
+        let count = NativeLifeShelfMetrics.columnCount(availableWidth: availableWidth, titlePointSize: shelfTitleSize,
+                                                       prefersTwoColumns: typeSize >= .xxLarge, titles: store.items.map(\.title))
+        let width = max(0, (availableWidth - NativeLifeShelfMetrics.spacing * CGFloat(count - 1)) / CGFloat(count))
+        let columns = Array(repeating: GridItem(.flexible(minimum: 0), spacing: NativeLifeShelfMetrics.spacing, alignment: .topLeading), count: count)
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 22) {
+            ForEach(store.items) { item in
+                NavigationLink { NativeLifeDetail(store: store, initial: item) } label: {
+                    NativeLifePoster(store: store, item: item, width: width, titlePointSize: shelfTitleSize)
+                }.buttonStyle(NativePressStyle())
+                    .overlay(alignment: .topTrailing) {
+                        if organizing && item.domain == "screen" {
+                            selectionButton(item).background(NativePalette.surface, in: Circle()).padding(4)
+                        }
+                    }
+            }
+        }
+    }
     private var categoryBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(NativeLifeContract.kinds, id: \.self) { kind in
+                ForEach(NativeLifeContract.kinds.filter { $0 != "screen" }, id: \.self) { kind in
                     Button { store.filters.kind = kind; selected.removeAll(); Task { await store.load() } } label: {
-                        Text(NativeLifeContract.kindLabels[kind] ?? kind).font(.subheadline.weight(store.filters.kind == kind ? .semibold : .regular))
-                            .padding(.horizontal, 15).padding(.vertical, 10)
-                            .nativeGeometricCard(fill: store.filters.kind == kind ? NativePalette.soft : NativePalette.surface, corner: 18, compactCorner: 7)
-                            .foregroundStyle(store.filters.kind == kind ? NativePalette.accent : NativePalette.ink)
+                        Text(kind == "all" ? "全部" : kind == "series" ? "剧集" : NativeLifeContract.kindLabels[kind] ?? kind)
+                            .font(.subheadline.weight(store.filters.kind == kind ? .medium : .regular))
+                            .padding(.horizontal, 13).frame(minHeight: 44)
+                            .nativeGeometricCard(fill: store.filters.kind == kind ? NativePalette.accent : .clear, corner: 16, compactCorner: 6, compactAt: .bottomTrailing)
+                            .foregroundStyle(store.filters.kind == kind ? NativePalette.onAccent : NativePalette.muted)
                     }.buttonStyle(NativePressStyle()).accessibilityAddTraits(store.filters.kind == kind ? .isSelected : [])
                 }
             }
@@ -337,8 +451,8 @@ struct NativeLifeRoot: View {
     private var filterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(store.filters.activeChips, id: \.key) { chip in
-                    Button { store.filters.removeChip(chip.key); Task { await store.load() } } label: { HStack(spacing: 6) { Text(chip.title); Image(systemName: "xmark").font(.caption2) }.font(.caption).padding(.horizontal, 10).padding(.vertical, 8).nativeGeometricCard(fill: NativePalette.soft, corner: 14, compactCorner: 5) }
+                ForEach(browseChips, id: \.key) { chip in
+                    Button { if chip.key == "kind" { store.filters.kind = "all" } else { store.filters.removeChip(chip.key) }; selected.removeAll(); Task { await store.load() } } label: { HStack(spacing: 6) { Text(chip.title); Image(systemName: "xmark").font(.caption2) }.font(.caption).padding(.horizontal, 10).frame(minHeight: 44).nativeGeometricCard(fill: NativePalette.soft, corner: 14, compactCorner: 5) }
                         .buttonStyle(NativePressStyle()).accessibilityLabel("移除筛选：" + chip.title)
                 }
             }
@@ -359,37 +473,55 @@ struct NativeLifeRoot: View {
 private struct NativeLifePoster: View {
     @ObservedObject var store: NativeLifeStore
     let item: NativeLifeItem
+    let width: CGFloat
+    let titlePointSize: CGFloat
+    private var artwork: CGSize { NativeLifeShelfMetrics.artworkSize(width: width, domain: item.domain) }
+    private var titleHeight: CGFloat { ceil(UIFont.systemFont(ofSize: titlePointSize, weight: .medium).lineHeight * 2) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            NativeLifeCover(api: store.api, token: store.token, item: item).aspectRatio(2.0 / 3.0, contentMode: .fit)
-                .clipShape(UnevenRoundedRectangle(topLeadingRadius: item.domain == "book" ? 8 : 22, bottomLeadingRadius: 22, bottomTrailingRadius: 8, topTrailingRadius: 22)).accessibilityHidden(true)
-            Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.ink).lineLimit(2).frame(minHeight: 38, alignment: .topLeading)
-            HStack(spacing: 2) {
+        VStack(alignment: .leading, spacing: 5) {
+            NativeLifeCover(api: store.api, token: store.token, item: item, contentMode: .fit)
+                .frame(width: artwork.width, height: artwork.height)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: item.domain == "book" ? 6 : 20, bottomLeadingRadius: 20, bottomTrailingRadius: 6, topTrailingRadius: item.domain == "music" ? 6 : 20, style: .continuous))
+                // The mask belongs to the real cover. The extra album space is
+                // above it, so all titles and ratings share the same baseline.
+                .frame(width: width, height: width / NativeLifeShelfMetrics.portraitRatio, alignment: .bottom)
+                .accessibilityHidden(true)
+            Text(item.title).font(.system(size: titlePointSize, weight: .medium)).foregroundStyle(NativePalette.ink)
+                .lineLimit(2).frame(maxWidth: .infinity, minHeight: titleHeight, alignment: .topLeading)
+            HStack(spacing: 1) {
                 if let rating = item.raw["rating"].intValue { ForEach(0..<5, id: \.self) { index in Image(systemName: index < rating ? "star.fill" : "star").font(.caption2).foregroundStyle(NativePalette.accent) } }
-                else { Text("未评分").font(.caption).foregroundStyle(NativePalette.muted) }
-            }.accessibilityLabel(item.raw["rating"].intValue.map { "我的评分\($0)星" } ?? "未评分")
-            Text(item.raw["markedDate"].stringValue ?? item.kindLabel).font(.caption).foregroundStyle(NativePalette.muted)
-        }.frame(maxWidth: .infinity, alignment: .topLeading).accessibilityElement(children: .combine)
+                else { Text("未评分").font(.caption2).foregroundStyle(NativePalette.muted) }
+            }.frame(minHeight: max(15, titlePointSize * 1.1), alignment: .leading)
+                .accessibilityLabel(item.raw["rating"].intValue.map { "我的评分\($0)星" } ?? "未评分")
+            Text(NativeLifeShelfMetrics.markingDate(item.raw["markedDate"].stringValue)).font(.caption2).foregroundStyle(NativePalette.muted)
+                .accessibilityLabel(item.raw["markedDate"].stringValue.map { "标记日期：" + $0 } ?? "标记日期未知")
+        }.frame(width: width, alignment: .topLeading).accessibilityElement(children: .combine)
     }
 }
 
 private struct NativeLifeFilterSheet: View {
     @ObservedObject var store: NativeLifeStore
     @Environment(\.dismiss) private var dismiss
+    @State private var filters: NativeLifeFilters
+    init(store: NativeLifeStore) {
+        self.store = store
+        _filters = State(initialValue: store.filters)
+    }
     var body: some View {
         Form {
-            Picker("来源", selection: $store.filters.profile) { Text("全部已保存来源").tag("all"); Text("当前绑定主页").tag("current") }
-            Picker("我的评分", selection: $store.filters.rating) { Text("全部评分").tag(""); Text("未评分").tag("unrated"); ForEach(1...5, id: \.self) { Text("\($0) 星").tag(String($0)) } }
-            Picker("豆瓣标记年份", selection: $store.filters.year) { Text("全部年份").tag(""); ForEach(store.response["years"].arrayValue.compactMap(\.intValue), id: \.self) { Text(String($0)).tag(String($0)) } }
-            Picker("排序", selection: $store.filters.sort) { Text("标记日期从近到远").tag("date-desc"); Text("标记日期从远到近").tag("date-asc"); Text("个人评分从高到低").tag("rating-desc"); Text("个人评分从低到高").tag("rating-asc") }
-            Picker("展示范围", selection: $store.filters.hidden) { Text("未隐藏").tag("visible"); Text("已隐藏").tag("hidden"); Text("全部").tag("all") }
-            Picker("标签", selection: $store.filters.tag) { Text("全部标签").tag(""); ForEach(store.response["tags"].arrayValue.compactMap(\.stringValue), id: \.self) { Text($0).tag($0) } }
-            Toggle("只看资料待补全", isOn: $store.filters.missing)
+            Picker("分类", selection: $filters.kind) { ForEach(NativeLifeContract.kinds, id: \.self) { kind in Text(NativeLifeContract.kindLabels[kind] ?? kind).tag(kind) } }
+            Picker("来源", selection: $filters.profile) { Text("全部已保存来源").tag("all"); Text("当前绑定主页").tag("current") }
+            Picker("我的评分", selection: $filters.rating) { Text("全部评分").tag(""); Text("未评分").tag("unrated"); ForEach(1...5, id: \.self) { Text("\($0) 星").tag(String($0)) } }
+            Picker("豆瓣标记年份", selection: $filters.year) { Text("全部年份").tag(""); ForEach(store.response["years"].arrayValue.compactMap(\.intValue), id: \.self) { Text(String($0)).tag(String($0)) } }
+            Picker("排序", selection: $filters.sort) { Text("标记日期从近到远").tag("date-desc"); Text("标记日期从远到近").tag("date-asc"); Text("个人评分从高到低").tag("rating-desc"); Text("个人评分从低到高").tag("rating-asc") }
+            Picker("展示范围", selection: $filters.hidden) { Text("未隐藏").tag("visible"); Text("已隐藏").tag("hidden"); Text("全部").tag("all") }
+            Picker("标签", selection: $filters.tag) { Text("全部标签").tag(""); ForEach(store.response["tags"].arrayValue.compactMap(\.stringValue), id: \.self) { Text($0).tag($0) } }
+            Toggle("只看资料待补全", isOn: $filters.missing)
             Text("标记日期未知的作品不会归入某一年。").font(.caption).foregroundStyle(.secondary)
-            Button("清除筛选") { store.filters = NativeLifeFilters() }
+            Button("清除筛选") { filters = NativeLifeFilters() }
         }
         .navigationTitle("筛选与排序")
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("查看收藏") { dismiss(); Task { await store.load() } } } }
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("查看收藏") { store.filters = filters; dismiss(); Task { await store.load() } } } }
     }
 }
 
@@ -398,11 +530,16 @@ private struct NativeLifeRow: View {
     let item: NativeLifeItem
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            NativeLifeCover(api: store.api, token: store.token, item: item).frame(width: 68, height: 96).clipShape(UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 14, bottomTrailingRadius: 6, topTrailingRadius: 14)).accessibilityHidden(true)
+            NativeLifeCover(api: store.api, token: store.token, item: item, contentMode: .fit)
+                .frame(width: 68, height: NativeLifeShelfMetrics.artworkSize(width: 68, domain: item.domain).height)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 14, bottomTrailingRadius: 6, topTrailingRadius: 14)).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(NativePalette.ink).lineLimit(3)
                 Text(item.kindLabel + (item.raw["markedDate"].stringValue.map { " · " + $0 } ?? "")).font(.caption).foregroundStyle(NativePalette.muted)
-                if let rating = item.raw["rating"].intValue { Text(String(repeating: "★", count: max(0, min(rating, 5)))).foregroundStyle(NativePalette.accent) }
+                if let rating = item.raw["rating"].intValue {
+                    Label("\(rating) 星", systemImage: "star.fill")
+                        .foregroundStyle(NativePalette.accent).accessibilityLabel("我的评分\(rating)星")
+                }
                 HStack { if let score = item.raw["details"]["doubanRating"].doubleValue { Text("豆瓣 \(score, specifier: "%.1f")") }; if let score = item.raw["imdb"]["rating"].doubleValue { Text("IMDb \(score, specifier: "%.1f")") } }.font(.caption2).foregroundStyle(NativePalette.muted)
                 if !item.tags.isEmpty { Text(item.tags.joined(separator: " · ")).font(.caption).foregroundStyle(NativePalette.accent) }
             }
@@ -537,7 +674,7 @@ private struct NativeLifeDetail: View {
         Form {
             Section {
                 HStack(alignment: .top, spacing: 18) {
-                    NativeLifeCover(api: store.api, token: store.token, item: item).frame(width: 112, height: 168).clipShape(RoundedRectangle(cornerRadius: 10))
+                    NativeLifeCover(api: store.api, token: store.token, item: item).frame(width: 112, height: item.domain == "music" ? 112 : 168).clipShape(RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.title).font(.title3.bold()).textSelection(.enabled)
                         Text(item.kindLabel).font(.subheadline).foregroundStyle(.secondary)

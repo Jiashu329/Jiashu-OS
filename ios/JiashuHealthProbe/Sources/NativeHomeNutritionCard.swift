@@ -6,7 +6,7 @@ import SwiftUI
 struct NativeHomeNutritionCard: View {
     @ObservedObject var model: NativeAppModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .largeTitle) private var calorieSize: CGFloat = 31
+    @ScaledMetric(relativeTo: .largeTitle) private var calorieSize: CGFloat = 34
     @State private var nutrition: NativeNutritionDay?
     @State private var scope: Scope?
     @State private var requestID = UUID()
@@ -63,6 +63,7 @@ struct NativeHomeNutritionCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(NativePressStyle())
+                .accessibilityIdentifier("today-nutrition-card")
                 .accessibilityHint("查看当天饮食记录与营养详情")
 
                 if current, let readError {
@@ -96,32 +97,77 @@ struct NativeHomeNutritionCard: View {
     }
 
     private func totals(_ data: NativeNutritionDay, targets: NativeJSON?) -> some View {
-        let nutrients = [
-            NativeHomeNutrient("能量", unit: "千卡", total: data.summary.knownCalories,
-                               knownCount: data.summary.knownCount, unknownCount: data.summary.unknownCount,
-                               target: targets?["calories"].stringValue),
-            macro("碳水", key: "carbs", data: data, targets: targets),
-            macro("蛋白质", key: "protein", data: data, targets: targets),
-            macro("脂肪", key: "fat", data: data, targets: targets),
-        ]
+        let energy = NativeHomeNutrient("能量", unit: "千卡", total: data.summary.knownCalories,
+                                        knownCount: data.summary.knownCount, unknownCount: data.summary.unknownCount,
+                                        target: targets?["calories"].stringValue)
+        let macros = [(key: "carbs", title: "碳水"), (key: "protein", title: "蛋白质"), (key: "fat", title: "脂肪")]
+            .map { (key: $0.key, nutrient: macro($0.title, key: $0.key, data: data, targets: targets)) }
+        let nutrients = [energy] + macros.map(\.nutrient)
+        let stackedMacros = VStack(alignment: .leading, spacing: 10) { macroCells(macros, horizontal: false) }
 
         return VStack(alignment: .leading, spacing: 10) {
+            energyPanel(energy)
             if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(nutrients) { nutrient in nutrientCell(nutrient) }
-                }
+                stackedMacros
             } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible())],
-                          alignment: .leading, spacing: 13) {
-                    ForEach(nutrients) { nutrient in nutrientCell(nutrient) }
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 10) {
+                        macroCells(macros, horizontal: true)
+                    }
+                    stackedMacros
                 }
             }
             if nutrients.contains(where: \.isPartial) {
                 Text("≥ 为已知小计").font(.caption2).foregroundStyle(NativePalette.muted)
+                    .accessibilityHidden(true)
             }
             if let targets, !targets.objectValue.isEmpty, nutrients.allSatisfy({ $0.target == nil }) {
                 Text("未设每日目标").font(.caption2).foregroundStyle(NativePalette.muted)
             }
+        }
+    }
+
+    private func energyPanel(_ energy: NativeHomeNutrient) -> some View {
+        let amount = (energy.isPartial ? "≥" : "") + (energy.current ?? "—")
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("已摄入能量").font(.caption.weight(.medium))
+            if let target = energy.target {
+                let goal = Text("目标 \(target) 千卡").font(.caption)
+                    .accessibilityIdentifier("today-nutrition-goal")
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        energyAmount(amount)
+                        Spacer(minLength: 6)
+                        goal.fixedSize(horizontal: true, vertical: false)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        energyAmount(amount)
+                        goal
+                    }
+                }
+            } else {
+                energyAmount(amount)
+            }
+            if let fraction = energy.fraction {
+                progressTrack(fraction, fill: NativePalette.onAccent, track: NativePalette.onAccent.opacity(0.26))
+            }
+        }
+        .foregroundStyle(NativePalette.onAccent)
+        .padding(.horizontal, 13).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativeGeometricCard(fill: NativePalette.accent, corner: 19, compactCorner: 7, compactAt: .bottomTrailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("已摄入能量")
+        .accessibilityValue(energy.accessibilityValue)
+        .accessibilityIdentifier("today-nutrition-energy")
+    }
+
+    private func energyAmount(_ amount: String) -> some View {
+        let value = Text(amount).font(.system(size: calorieSize, weight: .semibold, design: .rounded)).monospacedDigit()
+        let unit = Text("千卡").font(.caption)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) { value; unit }
+            VStack(alignment: .leading, spacing: 1) { value; unit }
         }
     }
 
@@ -132,20 +178,36 @@ struct NativeHomeNutritionCard: View {
                                   target: targets?[key].stringValue)
     }
 
-    private func nutrientCell(_ nutrient: NativeHomeNutrient) -> some View {
+    private func macroCells(_ macros: [(key: String, nutrient: NativeHomeNutrient)], horizontal: Bool) -> some View {
+        ForEach(macros, id: \.key) { key, nutrient in
+            macroCell(nutrient, key: key, horizontal: horizontal)
+        }
+    }
+
+    private func macroCell(_ nutrient: NativeHomeNutrient, key: String, horizontal: Bool) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(nutrient.title).font(.subheadline.weight(.medium)).foregroundStyle(NativePalette.muted)
-            Text(nutrient.quantity).font(.callout.weight(.semibold)).monospacedDigit()
-                .foregroundStyle(NativePalette.ink).fixedSize(horizontal: false, vertical: true)
+            Text(nutrient.title).font(.caption).foregroundStyle(NativePalette.muted)
+            Text(nutrient.quantity).font(.subheadline.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(NativePalette.ink).fixedSize(horizontal: horizontal, vertical: true)
             if let fraction = nutrient.fraction {
-                ProgressView(value: fraction)
-                    .progressViewStyle(.linear).tint(NativePalette.accent)
+                progressTrack(fraction, fill: NativePalette.accent, track: NativePalette.soft)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: horizontal ? 78 : nil, maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(nutrient.title)
         .accessibilityValue(nutrient.accessibilityValue)
+        .accessibilityIdentifier("today-nutrition-" + key)
+    }
+
+    private func progressTrack(_ fraction: Double, fill: Color, track: Color) -> some View {
+        GeometryReader { geometry in
+            Capsule().fill(track).overlay(alignment: .leading) {
+                Capsule().fill(fill).frame(width: geometry.size.width * CGFloat(fraction))
+            }
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
     }
 
     private func placeholder(isLoading: Bool) -> some View {

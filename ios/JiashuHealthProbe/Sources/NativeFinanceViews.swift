@@ -131,6 +131,7 @@ struct NativeFinancePending: Codable, Hashable, Identifiable {
     var scopeLabel: String? = nil
     var targetName: String? = nil
     var currency: String? = nil
+    var requiresBalanceReceipt: Bool? = nil
     var id: Self { self }
     var requestBody: NativeJSON { (try? JSONDecoder().decode(NativeJSON.self, from: body)) ?? .null }
     var summaryLines: [String] {
@@ -232,8 +233,10 @@ final class NativeFinanceContext: ObservableObject {
     @Published private var accessBlocked = false
     var initialReviewMonth: String?
     @Published var change = 0
-    private var valid = true
+    @Published private var valid = true
+    private var visibleScreens = Set<UUID>()
     private var generation = UUID()
+    private(set) var definitiveRejectedOperation: NativeFinancePending?
     private static let submissions = NativePendingSubmissions<NativeFinancePending>()
     private let submission: NativePendingSubmission<NativeFinancePending>
     private var submissionObservation: AnyCancellable?
@@ -256,7 +259,7 @@ final class NativeFinanceContext: ObservableObject {
     var pending: NativeFinancePending? { submission.pending }
     var busy: Bool { submission.busy }
     var blocked: Bool { accessBlocked || storageUnavailable }
-    var canWrite: Bool { role != "viewer" && scopeReady && !blocked && pending == nil && !busy }
+    var canWrite: Bool { valid && role != "viewer" && scopeReady && !blocked && pending == nil && !busy }
     private var selectionStore: NativeWorkspacePersistence { NativeWorkspacePersistence(userID: userID, scope: "finance-selection") }
     var scopeLabel: String { ownerName.isEmpty ? bookName : bookName + " · " + ownerName }
     var scopeSummary: String { scopeLabel + " · " + currency }
@@ -289,8 +292,13 @@ final class NativeFinanceContext: ObservableObject {
         submission.restore()
         if !storageUnavailable { error = nil; change += 1 }
     }
-    func deactivate() { valid = false; generation = UUID() }
+    func deactivate() { visibleScreens.removeAll(); valid = false; generation = UUID() }
     func activate() { valid = true }
+    func showScreen(_ identifier: UUID) { visibleScreens.insert(identifier); activate() }
+    func hideScreen(_ identifier: UUID) {
+        guard visibleScreens.remove(identifier) != nil, visibleScreens.isEmpty else { return }
+        deactivate()
+    }
     func read(_ path: String) async throws -> NativeJSON {
         let requestedLedger = ledger; let requestedBook = bookID; let requestedCurrency = currency
         try await validateScope()
@@ -336,9 +344,10 @@ final class NativeFinanceContext: ObservableObject {
         ownerName = ledger == "family" ? book?["ownerName"].stringValue ?? "" : ""
         scopeReady = true; persistSelection(); change += 1
     }
-    @discardableResult func write(title: String, path: String, method: String, body: NativeJSON, idempotent: Bool = false, targetName: String? = nil) async throws -> NativeJSON {
+    @discardableResult func write(title: String, path: String, method: String, body: NativeJSON, idempotent: Bool = false, targetName: String? = nil, requiresBalanceReceipt: Bool = false, prepared: ((NativeFinancePending) -> Void)? = nil) async throws -> NativeJSON {
         guard valid, !busy, pending == nil, !blocked, scopeReady else { throw NativeFinanceInputError("请先核对待确认的原操作或重新选择账本。") }
-        let command = NativeFinancePending(owner: userID, title: title, path: path, method: method, body: try body.encodedData(), operationID: idempotent ? UUID().uuidString.lowercased() : nil, createdAt: Date(), scopeLabel: path.hasPrefix("finance/books/own/") ? "我的家庭账本" : scopeLabel, targetName: targetName ?? body["name"].stringValue, currency: currency)
+        let command = NativeFinancePending(owner: userID, title: title, path: path, method: method, body: try body.encodedData(), operationID: idempotent ? UUID().uuidString.lowercased() : nil, createdAt: Date(), scopeLabel: path.hasPrefix("finance/books/own/") ? "我的家庭账本" : scopeLabel, targetName: targetName ?? body["name"].stringValue, currency: currency, requiresBalanceReceipt: requiresBalanceReceipt)
+        prepared?(command)
         guard let response = try await send(command, retrying: false) else {
             throw NativeFinanceInputError("请先核对待确认的原操作。")
         }
@@ -352,6 +361,7 @@ final class NativeFinanceContext: ObservableObject {
                 do {
                     let headers = command.operationID.map { ["Idempotency-Key": $0] } ?? [:]
                     let result = try await api.upload(path: command.path, method: command.method, token: token, data: command.body, headers: headers)
+                    if command.requiresBalanceReceipt == true { _ = try NativeFinanceBalanceReceipt.record(in: result, for: command) }
                     return Result<NativeJSON, Error>.success(result)
                 } catch let failure as NativeAPIError {
                     // Validation rejection permits editing. Network ambiguity and
@@ -368,6 +378,11 @@ final class NativeFinanceContext: ObservableObject {
             guard valid, epoch == generation else { throw CancellationError() }; notice = command.title + "已确认。"; change += 1
             return response
         } catch {
+            if pending == nil, let failure = error as? NativeAPIError,
+               case .server(let status, let code, _, _) = failure,
+               [400, 404, 409, 413, 415, 422].contains(status), code != "FINANCE_BOOK_ACCESS_CHANGED" {
+                definitiveRejectedOperation = command
+            }
             if valid, epoch == generation { fail(error) }; throw error
         }
     }
@@ -424,8 +439,7 @@ struct NativeFinanceRoot: View {
                     .toolbar { if embedded { ToolbarItem(placement: .topBarLeading) { Button("返回") { dismiss() } } } }
                 }
         }
-        .onAppear { context.activate() }
-        .onDisappear { context.deactivate() }
+        .modifier(NativeFinanceScreenLifetime(context: context))
     }
 }
 
@@ -509,6 +523,7 @@ private struct NativeFinancePendingRecovery: View {
             }.listRowBackground(NativePalette.surface)
         }
         .nativeGeometricPage().navigationTitle("核对保存结果")
+        .modifier(NativeFinanceScreenLifetime(context: context))
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         .task { await load() }
         .confirmationDialog("已核对原保存结果？", isPresented: $finish, titleVisibility: .visible) {
@@ -944,10 +959,12 @@ private struct NativeFinanceAccountDetail: View {
     let accountID: String
     @State private var response: NativeJSON = .null
     @State private var editing = false
-    @State private var balance = false
+    @State private var balanceAccount: NativeFinanceAccountPresentation?
     @State private var archive = false
     @State private var loading = false
     @State private var allBalances = false
+    @State private var loadedScopeID: String?
+    @State private var loadGeneration = UUID()
     private var visibleBalances: [NativeJSON] { allBalances ? response["balances"].arrayValue : Array(response["balances"].arrayValue.prefix(10)) }
     private var account: NativeJSON { response["account"] }
     var body: some View {
@@ -962,7 +979,7 @@ private struct NativeFinanceAccountDetail: View {
                     LabeledContent("可动用比例", value: String(account["usableBps"].intValue.map { $0 / 100 } ?? 0) + "." + String(format: "%02d%%", (account["usableBps"].intValue ?? 0) % 100))
                     if let note = account["note"].stringValue, !note.isEmpty { Text(note) }
                     Button("编辑账户资料") { editing = true }.disabled(!context.canWrite)
-                    Button("记录新余额") { balance = true }.disabled(!context.canWrite || account["archived"].boolValue == true)
+                    Button("记录新余额") { balanceAccount = NativeFinanceAccountPresentation(account: account) }.disabled(!context.canWrite || account["archived"].boolValue == true)
                     Button(account["archived"].boolValue == true ? "恢复账户" : "归档账户", role: account["archived"].boolValue == true ? nil : .destructive) { archive = true }.disabled(!context.canWrite)
                 }.listRowBackground(NativePalette.surface)
                 Section("余额历史") {
@@ -1000,18 +1017,38 @@ private struct NativeFinanceAccountDetail: View {
             }
         }
         .nativeGeometricPage().navigationTitle(account["name"].stringValue ?? "账户详情")
-        .task(id: String(context.change) + context.scopeID) { await load() }
+        .modifier(NativeFinanceScreenLifetime(context: context))
+        .task(id: String(context.change) + context.scopeID) { if balanceAccount == nil && !editing { await load() } }
         .refreshable { await load() }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) { NavigationStack { NativeFinanceAccountForm(context: context, account: account) } }
-        .sheet(isPresented: $balance, onDismiss: { Task { await load() } }) { NavigationStack { NativeFinanceBalanceForm(context: context, account: account, entry: nil) } }
+        .sheet(item: $balanceAccount, onDismiss: { Task { await load() } }) { snapshot in
+            NavigationStack {
+                NativeFinanceBalanceForm(context: context, account: snapshot.account, entry: nil, onSaved: { saved in
+                    loadGeneration = UUID(); loading = false
+                    response = saved; loadedScopeID = context.scopeID; balanceAccount = nil
+                })
+            }
+        }
         .confirmationDialog(account["archived"].boolValue == true ? "恢复此账户？" : "归档此账户？", isPresented: $archive, titleVisibility: .visible) {
             Button(account["archived"].boolValue == true ? "恢复账户" : "归档账户", role: account["archived"].boolValue == true ? nil : .destructive) { Task { await setArchive() } }
         } message: { Text(context.scopeSummary + "\n" + (account["name"].stringValue ?? "账户") + "\n余额历史保留") }
     }
     private func status(_ value: String) -> String { value == "void" ? "已作废" : value == "corrected" ? "已更正" : "原始记录" }
     private func load() async {
-        loading = true; defer { loading = false }
-        do { response = try await context.read(context.path("finance/accounts/" + accountID)) } catch { response = .null; context.fail(error) }
+        guard !loading else { return }
+        let generation = UUID(); loadGeneration = generation
+        let scope = context.scopeID
+        if loadedScopeID != scope { response = .null }
+        loading = true; defer { if generation == loadGeneration { loading = false } }
+        do {
+            let current = try await context.read(context.path("finance/accounts/" + accountID))
+            guard generation == loadGeneration else { return }
+            response = current; loadedScopeID = scope
+        } catch {
+            guard generation == loadGeneration else { return }
+            if loadedScopeID != scope { response = .null }
+            context.fail(error)
+        }
     }
     private func setArchive() async {
         guard let version = account["metadataRevision"].intValue else { return }
@@ -1019,11 +1056,146 @@ private struct NativeFinanceAccountDetail: View {
     }
 }
 
+private struct NativeFinanceAccountPresentation: Identifiable {
+    let account: NativeJSON
+    var id: String { account["id"].stringValue ?? "" }
+}
+
+/// A form's lifetime can outlast the navigation page presenting its sheet.
+/// Only the last visible finance screen releases the context; the API's user
+/// credential lease and each server-side book grant still authorize requests.
+private struct NativeFinanceScreenLifetime: ViewModifier {
+    @ObservedObject var context: NativeFinanceContext
+    @State private var identifier = UUID()
+    func body(content: Content) -> some View {
+        content.onAppear { context.showScreen(identifier) }
+            .onDisappear { context.hideScreen(identifier) }
+    }
+}
+
+enum NativeFinanceBalanceReceipt {
+    static func record(in response: NativeJSON, for command: NativeFinancePending) throws -> NativeJSON {
+        let segments = URLComponents(string: command.path)?.path.split(separator: "/").map(String.init) ?? []
+        guard segments.count == 4 || segments.count == 5,
+              segments[0] == "finance", segments[1] == "accounts", segments[3] == "balances",
+              response["account"].financeID == segments[2], let operationID = command.operationID else {
+            throw NativeAPIError.invalidResponse
+        }
+        let records = response[segments.count == 4 ? "balances" : "changes"].arrayValue
+        guard let record = records.first(where: { $0.financeID == operationID }) else {
+            throw NativeFinanceInputError("尚未收到这次保存的回执，请核对原操作。")
+        }
+        return record
+    }
+}
+
+@MainActor
+final class NativeFinanceBalanceSaveState: ObservableObject {
+    struct Receipt: Identifiable {
+        let command: NativeFinancePending
+        let response: NativeJSON
+        let record: NativeJSON
+        var id: String { command.operationID ?? command.path }
+    }
+    @Published private(set) var saving = false
+    @Published private(set) var error: String?
+    @Published private(set) var receipt: Receipt?
+    @Published private(set) var cleanupWarning: String?
+    private let context: NativeFinanceContext
+    private let account: NativeJSON
+    private let entry: NativeJSON?
+    private let scopeID: String
+    private let path: String
+    @Published private var command: NativeFinancePending?
+    var needsReceiptCheck: Bool { receipt == nil && command != nil && context.pending == nil }
+    private var completionTaken = false
+
+    init(context: NativeFinanceContext, account: NativeJSON, entry: NativeJSON?) {
+        self.context = context; self.account = account; self.entry = entry
+        scopeID = context.scopeID
+        let base = "finance/accounts/" + account.financeID + "/balances"
+        let resource = entry.map { base + "/" + $0.financeID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)! } ?? base
+        path = context.path(resource)
+    }
+
+    func report(_ failure: Error) {
+        if !(failure is CancellationError) { error = failure.localizedDescription }
+    }
+
+    func save(amount: String, date: String, note: String, previewBody: NativeJSON?) async {
+        guard !saving, receipt == nil else { return }
+        guard command == nil else { error = "请先核对原保存结果"; return }
+        saving = true; error = nil
+        defer { saving = false }
+        do {
+            guard context.scopeID == scopeID else { throw NativeFinanceInputError("账本已变化，请关闭后重新打开余额记录。") }
+            guard context.canWrite else { throw NativeFinanceInputError("请先核对原操作或重新读取账本权限。") }
+            let body: NativeJSON
+            if entry != nil {
+                guard let previewBody else { throw NativeFinanceInputError("请先预览修改影响。") }
+                body = previewBody
+            } else {
+                body = try NativeFinanceContract.balanceBody(amount: amount, currency: account["currency"].stringValue ?? "CNY", date: date, note: note)
+            }
+            let result = try await context.write(title: entry == nil ? "记录余额" : "余额历史修改", path: path, method: "POST", body: body,
+                                                 idempotent: true, targetName: account["name"].stringValue, requiresBalanceReceipt: true,
+                                                 prepared: { command in self.command = command })
+            guard let command else { throw NativeAPIError.invalidResponse }
+            try confirm(result, command: command)
+        } catch {
+            report(error)
+            // Unknown outcomes retain the persisted command. A cancelled response
+            // may already have committed; recover its receipt before any new save.
+            if context.pending == nil, receipt == nil, !(error is CancellationError) { command = nil }
+        }
+    }
+
+    func recoverConfirmedSave() async {
+        guard !saving, receipt == nil, context.pending == nil, let command,
+              let recoveryPath = command.recoveryPath, context.scopeID == scopeID else { return }
+        if context.definitiveRejectedOperation == command {
+            self.command = nil
+            error = context.error ?? "原保存未被接受，请核对后重新保存"
+            return
+        }
+        saving = true; defer { saving = false }
+        do {
+            let result = try await context.read(recoveryPath)
+            try confirm(result, command: command)
+        } catch { report(error) }
+    }
+
+    private func confirm(_ result: NativeJSON, command: NativeFinancePending) throws {
+        let record = try NativeFinanceBalanceReceipt.record(in: result, for: command)
+        receipt = Receipt(command: command, response: result, record: record)
+        error = nil
+        if entry == nil, let savedDate = record["asOfDate"].stringValue,
+           let currentDate = result["account"]["asOfDate"].stringValue, savedDate < currentDate {
+            context.notice = "历史余额已保存，当前余额不变。"
+        }
+    }
+
+    /// A local cleanup failure cannot turn a confirmed server receipt into a new save.
+    func complete(cleanup: () throws -> Void, allowingCleanupFailure: Bool = false) -> NativeJSON? {
+        guard !completionTaken, let receipt else { return nil }
+        do { try cleanup(); cleanupWarning = nil }
+        catch {
+            cleanupWarning = "余额已保存，本机草稿暂未清理"
+            guard allowingCleanupFailure else { return nil }
+        }
+        completionTaken = true
+        return receipt.response
+    }
+}
+
 private struct NativeFinanceBalanceForm: View {
     @ObservedObject var context: NativeFinanceContext
     let account: NativeJSON
     let entry: NativeJSON?
-    var onSaved: ((NativeJSON) -> Void)? = nil
+    var onSaved: ((NativeJSON) -> Void)?
+    private let saveAndAdvance: Bool
+    @StateObject private var saveState: NativeFinanceBalanceSaveState
+    private let draftScope: String
     @Environment(\.dismiss) private var dismiss
     @State private var action = "correct"
     @State private var amount = ""
@@ -1035,11 +1207,15 @@ private struct NativeFinanceBalanceForm: View {
     @State private var previewing = false
     @State private var initialized = false
     @State private var confirm = false
-    @State private var completing = false
+    @State private var showSaveError = false
+    init(context: NativeFinanceContext, account: NativeJSON, entry: NativeJSON?, saveAndAdvance: Bool = false, onSaved: ((NativeJSON) -> Void)? = nil) {
+        self.context = context; self.account = account; self.entry = entry; self.onSaved = onSaved; self.saveAndAdvance = saveAndAdvance
+        _saveState = StateObject(wrappedValue: NativeFinanceBalanceSaveState(context: context, account: account, entry: entry))
+        draftScope = context.draftScope("balance:" + account.financeID + ":" + (entry?.financeID ?? "new"))
+    }
     private var currency: String { account["currency"].stringValue ?? "CNY" }
-    private var draftScope: String { context.draftScope("balance:" + account.financeID + ":" + (entry?.financeID ?? "new")) }
     private var draftValues: NativeJSON { .object(["action": .string(action), "amount": .string(amount), "date": .string(date), "note": .string(note), "reason": .string(reason)]) }
-    private var changed: Bool { !reason.isEmpty || !note.isEmpty || amount != (entry?["amount"].stringValue ?? account["amount"].stringValue ?? "") || date != (entry?["asOfDate"].stringValue ?? NativeFinanceContract.today()) }
+    private var changed: Bool { saveState.receipt == nil && (!reason.isEmpty || !note.isEmpty || amount != (entry?["amount"].stringValue ?? account["amount"].stringValue ?? "") || date != (entry?["asOfDate"].stringValue ?? NativeFinanceContract.today())) }
     var body: some View {
         Form {
             NativeFinanceStatus(context: context)
@@ -1064,7 +1240,7 @@ private struct NativeFinanceBalanceForm: View {
                     TextField("说明", text: $note, axis: .vertical)
                 }
                 if entry != nil { TextField("修改原因（必填）", text: $reason, axis: .vertical) }
-            }.listRowBackground(NativePalette.surface).disabled(frozen != nil || context.pending != nil || context.busy)
+            }.listRowBackground(NativePalette.surface).disabled(frozen != nil || context.pending != nil || context.busy || saveState.receipt != nil)
             if let preview {
                 Section("对当前余额的影响") {
                     LabeledContent("修改前", value: NativeFinanceContract.money(preview["currentBefore"]["amountMinor"], currency: currency))
@@ -1073,33 +1249,54 @@ private struct NativeFinanceBalanceForm: View {
                     Text(preview["changesCurrentBalance"].boolValue == true ? "此操作将改变账户当前余额。" : "当前余额不变，历史记录将更新。")
                 }.listRowBackground(NativePalette.surface)
             }
-            Section {
-                if entry != nil && frozen == nil { Button("预览影响") { Task { await makePreview() } }.disabled(!context.canWrite || previewing || account["archived"].boolValue == true) }
-                else { Button(entry == nil ? (onSaved == nil ? "保存余额" : "保存并核对下一项") : "确认修改") { if entry == nil { Task { await save() } } else { confirm = true } }.disabled(!context.canWrite || completing) }
-                if frozen != nil && context.pending == nil { Button("返回修改内容") { preview = nil; frozen = nil } }
-                if previewing { ProgressView("核对服务器预览…") }
-            }.listRowBackground(NativePalette.surface)
+            saveSection
         }
         .nativeGeometricPage().navigationTitle(entry == nil ? "记录余额" : "更正与作废")
         .modifier(NativeFinancePrivacy(context: context))
         .navigationBarBackButtonHidden(changed)
-        .onChange(of: context.change) { _, _ in confirmedSave() }
+        .modifier(NativeFinanceScreenLifetime(context: context))
+        .onChange(of: context.pending?.id) { _, pending in
+            if pending == nil { Task { await saveState.recoverConfirmedSave(); finishSavedReceipt() } }
+        }
+        .onChange(of: saveState.error) { _, error in showSaveError = error != nil }
+        .alert("保存需要处理", isPresented: $showSaveError) { Button("知道了", role: .cancel) {} } message: { Text(saveState.error ?? "请核对保存结果") }
         .toolbar { ToolbarItem(placement: .cancellationAction) { NativeFinanceCloseButton(context: context, scope: draftScope, values: draftValues, basis: account, changed: changed) { dismiss() } } }
         .modifier(NativeFinanceKeyboardDone())
         .interactiveDismissDisabled(changed || context.busy || context.pending != nil)
-        .task { if !initialized { initialized = true; amount = entry?["amount"].stringValue ?? account["amount"].stringValue ?? ""; date = entry?["asOfDate"].stringValue ?? NativeFinanceContract.today(); note = entry?["note"].stringValue ?? "" } }
+        .task {
+            if !initialized { initialized = true; amount = entry?["amount"].stringValue ?? account["amount"].stringValue ?? ""; date = entry?["asOfDate"].stringValue ?? NativeFinanceContract.today(); note = entry?["note"].stringValue ?? "" }
+            await saveState.recoverConfirmedSave()
+            finishSavedReceipt()
+        }
         .confirmationDialog(entry == nil ? "保存这笔余额？" : "确认按预览修改历史？", isPresented: $confirm, titleVisibility: .visible) { Button("确认保存", role: action == "void" && entry != nil ? .destructive : nil) { Task { await save() } } } message: { Text(context.scopeSummary + "\n" + (account["name"].stringValue ?? "账户") + "\n" + (entry?["asOfDate"].stringValue ?? date) + "\n原始记录和修改原因保留") }
     }
-    private func confirmedSave() {
-        guard context.notice == "记录余额已确认。" || context.notice == "余额历史修改已确认。" else { return }
-        try? NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear()
-        if let onSaved {
-            guard !completing else { return }; completing = true
-            Task {
-                do { let current = try await context.read(context.path("finance/accounts/" + account.financeID)); onSaved(current) }
-                catch { context.fail(error) }
+    private var saveSection: some View {
+        Section {
+            if saveState.receipt != nil {
+                Label("余额已保存", systemImage: "checkmark.circle").foregroundStyle(.green)
+                if let warning = saveState.cleanupWarning { Text(warning).font(.caption).foregroundStyle(NativePalette.muted) }
+                Button(saveAndAdvance ? "继续核对" : "完成") { finishSavedReceipt(allowingCleanupFailure: true) }
+            } else {
+                if let error = saveState.error { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) }
+                if let pending = context.pending {
+                    NavigationLink("核对保存结果") { NativeFinancePendingRecovery(context: context, pending: pending) }
+                }
+                if saveState.needsReceiptCheck {
+                    Text("原保存结果待核对").font(.caption).foregroundStyle(NativePalette.muted)
+                    Button("核对保存结果") { Task { await saveState.recoverConfirmedSave(); finishSavedReceipt() } }.disabled(saveState.saving || context.busy)
+                } else if entry != nil && frozen == nil { Button("预览影响") { Task { await makePreview() } }.disabled(!context.canWrite || previewing || account["archived"].boolValue == true) }
+                else { Button(entry == nil ? (saveAndAdvance ? "保存并核对下一项" : "保存余额") : "确认修改") { if entry == nil { Task { await save() } } else { confirm = true } }.disabled(!context.canWrite || saveState.saving) }
+                if frozen != nil && context.pending == nil { Button("返回修改内容") { preview = nil; frozen = nil } }
+                if previewing { ProgressView("核对服务器预览…") }
+                if saveState.saving { ProgressView("保存余额…") }
             }
-        } else { dismiss() }
+        }.listRowBackground(NativePalette.surface)
+    }
+    private func finishSavedReceipt(allowingCleanupFailure: Bool = false) {
+        guard let result = saveState.complete(cleanup: {
+            try NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear()
+        }, allowingCleanupFailure: allowingCleanupFailure) else { return }
+        if let onSaved { onSaved(result) } else { dismiss() }
     }
     private func entryPath() -> String { "finance/accounts/" + account.financeID + "/balances/" + (entry?.financeID ?? "").addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)! }
     private func makePreview() async {
@@ -1108,19 +1305,11 @@ private struct NativeFinanceBalanceForm: View {
             let body = try NativeFinanceContract.correctionBody(entry: entry, account: account, action: action, amount: amount, date: date, note: note, reason: reason)
             preview = try await context.api.json(path: context.path(entryPath() + "/preview"), method: "POST", token: context.token, body: body)
             try Task.checkCancellation(); frozen = body
-        } catch { preview = nil; frozen = nil; context.fail(error) }
+        } catch { preview = nil; frozen = nil; context.fail(error); saveState.report(error) }
     }
     private func save() async {
-        guard !completing else { return }
-        do {
-            let body: NativeJSON
-            if entry != nil { guard let frozen else { throw NativeFinanceInputError("请先预览修改影响。") }; body = frozen }
-            else { body = try NativeFinanceContract.balanceBody(amount: amount, currency: currency, date: date, note: note) }
-            let path = entry == nil ? "finance/accounts/" + account.financeID + "/balances" : entryPath()
-            let result = try await context.write(title: entry == nil ? "记录余额" : "余额历史修改", path: context.path(path), method: "POST", body: body, idempotent: true, targetName: account["name"].stringValue)
-            try NativeWorkspacePersistence(userID: context.userID, scope: draftScope).clear()
-            if let onSaved { completing = true; onSaved(result) } else { dismiss() }
-        } catch { context.fail(error) }
+        await saveState.save(amount: amount, date: date, note: note, previewBody: frozen)
+        finishSavedReceipt()
     }
 }
 
@@ -1165,7 +1354,7 @@ private struct NativeFinanceBalanceCheck: View {
     private var editor: some View {
         NavigationStack {
             if let active {
-                NativeFinanceBalanceForm(context: context, account: active, entry: nil, onSaved: { result in Task { await advance(result) } })
+                NativeFinanceBalanceForm(context: context, account: active, entry: nil, saveAndAdvance: true, onSaved: { result in Task { await advance(result) } })
                     .id(active.financeID)
             }
         }
