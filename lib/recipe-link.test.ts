@@ -6,6 +6,7 @@ const NOTE_ID = '67abcdef1234567890abcdef';
 const XHS_URL = `https://www.xiaohongshu.com/explore/${NOTE_ID}`;
 const XHS_SHORT_CODE = '99ExampleAb';
 const XHS_SHORT_URL = `https://xhslink.cn/o/${XHS_SHORT_CODE}`;
+const XHS_REDNOTE_URL = `https://www.rednote.com/discovery/item/${NOTE_ID}`;
 const RECIPE_URL = 'https://www.xiachufang.com/recipe/107111111/';
 const HEAD = '<title>菌菇汤 · 下厨房</title><meta name="author" content="厨房朋友">';
 
@@ -97,19 +98,96 @@ void test('reads recipe microdata and ignores unstructured body and script data'
   assert.deepEqual(result, { title: '菌菇汤', author: '厨房朋友', ingredients: ['菌菇 100 克'], steps: ['加水煮。'] });
 });
 
-void test('does not request Xiaohongshu notes or shared redirects for a preview', async () => {
+void test('does not request a preview if the declared source identity does not match the link', async () => {
   let requests = 0;
   const transport = async () => { requests++; return html(); };
   const short = link(XHS_SHORT_URL);
   for (const source of [
-    short,
-    link('https://xhslink.com/a/Abcd23456'),
-    link(`${XHS_URL}?xsec_token=example`),
-    link(`https://www.rednote.com/discovery/item/${NOTE_ID}`),
     { ...short, source: 'xiachufang' as const },
     { ...link(RECIPE_URL), url: XHS_URL },
+    { ...link(XHS_URL), key: short.key },
+    { ...short, url: 'https://www.rednote.com/login' },
   ]) assert.equal(await fetchRecipeLinkPreview(source, { fetch: transport }), null);
   assert.equal(requests, 0);
+});
+
+const XHS_CAPTION = '来做晚饭 准备材料：草菇、鸡蛋 具体步骤： 1️⃣切草菇 2️⃣打散鸡蛋 3️⃣炒至熟透 \t 这里是个人感想 #家常菜';
+const XHS_META = `<title>草菇炒鸡蛋 - rednote</title><meta property="og:title" content="草菇炒鸡蛋 - rednote">
+  <meta property="og:type" content="article"><meta property="og:description" content="${XHS_CAPTION}">
+  <meta property="og:url" content="${XHS_REDNOTE_URL}"><meta name="robots" content="noindex,nofollow">`;
+
+void test('previews a publicly advertised mobile RedNote caption after resolving a short link to one note', async () => {
+  const shortAlias = XHS_SHORT_URL.replace('xhslink.cn', 'xhslink.com');
+  const detail = `${XHS_URL}?xsec_token=example`;
+  const rednote = `${XHS_REDNOTE_URL}?xsec_token=example&xsec_source=app_share`;
+  const urls = [XHS_SHORT_URL, shortAlias, detail, rednote];
+  const requests: string[] = [];
+  const preview = await fetchRecipeLinkPreview(link(XHS_SHORT_URL), { fetch: async (url, init) => {
+    assert.ok(typeof url === 'string');
+    requests.push(url);
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.redirect, 'manual');
+    assert.equal(init?.credentials, 'omit');
+    assert.equal(init?.referrerPolicy, 'no-referrer');
+    const headers = new Headers(init?.headers);
+    assert.match(headers.get('user-agent') ?? '', /iPhone.*Mobile/);
+    assert.equal(headers.get('cookie'), null);
+    assert.equal(headers.get('authorization'), null);
+    if (requests.length < urls.length) {
+      return Response.redirect(urls[requests.length] + (requests.length === 1 ? '?tracking=remove' : '&tracking=remove'), 302);
+    }
+    return new Response(`<!doctype html><html><head>${XHS_META}</head><body>
+      <div class="note-view-container"><div class="narmal-note-container"><div class="author-desc-content">
+      <div class="rich-text-wrapper">公开正文的版式测试</div></div></div></div>
+      <div class="comment-box">步骤：不应读取评论</div><script>window.__INITIAL_STATE__={private:'不应读取脚本'}</script>
+      </body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  } });
+  assert.deepEqual(requests, urls);
+  assert.deepEqual(preview, {
+    title: '草菇炒鸡蛋',
+    description: XHS_CAPTION.replace(/\s+/g, ' '),
+    ingredients: ['草菇', '鸡蛋'],
+    steps: ['切草菇', '打散鸡蛋', '炒至熟透'],
+  });
+});
+
+void test('stops Xiaohongshu previews at other notes, unapproved redirects, and access restrictions', async () => {
+  for (const target of [
+    '/login', '/captcha', RECIPE_URL, XHS_SHORT_URL, 'xhsdiscover://item/' + NOTE_ID,
+    XHS_REDNOTE_URL.replace(NOTE_ID, '89abcdef0123456789abcdef'),
+    XHS_REDNOTE_URL.replace('www.rednote.com', 'not.rednote.com'),
+    XHS_REDNOTE_URL.replace('www.rednote.com', 'www.rednote.com:443'),
+    XHS_REDNOTE_URL.replace('https:', 'http:'),
+  ]) {
+    let calls = 0;
+    assert.equal(await fetchRecipeLinkPreview(link(XHS_URL), { fetch: async () => {
+      calls++;
+      return new Response(null, { status: 302, headers: { location: target } });
+    } }), null);
+    assert.equal(calls, 1, target);
+  }
+  const anotherShort = XHS_SHORT_URL.replace(XHS_SHORT_CODE, 'AnotherShare');
+  let calls = 0;
+  assert.equal(await fetchRecipeLinkPreview(link(XHS_SHORT_URL), { fetch: async () => {
+    calls++;
+    return Response.redirect(anotherShort, 302);
+  } }), null);
+  assert.equal(calls, 1);
+
+  for (const response of [
+    html(XHS_META, { status: 401 }),
+    html(XHS_META, { headers: { 'cf-mitigated': 'challenge' } }),
+    html(XHS_META.replace('<title>草菇炒鸡蛋 - rednote</title>', '<title>登录 - rednote</title>')),
+    html(XHS_META.replace('noindex,nofollow', 'noindex,nosnippet')),
+    html(XHS_META.replace('<meta property="og:url"', '<meta property="unrelated"')),
+    html(XHS_META.replace(NOTE_ID, '89abcdef0123456789abcdef')),
+    html(`${XHS_META}<link rel="canonical" href="/login">`),
+    new Response(`<html><head>${XHS_META}</head><body><dialog open>请登录</dialog></body></html>`, {
+      headers: { 'content-type': 'text/html' },
+    }),
+  ]) assert.equal(await fetchRecipeLinkPreview(link(XHS_URL), { fetch: async () => response }), null);
+
+  assert.equal(await fetchRecipeLinkPreview(link(XHS_SHORT_URL), { fetch: async () => html(XHS_META) }), null);
 });
 
 void test('follows only bounded same-recipe Xiachufang redirects with anonymous requests', async () => {
@@ -171,13 +249,16 @@ void test('treats access restrictions, unsupported bodies, and length violations
 
 void test('aborts the preview deadline even when the fetch transport does not recover', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
-  let signal: AbortSignal | undefined;
-  const promise = fetchRecipeLinkPreview(link(RECIPE_URL), { fetch: async (_url, init) => {
-    signal = init?.signal ?? undefined;
-    return new Promise<Response>(() => {});
-  } });
-  assert.equal(signal?.aborted, false);
-  context.mock.timers.tick(5000);
-  assert.equal(await promise, null);
-  assert.equal(signal?.aborted, true);
+  for (const [source, timeout] of [[RECIPE_URL, 4_000], [XHS_SHORT_URL, 8_000]] as const) {
+    let signal: AbortSignal | undefined;
+    const promise = fetchRecipeLinkPreview(link(source), { fetch: async (_url, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    } });
+    context.mock.timers.tick(timeout - 1);
+    assert.equal(signal?.aborted, false);
+    context.mock.timers.tick(1);
+    assert.equal(await promise, null);
+    assert.equal(signal?.aborted, true);
+  }
 });

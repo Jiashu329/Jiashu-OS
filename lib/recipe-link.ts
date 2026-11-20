@@ -1,4 +1,5 @@
 import type { DOMParser } from 'linkedom/worker';
+import { parseRecipeTextDraft } from './recipe-text-draft.ts';
 
 export interface RecipeLinkSource {
   source: 'xiaohongshu' | 'xiachufang';
@@ -14,64 +15,75 @@ export interface RecipeLinkPreview {
   steps?: string[];
 }
 
-const XIAOHONGSHU_HOSTS = new Set(['xiaohongshu.com', 'www.xiaohongshu.com', 'm.xiaohongshu.com']);
-const REDNOTE_HOSTS = new Set(['rednote.com', 'www.rednote.com']);
-const XIAOHONGSHU_SHARE_HOSTS = new Set(['xhslink.com', 'www.xhslink.com', 'xhslink.cn', 'www.xhslink.cn']);
-const XIACHUFANG_HOSTS = new Set(['xiachufang.com', 'www.xiachufang.com', 'm.xiachufang.com', 'mip.xiachufang.com']);
-const MAX_URL_LENGTH = 2048;
-const MAX_SHARE_LENGTH = 8192;
+const XIAOHONGSHU_MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const PREVIEW_TIMEOUT_MS = 4000;
+const XIAOHONGSHU_PREVIEW_TIMEOUT_MS = 8000;
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 const GENERIC_TITLE = /^(?:小红书|下厨房|rednote)(?:\s*[-|_·]\s*.*)?$/i;
 const ACCESS_TITLE = /访问受限|禁止访问|页面不存在|内容不存在|当前笔记无法浏览|安全验证|人机验证|滑动验证|^请(?:先)?登录|^登录(?:页|下厨房|小红书|\s|$)|^(?:access denied|sign in|log in|security verification|captcha|404 not found)\b/i;
-// oxlint-disable-next-line no-control-regex -- Reject characters the URL parser may otherwise discard or reinterpret.
-const UNSAFE_URL_CHARACTERS = /[\\\u0000-\u001f\u007f]/;
 // oxlint-disable-next-line no-control-regex -- External metadata is returned as display text.
 const INVISIBLE_TEXT_CHARACTERS = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g;
 
-function sourceUrl(raw: string): RecipeLinkSource | null {
-  if (raw.length > MAX_URL_LENGTH || !/^https?:\/\/[a-z0-9.-]+(?=[/?#]|$)/i.test(raw) || /\s/.test(raw) || UNSAFE_URL_CHARACTERS.test(raw)) return null;
-  let url: URL;
-  try { url = new URL(raw); } catch { return null; }
-  if (url.username || url.password || url.port) return null;
-  url.protocol = 'https:';
-  url.hash = '';
-
-  if (XIACHUFANG_HOSTS.has(url.hostname)) {
-    const id = /^\/recipe\/([1-9]\d{0,15})\/?$/.exec(url.pathname)?.[1];
-    if (!id) return null;
-    url.pathname = `/recipe/${id}/`;
-    url.search = '';
-    return { source: 'xiachufang', url: url.href, key: `xiachufang:${id}` };
-  }
-
-  if (XIAOHONGSHU_SHARE_HOSTS.has(url.hostname)) {
-    const path = /^\/(?:[aom]\/)?[a-z0-9]{4,64}\/?$/i.exec(url.pathname)?.[0]?.replace(/\/$/, '');
-    if (!path) return null;
-    url.pathname = path;
-    url.search = '';
-    return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:share${path}` };
-  }
-
-  const notePath = XIAOHONGSHU_HOSTS.has(url.hostname)
-    ? /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i
-    : REDNOTE_HOSTS.has(url.hostname) ? /^\/(?:(?:en|zh)\/)?(?:explore|discovery\/item)\/([a-f0-9]{24})\/?$/i : null;
-  const id = notePath?.exec(url.pathname)?.[1];
-  if (!id) return null;
-  url.pathname = url.pathname.replace(/\/$/, '');
-  const token = url.searchParams.get('xsec_token');
-  const source = url.searchParams.get('xsec_source');
-  url.search = '';
-  if (token && /^[A-Za-z0-9_+./=-]{1,512}$/.test(token)) url.searchParams.set('xsec_token', token);
-  if (source && /^[A-Za-z0-9_-]{1,64}$/.test(source)) url.searchParams.set('xsec_source', source);
-  return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:${id.toLowerCase()}` };
-}
-
 /** Parse a supported link or the first supported URL in copied share text. */
-export function normalizeRecipeLink(input: unknown): RecipeLinkSource | null {
-  if (typeof input !== 'string' || input.length > MAX_SHARE_LENGTH) return null;
+export function normalizeRecipeLink(input: unknown, strict?: { baseUrl?: string; httpsOnly?: boolean }): RecipeLinkSource | null {
+  // The recipe editor embeds this function in its browser script.
+  const maximumUrlLength = 2048;
+  // oxlint-disable-next-line no-control-regex -- Reject characters the URL parser may otherwise discard or reinterpret.
+  const unsafeUrlCharacters = /[\\\u0000-\u001f\u007f]/;
+  if (typeof input !== 'string') return null;
+
+  function sourceUrl(raw: string): RecipeLinkSource | null {
+    if (raw.length > maximumUrlLength || !/^https?:\/\/[a-z0-9.-]+(?=[/?#]|$)/i.test(raw) || /\s/.test(raw) || unsafeUrlCharacters.test(raw)) return null;
+    let url: URL;
+    try { url = new URL(raw); } catch { return null; }
+    if (url.username || url.password || url.port || (strict?.httpsOnly && url.protocol !== 'https:')) return null;
+    url.protocol = 'https:';
+    url.hash = '';
+
+    if (['xiachufang.com', 'www.xiachufang.com', 'm.xiachufang.com', 'mip.xiachufang.com'].includes(url.hostname)) {
+      const id = /^\/recipe\/([1-9]\d{0,15})\/?$/.exec(url.pathname)?.[1];
+      if (!id) return null;
+      url.pathname = `/recipe/${id}/`;
+      url.search = '';
+      return { source: 'xiachufang', url: url.href, key: `xiachufang:${id}` };
+    }
+
+    if (['xhslink.com', 'www.xhslink.com', 'xhslink.cn', 'www.xhslink.cn'].includes(url.hostname)) {
+      const path = /^\/(?:[aom]\/)?[a-z0-9]{4,64}\/?$/i.exec(url.pathname)?.[0]?.replace(/\/$/, '');
+      if (!path) return null;
+      url.pathname = path;
+      url.search = '';
+      return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:share${path}` };
+    }
+
+    const notePath = ['xiaohongshu.com', 'www.xiaohongshu.com', 'm.xiaohongshu.com'].includes(url.hostname)
+      ? /^\/(?:explore|discovery\/item|user\/profile\/[a-f0-9]{24})\/([a-f0-9]{24})\/?$/i
+      : ['rednote.com', 'www.rednote.com'].includes(url.hostname) ? /^\/(?:(?:en|zh)\/)?(?:explore|discovery\/item)\/([a-f0-9]{24})\/?$/i : null;
+    const id = notePath?.exec(url.pathname)?.[1];
+    if (!id) return null;
+    url.pathname = url.pathname.replace(/\/$/, '');
+    const token = url.searchParams.get('xsec_token');
+    const source = url.searchParams.get('xsec_source');
+    url.search = '';
+    if (token && /^[A-Za-z0-9_+./=-]{1,512}$/.test(token)) url.searchParams.set('xsec_token', token);
+    if (source && /^[A-Za-z0-9_-]{1,64}$/.test(source)) url.searchParams.set('xsec_source', source);
+    return { source: 'xiaohongshu', url: url.href, key: `xiaohongshu:${id.toLowerCase()}` };
+  }
+
+  if (strict) {
+    if (!strict.baseUrl) return sourceUrl(input);
+    if (input.length > maximumUrlLength || unsafeUrlCharacters.test(input)) return null;
+    const value = input.trim();
+    try {
+      // Check absolute URLs before URL normalization can remove an explicit port.
+      const target = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : value.startsWith('//') ? `https:${value}` : new URL(value, strict.baseUrl).href;
+      return sourceUrl(target);
+    } catch { return null; }
+  }
+
+  if (input.length > 8192) return null;
   for (const match of input.matchAll(/(?:^|[^A-Za-z0-9_+.:/=-])(https?:\/\/[^\s<>"'“”‘’《》〈〉【】（）。，、；：！？]+)/gi)) {
     const link = sourceUrl(match[1].replace(/[.!?,;:)\]}]+$/, ''));
     if (link) return link;
@@ -114,13 +126,7 @@ function publicInstructions(raw: unknown): string[] {
 }
 
 function reference(raw: string, link: RecipeLinkSource): RecipeLinkSource | null {
-  if (raw.length > MAX_URL_LENGTH || UNSAFE_URL_CHARACTERS.test(raw)) return null;
-  const value = raw.trim();
-  try {
-    // Check absolute URLs before URL normalization can remove an explicit port.
-    const target = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : value.startsWith('//') ? `https:${value}` : new URL(value, link.url).href;
-    return sourceUrl(target);
-  } catch { return null; }
+  return normalizeRecipeLink(raw, { baseUrl: link.url, httpsOnly: link.source === 'xiaohongshu' });
 }
 
 function recipeData(document: ReturnType<DOMParser['parseFromString']>, link: RecipeLinkSource): Record<string, unknown> | undefined {
@@ -153,21 +159,43 @@ function excludesPreview(raw: string | null | undefined): boolean {
   return /(?:^|[\s,:])(?:none|nosnippet|noarchive|max-snippet\s*:\s*0)(?:$|[\s,;])/i.test(raw ?? '');
 }
 
+function parseXiaohongshuPreview(document: ReturnType<DOMParser['parseFromString']>, ogTitle: string | undefined): RecipeLinkPreview | null {
+  if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not([hidden]):not([aria-hidden="true"])')) return null;
+
+  const title = ogTitle?.replace(/\s+[-|·]\s+(?:小红书|rednote)$/i, '').trim();
+  const caption = document.querySelector('head meta[property="og:description"]')?.getAttribute('content');
+  const description = cleanText(caption, 300);
+  if (!title || GENERIC_TITLE.test(title) || !caption || caption.length > 16_000 || !description) return null;
+
+  const author = cleanText(document.querySelector('head meta[name="author"], head meta[property="article:author"]')?.getAttribute('content'), 100);
+  const draft = parseRecipeTextDraft(caption);
+  const items = (value: string, limit: number) => value.split('\n').slice(0, 24)
+    .map(line => cleanText(line, limit)).filter((line): line is string => Boolean(line));
+  const ingredients = items(draft.ingredients, 120);
+  const steps = items(draft.steps, 250);
+  return { title, description, ...(author ? { author } : {}),
+    ...(ingredients.length ? { ingredients } : {}), ...(steps.length ? { steps } : {}) };
+}
+
 async function parsePreview(html: string, link: RecipeLinkSource): Promise<RecipeLinkPreview | null> {
   if (!html.trim() || /<!ENTITY\b|<!DOCTYPE(?!\s+html\s*>)/i.test(html)) return null;
   let tags = 0;
   for (const _ of html.matchAll(/</g)) if (++tags > 25000) return null;
   const { DOMParser } = await import('linkedom/worker');
   const document = new DOMParser().parseFromString(html, 'text/html');
-  const meta = (selector: string) => document.querySelector(`meta[${selector}]`)?.getAttribute('content');
+  const metadata = link.source === 'xiaohongshu' ? document.querySelector('head') : document;
+  if (!metadata) return null;
+  const meta = (selector: string) => metadata.querySelector(`meta[${selector}]`)?.getAttribute('content');
   if (excludesPreview(meta('name="robots"')) || document.querySelector('meta[http-equiv="refresh" i]')) return null;
 
-  const pageTitle = cleanText(document.querySelector('title')?.textContent, 160);
+  const pageTitle = cleanText(metadata.querySelector('title')?.textContent, 160);
   const ogTitle = cleanText(meta('property="og:title"'), 160);
   if ((pageTitle && ACCESS_TITLE.test(pageTitle)) || (ogTitle && ACCESS_TITLE.test(ogTitle))) return null;
-  for (const url of [meta('property="og:url"'), document.querySelector('link[rel="canonical"]')?.getAttribute('href')]) {
+  const references = [meta('property="og:url"'), metadata.querySelector('link[rel="canonical"]')?.getAttribute('href')];
+  for (const url of references) {
     if (url && reference(url, link)?.key !== link.key) return null;
   }
+  if (link.source === 'xiaohongshu') return references.some(Boolean) ? parseXiaohongshuPreview(document, ogTitle) : null;
 
   const recipe = recipeData(document, link);
   const title = [cleanText(recipe?.name, 160), ogTitle, pageTitle].find(value => value && !GENERIC_TITLE.test(value));
@@ -211,38 +239,49 @@ async function readHtml(response: Response, signal: AbortSignal): Promise<string
   }
 }
 
+function isXiaohongshuShortLink(link: RecipeLinkSource): boolean {
+  return link.source === 'xiaohongshu' && link.key.startsWith('xiaohongshu:share/');
+}
+
 async function readPreview(initial: RecipeLinkSource, transport: typeof fetch, signal: AbortSignal): Promise<RecipeLinkPreview | null> {
+  const headers: Record<string, string> = { Accept: 'text/html, application/xhtml+xml', 'Accept-Language': 'zh-CN,zh;q=0.9' };
+  // The share page advertises its public caption in mobile Open Graph metadata.
+  if (initial.source === 'xiaohongshu') headers['User-Agent'] = XIAOHONGSHU_MOBILE_USER_AGENT;
   let link = initial;
   const seen = new Set<string>();
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
     if (signal.aborted || seen.has(link.url)) return null;
     seen.add(link.url);
-    const response = await transport(link.url, { method: 'GET', redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer', signal,
-      headers: { Accept: 'text/html, application/xhtml+xml', 'Accept-Language': 'zh-CN,zh;q=0.9' } });
-    if (signal.aborted || response.redirected) { cancel(response); return null; }
+    const response = await transport(link.url, { method: 'GET', redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer', signal, headers });
+    if (signal.aborted || response.redirected || (link.source === 'xiaohongshu' && response.headers.get('cf-mitigated') === 'challenge')) {
+      cancel(response);
+      return null;
+    }
     if (REDIRECT_CODES.has(response.status)) {
       const target = response.headers.get('location');
       cancel(response);
       const resolved = target ? reference(target, link) : null;
-      if (!resolved || resolved.source !== 'xiachufang' || resolved.key !== link.key) return null;
+      if (!resolved || resolved.source !== link.source || (resolved.key !== link.key &&
+          !(isXiaohongshuShortLink(link) && !isXiaohongshuShortLink(resolved)))) return null;
       link = resolved;
       continue;
     }
+    if (isXiaohongshuShortLink(link)) { cancel(response); return null; }
     const html = await readHtml(response, signal);
     return html === null ? null : parsePreview(html, link);
   }
   return null;
 }
 
-/** Best-effort public Xiachufang preview. Source links can be saved independently. */
+/** Best-effort public preview. Source links can be saved independently. */
 export async function fetchRecipeLinkPreview(link: RecipeLinkSource, options: { fetch?: typeof fetch } = {}): Promise<RecipeLinkPreview | null> {
-  // The iPhone app reads Xiaohongshu notes in its browser when the user asks to import one.
-  if (link.source !== 'xiachufang') return null;
-  const normalized = sourceUrl(link.url);
+  const normalized = normalizeRecipeLink(link.url, {});
   if (!normalized || normalized.source !== link.source || normalized.key !== link.key) return null;
+  // Short shares can require connections to the short host, Xiaohongshu, and RedNote.
+  const timeout = normalized.source === 'xiaohongshu' ? XIAOHONGSHU_PREVIEW_TIMEOUT_MS : PREVIEW_TIMEOUT_MS;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, PREVIEW_TIMEOUT_MS); });
+  const deadline = new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, timeout); });
   try { return await Promise.race([readPreview(normalized, options.fetch ?? fetch, controller.signal), deadline]); }
   catch { return null; }
   finally { clearTimeout(timer); controller.abort(); }

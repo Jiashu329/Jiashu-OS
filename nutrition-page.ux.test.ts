@@ -21,6 +21,7 @@ test('nutrition starts with one recording composer and keeps history and mainten
   assert.ok(document.getElementById('nutrition-options')?.contains(document.getElementById('nutrition-include-deleted')));
   assert.ok(document.getElementById('nutrition-history')?.contains(document.getElementById('nutrition-review-chart')));
   assert.equal(document.querySelectorAll('header #nutrition-focus-entry').length, 1);
+  assert.equal(document.querySelector('main header a[href="/health/nutrition/recipes"]')?.textContent, '我的菜谱');
 });
 
 test('manual recording exposes essentials while nutrition, catalog and record context remain available on demand', () => {

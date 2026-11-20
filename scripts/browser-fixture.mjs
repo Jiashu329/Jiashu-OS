@@ -7,6 +7,7 @@ import { makeP2HealthMeasurements } from '../tests/browser/p2-api.mjs';
 import { withPageAccount } from '../lib/page-account.ts';
 import { renderHomeApp } from '../home-ui.ts';
 import { renderNutritionPage } from '../nutrition-page.ts';
+import { renderRecipesPage } from '../recipes-page.ts';
 import { renderHealthRecordsPage } from '../health-records-page.ts';
 import { renderHealthWeeklyPage } from '../health-weekly-page.ts';
 import { renderDoubanPage } from '../douban-page.ts';
@@ -24,6 +25,7 @@ export const BROWSER_FIXTURE_OWNER = 'browser-acceptance-synthetic-owner';
 function renderSyntheticPage(pathname) {
   if (pathname === '/') return renderHomeApp();
   if (pathname === '/health/nutrition') return renderNutritionPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/health/nutrition/recipes') return renderRecipesPage();
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/review') return renderHealthWeeklyPage();
   if (pathname === '/life/douban') return renderDoubanPage();
