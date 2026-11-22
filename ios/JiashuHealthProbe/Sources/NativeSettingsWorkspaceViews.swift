@@ -81,11 +81,23 @@ struct NativeWorkspaceDestinationView: View {
     }
     @ViewBuilder private var healthDestination: some View {
         switch URL(string: href, relativeTo: NativeAPI.websiteURL)?.path {
+        case "/health/apple-activity": NativeAppleActivityWorkspace(api: api, token: token, initialRange: appleActivityRange).id(userID)
         case "/health/records": NativeHealthRecordsWorkspace(api: api, token: token, userID: userID, initialMetric: query("metric"), compose: query("compose") == "1")
         case "/health/goals": NativeHealthGoalsWorkspace(api: api, token: token, userID: userID)
         case "/health/weight-plan": NativeWeightPlanWorkspace(api: api, token: token, userID: userID)
         case "/health/assistant": NativeHealthAssistantWorkspace(api: api, token: token, userID: userID)
         default: NativeHealthRangeWorkspace(api: api, token: token, userID: userID, initialMetric: query("metric"))
         }
+    }
+
+    private var appleActivityRange: NativeHealthWorkspaceRange? {
+        if let from = query("from").flatMap(NativeHealthWorkspaceFormat.date),
+           let to = query("to").flatMap(NativeHealthWorkspaceFormat.date) {
+            return try? NativeHealthWorkspaceRange(from: from, to: to)
+        }
+        let now = Date()
+        guard let days = query("days").flatMap(Int.init), (1...360).contains(days),
+              let start = NativeActionDates.calendar.date(byAdding: .day, value: 1 - days, to: now) else { return nil }
+        return try? NativeHealthWorkspaceRange(from: start, to: now, now: now)
     }
 }

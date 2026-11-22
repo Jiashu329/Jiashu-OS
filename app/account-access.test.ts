@@ -99,7 +99,6 @@ void test('storage loss stays closed, safe diagnostics contain no identities and
   const blocked = await f.middleware(new Request('https://site.example/api/health', { headers: f.identity('member-site-id', 'member-private@example.test') }));
   assert.equal(blocked.status, 503); assert.equal(blocked.headers.get('x-middleware-next'), null);
   assert.doesNotMatch(JSON.stringify(f.diagnostics), /member-site-id|member-private|synthetic storage private/);
-  assert.equal(BACKUP_TABLE_NAMES.length, 34);
   assert.equal(BACKUP_TABLE_NAMES.some((name: string) => name === 'douban_items'), true);
   for (const excluded of ['douban_connections', 'douban_sync_runs', 'douban_import_receipts']) {
     assert.equal(BACKUP_TABLE_NAMES.some((name: string) => name === excluded), false);

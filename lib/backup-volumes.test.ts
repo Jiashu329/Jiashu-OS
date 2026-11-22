@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKUP_MAX_BYTES, BACKUP_TABLE_NAMES, BACKUP_PRE_RECIPES_V2_TABLE_NAMES, BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, BackupValidationError, backupDigest, parseDataBackup } from './data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_TABLE_NAMES, BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES, BACKUP_PRE_RECIPES_V2_TABLE_NAMES, BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, BACKUP_PREVIOUS_V2_TABLE_NAMES, BackupValidationError, backupDigest, parseDataBackup } from './data-backup.ts';
 import type { DataBackup } from './data-backup.ts';
 import { parseBackupInput, splitBackupVolumes } from './backup-volumes.ts';
 
@@ -44,7 +44,7 @@ void test('published 27-table volume digests are verified before adding the new 
   const set={kind:'jiashu-os-backup-set',version:1,manifest:{kind:'jiashu-os-backup-manifest',version:1,backupVersion:2,setId,exportedAt:EXPORTED,totalRows:1,volumes:[descriptor]},volumes:[volume]};
   const parsed=await parseBackupInput(set);
   assert.equal(parsed.backup.tables.health_measurements.length,1);
-  assert.equal(Object.keys(parsed.backup.tables).length,34);
+  assert.equal(Object.keys(parsed.backup.tables).length,36);
   assert.deepEqual(parsed.backup.tables.health_weekly_actions,[]);assert.deepEqual(parsed.backup.tables.finance_month_closes,[]);
   assert.deepEqual(parsed.backup.tables.douban_items,[]);
   const changed=structuredClone(set);changed.volumes[0].tables.health_measurements[0].received_at='2026-11-11T00:00:00.000Z';
@@ -62,7 +62,7 @@ async function signedSingleVolume(tables: Record<string, unknown[]>) {
 void test('the published 30-table signed shape remains frozen and verifies before adding empty Douban records',async()=>{
   assert.equal(BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.length,30);
   assert.equal(BACKUP_PREVIOUS_V2_TABLE_NAMES.length,27);
-  assert.equal(BACKUP_TABLE_NAMES.length,34);
+  assert.equal(BACKUP_TABLE_NAMES.length,36);
   assert.equal((BACKUP_PRE_DOUBAN_V2_TABLE_NAMES as readonly string[]).includes('douban_items'),false);
   const tables=Object.fromEntries(BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.map(table=>[table,table==='health_measurements'?large.tables.health_measurements.slice(0,1):[]]));
   const set=await signedSingleVolume(tables);
@@ -73,7 +73,7 @@ void test('the published 30-table signed shape remains frozen and verifies befor
 });
 
 void test('valid hashes cannot turn same-length unknown table sets into a supported signed shape',async()=>{
-  for(const names of [BACKUP_TABLE_NAMES,BACKUP_PRE_RECIPES_V2_TABLE_NAMES,BACKUP_PRE_DOUBAN_V2_TABLE_NAMES,BACKUP_PREVIOUS_V2_TABLE_NAMES]){
+  for(const names of [BACKUP_TABLE_NAMES,BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES,BACKUP_PRE_RECIPES_V2_TABLE_NAMES,BACKUP_PRE_DOUBAN_V2_TABLE_NAMES,BACKUP_PREVIOUS_V2_TABLE_NAMES]){
     const tables=Object.fromEntries(names.map(table=>[table,[]]));
     delete tables.health_syncs;tables.unsupported_table=[];
     await assert.rejects(parseBackupInput(await signedSingleVolume(tables)),BackupValidationError);
@@ -84,7 +84,7 @@ void test('new signed sets include canonical personal Douban records and preserv
   const backup:DataBackup={kind:'jiashu-os-backup',version:2,exportedAt:EXPORTED,tables:Object.fromEntries(BACKUP_TABLE_NAMES.map(table=>[table,[]])) as unknown as DataBackup['tables']};
   backup.tables.douban_items.push({profile_id:'synthetic-owner',domain:'music',subject_id:'1234567',kind:'music',title:'合成音乐条目',url:'https://music.douban.com/subject/1234567/',cover_url:null,rating:null,marked_date:null,comment:null,published_at:'2026-11-09T04:00:00.000Z',source:'rss',details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,tmdb_cover_json:'{}',tmdb_cover_url:null,imdb_rating_json:'{}',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED});
   const set=await splitBackupVolumes(backup);
-  assert.equal(Object.keys(set.volumes[0].tables).length,34);
+  assert.equal(Object.keys(set.volumes[0].tables).length,36);
   assert.equal(set.manifest.totalRows,1);
   const parsed=await parseBackupInput(set);
   assert.deepEqual(parsed.backup.tables.douban_items,backup.tables.douban_items);
@@ -95,9 +95,21 @@ void test('published 31-table volume rows without details verify their original 
   const row={profile_id:'synthetic-owner',domain:'book',subject_id:'1234567',kind:'book',title:'合成旧书籍条目',url:'https://book.douban.com/subject/1234567/',cover_url:null,rating:4,marked_date:'2026-11-09',comment:null,published_at:null,source:'import',observed_at:EXPORTED,created_at:EXPORTED,updated_at:EXPORTED};
   const tables=Object.fromEntries(BACKUP_PRE_RECIPES_V2_TABLE_NAMES.map(table=>[table,table==='douban_items'?[row]:[]]));
   const set=await signedSingleVolume(tables),parsed=await parseBackupInput(set);
-  assert.equal(Object.keys(parsed.backup.tables).length,34);
+  assert.equal(Object.keys(parsed.backup.tables).length,36);
   assert.deepEqual(parsed.backup.tables.douban_items,[{details_json:'{}',local_note:'',local_tags_json:'[]',local_hidden:0,local_revision:0,local_cover_url:null,tmdb_cover_json:'{}',tmdb_cover_url:null,imdb_rating_json:'{}',...row}]);
   assert.notEqual(await backupDigest(parsed.backup),set.manifest.setId);
   const edited=structuredClone(set);(edited.volumes[0].tables.douban_items[0] as Record<string,unknown>).title='被修改的旧记录';
   await assert.rejects(parseBackupInput(edited),BackupValidationError);
+});
+
+void test('published 34-table volume sets verify before Apple health tables are added', async () => {
+  assert.equal(BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES.length, 34);
+  const measurement = large.tables.health_measurements[0];
+  const tables = Object.fromEntries(BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES.map(table => [table, table === 'health_measurements' ? [measurement] : []]));
+  const set = await signedSingleVolume(tables);
+  const { backup } = await parseBackupInput(set);
+  assert.deepEqual(backup.tables.health_measurements, [measurement]);
+  assert.deepEqual(backup.tables.health_apple_vitals, []);
+  assert.deepEqual(backup.tables.health_apple_workouts, []);
+  assert.notEqual(await backupDigest(backup), set.manifest.setId);
 });

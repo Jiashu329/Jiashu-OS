@@ -267,6 +267,13 @@
       "when": 1795053753675,
       "tag": "0037_nutrition_recipes",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1795335339447,
+      "tag": "0038_apple_health_activity",
+      "breakpoints": true
     }
   ]
 }

@@ -11,7 +11,7 @@ struct BackupContractFixtures {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let original = try Data(contentsOf: input)
         let summary = try NativeBackupCodec.inspect(original)
-        guard summary.rows == 20_001, summary.files == 3 else { throw BackupContractFailure.mismatch }
+        guard summary.rows == 20_003, summary.files == 3 else { throw BackupContractFailure.mismatch }
         let files = try NativeBackupCodec.split(original)
         guard files.count == 3, files[0].data == (try NativeBackupCodec.value("manifest", in: original)) else {
             throw BackupContractFailure.mismatch

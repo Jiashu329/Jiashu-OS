@@ -6,11 +6,11 @@ import CryptoKit
 protocol NativeHealthReading {
     func authorize() async throws
     func read(days: Int) async throws -> NativeHealthSnapshot
-    func startObserving(onChange: @escaping @Sendable () async -> Void) async throws
+    func readAppleActivity(days: Int) async throws -> NativeAppleActivitySnapshot?
+    func startObserving(includingAppleActivity: Bool, onChange: @escaping @Sendable () async -> Void) async throws -> Bool
     func stopObserving()
 }
 
-/// Reads only the types supported by the existing Jiashu OS health schema.
 /// HealthKit intentionally does not reveal whether read permission was denied:
 /// an empty result is left unknown and never turned into a zero measurement.
 @MainActor
@@ -20,19 +20,25 @@ final class HealthKitReader: NativeHealthReading {
     private var observationGeneration = 0
     // Every enable/disable waits for the preceding HealthKit callback. A rapid
     // off/on sequence must not let an old disable finish after the new enable.
-    private var deliveryQueue: Task<Bool, Never>?
+    private var deliveryQueue: Task<(existing: Bool, activity: Bool), Never>?
     private let sampleTypes: [HKSampleType] = [
         HKQuantityType(.stepCount), HKQuantityType(.activeEnergyBurned),
         HKQuantityType(.bodyMass), HKQuantityType(.leanBodyMass),
         HKCategoryType(.sleepAnalysis),
     ]
+    private let heartRate = HKQuantityType(.heartRate)
+    private let restingHeartRate = HKQuantityType(.restingHeartRate)
+    private let oxygenSaturation = HKQuantityType(.oxygenSaturation)
+    private let workoutType = HKObjectType.workoutType()
+
+    private var activityTypes: [HKSampleType] { [heartRate, restingHeartRate, oxygenSaturation, workoutType] }
 
     init(store: HKHealthStore = HKHealthStore()) { self.store = store }
 
     func authorize() async throws {
         guard HKHealthStore.isHealthDataAvailable() else { throw NativeHealthError.unavailable }
         // Success means that the sheet finished, not that every read was granted.
-        let readTypes = Set(sampleTypes.map { $0 as HKObjectType })
+        let readTypes = Set((sampleTypes + activityTypes).map { $0 as HKObjectType })
         try await store.requestAuthorization(toShare: [], read: readTypes)
     }
 
@@ -88,29 +94,161 @@ final class HealthKitReader: NativeHealthReading {
         return snapshot
     }
 
+    func readAppleActivity(days: Int) async throws -> NativeAppleActivitySnapshot? {
+        guard HKHealthStore.isHealthDataAvailable() else { throw NativeHealthError.unavailable }
+        let capturedAt = try NativeHealthCalendar.cutoff(Date())
+        let windows = try NativeHealthCalendar.windows(days: days, capturedAt: capturedAt)
+        guard let first = windows.first else { return nil }
+
+        let beatsPerMinute = HKUnit.count().unitDivided(by: .minute())
+        async let heartResult = try? dailyHeartRate(windows: windows, unit: beatsPerMinute)
+        async let restingResult = try? activityQuantitySamples(type: restingHeartRate, unit: beatsPerMinute,
+                                                                from: first.start, to: capturedAt, maximum: 500)
+        async let oxygenResult = try? activityQuantitySamples(type: oxygenSaturation, unit: .percent(),
+                                                               from: first.start, to: capturedAt, maximum: 100, scale: 100)
+        async let workoutResult = try? workoutSamples(from: first.start, to: capturedAt)
+        let (heartDays, restingDays, oxygenDays, workouts) = await (heartResult, restingResult, oxygenResult, workoutResult)
+        try Task.checkCancellation()
+
+        let vitals = windows.compactMap { window -> NativeAppleActivityDay? in
+            let heart = heartDays?[window.day]
+            let resting = restingDays?[window.day]?.last.map {
+                NativeAppleActivityDay.RestingHeartRate(value: $0.value, measuredAt: NativeHealthCalendar.timestamp($0.measuredAt))
+            }
+            let oxygen = oxygenDays?[window.day].flatMap { readings -> NativeAppleActivityDay.OxygenSaturation? in
+                let values = readings.map(\.value)
+                guard let latest = readings.last, let minimum = values.min(), let maximum = values.max() else { return nil }
+                let average = values.reduce(0, +) / Double(values.count)
+                return .init(latest: latest.value, average: min(max(average, minimum), maximum), min: minimum,
+                             max: maximum, count: values.count, measuredAt: NativeHealthCalendar.timestamp(latest.measuredAt))
+            }
+            guard heart != nil || resting != nil || oxygen != nil else { return nil }
+            return .init(day: window.day, heartRate: heart, restingHeartRate: resting, oxygenSaturation: oxygen)
+        }
+
+        var unavailableTypes: [String] = []
+        if heartDays == nil { unavailableTypes.append("心率") }
+        if restingDays == nil { unavailableTypes.append("静息心率") }
+        if oxygenDays == nil { unavailableTypes.append("血氧") }
+        if workouts == nil { unavailableTypes.append("训练记录") }
+        return NativeAppleActivitySnapshot(capturedAt: capturedAt, vitals: vitals, workouts: workouts ?? [],
+                                           unavailableTypes: unavailableTypes)
+    }
+
+    private func dailyHeartRate(windows: [NativeHealthWindow], unit: HKUnit) async throws -> [String: NativeAppleActivityDay.HeartRate] {
+        var values: [String: NativeAppleActivityDay.HeartRate] = [:]
+        for window in windows {
+            try Task.checkCancellation()
+            let summary: NativeAppleActivityDay.HeartRate? = try await runQuery { finish in
+                let predicate = NSPredicate(format: "%K >= %@ AND %K < %@", HKPredicateKeyPathStartDate,
+                                            window.start as NSDate, HKPredicateKeyPathStartDate, window.end as NSDate)
+                return HKStatisticsQuery(quantityType: self.heartRate, quantitySamplePredicate: predicate,
+                                         options: [.discreteAverage, .discreteMin, .discreteMax]) { _, statistics, error in
+                    NativeHealthQueryCompletion.complete(error: error, emptyValue: nil, value: {
+                        guard let average = statistics?.averageQuantity()?.doubleValue(for: unit),
+                              let minimum = statistics?.minimumQuantity()?.doubleValue(for: unit),
+                              let maximum = statistics?.maximumQuantity()?.doubleValue(for: unit),
+                              average.isFinite, minimum > 0, maximum <= 500, minimum <= maximum else { return nil }
+                        return .init(average: min(max(average, minimum), maximum), min: minimum, max: maximum)
+                    }, finish: finish)
+                }
+            }
+            if let summary { values[window.day] = summary }
+        }
+        return values
+    }
+
+    private struct ActivityReading: Sendable {
+        let measuredAt: Date
+        let value: Double
+    }
+
+    private func activityQuantitySamples(type: HKQuantityType, unit: HKUnit, from: Date, to: Date,
+                                         maximum: Double, scale: Double = 1) async throws -> [String: [ActivityReading]] {
+        let samples = try await quantitySamples(type: type, from: from, to: to, maximumCount: 20_000)
+        var days: [String: [ActivityReading]] = [:]
+        for sample in samples {
+            try Task.checkCancellation()
+            let value = sample.quantity.doubleValue(for: unit) * scale
+            guard value.isFinite, value > 0, value <= maximum,
+                  let measuredAt = try? NativeHealthCalendar.cutoff(sample.startDate) else { continue }
+            days[StepCalendar.dayString(for: measuredAt), default: []].append(.init(measuredAt: measuredAt, value: value))
+        }
+        return days
+    }
+
+    private func workoutSamples(from: Date, to: Date) async throws -> [NativeAppleActivityWorkout] {
+        let workouts: [HKWorkout] = try await runQuery { finish in
+            let predicate = HKQuery.predicateForSamples(withStart: from, end: to, options: [.strictStartDate, .strictEndDate])
+            return HKSampleQuery(sampleType: self.workoutType, predicate: predicate, limit: 10_001,
+                                 sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, samples, error in
+                NativeHealthQueryCompletion.complete(error: error, emptyValue: [], value: {
+                    (samples ?? []).compactMap { $0 as? HKWorkout }
+                }, finish: finish)
+            }
+        }
+        guard workouts.count <= 10_000 else { throw NativeHealthError.tooManyRecords }
+        return try workouts.compactMap { workout in
+            try Task.checkCancellation()
+            guard workout.startDate >= from, workout.endDate <= to, workout.endDate >= workout.startDate,
+                  workout.duration.isFinite, workout.duration >= 0, workout.workoutActivityType.rawValue > 0,
+                  let start = try? NativeHealthCalendar.cutoff(workout.startDate),
+                  let end = try? NativeHealthCalendar.cutoff(workout.endDate) else { return nil }
+            let duration = min(workout.duration, end.timeIntervalSince(start) + 0.000_5)
+            let energy = workout.statistics(for: HKQuantityType(.activeEnergyBurned))?.sumQuantity()
+                ?? workout.totalEnergyBurned
+            var distances: [HKQuantityTypeIdentifier] = [.distanceWalkingRunning, .distanceCycling, .distanceSwimming,
+                                                          .distanceWheelchair, .distanceDownhillSnowSports]
+            if #available(iOS 18.0, *) {
+                distances += [.distanceRowing, .distancePaddleSports, .distanceSkatingSports, .distanceCrossCountrySkiing]
+            }
+            let recordedDistances = distances.compactMap { identifier in
+                workout.statistics(for: HKQuantityType(identifier))?.sumQuantity()?.doubleValue(for: .meter())
+            }
+            let distance = workout.totalDistance?.doubleValue(for: .meter())
+                ?? (recordedDistances.isEmpty ? nil : recordedDistances.reduce(0, +))
+            return NativeAppleActivityWorkout(id: workout.uuid.uuidString.lowercased(),
+                activityType: workout.workoutActivityType.rawValue, startDate: NativeHealthCalendar.timestamp(start),
+                endDate: NativeHealthCalendar.timestamp(end), durationSeconds: duration,
+                energyKcal: Self.nonnegative(energy?.doubleValue(for: .kilocalorie())), distanceMeters: Self.nonnegative(distance))
+        }
+    }
+
+    private static func nonnegative(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
     /// Register at app launch when automatic sync was previously enabled. The
     /// async callback must finish bounded reconciliation before returning; only
     /// then is HealthKit's completion acknowledged. Delivery time is controlled
     /// by iOS and cannot be promised at a fixed interval.
-    func startObserving(onChange: @escaping @Sendable () async -> Void) async throws {
+    func startObserving(includingAppleActivity: Bool, onChange: @escaping @Sendable () async -> Void) async throws -> Bool {
         guard HKHealthStore.isHealthDataAvailable() else { throw NativeHealthError.unavailable }
         tearDownQueries()
         let generation = observationGeneration
         let preceding = deliveryQueue
-        let operation = Task { @MainActor [weak self] () -> Bool in
-            let previousSucceeded = await preceding?.value ?? true
-            guard let self, self.observationGeneration == generation else { return false }
-            // A failed earlier change has an uncertain delivery state. Reset
-            // it explicitly and await completion before a fresh enable.
-            if !previousSucceeded {
+        let operation = Task { @MainActor [weak self] () -> (existing: Bool, activity: Bool) in
+            let previous = await preceding?.value
+            guard let self, self.observationGeneration == generation else { return (false, false) }
+            let observationTypes = self.sampleTypes + (includingAppleActivity ? self.activityTypes : [])
+            // Reset uncertain legacy delivery before a fresh enable. Optional
+            // types are allowed to be unavailable without blocking this reset.
+            if previous?.existing == false {
                 var resetSucceeded = true
                 for type in self.sampleTypes {
                     let success = await self.changeBackgroundDelivery(for: type, enabled: false)
                     if !success { resetSucceeded = false }
                 }
-                guard resetSucceeded, self.observationGeneration == generation else { return false }
+                guard resetSucceeded, self.observationGeneration == generation else { return (false, false) }
             }
-            for type in self.sampleTypes {
+            if previous?.activity == false {
+                for type in self.activityTypes {
+                    _ = await self.changeBackgroundDelivery(for: type, enabled: false)
+                }
+            }
+            guard self.observationGeneration == generation else { return (false, false) }
+            for type in observationTypes {
                 let query = HKObserverQuery(sampleType: type, predicate: nil) { [weak self] _, completion, error in
                     Task { @MainActor in
                         guard let self, self.observationGeneration == generation else { completion(); return }
@@ -121,18 +259,26 @@ final class HealthKitReader: NativeHealthReading {
                 self.observers.append(query)
                 self.store.execute(query)
             }
-            var succeeded = true
+            var existingSucceeded = true
             for type in self.sampleTypes {
-                guard self.observationGeneration == generation else { return false }
+                guard self.observationGeneration == generation else { return (false, false) }
                 let success = await self.changeBackgroundDelivery(for: type, enabled: true)
-                if !success { succeeded = false }
+                if !success { existingSucceeded = false }
             }
-            return succeeded
+            var activitySucceeded = true
+            for type in includingAppleActivity ? self.activityTypes : [] {
+                guard self.observationGeneration == generation else { return (false, false) }
+                let frequency: HKUpdateFrequency = type == self.heartRate || type == self.oxygenSaturation ? .hourly : .immediate
+                let success = await self.changeBackgroundDelivery(for: type, enabled: true, frequency: frequency)
+                if !success { activitySucceeded = false }
+            }
+            return (existingSucceeded, activitySucceeded)
         }
         deliveryQueue = operation
-        let succeeded = await operation.value
-        guard observationGeneration == generation else { return }
-        if !succeeded { throw NativeHealthError.backgroundDeliveryUnavailable }
+        let result = await operation.value
+        guard observationGeneration == generation else { return true }
+        if !result.existing { throw NativeHealthError.backgroundDeliveryUnavailable }
+        return result.activity
     }
 
     /// Explicit user pause/logout stops callbacks immediately and then queues
@@ -140,15 +286,20 @@ final class HealthKitReader: NativeHealthReading {
     func stopObserving() {
         tearDownQueries()
         let preceding = deliveryQueue
-        deliveryQueue = Task { @MainActor [weak self] () -> Bool in
+        deliveryQueue = Task { @MainActor [weak self] () -> (existing: Bool, activity: Bool) in
             _ = await preceding?.value
-            guard let self else { return false }
-            var succeeded = true
+            guard let self else { return (false, false) }
+            var existingSucceeded = true
             for type in self.sampleTypes {
                 let success = await self.changeBackgroundDelivery(for: type, enabled: false)
-                if !success { succeeded = false }
+                if !success { existingSucceeded = false }
             }
-            return succeeded
+            var activitySucceeded = true
+            for type in self.activityTypes {
+                let success = await self.changeBackgroundDelivery(for: type, enabled: false)
+                if !success { activitySucceeded = false }
+            }
+            return (existingSucceeded, activitySucceeded)
         }
     }
 
@@ -159,10 +310,10 @@ final class HealthKitReader: NativeHealthReading {
         observers.removeAll()
     }
 
-    private func changeBackgroundDelivery(for type: HKSampleType, enabled: Bool) async -> Bool {
+    private func changeBackgroundDelivery(for type: HKSampleType, enabled: Bool, frequency: HKUpdateFrequency = .immediate) async -> Bool {
         await withCheckedContinuation { continuation in
             if enabled {
-                store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
+                store.enableBackgroundDelivery(for: type, frequency: frequency) { success, error in
                     continuation.resume(returning: success && error == nil)
                 }
             } else {
@@ -193,17 +344,17 @@ final class HealthKitReader: NativeHealthReading {
         return values
     }
 
-    private func quantitySamples(type: HKQuantityType, from: Date, to: Date) async throws -> [HKQuantitySample] {
+    private func quantitySamples(type: HKQuantityType, from: Date, to: Date, maximumCount: Int = 1_000) async throws -> [HKQuantitySample] {
         let samples: [HKQuantitySample] = try await runQuery { finish in
             let predicate = HKQuery.predicateForSamples(withStart: from, end: to, options: .strictStartDate)
-            return HKSampleQuery(sampleType: type, predicate: predicate, limit: 1_001,
+            return HKSampleQuery(sampleType: type, predicate: predicate, limit: maximumCount + 1,
                                  sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, samples, error in
                 NativeHealthQueryCompletion.complete(error: error, emptyValue: [], value: {
                     (samples ?? []).compactMap { $0 as? HKQuantitySample }
                 }, finish: finish)
             }
         }
-        guard samples.count <= 1_000 else { throw NativeHealthError.tooManyRecords }
+        guard samples.count <= maximumCount else { throw NativeHealthError.tooManyRecords }
         return samples.filter { $0.startDate >= from && $0.startDate <= to }
     }
 

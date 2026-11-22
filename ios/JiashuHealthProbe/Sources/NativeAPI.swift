@@ -124,6 +124,15 @@ final class NativeAPI: @unchecked Sendable {
         return try await request(path: "health/import", method: "POST", token: token, body: payload, headers: headers)
     }
 
+    func uploadAppleActivity(token: String, payload: Data, deviceToken: String) async throws -> NativeAppleActivitySyncReceipt {
+        let headers = try syncDeviceHeaders(deviceToken)
+        let receipt: NativeAppleActivitySyncReceipt = try await request(path: "health/apple-activity", method: "POST",
+            token: token, body: payload, headers: headers)
+        guard receipt.received > 0, (0...receipt.received).contains(receipt.updated),
+              NativeHealthCalendar.parseTimestamp(receipt.syncedAt) != nil else { throw NativeAPIError.invalidResponse }
+        return receipt
+    }
+
     /// Reading status never selects a device. Supplying the local credential lets
     /// the server distinguish this phone from another already selected phone.
     func channel(token: String, deviceToken: String? = nil) async throws -> NativeHealthChannel {

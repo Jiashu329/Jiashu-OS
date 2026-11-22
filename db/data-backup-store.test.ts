@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_TABLE_NAMES, BACKUP_TABLES, BACKUP_V1_TABLE_NAMES, VOLUME_BACKUP_LIMITS, BackupCapacityError, BackupValidationError, backupDigest, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
+import { BACKUP_MAX_BYTES, BACKUP_MAX_ROWS, BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES, BACKUP_TABLE_NAMES, BACKUP_TABLES, BACKUP_V1_TABLE_NAMES, VOLUME_BACKUP_LIMITS, BackupCapacityError, BackupValidationError, backupDigest, comparableBackupRow, parseDataBackup } from '../lib/data-backup.ts';
 import { splitBackupVolumes } from '../lib/backup-volumes.ts';
 import { parseNutritionTemplate } from '../lib/nutrition-templates.ts';
 import { createNutritionTemplate, replaceNutritionTemplate, archiveNutritionTemplate } from './nutrition-templates-store.ts';
@@ -45,6 +45,54 @@ function fixture(t: TestContext) {
   const db={prepare(sql:string){const query=sqlite.prepare(sql);let values:SQLInputValue[]=[]; const statement:Statement={bind(...args){values=args as SQLInputValue[];return statement;},async first<T>(){return(query.get(...values) as T|undefined)??null;},async all<T>(){return{results:query.all(...values) as T[]};},execute(){if(query.columns().length)return{results:query.all(...values),meta:{changes:0}};return{results:[],meta:{changes:Number(query.run(...values).changes)}};}};return statement;},async batch(statements:Statement[]){if(mutate){mutate=false;beforeBatch?.();}sqlite.exec('BEGIN');try{const result=statements.map((s)=>s.execute());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}} as unknown as D1Database;
   return{sqlite,db,mutateNextBatch(fn:()=>void){beforeBatch=fn;mutate=true;}};
 }
+
+void test('complete backups preserve account-scoped Apple health vitals and workouts', async (t) => {
+  const source = fixture(t), target = fixture(t);
+  const date = '2026-11-10';
+  const startDate = '2026-11-09T17:00:00.000Z';
+  const workout = { id: A, activityType: 37, startDate, endDate: '2026-11-09T17:35:00.000Z', durationSeconds: 1800, energyKcal: 280 };
+  const vitals = {
+    heartRate: { average: 72, min: 54, max: 102 },
+    restingHeartRate: { value: 59, measuredAt: startDate },
+    oxygenSaturation: { average: 98, min: 94, max: 100, latest: 97, count: 3, measuredAt: startDate },
+  };
+  const insertVital = source.sqlite.prepare('INSERT INTO health_apple_vitals (user_id, day, metric, value_json, exported_at, received_at) VALUES (?, ?, ?, ?, ?, ?)');
+  for (const [metric, value] of Object.entries(vitals)) insertVital.run('alice', date, metric, JSON.stringify(value), NOW, NOW);
+  insertVital.run('bob', date, 'heartRate', JSON.stringify({ average: 102, min: 102, max: 102 }), NOW, NOW);
+  const insertWorkout = source.sqlite.prepare('INSERT INTO health_apple_workouts (user_id, workout_id, day, start_date, workout_json, exported_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  insertWorkout.run('alice', A, date, startDate, JSON.stringify(workout), NOW, NOW);
+  insertWorkout.run('bob', A, date, startDate, JSON.stringify({ ...workout, energyKcal: 999 }), NOW, NOW);
+
+  const backup = await exportDataBackup(source.db, 'alice', NOW);
+  assert.deepEqual(Object.fromEntries(backup.tables.health_apple_vitals.map(row => [row.metric, JSON.parse(String(row.value_json))])), vitals);
+  assert.deepEqual(backup.tables.health_apple_workouts.map(row => JSON.parse(String(row.workout_json))), [workout]);
+  const older = { ...backup, tables: Object.fromEntries(BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES.map(table => [table, backup.tables[table]])) };
+  assert.deepEqual(parseDataBackup(older).tables.health_apple_vitals, []);
+  assert.deepEqual(parseDataBackup(older).tables.health_apple_workouts, []);
+
+  const { health_apple_workouts: ignoredWorkouts, ...incompleteTables } = backup.tables;
+  assert.ok(ignoredWorkouts.length);
+  assert.throws(() => parseDataBackup({ ...backup, tables: incompleteTables }), BackupValidationError);
+  const invalidVital = structuredClone(backup);
+  invalidVital.tables.health_apple_vitals.find(row => row.metric === 'oxygenSaturation')!.value_json = JSON.stringify({ ...vitals.oxygenSaturation, latest: 101 });
+  assert.throws(() => parseDataBackup(invalidVital), BackupValidationError);
+  const invalidWorkout = structuredClone(backup);
+  invalidWorkout.tables.health_apple_workouts[0].day = '2026-11-09';
+  assert.throws(() => parseDataBackup(invalidWorkout), BackupValidationError);
+
+  const volumes = await splitBackupVolumes(backup);
+  const preview = await previewDataRestore(target.db, 'restored', volumes);
+  assert.equal(preview.canRestore, true);
+  assert.equal(preview.total.added, 4);
+  await restoreDataBackup(target.db, 'restored', volumes, preview.previewHash);
+  assert.deepEqual((await exportDataBackup(target.db, 'restored', NOW)).tables, backup.tables);
+  target.sqlite.prepare('UPDATE health_apple_vitals SET exported_at = ?, received_at = ?').run('2026-11-10T05:00:00.000Z', '2026-11-10T05:00:00.000Z');
+  const unchanged = await previewDataRestore(target.db, 'restored', backup);
+  assert.equal(unchanged.canRestore, true);
+  assert.equal(unchanged.total.skipped, 4);
+  target.sqlite.prepare('UPDATE health_apple_workouts SET workout_json = ?').run(JSON.stringify({ ...workout, energyKcal: 300 }));
+  assert.equal((await previewDataRestore(target.db, 'restored', backup)).canRestore, false);
+});
 
 void test('complete backups preserve private recipes and photos, reject orphaned photos and preview duplicate source links', async (t) => {
   const source = fixture(t), target = fixture(t);
@@ -115,7 +163,7 @@ void test('complete backup roundtrips old records, real import receipts, edits, 
   const source=fixture(t);await seed(source.db,source.sqlite); const backup=await exportDataBackup(source.db,'alice',NOW);
   assert.equal(backup.tables.health_measurements[0].day,'2024-01-01');assert.equal(backup.tables.health_import_batches.length,2);assert.equal(JSON.parse(backup.tables.health_import_batches[1].receipt_json as string).imported,0);
   assert.deepEqual(JSON.parse(String(backup.tables.health_import_batches[1].before_json)),[]);assert.deepEqual(JSON.parse(String(backup.tables.health_import_batches[1].after_json)),[]);assert.equal(JSON.parse(String(backup.tables.health_import_batches[1].receipt_json)).canRevert,false);
-  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,34);
+  assert.equal(backup.version,2); assert.equal(BACKUP_TABLE_NAMES.length,36);
   for (const table of ['health_goal_versions','health_sync_attempts','nutrition_favorites','nutrition_copy_operations','nutrition_batches','nutrition_day_status'] as const) assert.ok(backup.tables[table].length>0);
   assert.equal(JSON.stringify(backup).includes('user_id'),false);assert.equal(JSON.stringify(backup).includes('synthetic-token-hash'),false);
   const target=fixture(t);let preview=await previewDataRestore(target.db,'restored-owner',backup);assert.equal(preview.canRestore,true);assert.ok(preview.total.added>0);
@@ -467,7 +515,7 @@ void test('published v1 and v2 nutrition backups without macro columns or source
   for(const version of [1,2]){
     const backup=structuredClone(current) as unknown as {version:number;tables:Record<string,Array<Record<string,unknown>>>};
     backup.version=version;
-    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations','health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications','douban_items','nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations'])delete backup.tables[name];
+    for(const name of ['nutrition_entry_history','nutrition_goal_settings','nutrition_restore_operations','health_weight_plan_cycles','health_weight_plan_operations','nutrition_templates','nutrition_template_operations','finance_account_classifications','douban_items','nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations','health_apple_vitals','health_apple_workouts'])delete backup.tables[name];
     if(version===1){for(const name of ['health_goal_versions','health_sync_attempts','nutrition_copy_operations','health_sync_diagnostics','health_weekly_actions','finance_month_closes'])delete backup.tables[name];}
     for(const row of backup.tables.nutrition_entries){
       for(const key of ['carbs_tenth','protein_tenth','fat_tenth'])delete row[key];
@@ -640,7 +688,7 @@ void test('the canonical complete backup includes per-metric checks, weekly feed
 void test('published 27-table v2 single files remain valid and gain empty action tables without losing existing business fields',async(t)=>{
   const source=fixture(t);await seed(source.db,source.sqlite);
   const backup=await exportDataBackup(source.db,'alice',NOW),legacy=structuredClone(backup) as unknown as {tables:Record<string,unknown>};
-  for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes','douban_items','nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations'])delete legacy.tables[table];
+  for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes','douban_items','nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations','health_apple_vitals','health_apple_workouts'])delete legacy.tables[table];
   assert.equal(Object.keys(legacy.tables).length,27);
   const parsed=parseDataBackup(legacy);for(const table of ['health_sync_diagnostics','health_weekly_actions','finance_month_closes'] as const)assert.deepEqual(parsed.tables[table],[]);
   const target=fixture(t),preview=await previewDataRestore(target.db,'restored',legacy);assert.equal(preview.canRestore,true);await restoreDataBackup(target.db,'restored',legacy,preview.previewHash);
@@ -750,7 +798,7 @@ void test('published 30-table single backups gain empty Douban records and never
   const source=fixture(t);await seed(source.db,source.sqlite);
   const current=await exportDataBackup(source.db,'alice',NOW);
   const old=structuredClone(current) as unknown as {tables:Record<string,unknown>};delete old.tables.douban_items;
-  for (const table of ['nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations']) delete old.tables[table];
+  for (const table of ['nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations','health_apple_vitals','health_apple_workouts']) delete old.tables[table];
   assert.equal(Object.keys(old.tables).length,30);
   const parsed=parseDataBackup(old);assert.deepEqual(parsed.tables.douban_items,[]);
   const target=fixture(t);const preview=await previewDataRestore(target.db,'restored',old);
@@ -762,7 +810,7 @@ void test('published 30-table single backups gain empty Douban records and never
 void test('the complete backup roundtrip rich Douban details and keep personal and site ratings independent',async(t)=>{
   const source=fixture(t),details={summary:'合成内容简介\n第二段',doubanRating:8.8,ratingCount:123,authors:['合成作者'],translators:['合成译者'],publisher:'合成出版社',publicationDate:'2001-09',isbn:'9780000000001',pages:321,price:'39.00元',binding:'平装',seriesTitle:'合成丛书'};
   seedDouban(source.sqlite,'alice',doubanRow({domain:'book',kind:'book',subject_id:'1234567',url:'https://book.douban.com/subject/1234567/',rating:4,details_json:JSON.stringify(parseDoubanDetails(details))}));
-  const backup=await exportDataBackup(source.db,'alice',NOW);assert.equal(BACKUP_TABLE_NAMES.length,34);
+  const backup=await exportDataBackup(source.db,'alice',NOW);assert.equal(BACKUP_TABLE_NAMES.length,36);
   assert.equal(backup.tables.douban_items[0].rating,4);assert.deepEqual(JSON.parse(String(backup.tables.douban_items[0].details_json)),details);
   const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);assert.equal(preview.canRestore,true);
   await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
@@ -828,7 +876,7 @@ void test('personal Douban notes, tags, visibility and local versions roundtrip 
   seedDouban(source.sqlite,'alice',doubanRow({local_note:'重看后的感受\n下次推荐给家人',local_tags_json:JSON.stringify(['值得重看','家庭']),local_hidden:1,local_revision:3}));
   seedDouban(source.sqlite,'bob',doubanRow({local_note:'BOB-PRIVATE-NOTE',local_tags_json:'["BOB-PRIVATE-TAG"]',local_hidden:1,local_revision:1}));
   const backup=await exportDataBackup(source.db,'alice',NOW);
-  assert.equal(BACKUP_TABLE_NAMES.length,34);assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE/);
+  assert.equal(BACKUP_TABLE_NAMES.length,36);assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE/);
   assert.equal(backup.tables.douban_items[0].local_hidden,1);
   const target=fixture(t),preview=await previewDataRestore(target.db,'restored',backup);
   await restoreDataBackup(target.db,'restored',backup,preview.previewHash);
@@ -925,7 +973,7 @@ void test('manual cover URLs roundtrip with the complete backup and signed volum
   seedDouban(source.sqlite,'alice',doubanRow({local_cover_url:cover,local_revision:2,local_note:'保留自己的封面'}));
   seedDouban(source.sqlite,'bob',doubanRow({local_cover_url:'https://private.example.org/BOB-PRIVATE-COVER.jpg'}));
   const backup=await exportDataBackup(source.db,'alice',NOW);
-  assert.equal(BACKUP_TABLE_NAMES.length,34);assert.equal(backup.tables.douban_items[0].local_cover_url,cover);
+  assert.equal(BACKUP_TABLE_NAMES.length,36);assert.equal(backup.tables.douban_items[0].local_cover_url,cover);
   assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE-COVER/);
   for(const input of [backup,await splitBackupVolumes(backup)]){
     const target=fixture(t),preview=await previewDataRestore(target.db,'restored',input);
@@ -991,7 +1039,7 @@ void test('IMDb details, manual links and TMDB fallback metadata roundtrip throu
   seedDouban(source.sqlite,'bob',doubanRow({tmdb_cover_json:serializeTMDBCover(tmdbCover({posterPath:'/BOB-PRIVATE-POSTER.jpg'}))}));
   source.sqlite.prepare('INSERT INTO tmdb_settings (owner_id,token_ciphertext,token_iv,revision,created_at,updated_at) VALUES (?,?,?,?,?,?)').run('alice','SYNTHETIC-TMDB-ENCRYPTED-TOKEN','SYNTHETIC-TMDB-IV',1,NOW,NOW);
   const backup=await exportDataBackup(source.db,'alice',NOW);
-  assert.equal(BACKUP_TABLE_NAMES.length,34);assert.equal(Object.keys(backup.tables).length,34);
+  assert.equal(BACKUP_TABLE_NAMES.length,36);assert.equal(Object.keys(backup.tables).length,36);
   assert.equal(backup.tables.douban_items[0].tmdb_cover_json,cover);
   assert.doesNotMatch(JSON.stringify(backup),/BOB-PRIVATE-POSTER|SYNTHETIC-TMDB|tmdb_settings|token_ciphertext|token_iv|encryption_key/);
   for(const input of [backup,await splitBackupVolumes(backup)]){
@@ -1071,7 +1119,7 @@ void test('IMDb ratings and persisted TMDB URLs roundtrip while public caches an
   source.sqlite.prepare('INSERT INTO imdb_ratings_refresh_leases VALUES (?,?,?)').run('ratings','LEASE-TOKEN-NOT-EXPORT',NOW);
   source.sqlite.prepare('INSERT INTO douban_imdb_ratings_receipts VALUES (?,?,?,?,?,?)').run('alice',A,HASH,'WRITE-TOKEN-NOT-EXPORT','RECEIPT-NOT-EXPORT',NOW);
   const backup=await exportDataBackup(source.db,'alice',NOW);
-  assert.equal(Object.keys(backup.tables).length,34);
+  assert.equal(Object.keys(backup.tables).length,36);
   assert.equal(backup.tables.douban_items[0].tmdb_cover_url,url);
   assert.equal(backup.tables.douban_items[0].imdb_rating_json,rating);
   assert.equal(JSON.parse(String(backup.tables.douban_items[0].details_json)).doubanRating,9.7);

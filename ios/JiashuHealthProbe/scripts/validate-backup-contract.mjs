@@ -20,7 +20,11 @@ for (const value of [assembled, preview.backup, restore.backup]) {
   assert.equal(await backupDigest(parsed.backup), original.manifest.setId);
   const boundary = parsed.backup.tables.health_measurements.find(row => row.record_key === 'weight:swift-backup-contract-20000');
   assert.ok(boundary, 'The record beyond the single-file row ceiling must survive');
-  assert.equal(JSON.parse(boundary.measurement_json).source, 'synthetic / 合成 \"scale\"');
+  assert.equal(JSON.parse(boundary.measurement_json).source, 'synthetic / 合成 "scale"');
+  assert.equal(parsed.backup.tables.health_apple_vitals.length, 1);
+  assert.equal(JSON.parse(parsed.backup.tables.health_apple_vitals[0].value_json).average, 97.1);
+  assert.equal(parsed.backup.tables.health_apple_workouts.length, 1);
+  assert.equal(JSON.parse(parsed.backup.tables.health_apple_workouts[0].workout_json).energyKcal, 335.5);
 }
 assert.equal(readFileSync(join(output, 'manifest.json'), 'utf8'), JSON.stringify(original.manifest), 'Manifest JSON property order must survive Swift transport');
 for (let index = 0; index < original.volumes.length; index++) {
@@ -38,4 +42,4 @@ for (const mutate of [
   const modified = structuredClone(assembled); mutate(modified);
   await assert.rejects(parseBackupInput(modified), BackupValidationError, 'Damaged Swift-restored groups must fail before database work');
 }
-process.stdout.write('Node → Swift → Node backup contract: 20,001 rows and 2 real signed volumes verified.\n');
+process.stdout.write('Node → Swift → Node backup contract: 20,003 rows and 2 real signed volumes verified.\n');

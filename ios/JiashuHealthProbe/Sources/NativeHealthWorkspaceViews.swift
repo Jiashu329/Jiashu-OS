@@ -9,6 +9,7 @@ struct NativeHealthWorkspaceRoot: View {
         List {
             Section("了解自己的变化") {
                 NavigationLink("健康趋势与睡眠") { NativeHealthRangeWorkspace(api: api, token: token, userID: userID) }
+                NavigationLink("心率、血氧与训练") { NativeAppleActivityWorkspace(api: api, token: token).id(userID) }
                 NavigationLink("查看与更正记录") { NativeHealthRecordsWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("每日目标") { NativeHealthGoalsWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("体重计划") { NativeWeightPlanWorkspace(api: api, token: token, userID: userID) }
@@ -267,6 +268,7 @@ struct NativeHealthRangeWorkspace: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 rangeControls
+                appleActivityLink
                 readStatus
                 if hasCurrentRange, let range = loadedRange {
                     focusCard(range)
@@ -332,6 +334,25 @@ struct NativeHealthRangeWorkspace: View {
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .json, defaultFilename: exportFilename) { result in
             if case .failure(let error) = result { actionMessage = error.localizedDescription }
         }
+    }
+
+    private var appleActivityLink: some View {
+        NavigationLink {
+            NativeAppleActivityWorkspace(api: api, token: token, initialRange: requestedRange).id(userID)
+        } label: {
+            HStack(spacing: 10) {
+                Label("心率、血氧与训练", systemImage: "heart.text.square")
+                    .font(.subheadline.weight(.medium))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).accessibilityHidden(true)
+            }
+            .foregroundStyle(NativePalette.ink)
+            .frame(minHeight: 44)
+            .padding(.horizontal, 12)
+            .nativeGeometricCard(corner: 16, compactCorner: 7)
+        }
+        .buttonStyle(NativePressStyle())
+        .accessibilityIdentifier("health-apple-activity")
     }
 
     private var rangeControls: some View {
@@ -1051,7 +1072,7 @@ struct NativeHealthRangeWorkspace: View {
 }
 
 
-private struct NativeHealthDateRangeEditor: View {
+struct NativeHealthDateRangeEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var from: Date
     @State private var to: Date

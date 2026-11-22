@@ -10,10 +10,11 @@ test('browser acceptance fixture refuses managed preview substitution and expose
   assert.equal(renderBrowserFixture('/unknown'), null);
   assert.match(renderBrowserFixture('/health/nutrition'), /browser-acceptance-synthetic-owner/);
   assert.match(renderBrowserFixture('/health/records'), /id="records-dialog"/);
+  assert.match(renderBrowserFixture('/health/apple-activity'), /id="activity-page"/);
 });
 
 test('all synthetic fixture pages emit parseable inline scripts', () => {
-  for (const pathname of ['/', '/life/douban', '/health', '/health/review', '/health/nutrition', '/health/records', '/health/weight-plan', '/finance', '/finance/goals', '/finance/runway', '/finance/review', '/data/backup', '/sync/templates']) {
+  for (const pathname of ['/', '/life/douban', '/health', '/health/review', '/health/nutrition', '/health/records', '/health/apple-activity', '/health/weight-plan', '/finance', '/finance/goals', '/finance/runway', '/finance/review', '/data/backup', '/sync/templates']) {
     const html = renderBrowserFixture(pathname);
     assert.ok(html, pathname);
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter(([, attributes]) => !/type=["']application\//.test(attributes));

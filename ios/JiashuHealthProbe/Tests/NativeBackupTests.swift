@@ -10,7 +10,7 @@ final class NativeBackupTests: XCTestCase {
 
     /// These small shape fixtures exercise local file transport only. The CI
     /// Swift→Node contract separately verifies full production table validation
-    /// and real server-generated SHA-256 manifests over 20,001 valid records.
+    /// and real server-generated SHA-256 manifests above the single-file record limit.
     private func group() -> (Data, [NativeBackupFile]) {
         let setID = String(repeating: "a", count: 64)
         let p1 = Data(("{\"kind\":\"jiashu-os-backup-volume\",\"version\":1,\"setId\":\"" + setID

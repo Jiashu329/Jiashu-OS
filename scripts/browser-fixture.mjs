@@ -9,6 +9,7 @@ import { renderHomeApp } from '../home-ui.ts';
 import { renderNutritionPage } from '../nutrition-page.ts';
 import { renderRecipesPage } from '../recipes-page.ts';
 import { renderHealthRecordsPage } from '../health-records-page.ts';
+import { renderAppleActivityPage } from '../apple-activity-page.ts';
 import { renderHealthWeeklyPage } from '../health-weekly-page.ts';
 import { renderDoubanPage } from '../douban-page.ts';
 import { renderFinanceApp } from '../finance-ui.ts';
@@ -27,6 +28,7 @@ function renderSyntheticPage(pathname) {
   if (pathname === '/health/nutrition') return renderNutritionPage(BROWSER_FIXTURE_OWNER);
   if (pathname === '/health/nutrition/recipes') return renderRecipesPage();
   if (pathname === '/health/records') return renderHealthRecordsPage(BROWSER_FIXTURE_OWNER);
+  if (pathname === '/health/apple-activity') return renderAppleActivityPage();
   if (pathname === '/health/review') return renderHealthWeeklyPage();
   if (pathname === '/life/douban') return renderDoubanPage();
   if (pathname === '/settings/media') return renderMediaSettingsPage();

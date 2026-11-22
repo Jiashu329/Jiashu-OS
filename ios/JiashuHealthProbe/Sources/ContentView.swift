@@ -218,14 +218,23 @@ struct NativeSyncCenter: View {
                 if model.autoSyncEnabled || model.channel?.isCurrentDevice == true {
                     Toggle("自动同步", isOn: Binding(get: { model.autoSyncEnabled }, set: { value in Task { await model.setAutomaticSync(value) } }))
                         .disabled(model.authorizingHealth || model.configuringChannel || model.syncing)
+                    if !model.appleActivityPermissionRequested {
+                        Button(model.authorizingHealth ? "等待授权…" : "更新健康数据授权") { Task { await model.connectHealth() } }
+                            .disabled(model.syncing || model.authorizingHealth || model.configuringChannel)
+                    }
                     Picker("补充范围", selection: $syncDays) { Text("7天").tag(7); Text("30天").tag(30); Text("90天").tag(90) }
                     Button(model.syncing ? "正在同步…" : "立即同步") { Task { await model.sync(days: syncDays) } }
-                        .disabled(!model.autoSyncEnabled || model.syncing || model.configuringChannel)
+                        .disabled(!model.autoSyncEnabled || model.syncing || model.configuringChannel || model.authorizingHealth)
                 } else {
                     Button(model.authorizingHealth ? "等待授权…" : "连接这台 iPhone") { Task { await model.connectHealth() } }
                         .disabled(model.syncing || model.authorizingHealth || model.configuringChannel)
                 }
+                if !model.appleActivityPermissionRequested {
+                    Text("将获准的每日心率与血氧汇总、静息心率及训练记录上传到你的 Jiashu OS 账号。可在苹果健康授权页选择允许读取的项目。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Text(model.syncMessage).font(.footnote).foregroundStyle(.secondary)
+                if let activity = model.appleActivitySyncMessage { Text(activity).font(.footnote).foregroundStyle(.secondary) }
                 if let note = model.observerMessage { NativeInlineNotice(note, tone: .attention) }
                 if let error = model.errorMessage, !model.syncMessage.contains(error) { NativeInlineNotice(error, tone: .error) }
             }
@@ -268,7 +277,7 @@ private struct NativeDailyChannelConsent: View {
                         if let current = pending.currentLabel { LabeledContent("将替换", value: current) }
                     }
                     Section {
-                        Text("读取授权的步数、能量、睡眠及体重记录，之后自动尝试同步。")
+                        Text("将你授权的步数、活动能量、睡眠、体重、心率、血氧和训练同步到你的 Jiashu OS 账号。")
                         Text("旧设备和快捷指令将停止向此日常通道写入；已有记录与人工更正保留。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }

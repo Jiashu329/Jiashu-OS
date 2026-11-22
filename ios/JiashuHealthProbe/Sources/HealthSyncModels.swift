@@ -1,5 +1,76 @@
 import Foundation
 
+struct NativeAppleActivitySnapshot: Sendable {
+    let capturedAt: Date
+    let vitals: [NativeAppleActivityDay]
+    let workouts: [NativeAppleActivityWorkout]
+    var unavailableTypes: [String] = []
+
+    func encodedBatches() throws -> [Data] {
+        guard !vitals.isEmpty || !workouts.isEmpty else { return [] }
+        let exportedAt = NativeHealthCalendar.timestamp(try NativeHealthCalendar.cutoff(capturedAt))
+        let encoder = JSONEncoder()
+        return try stride(from: 0, to: max(workouts.count, 1), by: 1_000).map { offset in
+            let end = min(offset + 1_000, workouts.count)
+            let payload = NativeAppleActivityEnvelope(exportedAt: exportedAt, vitals: offset == 0 ? vitals : [],
+                                                      workouts: Array(workouts[offset..<end]))
+            let encoded = try encoder.encode(payload)
+            guard encoded.count <= 512 * 1_024 else { throw NativeHealthError.tooManyRecords }
+            return encoded
+        }
+    }
+}
+
+private struct NativeAppleActivityEnvelope: Encodable {
+    let version = 1
+    let exportedAt: String
+    let vitals: [NativeAppleActivityDay]
+    let workouts: [NativeAppleActivityWorkout]
+}
+
+struct NativeAppleActivityDay: Codable, Sendable {
+    struct HeartRate: Codable, Sendable {
+        let average: Double
+        let min: Double
+        let max: Double
+    }
+
+    struct RestingHeartRate: Codable, Sendable {
+        let value: Double
+        let measuredAt: String
+    }
+
+    struct OxygenSaturation: Codable, Sendable {
+        let latest: Double
+        let average: Double
+        let min: Double
+        let max: Double
+        let count: Int
+        let measuredAt: String
+    }
+
+    let day: String
+    let heartRate: HeartRate?
+    let restingHeartRate: RestingHeartRate?
+    let oxygenSaturation: OxygenSaturation?
+}
+
+struct NativeAppleActivityWorkout: Codable, Sendable, Identifiable {
+    let id: String
+    let activityType: UInt
+    let startDate: String
+    let endDate: String
+    let durationSeconds: Double
+    let energyKcal: Double?
+    let distanceMeters: Double?
+}
+
+struct NativeAppleActivitySyncReceipt: Decodable, Sendable {
+    let received: Int
+    let updated: Int
+    let syncedAt: String
+}
+
 /// The existing server schema name is retained for compatibility; each record's
 /// source identifies native merged statistics or the selected HealthKit source.
 struct NativeHealthSnapshot: Sendable {

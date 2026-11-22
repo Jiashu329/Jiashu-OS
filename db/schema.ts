@@ -14,6 +14,31 @@ export const healthMeasurements = sqliteTable('health_measurements', {
   index('health_measurements_user_day_idx').on(table.userId, table.day),
 ]);
 
+export const healthAppleVitals = sqliteTable('health_apple_vitals', {
+  userId: text('user_id').notNull(),
+  day: text('day').notNull(),
+  metric: text('metric', { enum: ['heartRate', 'restingHeartRate', 'oxygenSaturation'] }).notNull(),
+  valueJson: text('value_json').notNull(),
+  exportedAt: text('exported_at').notNull(),
+  receivedAt: text('received_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.day, table.metric] }),
+  check('health_apple_vitals_metric', sql`${table.metric} IN ('heartRate','restingHeartRate','oxygenSaturation')`),
+]);
+
+export const healthAppleWorkouts = sqliteTable('health_apple_workouts', {
+  userId: text('user_id').notNull(),
+  workoutId: text('workout_id').notNull(),
+  day: text('day').notNull(),
+  startDate: text('start_date').notNull(),
+  workoutJson: text('workout_json').notNull(),
+  exportedAt: text('exported_at').notNull(),
+  receivedAt: text('received_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.workoutId] }),
+  index('health_apple_workouts_owner_day_idx').on(table.userId, table.day, table.startDate),
+]);
+
 export const healthSyncs = sqliteTable('health_syncs', {
   userId: text('user_id').notNull(),
   payloadHash: text('payload_hash').notNull(),
