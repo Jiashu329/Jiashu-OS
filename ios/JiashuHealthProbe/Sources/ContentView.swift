@@ -148,7 +148,8 @@ private struct NativeHealthView: View {
     var body: some View {
         NavigationStack {
             if let session = model.session {
-                NativeHealthRangeWorkspace(api: model.api, token: session.accessToken, userID: session.user.id, initialMetric: initialMetric)
+                NativeHealthRangeWorkspace(api: model.api, token: session.accessToken, userID: session.user.id,
+                                           initialMetric: initialMetric, appleActivityLastSync: model.appleActivityLastSync)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Menu {

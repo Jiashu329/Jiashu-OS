@@ -223,6 +223,15 @@ struct NativeWeeklyDetails: Decodable {
     let isCurrent: Bool
     let metrics: [Metric]
     let focus: Focus?
+    let appleActivity: NativeAppleActivityWeekly?
+}
+
+extension NativeAppleActivityWeekly.Period {
+    func reviewRange(now: Date = Date()) -> NativeHealthWorkspaceRange? {
+        guard let start = NativeHealthWorkspaceFormat.date(from), let end = NativeHealthWorkspaceFormat.date(to),
+              let range = try? NativeHealthWorkspaceRange(from: start, to: end, now: now), range.days <= 7 else { return nil }
+        return range
+    }
 }
 
 enum NativeWeeklyActionStatus: String, Codable, CaseIterable, Identifiable {

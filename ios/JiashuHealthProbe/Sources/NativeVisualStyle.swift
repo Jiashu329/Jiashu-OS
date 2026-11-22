@@ -13,7 +13,7 @@ enum NativePalette {
     static let soft = adaptive(0xDDE1F7, 0x343E68)
     static let peach = adaptive(0xF6DECE, 0x614C42)
 
-    private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
+    static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
             let value = traits.userInterfaceStyle == .dark ? dark : light
             return UIColor(red: CGFloat((value >> 16) & 0xFF) / 255,

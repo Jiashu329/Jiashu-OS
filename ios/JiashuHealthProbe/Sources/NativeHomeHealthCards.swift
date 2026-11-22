@@ -8,10 +8,12 @@ struct NativeHomeHealthSnapshot {
     let hasSource: Bool
     let metrics: [String: NativeHomeMetric]
     let sleepDeepHours: Double?
+    let activity: NativeHomeAppleActivitySnapshot
 
     init(overview: NativeOverview?, health: NativeHealthResponse?, now: Date = Date(), healthUpdatedAt: Date? = nil) {
         let today = NativeActionDates.day(now)
         self.today = today
+        activity = NativeHomeAppleActivitySnapshot(overview?.appleActivity, now: now)
         let ready = overview?.health.status == "ready"
         hasSource = ready || health != nil
         let end: String
@@ -41,6 +43,77 @@ struct NativeHomeHealthSnapshot {
     }
 
     func metric(_ key: String) -> NativeHomeMetric { metrics[key]! }
+}
+
+struct NativeHomeAppleActivitySnapshot {
+    enum Availability: Equatable { case ready, unavailable, unsupplied }
+
+    struct Reading {
+        let value: Double
+        let measuredAt: Date
+        let day: String
+
+        func timestamp(today: String) -> String {
+            NativeHomeHealthData.dateLabel(day, today: today) + " "
+                + NativeActionDates.formatted(measuredAt, pattern: "HH:mm")
+        }
+    }
+
+    let availability: Availability
+    let from: String?
+    let to: String?
+    let today: String
+    let restingHeartRate: Reading?
+    let oxygenSaturation: Reading?
+    let workouts: NativeAppleActivityWorkoutSummary?
+
+    init(_ source: NativeAppleActivityOverview?, now: Date) {
+        today = NativeActionDates.day(now)
+        guard let source, source.status == "ready", let from = source.from, let to = source.to,
+              source.today == to, to <= today, NativeHomeHealthData.recentDays(ending: to).first == from else {
+            availability = source == nil ? .unsupplied : .unavailable
+            from = nil; to = nil; restingHeartRate = nil; oxygenSaturation = nil; workouts = nil
+            return
+        }
+        availability = .ready
+        self.from = from; self.to = to
+
+        func reading(_ input: NativeAppleActivityOverview.Reading?, maximum: Double) -> Reading? {
+            guard let input, input.value.isFinite, input.value > 0, input.value <= maximum,
+                  let measuredAt = NativeDates.parse(input.measuredAt), measuredAt <= now else { return nil }
+            let day = NativeActionDates.day(measuredAt)
+            return (from...to).contains(day) ? Reading(value: input.value, measuredAt: measuredAt, day: day) : nil
+        }
+        restingHeartRate = reading(source.restingHeartRate, maximum: 500)
+        oxygenSaturation = reading(source.oxygenSaturation, maximum: 100)
+        if to == today, let workout = source.workouts, workout.count > 0,
+           workout.durationSeconds.isFinite, workout.durationSeconds >= 0 {
+            workouts = workout
+        } else { workouts = nil }
+    }
+
+    var emptyReadingLabel: String {
+        switch availability {
+        case .ready: return "暂无记录"
+        case .unavailable: return "暂时无法读取"
+        case .unsupplied: return "暂无同步概览"
+        }
+    }
+
+    var workoutLabel: String {
+        guard let workouts else {
+            if availability == .ready { return to == today ? "暂无已同步训练" : "今日训练待更新" }
+            return emptyReadingLabel
+        }
+        return "\(workouts.count) 次 · " + workouts.durationLabel
+    }
+}
+
+extension NativeAppleActivityWorkoutSummary {
+    var durationLabel: String {
+        let minutes = durationSeconds / 60
+        return minutes.formatted(.number.precision(.fractionLength(0...1))) + " 分钟"
+    }
 }
 
 enum NativeHomeHealthData {
@@ -218,12 +291,17 @@ struct NativeHomeHealthCards: View {
         let data = snapshot
         VStack(alignment: .leading, spacing: 16) {
             primaryCards(data)
+            vitalCards(data)
             compositionCard(data)
             if let notice = sourceNotice(data) {
                 Text(notice).font(.caption).foregroundStyle(NativePalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }.foregroundStyle(NativePalette.ink)
+            .onChange(of: model.appleActivityLastSync) { _, syncedAt in
+                guard syncedAt != nil else { return }
+                Task { await model.reloadOverview(presentError: false) }
+            }
     }
 
     private func primaryCards(_ data: NativeHomeHealthSnapshot) -> some View {
@@ -238,6 +316,7 @@ struct NativeHomeHealthCards: View {
         let steps = data.metric("steps")
         let energy = data.metric("active_energy")
         return VStack(alignment: .leading, spacing: 12) {
+            Text("活动与训练").font(.headline)
             Button { showHealth("steps") } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("步数").font(.subheadline)
@@ -265,10 +344,63 @@ struct NativeHomeHealthCards: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
                 .accessibilityHint("查看活动能量趋势")
+            Rectangle().fill(NativePalette.onAccent.opacity(0.28)).frame(height: 1).accessibilityHidden(true)
+            appleActivityLink(data.activity, topic: .activity, metric: "workouts", day: data.today) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("今日训练").font(.caption)
+                    Text(data.activity.workoutLabel).font(.subheadline.weight(.semibold)).monospacedDigit()
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
+                .accessibilityHint("查看今天的训练记录")
         }
         .foregroundStyle(NativePalette.onAccent).padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativeGeometricCard(fill: NativePalette.accent, compactAt: .bottomTrailing)
+    }
+
+    private func vitalCards(_ data: NativeHomeHealthSnapshot) -> some View {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        return layout {
+            vitalCard(data.activity, unit: "次/分", topic: .heart, metric: "resting_heart_rate",
+                      reading: data.activity.restingHeartRate)
+            vitalCard(data.activity, unit: "%", topic: .oxygen, metric: "oxygen_saturation",
+                      reading: data.activity.oxygenSaturation)
+        }
+    }
+
+    private func vitalCard(_ data: NativeHomeAppleActivitySnapshot, unit: String,
+                           topic: NativeHealthTrendTopic, metric: String,
+                           reading: NativeHomeAppleActivitySnapshot.Reading?) -> some View {
+        appleActivityLink(data, topic: topic, metric: metric, day: reading?.day) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(topic.title, systemImage: topic.icon).font(.headline)
+                if let reading {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(reading.value.formatted(.number.precision(.fractionLength(0...1))))
+                            .font(.title2.weight(.semibold)).monospacedDigit()
+                        Text(unit).font(.caption)
+                    }
+                    Text((topic == .heart ? "静息 · " : "最近 · ") + reading.timestamp(today: data.today))
+                        .font(.caption).foregroundStyle(NativePalette.muted)
+                } else {
+                    Text(data.emptyReadingLabel).font(.subheadline).foregroundStyle(NativePalette.muted)
+                }
+            }.frame(maxWidth: .infinity, minHeight: 62, alignment: .leading).padding(18)
+                .nativeGeometricCard(fill: topic == .heart ? NativePalette.soft : NativePalette.surface)
+                .contentShape(Rectangle())
+        }.buttonStyle(NativePressStyle()).accessibilityElement(children: .combine)
+            .accessibilityHint("查看" + topic.title + "趋势")
+    }
+
+    @ViewBuilder private func appleActivityLink<LabelContent: View>(_ data: NativeHomeAppleActivitySnapshot,
+        topic: NativeHealthTrendTopic, metric: String, day: String?, @ViewBuilder label: () -> LabelContent) -> some View {
+        if let session = model.session {
+            NavigationLink {
+                NativeHealthRangeWorkspace(api: model.api, token: session.accessToken, userID: session.user.id,
+                    initialMetric: metric, initialFrom: data.from, initialTo: topic == .activity ? data.today : data.to,
+                    initialTopic: topic, initialDay: day, appleActivityLastSync: model.appleActivityLastSync)
+            } label: { label() }
+        } else { label() }
     }
 
     private func sleepCard(_ data: NativeHomeHealthSnapshot) -> some View {

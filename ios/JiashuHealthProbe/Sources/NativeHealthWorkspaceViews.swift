@@ -8,8 +8,7 @@ struct NativeHealthWorkspaceRoot: View {
     var body: some View {
         List {
             Section("了解自己的变化") {
-                NavigationLink("健康趋势与睡眠") { NativeHealthRangeWorkspace(api: api, token: token, userID: userID) }
-                NavigationLink("心率、血氧与训练") { NativeAppleActivityWorkspace(api: api, token: token).id(userID) }
+                NavigationLink("健康趋势") { NativeHealthRangeWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("查看与更正记录") { NativeHealthRecordsWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("每日目标") { NativeHealthGoalsWorkspace(api: api, token: token, userID: userID) }
                 NavigationLink("体重计划") { NativeWeightPlanWorkspace(api: api, token: token, userID: userID) }
@@ -26,12 +25,24 @@ struct NativeWorkspaceHealthPoint: Identifiable {
     let measuredAt: String?
     let stages: NativeJSON
     let timing: NativeJSON
+    let bounds: ClosedRange<Double>?
     var id: String { day }
     init?(_ row: NativeJSON) {
         guard let day = row["day"].stringValue, NativeHealthWorkspaceFormat.date(day) != nil,
               let value = row["value"].doubleValue, value.isFinite else { return nil }
         self.day = day; self.value = value; self.source = row["source"].stringValue
         self.measuredAt = row["measuredAt"].stringValue; self.stages = row["sleepStages"]; self.timing = row["sleepTiming"]
+        self.bounds = nil
+    }
+
+    init(day: String, value: Double, measuredAt: String? = nil, bounds: ClosedRange<Double>? = nil) {
+        self.day = day
+        self.value = value
+        self.measuredAt = measuredAt
+        self.bounds = bounds
+        self.source = "苹果健康"
+        self.stages = .null
+        self.timing = .null
     }
 }
 
@@ -196,14 +207,29 @@ private struct NativeHealthPeriodComparisonSnapshot {
 }
 
 struct NativeHealthRangeWorkspace: View {
+    private struct AppleReadScope: Equatable {
+        let range: NativeHealthWorkspaceRange?
+        let updatedAt: String?
+    }
+
+    private struct AppleReadIssue {
+        let range: NativeHealthWorkspaceRange
+        let message: String
+        let canRetry: Bool
+    }
+
     let api: NativeAPI
     let token: String
     let userID: String
+    let appleActivityLastSync: String?
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var from = NativeActionDates.calendar.date(byAdding: .day, value: -29, to: Date())!
     @State private var to = Date()
     @State private var metric = "steps"
     @State private var snapshot: NativeHealthTrendSnapshot?
+    @State private var appleSnapshot: NativeAppleActivityResponse?
+    @State private var appleReadIssue: AppleReadIssue?
+    @State private var appleReadGeneration = UUID()
     @State private var busy = false
     @State private var readMessage: String?
     @State private var actionMessage: String?
@@ -213,6 +239,10 @@ struct NativeHealthRangeWorkspace: View {
     @State private var preparingExport = false
     @State private var editingRange = false
     @State private var editingInspectedDay = false
+    @State private var showingDailyDetails = false
+    @State private var expandedWorkoutID: String?
+    @State private var expandedDayWorkoutID: String?
+    @State private var pendingWorkoutNavigation: Bool
     @State private var entryMetric: QuickEntryMetric?
     @State private var choosingEntryMetric = false
     @State private var inspectedDate: Date?
@@ -230,23 +260,48 @@ struct NativeHealthRangeWorkspace: View {
     @State private var comparisonGeneration = UUID()
     @State private var goalGeneration = UUID()
 
-    init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil, initialFrom: String? = nil, initialTo: String? = nil) {
+    init(api: NativeAPI, token: String, userID: String, initialMetric: String? = nil, initialFrom: String? = nil,
+         initialTo: String? = nil, initialTopic: NativeHealthTrendTopic? = nil, initialDay: String? = nil,
+         initialWorkoutID: String? = nil, appleActivityLastSync: String? = nil) {
         self.api = api; self.token = token; self.userID = userID
-        let end = initialTo.flatMap(NativeHealthWorkspaceFormat.date) ?? Date()
-        let start = initialFrom.flatMap(NativeHealthWorkspaceFormat.date) ?? NativeActionDates.calendar.date(byAdding: .day, value: -29, to: end)!
-        _from = State(initialValue: start); _to = State(initialValue: end)
-        let allowed = NativeHealthWorkspaceFormat.metricKeys + ["body_fat"]
-        _metric = State(initialValue: initialMetric.flatMap { allowed.contains($0) ? $0 : nil } ?? "steps")
+        self.appleActivityLastSync = appleActivityLastSync
+        let now = Date()
+        let defaultStart = NativeActionDates.calendar.date(byAdding: .day, value: -29, to: now)!
+        let day = initialDay.flatMap(NativeHealthWorkspaceFormat.date).flatMap {
+            $0 <= now ? $0 : nil
+        }
+        let end = initialTo.flatMap(NativeHealthWorkspaceFormat.date)
+            ?? day.flatMap { $0 < NativeActionDates.calendar.startOfDay(for: defaultStart) ? $0 : nil } ?? now
+        let start = initialFrom.flatMap(NativeHealthWorkspaceFormat.date)
+            ?? NativeActionDates.calendar.date(byAdding: .day, value: -29, to: end)!
+        let range = try? NativeHealthWorkspaceRange(from: start, to: end, now: now)
+        _from = State(initialValue: range == nil ? defaultStart : start)
+        _to = State(initialValue: range == nil ? now : end)
+        let selectedTopic = initialTopic ?? (initialWorkoutID == nil ? NativeHealthTrendTopic.forMetric(initialMetric) : .activity)
+        _metric = State(initialValue: initialMetric.flatMap { selectedTopic.metrics.contains($0) ? $0 : nil } ?? selectedTopic.defaultMetric)
+        _inspectedDate = State(initialValue: day)
+        _showingDailyDetails = State(initialValue: day != nil)
+        _expandedWorkoutID = State(initialValue: initialWorkoutID)
+        _pendingWorkoutNavigation = State(initialValue: initialMetric == "workouts" || initialWorkoutID != nil)
     }
 
     private var data: NativeJSON { snapshot?.response ?? .null }
     private var loadedRange: NativeHealthWorkspaceRange? { snapshot?.range }
-    private var points: [NativeWorkspaceHealthPoint] { snapshot?.points(metric: metric) ?? [] }
-    private var metricChoices: [String] { ["steps", "active_energy", "sleep", "weight", "lean_body_mass", "body_fat"] }
+    private var topic: NativeHealthTrendTopic { NativeHealthTrendTopic.forMetric(metric) }
+    private var isVitalMetric: Bool { topic == .heart || topic == .oxygen }
+    private var points: [NativeWorkspaceHealthPoint] { currentPoints(metric) }
     private var requestedRange: NativeHealthWorkspaceRange? { try? NativeHealthWorkspaceRange(from: from, to: to) }
     private var hasCurrentRange: Bool { requestedRange != nil && requestedRange == loadedRange }
+    private var currentAppleSnapshot: NativeAppleActivityResponse? {
+        guard let range = requestedRange, appleSnapshot?.from == range.from, appleSnapshot?.to == range.to else { return nil }
+        return appleSnapshot
+    }
+    private var currentAppleIssue: AppleReadIssue? {
+        appleReadIssue?.range == requestedRange ? appleReadIssue : nil
+    }
+    private var hasChartData: Bool { isVitalMetric ? currentAppleSnapshot != nil : hasCurrentRange }
     private var selectedDay: String? {
-        guard let range = loadedRange else { return nil }
+        guard let range = requestedRange else { return nil }
         return NativeHealthTrendSelection.day(inspectedDate, points: points, range: range)
     }
     private var selectedDate: Date? { selectedDay.flatMap(NativeHealthWorkspaceFormat.date) }
@@ -258,46 +313,39 @@ struct NativeHealthRangeWorkspace: View {
     private var isMassMetric: Bool { ["weight", "lean_body_mass", "body_fat"].contains(metric) }
     private var selectionBinding: Binding<Date?> {
         Binding(get: { selectedDate }, set: { value in
-            guard let value, let range = loadedRange else { return }
+            guard let value, let range = requestedRange else { return }
             let day = NativeHealthTrendSelection.day(value, points: points, range: range)
-            inspectedDate = NativeHealthWorkspaceFormat.date(day)
+            selectDay(day)
         })
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                rangeControls
-                appleActivityLink
-                readStatus
-                if hasCurrentRange, let range = loadedRange {
-                    focusCard(range)
-                    summaryCards
-                    recordLinks(range)
-                    goalReference
-                    if metric == "sleep" { selectedSleepBreakdown }
-                    dataDetails(range)
-                    if metric == "sleep" { sleepDetails }
-                }
-                if let actionMessage {
-                    NativeInlineNotice(actionMessage, tone: .attention).font(.footnote)
-                }
+        ScrollViewReader { scroll in
+            ScrollView {
+                trendContent
+                    .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
+                    .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
-            .frame(maxWidth: 680).frame(maxWidth: .infinity)
+            .onChange(of: currentAppleSnapshot != nil || currentAppleIssue != nil, initial: true) { _, canOpenWorkouts in
+                guard canOpenWorkouts, pendingWorkoutNavigation, topic == .activity else { return }
+                pendingWorkoutNavigation = false
+                scroll.scrollTo("health-trend-workouts", anchor: .top)
+            }
         }
         .nativeGeometricPage().navigationTitle("健康趋势")
         .environment(\.timeZone, NativeActionDates.timeZone)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 moreMenu
-                Button { beginQuickEntry() } label: { Image(systemName: "plus") }
-                    .accessibilityLabel("补记健康数据").disabled(busy)
+                if !isVitalMetric {
+                    Button { beginQuickEntry() } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("补记健康数据").disabled(busy)
+                }
             }
         }
         .task { await refresh() }
-        .refreshable { await refresh() }
-        .onChange(of: metric) { _, _ in inspectedDate = nil; invalidateComparison() }
+        .task(id: AppleReadScope(range: requestedRange, updatedAt: appleActivityLastSync)) { await loadAppleActivity() }
+        .refreshable { await refreshAll() }
         .onChange(of: recordsPresented) { wasPresented, isPresented in
             if wasPresented, !isPresented { flushRecordsRefresh() }
         }
@@ -313,12 +361,11 @@ struct NativeHealthRangeWorkspace: View {
         }
         .sheet(isPresented: $editingRange) {
             NativeHealthDateRangeEditor(from: from, to: to) { first, last in
-                from = first; to = last
-                Task { await load() }
+                changeRange(from: first, to: last)
             }
         }
         .sheet(isPresented: $editingInspectedDay) {
-            if hasCurrentRange, let range = loadedRange { inspectedDaySheet(range) }
+            if let range = requestedRange { inspectedDaySheet(range) }
         }
         .sheet(item: $entryMetric) { selected in
             HealthQuickEntryView(api: api, token: token, userID: userID, initialMetric: selected,
@@ -336,23 +383,34 @@ struct NativeHealthRangeWorkspace: View {
         }
     }
 
-    private var appleActivityLink: some View {
-        NavigationLink {
-            NativeAppleActivityWorkspace(api: api, token: token, initialRange: requestedRange).id(userID)
-        } label: {
-            HStack(spacing: 10) {
-                Label("心率、血氧与训练", systemImage: "heart.text.square")
-                    .font(.subheadline.weight(.medium))
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).accessibilityHidden(true)
+    private var trendContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            rangeControls
+            topics
+            if !isVitalMetric { readStatus }
+            if let range = requestedRange {
+                focusCard(range)
+                dailyDetails(range)
+                if showingDailyDetails, let workouts = workoutsOnSelectedDay, !workouts.isEmpty,
+                   topic != .activity || workouts.count != currentAppleSnapshot?.workouts.count {
+                    NativeHealthTrendWorkouts(title: "当天训练", workouts: workouts, unavailableText: "",
+                                              expandedID: $expandedDayWorkoutID)
+                }
+                if topic == .activity {
+                    periodWorkouts.id("health-trend-workouts")
+                } else if topic == .sleep {
+                    selectedSleepBreakdown
+                }
+                if !isVitalMetric, hasCurrentRange {
+                    summaryCards
+                    recordLinks(range)
+                    goalReference
+                    dataDetails(range)
+                    if topic == .sleep { sleepDetails }
+                }
             }
-            .foregroundStyle(NativePalette.ink)
-            .frame(minHeight: 44)
-            .padding(.horizontal, 12)
-            .nativeGeometricCard(corner: 16, compactCorner: 7)
+            if let actionMessage { NativeInlineNotice(actionMessage, tone: .attention).font(.footnote) }
         }
-        .buttonStyle(NativePressStyle())
-        .accessibilityIdentifier("health-apple-activity")
     }
 
     private var rangeControls: some View {
@@ -365,10 +423,6 @@ struct NativeHealthRangeWorkspace: View {
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(12)
                         .nativeGeometricCard(fill: NativePalette.surface, corner: 16, compactCorner: 7)
                 }.disabled(busy).accessibilityLabel("时间范围，" + recentDaysLabel)
-                VStack(alignment: .leading, spacing: 4) {
-                    metricMenu
-                    rangeLabel
-                }
             } else {
                 HStack(spacing: 8) {
                     HStack(spacing: 4) {
@@ -392,18 +446,8 @@ struct NativeHealthRangeWorkspace: View {
                             .nativeGeometricCard(fill: NativePalette.surface, corner: 15, compactCorner: 6)
                     }.accessibilityLabel("更多时间范围")
                 }.disabled(busy)
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        metricMenu
-                        Spacer(minLength: 0)
-                        rangeLabel
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        metricMenu
-                        rangeLabel
-                    }
-                }
             }
+            rangeLabel
         }.foregroundStyle(NativePalette.ink)
     }
 
@@ -422,32 +466,89 @@ struct NativeHealthRangeWorkspace: View {
     }
 
     private var rangeLabel: some View {
-        Text(requestedRange.map(compactRange) ?? "自定日期")
+        Text((requestedRange.map(compactRange) ?? "自定日期") + " · 北京时间")
             .font(.caption).foregroundStyle(NativePalette.muted)
     }
 
-    private var metricMenu: some View {
-        Menu {
-            Picker("健康指标", selection: $metric) {
-                ForEach(metricChoices, id: \.self) { key in
-                    Text(NativeHealthWorkspaceFormat.metric(key)).tag(key)
+    private var topics: some View {
+        VStack(spacing: 8) {
+            if typeSize.isAccessibilitySize {
+                ForEach(NativeHealthTrendTopic.allCases) { key in topicCard(key) }
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(NativeHealthTrendTopic.allCases.dropLast()) { key in topicCard(key) }
                 }
+                topicCard(.body)
             }
-        } label: {
-            HStack(spacing: 7) {
-                Text(NativeHealthWorkspaceFormat.metric(metric)).font(.headline)
-                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
-            }.frame(minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(NativePressStyle()).disabled(busy)
-        .accessibilityLabel("健康指标，" + NativeHealthWorkspaceFormat.metric(metric))
+        .accessibilityElement(children: .contain).accessibilityLabel("健康指标分组")
+    }
+
+    private func topicCard(_ key: NativeHealthTrendTopic) -> some View {
+        let info = topicReadout(key)
+        return NativeHealthTrendTopicCard(topic: key, value: info.value, note: info.note, selected: topic == key) {
+            guard topic != key else { return }
+            setMetric(key.defaultMetric)
+        }
+    }
+
+    private func topicReadout(_ key: NativeHealthTrendTopic) -> (value: String, note: String) {
+        switch key {
+        case .activity:
+            let training = currentAppleSnapshot.map { NativeHealthTrendWorkouts.summary($0.workouts) } ?? appleAvailabilityText
+            return (display(currentPoints("steps").last?.value, metric: "steps"), training)
+        case .sleep:
+            guard let latest = currentPoints("sleep").last else { return ("—", legacyAvailabilityText) }
+            return (display(latest.value, metric: "sleep"), monthDay(latest.day) + "醒来")
+        case .heart:
+            if let rest = currentPoints("resting_heart_rate").last {
+                return (display(rest.value, metric: "resting_heart_rate"), "静息 · " + monthDay(rest.day))
+            }
+            if let average = currentPoints("heart_rate").last {
+                return (display(average.value, metric: "heart_rate"), "日均 · " + monthDay(average.day))
+            }
+            return ("—", appleAvailabilityText)
+        case .oxygen:
+            guard let day = currentAppleSnapshot?.vitals.last(where: { $0.oxygenSaturation != nil }),
+                  let oxygen = day.oxygenSaturation else { return ("—", appleAvailabilityText) }
+            return (display(oxygen.latest, metric: "oxygen_saturation"),
+                    "最近 · " + monthDay(day.day) + " " + NativeHealthWorkspaceFormat.clock(oxygen.measuredAt))
+        case .body:
+            guard let latest = currentPoints("weight").last else { return ("—", legacyAvailabilityText) }
+            let fat = currentPoints("body_fat").last(where: { $0.day == latest.day })
+            return (display(latest.value, metric: "weight"), fat.map { "估算体脂 " + display($0.value, metric: "body_fat") } ?? monthDay(latest.day) + "测量")
+        }
+    }
+
+    @ViewBuilder private var metricChoices: some View {
+        if topic.metrics.count > 1 {
+            let selection = Binding(get: { metric }, set: { setMetric($0) })
+            if typeSize.isAccessibilitySize {
+                Picker("健康指标", selection: selection) { metricOptions }
+                    .pickerStyle(.menu)
+            } else {
+                Picker("健康指标", selection: selection) { metricOptions }
+                    .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    private var metricOptions: some View {
+        ForEach(topic.metrics, id: \.self) { key in Text(NativeHealthWorkspaceFormat.metric(key)).tag(key) }
+    }
+
+    private func setMetric(_ key: String) {
+        guard key != metric else { return }
+        if inspectedDate == nil { inspectedDate = selectedDate }
+        metric = key
+        invalidateComparison()
     }
 
     private var moreMenu: some View {
         Menu {
             Button("刷新记录", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(busy)
             if hasCurrentRange, let range = loadedRange {
-                Button("导出这段记录", systemImage: "square.and.arrow.up") { Task { await export(range) } }
+                Button("导出基础健康记录", systemImage: "square.and.arrow.up") { Task { await export(range) } }
                     .disabled(busy || preparingExport)
             }
             NavigationLink("目标与生效历史") { NativeHealthGoalsWorkspace(api: api, token: token, userID: userID) }
@@ -478,32 +579,73 @@ struct NativeHealthRangeWorkspace: View {
 
     private func focusCard(_ range: NativeHealthWorkspaceRange) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    focusedValue
-                    Spacer(minLength: 4)
-                    dayPicker(range)
+            let title = metric == "heart_rate" ? "心率" : NativeHealthWorkspaceFormat.metric(metric)
+            Text(title + "趋势").font(.headline).accessibilityAddTraits(.isHeader)
+            metricChoices
+            if isVitalMetric, currentAppleIssue != nil { appleReadNotice }
+            if hasChartData {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        focusedValue.fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 4)
+                        coverage(range)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        focusedValue
+                        coverage(range)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    focusedValue
-                    dayPicker(range)
-                }
+                if isVitalMetric { vitalLegend }
+                chart.frame(height: 230)
+                if let vitalNote { Text(vitalNote).font(.caption).foregroundStyle(NativePalette.muted) }
+                if !selectionStatus.isEmpty { Text(selectionStatus).font(.caption).foregroundStyle(NativePalette.muted) }
+            } else if isVitalMetric, currentAppleIssue == nil {
+                ProgressView("正在读取苹果健康记录…").font(.subheadline)
             }
-            chart.frame(height: 230)
-            dayNavigation(range)
         }
         .padding(16).foregroundStyle(NativePalette.ink)
-        .nativeGeometricCard(fill: NativePalette.soft, compactCorner: 8, compactAt: .bottomTrailing)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativeGeometricCard(fill: NativePalette.surface, compactCorner: 8, compactAt: .bottomTrailing)
         .accessibilityIdentifier("health-trend-focus")
+    }
+
+    private func coverage(_ range: NativeHealthWorkspaceRange) -> some View {
+        Text("有记录 \(points.count)/\(range.days) 天")
+            .font(.caption).foregroundStyle(NativePalette.muted)
+    }
+
+    private var vitalLegend: some View {
+        HStack(spacing: 12) {
+            Label(metric == "oxygen_saturation" ? "血氧日均" : NativeHealthWorkspaceFormat.metric(metric),
+                  systemImage: "circle.fill").foregroundStyle(topic.accent)
+            if metric == "heart_rate" { Label("最低–最高", systemImage: "line.diagonal") }
+        }.font(.caption).foregroundStyle(NativePalette.muted)
+    }
+
+    private var vitalNote: String? {
+        guard let day = selectedDay, isVitalMetric, let value = appleDay(day) else { return nil }
+        if metric == "heart_rate", let bounds = selectedPoint?.bounds {
+            return "当天范围 " + NativeHealthWorkspaceFormat.number(bounds.lowerBound) + "–"
+                + display(bounds.upperBound, metric: metric)
+        }
+        if metric == "resting_heart_rate", let resting = value.restingHeartRate {
+            return "记录时间 " + NativeHealthWorkspaceFormat.clock(resting.measuredAt)
+        }
+        if metric == "oxygen_saturation", let oxygen = value.oxygenSaturation {
+            return "最近 " + display(oxygen.latest, metric: metric) + "（"
+                + NativeHealthWorkspaceFormat.clock(oxygen.measuredAt) + "）· \(oxygen.count) 次采样"
+        }
+        return nil
     }
 
     private var focusedValue: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(selectedPoint != nil && selectedDay == points.last?.day ? "最新记录" : "单日记录")
+            let state = selectedPoint != nil && selectedDay == points.last?.day ? "最新记录" : "单日记录"
+            Text(selectedDay.map { monthDay($0) + " · " + state } ?? state)
                 .font(.caption).foregroundStyle(NativePalette.muted)
             valueReadout(selectedPoint?.value, font: .largeTitle)
                 .accessibilityLabel(selectedAnnouncement)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func valueReadout(_ value: Double?, font: Font) -> some View {
@@ -519,7 +661,7 @@ struct NativeHealthRangeWorkspace: View {
     @ViewBuilder private func dayPicker(_ range: NativeHealthWorkspaceRange) -> some View {
         let first = NativeHealthWorkspaceFormat.date(range.from)!
         let last = NativeHealthWorkspaceFormat.date(range.to)!
-        let selection = Binding(get: { selectedDate ?? last }, set: { inspectedDate = $0 })
+        let selection = Binding(get: { selectedDate ?? last }, set: { selectDay(NativeActionDates.day($0)) })
         if typeSize.isAccessibilitySize {
             Button { editingInspectedDay = true } label: {
                 Label(NativeActionDates.formatted(selection.wrappedValue, pattern: "M月d日"), systemImage: "calendar")
@@ -537,7 +679,7 @@ struct NativeHealthRangeWorkspace: View {
     private func inspectedDaySheet(_ range: NativeHealthWorkspaceRange) -> some View {
         let first = NativeHealthWorkspaceFormat.date(range.from)!
         let last = NativeHealthWorkspaceFormat.date(range.to)!
-        let selection = Binding(get: { selectedDate ?? last }, set: { inspectedDate = $0 })
+        let selection = Binding(get: { selectedDate ?? last }, set: { selectDay(NativeActionDates.day($0)) })
         return NavigationStack {
             Form {
                 DatePicker("日期", selection: selection, in: first...last, displayedComponents: .date)
@@ -552,27 +694,107 @@ struct NativeHealthRangeWorkspace: View {
             Button { shiftSelection(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
                 .disabled(selectedDay == range.from).accessibilityLabel("查看前一天")
             Spacer(minLength: 0)
-            Text(selectionStatus).font(.caption).foregroundStyle(NativePalette.muted)
-                .multilineTextAlignment(.center).accessibilityLabel(selectedAnnouncement)
-                .accessibilityAddTraits(.updatesFrequently)
+            dayPicker(range)
             Spacer(minLength: 0)
             Button { shiftSelection(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
                 .disabled(selectedDay == range.to).accessibilityLabel("查看后一天")
         }.buttonStyle(NativePressStyle()).foregroundStyle(NativePalette.accent)
     }
 
+    private func dailyDetails(_ range: NativeHealthWorkspaceRange) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("日详情").font(.headline).accessibilityAddTraits(.isHeader)
+            dayNavigation(range)
+            if let day = selectedDay {
+                DisclosureGroup(showingDailyDetails ? "收起当天明细" : "查看当天明细", isExpanded: $showingDailyDetails) {
+                    dayRows(day).padding(.top, 12)
+                }.font(.subheadline)
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .nativeGeometricCard(corner: 20, compactCorner: 7)
+        .accessibilityIdentifier("health-trend-day-details")
+    }
+
+    private func dayRows(_ day: String) -> some View {
+        let sleep = point("sleep", on: day)
+        let steps = point("steps", on: day)
+        let energy = point("active_energy", on: day)
+        let weight = point("weight", on: day)
+        let fat = point("body_fat", on: day)
+        let heart = appleDay(day)
+        let sleepTimes = sleep.flatMap(NativeWorkspaceSleepSummary.validTiming).map {
+            NativeActionDates.formatted($0.0, pattern: "HH:mm") + " → " + NativeActionDates.formatted($0.1, pattern: "HH:mm")
+        }
+        let activity = [steps.map { display($0.value, metric: "steps") }, energy.map { display($0.value, metric: "active_energy") }]
+            .compactMap { $0 }.joined(separator: " · ")
+        let workoutSummary = workoutsOnSelectedDay.map(NativeHealthTrendWorkouts.summary) ?? appleAvailabilityText
+        let heartValue = heart?.heartRate.map { "日均 " + display($0.average, metric: "heart_rate") } ?? appleAvailabilityText
+        let restingNote = heart?.restingHeartRate.map {
+            "静息 " + display($0.value, metric: "resting_heart_rate") + " · " + NativeHealthWorkspaceFormat.clock($0.measuredAt)
+        } ?? "暂无已同步静息心率"
+        let oxygenValue = heart?.oxygenSaturation.map { "最近 " + display($0.latest, metric: "oxygen_saturation") } ?? appleAvailabilityText
+        let oxygenNote = heart?.oxygenSaturation.map {
+            NativeHealthWorkspaceFormat.clock($0.measuredAt) + " 采样 · 当天 \($0.count) 次"
+        } ?? "暂无已同步采样"
+        return VStack(alignment: .leading, spacing: 12) {
+            NativeHealthTrendDayRow(topic: .sleep, title: "昨晚睡眠", value: sleep.map { display($0.value, metric: "sleep") } ?? legacyAvailabilityText,
+                                    note: sleepTimes ?? "按醒来日归属")
+            Divider()
+            NativeHealthTrendDayRow(topic: .activity, title: "全天活动", value: activity.isEmpty ? legacyAvailabilityText : activity,
+                                    note: workoutSummary)
+            Divider()
+            NativeHealthTrendDayRow(topic: .heart, title: "心率", value: heartValue, note: restingNote)
+            Divider()
+            NativeHealthTrendDayRow(topic: .oxygen, title: "血氧", value: oxygenValue, note: oxygenNote)
+            Divider()
+            NativeHealthTrendDayRow(topic: .body, title: "体重与体成分", value: weight.map { display($0.value, metric: "weight") } ?? legacyAvailabilityText,
+                                    note: fat.map { "估算体脂 " + display($0.value, metric: "body_fat") } ?? "暂无估算体脂")
+        }.foregroundStyle(NativePalette.ink)
+    }
+
+    private var periodWorkouts: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if currentAppleIssue != nil { appleReadNotice }
+            NativeHealthTrendWorkouts(title: "训练记录", workouts: currentAppleSnapshot?.workouts,
+                                      unavailableText: appleAvailabilityText, expandedID: $expandedWorkoutID)
+        }
+    }
+
+    @ViewBuilder private var appleReadNotice: some View {
+        if let issue = currentAppleIssue {
+            VStack(alignment: .leading, spacing: 6) {
+                NativeInlineNotice(currentAppleSnapshot == nil ? issue.message : "更新失败，显示上次读取的苹果健康记录。",
+                                   tone: issue.canRetry ? .error : .neutral)
+                if issue.canRetry { Button("重试读取苹果健康记录") { Task { await loadAppleActivity() } }.frame(minHeight: 44) }
+            }
+        }
+    }
+
+    private var workoutsOnSelectedDay: [NativeAppleActivityWorkout]? {
+        guard let day = selectedDay else { return nil }
+        return currentAppleSnapshot?.workouts.filter { workout in
+            NativeDates.parse(workout.startDate).map(NativeActionDates.day) == day
+        }
+    }
+
     private var chart: some View {
         let chartPoints = points
         let selected = selectedDay
         return Chart {
-            if isMassMetric {
+            if isMassMetric || isVitalMetric {
                 ForEach(Array(NativeHealthTrendSelection.segments(chartPoints).enumerated()), id: \.offset) { index, segment in
                     ForEach(segment) { point in
                         if let date = NativeHealthWorkspaceFormat.date(point.day) {
+                            if let bounds = point.bounds {
+                                RuleMark(x: .value("日期", date), yStart: .value("最低", bounds.lowerBound),
+                                         yEnd: .value("最高", bounds.upperBound))
+                                    .foregroundStyle(topic.accent.opacity(0.32)).lineStyle(StrokeStyle(lineWidth: 2))
+                            }
                             LineMark(x: .value("日期", date), y: .value("数值", point.value), series: .value("连续记录", index))
-                                .foregroundStyle(NativePalette.accent)
+                                .foregroundStyle(topic.accent)
                             PointMark(x: .value("日期", date), y: .value("数值", point.value))
-                                .foregroundStyle(NativePalette.accent).symbolSize(point.day == selected ? 38 : 18)
+                                .foregroundStyle(topic.accent).symbolSize(point.day == selected ? 38 : 18)
                         }
                     }
                 }
@@ -634,7 +856,7 @@ struct NativeHealthRangeWorkspace: View {
                 }
             } else {
                 BarMark(x: .value("日期", date, unit: .day, calendar: NativeActionDates.calendar), y: .value("数值", point.value))
-                    .foregroundStyle(point.day == selected ? NativePalette.accent : NativePalette.accent.opacity(0.5))
+                    .foregroundStyle(point.day == selected ? topic.accent : topic.accent.opacity(0.5))
             }
             if point.value == 0 {
                 PointMark(x: .value("日期", date), y: .value("数值", 0.0))
@@ -644,22 +866,25 @@ struct NativeHealthRangeWorkspace: View {
     }
 
     private var chartDomain: ClosedRange<Date> {
-        if let loadedRange { return NativeHealthChartCalendar.domain(loadedRange) }
+        if let requestedRange { return NativeHealthChartCalendar.domain(requestedRange) }
         let start = NativeActionDates.calendar.startOfDay(for: Date())
         return start...start.addingTimeInterval(86_400)
     }
     private var chartTicks: [Date] {
-        guard let range = loadedRange else { return [] }
+        guard let range = requestedRange else { return [] }
         let ticks = NativeHealthChartCalendar.ticks(range)
         guard typeSize.isAccessibilitySize, let first = ticks.first, let last = ticks.last else { return ticks }
         return first == last ? [first] : [first, last]
     }
     private var chartYDomain: ClosedRange<Double> {
-        let values = points.map(\.value)
-        if isMassMetric, let minimum = values.min(), let maximum = values.max() {
+        let values = points.flatMap { point in
+            point.bounds.map { [point.value, $0.lowerBound, $0.upperBound] } ?? [point.value]
+        }
+        if (isMassMetric || isVitalMetric), let minimum = values.min(), let maximum = values.max() {
             let padding = max(0.2, (maximum - minimum) * 0.15)
             let low = max(0, minimum - padding)
-            return low...max(low + 0.2, maximum + padding)
+            let high = max(low + 0.2, maximum + padding)
+            return low...(topic == .oxygen ? min(100, high) : high)
         }
         let maximum = max(values.max() ?? 0, currentGoal ?? 0)
         return 0...max(1, maximum * 1.15)
@@ -726,22 +951,42 @@ struct NativeHealthRangeWorkspace: View {
     }
 
     @ViewBuilder private var selectedSleepBreakdown: some View {
-        if let point = selectedPoint, NativeWorkspaceSleepSummary.validStages(point) {
+        if hasCurrentRange {
             VStack(alignment: .leading, spacing: 12) {
-                Text("睡眠分期").font(.subheadline.weight(.semibold))
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), alignment: .leading)], alignment: .leading, spacing: 12) {
-                    ForEach(NativeWorkspaceSleepSummary.stageKeys, id: \.self) { key in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 5) {
-                                Circle().fill(stageColor(key)).frame(width: 7, height: 7).accessibilityHidden(true)
-                                Text(stageLabel(key)).font(.caption).foregroundStyle(NativePalette.muted)
+                Text("睡眠分期").font(.headline).accessibilityAddTraits(.isHeader)
+                if let day = selectedDay { Text(monthDay(day) + "醒来").font(.caption).foregroundStyle(NativePalette.muted) }
+                if let point = selectedPoint, NativeWorkspaceSleepSummary.validStages(point) {
+                    sleepStageBand(point)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), alignment: .leading)], alignment: .leading, spacing: 12) {
+                        ForEach(NativeWorkspaceSleepSummary.stageKeys, id: \.self) { key in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Circle().fill(stageColor(key)).frame(width: 7, height: 7).accessibilityHidden(true)
+                                    Text(stageLabel(key)).font(.caption).foregroundStyle(NativePalette.muted)
+                                }
+                                Text(formattedValue(point.stages[key].doubleValue)).font(.subheadline).monospacedDigit()
                             }
-                            Text(formattedValue(point.stages[key].doubleValue)).font(.subheadline).monospacedDigit()
-                        }.accessibilityElement(children: .combine)
+                            .accessibilityElement(children: .combine)
+                        }
                     }
+                } else {
+                    Text("这一天暂无已同步睡眠分期。").font(.subheadline).foregroundStyle(NativePalette.muted)
                 }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                 .nativeGeometricCard(fill: NativePalette.surface, corner: 20, compactCorner: 7)
+        }
+    }
+
+    @ViewBuilder private func sleepStageBand(_ point: NativeWorkspaceHealthPoint) -> some View {
+        if point.value > 0 {
+            GeometryReader { geometry in
+                HStack(spacing: 0) {
+                    ForEach(NativeWorkspaceSleepSummary.stageKeys, id: \.self) { key in
+                        stageColor(key).frame(width: geometry.size.width * CGFloat((point.stages[key].doubleValue ?? 0) / point.value))
+                    }
+                }
+            }
+            .frame(height: 8).clipShape(Capsule()).accessibilityHidden(true)
         }
     }
 
@@ -750,8 +995,8 @@ struct NativeHealthRangeWorkspace: View {
             DisclosureGroup("数据与来源") {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(range.label).font(.caption).foregroundStyle(NativePalette.muted)
-                    Button("导出这段记录") { Task { await export(range) } }.disabled(busy || preparingExport)
-                    Text("导出此时段的全部健康指标；缺失值不补零。").font(.caption).foregroundStyle(NativePalette.muted)
+                    Button("导出基础健康记录") { Task { await export(range) } }.disabled(busy || preparingExport)
+                    Text("导出此时段的步数、活动能量、睡眠、体重和去脂体重。").font(.caption).foregroundStyle(NativePalette.muted)
                     if ["steps", "sleep", "active_energy"].contains(metric) {
                         if currentGoal != nil {
                             Text("横向虚线是当前目标，不代表历史达标情况。").font(.caption).foregroundStyle(NativePalette.muted)
@@ -915,8 +1160,7 @@ struct NativeHealthRangeWorkspace: View {
     }
 
     private var selectionStatus: String {
-        guard selectedPoint != nil else { return "这天未记录" }
-        if selectedDay == NativeActionDates.day(Date()), ["steps", "active_energy"].contains(metric) { return "截至目前" }
+        if selectedPoint != nil, selectedDay == NativeActionDates.day(Date()), ["steps", "active_energy"].contains(metric) { return "截至目前" }
         return ""
     }
     private var selectedAnnouncement: String {
@@ -929,12 +1173,25 @@ struct NativeHealthRangeWorkspace: View {
         return differenceLabel(comparison.meanDifference)
     }
     private func formattedValue(_ value: Double?) -> String {
+        formattedValue(value, metric: metric)
+    }
+    private func formattedValue(_ value: Double?, metric: String) -> String {
         guard let value, value.isFinite else { return "—" }
         if metric == "sleep" {
             let minutes = Int((max(0, value) * 60).rounded())
             return "\(minutes / 60)时\(minutes % 60)分"
         }
         return NativeHealthWorkspaceFormat.number(value)
+    }
+    private func display(_ value: Double?, metric: String) -> String {
+        let unit = NativeHealthWorkspaceFormat.unit(metric)
+        let text = formattedValue(value, metric: metric)
+        guard value != nil, metric != "sleep", !unit.isEmpty else { return text }
+        return text + (unit == "%" ? "" : " ") + unit
+    }
+    private func monthDay(_ value: String) -> String {
+        guard let date = NativeHealthWorkspaceFormat.date(value) else { return value }
+        return NativeActionDates.formatted(date, pattern: "M月d日")
     }
     private func differenceLabel(_ value: Double?) -> String {
         guard let value else { return "暂无可比日均" }
@@ -963,9 +1220,15 @@ struct NativeHealthRangeWorkspace: View {
         }
     }
     private func shiftSelection(_ offset: Int) {
-        guard let date = selectedDate, let range = loadedRange,
+        guard let date = selectedDate, let range = requestedRange,
               let next = NativeActionDates.calendar.date(byAdding: .day, value: offset, to: date) else { return }
-        inspectedDate = NativeHealthWorkspaceFormat.date(NativeHealthTrendSelection.day(next, points: points, range: range))
+        selectDay(NativeHealthTrendSelection.day(next, points: points, range: range))
+    }
+    private func selectDay(_ day: String) {
+        guard day != selectedDay || inspectedDate == nil else { return }
+        inspectedDate = NativeHealthWorkspaceFormat.date(day)
+        showingDailyDetails = true
+        expandedDayWorkoutID = nil
     }
     private func openRecords(_ range: NativeHealthWorkspaceRange) {
         guard !busy, hasCurrentRange, let day = selectedDay,
@@ -983,8 +1246,21 @@ struct NativeHealthRangeWorkspace: View {
     }
     private func selectRecentDays(_ days: Int) {
         let end = Date()
-        from = NativeActionDates.calendar.date(byAdding: .day, value: 1 - days, to: end)!
-        to = end
+        let start = NativeActionDates.calendar.date(byAdding: .day, value: 1 - days, to: end)!
+        changeRange(from: start, to: end)
+    }
+    private func changeRange(from start: Date, to end: Date) {
+        guard let range = try? NativeHealthWorkspaceRange(from: start, to: end), range != requestedRange else { return }
+        let previousDay = selectedDay
+        from = start; to = end
+        if let previousDay, previousDay >= range.from, previousDay <= range.to {
+            inspectedDate = NativeHealthWorkspaceFormat.date(previousDay)
+        } else {
+            inspectedDate = NativeHealthWorkspaceFormat.date(range.to)
+            expandedWorkoutID = nil
+            expandedDayWorkoutID = nil
+        }
+        readMessage = nil
         Task { await load() }
     }
     private func restoreLoadedRange() {
@@ -1006,25 +1282,72 @@ struct NativeHealthRangeWorkspace: View {
         await load()
         await loadCurrentGoals()
     }
+    private func refreshAll() async {
+        async let health: Void = refresh()
+        async let apple: Void = loadAppleActivity()
+        _ = await (health, apple)
+    }
     private func load() async {
         guard !busy else { return }
-        let generation = UUID(), requestedMetric = metric
+        let generation = UUID()
         readGeneration = generation; busy = true; readMessage = nil; invalidateComparison()
         defer { if readGeneration == generation { busy = false } }
         do {
             let range = try NativeHealthWorkspaceRange(from: from, to: to)
             let result = try await api.json(path: NativeHealthWorkspaceFormat.path("health", query: range.query), token: token)
-            guard !Task.isCancelled, readGeneration == generation, metric == requestedMetric,
+            guard !Task.isCancelled, readGeneration == generation,
                   NativeActionDates.day(from) == range.from, NativeActionDates.day(to) == range.to else { return }
             let accepted = try NativeHealthTrendSnapshot(response: result, range: range)
-            let previousRange = loadedRange
             snapshot = accepted
             if !recordsPresented { needsRecordsRefresh = false }
-            if previousRange != range { inspectedDate = nil }
         } catch {
             if readGeneration == generation, !Task.isCancelled {
                 readMessage = error.localizedDescription
                 needsRecordsRefresh = false
+            }
+        }
+    }
+
+    private func currentPoints(_ key: String) -> [NativeWorkspaceHealthPoint] {
+        let keyTopic = NativeHealthTrendTopic.forMetric(key)
+        if keyTopic == .heart || keyTopic == .oxygen { return currentAppleSnapshot?.points(for: key) ?? [] }
+        return hasCurrentRange ? snapshot?.points(metric: key) ?? [] : []
+    }
+
+    private func point(_ key: String, on day: String) -> NativeWorkspaceHealthPoint? {
+        currentPoints(key).first { $0.day == day }
+    }
+
+    private func appleDay(_ day: String) -> NativeAppleActivityDay? {
+        currentAppleSnapshot?.vitals.first { $0.day == day }
+    }
+
+    private var appleAvailabilityText: String {
+        if currentAppleSnapshot != nil { return "暂无已同步记录" }
+        if let issue = currentAppleIssue { return issue.canRetry ? "暂时无法读取" : "当前服务尚未支持" }
+        return "正在读取…"
+    }
+
+    private var legacyAvailabilityText: String {
+        if hasCurrentRange { return "暂无记录" }
+        return readMessage == nil ? "正在读取…" : "暂时无法读取"
+    }
+
+    @MainActor private func loadAppleActivity() async {
+        guard let range = requestedRange else { return }
+        let generation = UUID()
+        appleReadGeneration = generation
+        if currentAppleIssue?.range == range { appleReadIssue = nil }
+        do {
+            let result = try await api.appleActivity(token: token, range: range)
+            guard !Task.isCancelled, appleReadGeneration == generation, requestedRange == range else { return }
+            appleSnapshot = result
+        } catch {
+            guard !Task.isCancelled, appleReadGeneration == generation, requestedRange == range else { return }
+            if case NativeAPIError.server(let status, _, _, _) = error, status == 404 {
+                appleReadIssue = AppleReadIssue(range: range, message: "当前服务版本尚未提供苹果健康心率、血氧和训练记录。", canRetry: false)
+            } else {
+                appleReadIssue = AppleReadIssue(range: range, message: error.localizedDescription, canRetry: true)
             }
         }
     }

@@ -2,21 +2,38 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
+import { compileFunction } from 'node:vm';
 import { readWithDeadline } from '../../../lib/read-deadline.ts';
+import { buildHomeAppleActivity, homeAppleActivityRange, type AppleActivityRange, type HomeAppleActivity } from '../../../lib/apple-activity-supplements.ts';
 
 function load(path: URL, bindings: Record<string, unknown>, names: string[]) {
   const source = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' })
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
-  return new Function(...Object.keys(bindings), source + '\nreturn {' + names.join(',') + '};')(...Object.values(bindings));
+  return compileFunction(source + '\nreturn {' + names.join(',') + '};', Object.keys(bindings))(...Object.values(bindings));
 }
-function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; personal?: 'failed'; nutrition?: 'pending'|'failed'; actions?: 'pending'|'failed' } = {}) {
+function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; personal?: 'failed'; nutrition?: 'pending'|'failed'; actions?: 'pending'|'failed'; appleActivity?: 'pending'|'failed' } = {}) {
   const logs: string[] = []; const owners: string[] = [];
+  const activityRanges: [AppleActivityRange, AppleActivityRange][] = [];
   const shared = load(new URL('../_shared.ts', import.meta.url), {
     getChatGPTAccess: async () => ({ identity: null, allowed: false, isOwner: false, reason: 'signed_out' }), getChatGPTUser: async () => options.signedIn === false ? null : { userId: 'synthetic-owner' },
     console: { error: (value: string) => logs.push(value) },
   }, ['apiUser', 'json', 'storageDiagnostic', 'unavailable', 'unauthenticated']);
   const { GET } = load(new URL('./route.ts', import.meta.url), {
     ...shared, env:{DB:{}},shanghaiDay:()=> '2026-11-11',readWithDeadline: <T>(operation: Promise<T>) => readWithDeadline(operation, 10),
+    buildHomeAppleActivity, homeAppleActivityRange,
+    readAppleActivityDaily: async (_db: unknown, owner: string, vitals: AppleActivityRange, workouts: AppleActivityRange) => {
+      owners.push(owner);
+      activityRanges.push([vitals, workouts]);
+      if (options.appleActivity === 'pending') return new Promise(() => {});
+      if (options.appleActivity === 'failed') throw new Error('synthetic-private-apple');
+      return {
+        vitals: [
+          { day: '2026-11-10', restingHeartRate: { value: 62, measuredAt: '2026-11-10T02:00:00.000Z' } },
+          { day: '2026-11-11', oxygenSaturation: { latest: 97, average: 96, min: 95, max: 97, count: 3, measuredAt: '2026-11-10T17:15:00.000Z' } },
+        ],
+        workouts: [{ day: '2026-11-11', count: 2, durationSeconds: 1350 }],
+      };
+    },
     readNutritionRangeSnapshot:async(_db:unknown,owner:string)=>{owners.push(owner);if(options.nutrition==='pending')return new Promise(()=>{});if(options.nutrition==='failed')throw new Error('synthetic-private-food');return {entries:[],statuses:[]};},
     readHomeActions:async(_db:unknown,owner:string)=>{owners.push(owner);if(options.actions==='pending')return new Promise(()=>{});if(options.actions==='failed')throw new Error('synthetic-private-action');return {nutrition:null,weekly:null,decisions:[]};},
     readNutritionGoals:async(_db:unknown,owner:string)=>{owners.push(owner);return {calories:null,carbs:null,protein:null,fat:null,revision:0};},
@@ -28,14 +45,14 @@ function fixture(options: { signedIn?: boolean; health?: 'pending' | 'failed'; p
       nutrition:{status:sources.nutrition?'ready':'unavailable'},actionsStatus:sources.actions?'partial':'unavailable',
     }),
   }, ['GET']);
-  return { GET: GET as () => Promise<Response>, logs, owners, unavailable: shared.unavailable as () => Response };
+  return { GET: GET as () => Promise<Response>, logs, owners, activityRanges, unavailable: shared.unavailable as () => Response };
 }
 
-test('overview authenticates before reading any module', async () => {
+void test('overview authenticates before reading any module', async () => {
   const f = fixture({ signedIn: false }); assert.equal((await f.GET()).status, 401); assert.equal(f.owners.length, 0);
 });
 
-test('one stalled module yields a bounded partial overview with safe diagnostics', async () => {
+void test('one stalled module yields a bounded partial overview with safe diagnostics', async () => {
   const f = fixture({ health: 'pending' }); const response = await f.GET();
   assert.equal(response.status, 200); assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const data = await response.json() as { health: { status: string }; finance: { family: { status: string } }; modules: Record<string, { status: string; diagnosticId?: string }> };
@@ -46,7 +63,7 @@ test('one stalled module yields a bounded partial overview with safe diagnostics
   assert.ok(f.owners.every((owner) => owner === 'synthetic-owner'));
 });
 
-test('module failures and health 503 responses never expose raw errors in diagnostics', async () => {
+void test('module failures and health 503 responses never expose raw errors in diagnostics', async () => {
   const f = fixture({ health: 'failed', personal: 'failed' }); const response = await f.GET();
   const text = await response.text(); assert.ok(!text.includes('synthetic-private'));
   assert.equal(f.logs.length, 2); assert.ok(!f.logs.join('').includes('synthetic-private'));
@@ -55,7 +72,7 @@ test('module failures and health 503 responses never expose raw errors in diagno
   assert.equal(data.code, 'HEALTH_STORAGE_UNAVAILABLE'); assert.equal(unavailable.headers.get('X-Diagnostic-ID'), data.diagnosticId);
 });
 
-test('nutrition failure stays separate from ready health and finance and never appears as an empty diet',async()=>{
+void test('nutrition failure stays separate from ready health and finance and never appears as an empty diet',async()=>{
   const f=fixture({nutrition:'failed'});const response=await f.GET();assert.equal(response.status,200);
   const data=await response.json() as {health:{status:string};nutrition:{status:string};modules:Record<string,{status:string;diagnosticId?:string}>};
   assert.equal(data.health.status,'ready');assert.equal(data.nutrition.status,'unavailable');assert.equal(data.modules.nutrition.status,'unavailable');
@@ -64,11 +81,34 @@ test('nutrition failure stays separate from ready health and finance and never a
 });
 
 
-test('a stalled or failed optional action source cannot hide the complete core overview',async()=>{
+void test('a stalled or failed optional action source cannot hide the complete core overview',async()=>{
   for(const actions of ['pending','failed'] as const){
     const f=fixture({actions});const response=await f.GET();assert.equal(response.status,200);
     const data=await response.json() as {health:{status:string};nutrition:{status:string};actionsStatus:string};
     assert.equal(data.health.status,'ready');assert.equal(data.nutrition.status,'ready');assert.equal(data.actionsStatus,'unavailable');
     assert.ok(!JSON.stringify(data).includes('synthetic-private'));assert.equal(f.logs.length,0);
+  }
+});
+
+void test('Apple overview uses the latest actual samples in seven days and only today’s training', async () => {
+  const f = fixture();
+  const response = await f.GET();
+  const data = await response.json() as { appleActivity: HomeAppleActivity };
+  assert.deepEqual(f.activityRanges, [[{ from: '2026-11-05', to: '2026-11-11' }, { from: '2026-11-11', to: '2026-11-11' }]]);
+  assert.deepEqual(data.appleActivity, { status: 'ready', from: '2026-11-05', to: '2026-11-11', today: '2026-11-11',
+    restingHeartRate: { value: 62, measuredAt: '2026-11-10T02:00:00.000Z' },
+    oxygenSaturation: { value: 97, measuredAt: '2026-11-10T17:15:00.000Z' }, workouts: { count: 2, durationSeconds: 1350 } });
+});
+
+void test('stalled Apple activity does not degrade other overview data', async () => {
+  for (const appleActivity of ['pending', 'failed'] as const) {
+    const f = fixture({ appleActivity });
+    const response = await f.GET();
+    const data = await response.json() as { appleActivity: HomeAppleActivity; health: { status: string }; nutrition: { status: string } };
+    assert.equal(response.status, 200);
+    assert.deepEqual(data.appleActivity, { status: 'unavailable' });
+    assert.equal(data.health.status, 'ready');
+    assert.equal(data.nutrition.status, 'ready');
+    assert.doesNotMatch(JSON.stringify(data), /synthetic-private/);
   }
 });

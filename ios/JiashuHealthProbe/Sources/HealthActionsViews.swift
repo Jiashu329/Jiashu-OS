@@ -481,6 +481,10 @@ struct HealthWeeklyReviewView: View {
         List {
             weekSection
             focusSection
+            if let review, let activity = review.appleActivity {
+                NativeAppleActivityWeeklySections(api: api, token: token, userID: userID,
+                                                 activity: activity, isCurrent: review.isCurrent)
+            }
             recoverySection
             actionSection
             evidenceSection
@@ -853,5 +857,139 @@ struct HealthWeeklyReviewView: View {
             }
             actionError = error.localizedDescription + (pendingAction == nil ? " 原填写已保留，请核对后再保存。":" 原请求已保留；请继续核对或检查服务器最新版本。")
         }
+    }
+}
+
+private struct NativeAppleActivityWeeklySections: View {
+    let api: NativeAPI
+    let token: String
+    let userID: String
+    let activity: NativeAppleActivityWeekly
+    let isCurrent: Bool
+
+    private var currentRange: NativeHealthWorkspaceRange? { activity.current?.reviewRange() }
+    private var previousRange: NativeHealthWorkspaceRange? {
+        guard let currentRange, let previous = activity.previous?.reviewRange(), previous.days == currentRange.days else { return nil }
+        return previous
+    }
+    private var todayRange: NativeHealthWorkspaceRange? {
+        guard isCurrent, let today = activity.today?.reviewRange(), today.days == 1 else { return nil }
+        return today
+    }
+    private var baseline: String { isCurrent ? "上周同期" : "前一周同期" }
+
+    var body: some View {
+        if activity.status == "ready" {
+            workoutSection
+            heartSection
+            oxygenSection
+        } else {
+            Section {
+                NativeInlineNotice("暂时无法读取心率、血氧与训练记录。", tone: .attention)
+            }
+        }
+    }
+
+    private var workoutSection: some View {
+        Section("活动与训练") {
+            if let currentRange {
+                if let previousRange {
+                    Text((isCurrent ? "已结束日期 " : "回顾日期 ") + currentRange.label + "\n" + baseline + " " + previousRange.label)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                comparison("训练次数", workoutCount(activity.current?.workouts), workoutCount(activity.previous?.workouts))
+                comparison("实际总时长", activity.current?.workouts?.durationLabel, activity.previous?.workouts?.durationLabel)
+                trendLink("查看训练记录", topic: .activity, metric: "workouts", range: currentRange)
+            } else if isCurrent {
+                Text("本周还没有已结束的日期。")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            if let todayRange {
+                trendLink("今天的训练", topic: .activity, metric: "workouts", range: todayRange) {
+                    let count = workoutCount(activity.today?.workouts)
+                    let detail = [count, activity.today?.workouts?.durationLabel].compactMap { $0 }.joined(separator: " · ")
+                    LabeledContent("今天", value: detail.isEmpty ? "暂无已同步训练" : detail)
+                }
+            }
+        }
+    }
+
+    private var heartSection: some View {
+        Section("心率") {
+            if let currentRange {
+                comparison("日均心率有记录", coverage(activity.current?.heartRate?.days, range: currentRange),
+                           coverage(activity.previous?.heartRate?.days, range: previousRange))
+                comparison("静息心率有记录", coverage(activity.current?.restingHeartRate?.days, range: currentRange),
+                           coverage(activity.previous?.restingHeartRate?.days, range: previousRange))
+                trendLink("查看心率趋势", topic: .heart, metric: "heart_rate", range: currentRange)
+            }
+            if let todayRange {
+                let readings = [heartValue(activity.today?.heartRate, label: "日均"),
+                                heartValue(activity.today?.restingHeartRate, label: "静息")].compactMap { $0 }
+                trendLink("今天的心率", topic: .heart, metric: "heart_rate", range: todayRange) {
+                    LabeledContent("今天", value: readings.isEmpty ? "暂无记录" : readings.joined(separator: " · "))
+                }
+            }
+        }
+    }
+
+    private var oxygenSection: some View {
+        Section("血氧") {
+            if let currentRange {
+                comparison("有记录天数", coverage(activity.current?.oxygenSaturation?.days, range: currentRange),
+                           coverage(activity.previous?.oxygenSaturation?.days, range: previousRange))
+                comparison("采样次数", sampleCount(activity.current?.oxygenSaturation?.samples),
+                           sampleCount(activity.previous?.oxygenSaturation?.samples))
+                trendLink("查看血氧趋势", topic: .oxygen, metric: "oxygen_saturation", range: currentRange)
+            }
+            if let todayRange {
+                trendLink("今天的血氧", topic: .oxygen, metric: "oxygen_saturation", range: todayRange) {
+                    LabeledContent("今天", value: sampleCount(activity.today?.oxygenSaturation?.samples).map { $0 + "采样" } ?? "暂无采样")
+                }
+            }
+        }
+    }
+
+    private func comparison(_ title: String, _ value: String?, _ previous: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title, value: value ?? "暂无记录")
+            Text(baseline + " " + (previous ?? "暂无记录")).font(.caption).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func coverage(_ count: Int?, range: NativeHealthWorkspaceRange?) -> String? {
+        guard let range else { return nil }
+        let recorded = count ?? 0
+        guard (0...range.days).contains(recorded) else { return nil }
+        return "\(recorded)/\(range.days) 天"
+    }
+
+    private func workoutCount(_ summary: NativeAppleActivityWorkoutSummary?) -> String? {
+        sampleCount(summary?.count)
+    }
+
+    private func sampleCount(_ count: Int?) -> String? {
+        guard let count, count > 0 else { return nil }
+        return "\(count) 次"
+    }
+
+    private func heartValue(_ rate: NativeAppleActivityWeekly.Period.HeartRate?, label: String) -> String? {
+        guard let rate, rate.days == 1, rate.average > 0, rate.average <= 500 else { return nil }
+        return label + " " + rate.average.formatted(.number.precision(.fractionLength(0...1))) + " 次/分"
+    }
+
+    private func trendLink(_ title: String, topic: NativeHealthTrendTopic, metric: String,
+                           range: NativeHealthWorkspaceRange) -> some View {
+        trendLink(title, topic: topic, metric: metric, range: range) { Text(title) }
+    }
+
+    private func trendLink<LabelContent: View>(_ title: String, topic: NativeHealthTrendTopic, metric: String,
+        range: NativeHealthWorkspaceRange, @ViewBuilder label: () -> LabelContent) -> some View {
+        NavigationLink {
+            NativeHealthRangeWorkspace(api: api, token: token, userID: userID, initialMetric: metric,
+                initialFrom: range.from, initialTo: range.to, initialTopic: topic, initialDay: range.to)
+        } label: { label() }
+            .accessibilityHint(title)
     }
 }

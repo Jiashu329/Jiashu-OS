@@ -1,5 +1,7 @@
 import { buildHomeOverview } from '../../lib/home-overview.ts';
-import { buildHealthSummary, measurementKey } from '../../lib/health.ts';
+import { buildHealthSummary, measurementKey, shanghaiDay } from '../../lib/health.ts';
+import { buildHomeAppleActivity, homeAppleActivityRange } from '../../lib/apple-activity-supplements.ts';
+import { parseDateRangeQuery } from '../../lib/date-range.ts';
 import { parseHealthRecordCreate } from '../../lib/health-records.ts';
 import { buildFinanceSummary, ACCOUNT_TYPES, CURRENCIES } from '../../lib/finance.ts';
 import { buildNutritionReview, parseNutritionQuery, parseNutritionCreate, presentNutritionEntry } from '../../lib/nutrition.ts';
@@ -33,6 +35,18 @@ export function syntheticState() {
   };
 }
 
+export function syntheticAppleActivityDaily(activity) {
+  const workouts = new Map();
+  for (const record of activity.workouts) {
+    const day = shanghaiDay(record.startDate);
+    const summary = workouts.get(day) ?? { day, count: 0, durationSeconds: 0 };
+    summary.count++;
+    summary.durationSeconds += record.durationSeconds;
+    workouts.set(day, summary);
+  }
+  return { vitals: activity.vitals, workouts: [...workouts.values()] };
+}
+
 export async function interceptSyntheticAPI(context, state) {
   await context.route('**/*', async (route) => {
     const request = route.request(), url = new URL(request.url());
@@ -46,11 +60,22 @@ export async function interceptSyntheticAPI(context, state) {
     if (await handleSyntheticPhoto({ route, state, url, method, body, send, fail })) return;
     if (await handleSyntheticNutritionTemplates({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
     if (await handleSyntheticP2({ route, state, url, method, body, key: request.headers()['idempotency-key'] ?? null, send, fail })) return;
+    if (url.pathname === '/api/health/apple-activity' && method === 'GET') {
+      if (state.appleActivityReadFailure) return fail('暂时无法读取苹果健康记录。', 'SYNTHETIC_UNAVAILABLE', 503);
+      const { from, to } = parseDateRangeQuery(url.searchParams, state.now ?? Date.now(), 30);
+      const includes = (day) => day >= from && day <= to;
+      const vitals = (state.appleActivity?.vitals ?? []).filter(row => includes(row.day));
+      const workouts = (state.appleActivity?.workouts ?? []).filter(row => includes(shanghaiDay(row.startDate)));
+      return send({ from, to, vitals, workouts });
+    }
     if (url.pathname === '/api/overview') {
+      const now = new Date(state.now ?? Date.now());
       const overview = buildHomeOverview({ health: { summary: buildHealthSummary([]), lastSync: null },
         personal: { accounts: state.accounts }, family: { accounts: [] },
-        nutrition: { entries: state.entries, statuses: [state.dayStatus], goals: state.goals } });
-      return send(overview);
+        nutrition: { entries: state.entries, statuses: [state.dayStatus], goals: state.goals } }, now);
+      if (!state.appleActivity) return send(overview);
+      const appleActivity = buildHomeAppleActivity(syntheticAppleActivityDaily(state.appleActivity), homeAppleActivityRange(overview.today));
+      return send({ ...overview, appleActivity });
     }
     if (url.pathname === '/api/health/records' && method === 'GET') return send({ records: state.healthRecords, hasMore: false, nextCursor: null, today: DAY });
     if (url.pathname === '/api/health/records' && method === 'POST') {

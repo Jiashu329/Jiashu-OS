@@ -6,6 +6,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { parseDateRangeQuery } from './date-range.ts';
 
 // Source-level DOM tests cannot detect identifier renaming inside Function#toString.
 // Exercise the exact HTML emitted by the minified production module after build.
@@ -67,6 +68,10 @@ async function fixture(path: string, savedState: unknown = null) {
   const fetch = async (path: string, options?: RequestInit) => {
     requests.push({ url: path, method: options?.method ?? 'GET' });
     if (path.startsWith('/api/health?')) return Response.json({ measurements, lastSync: null, bodyComposition: null });
+    if (path.startsWith('/api/health/apple-activity?')) {
+      const { from, to } = parseDateRangeQuery(new URL(path, url.origin).searchParams, Date.now(), 30);
+      return Response.json({ from, to, vitals: [], workouts: [] });
+    }
     if (path === '/api/health/goals/progress') return Response.json({ error: 'Synthetic goal failure' }, { status: 503 });
     if (path === '/api/sync/devices') return Response.json({ devices: [] });
     throw new Error('Unexpected production-client request: ' + path);
