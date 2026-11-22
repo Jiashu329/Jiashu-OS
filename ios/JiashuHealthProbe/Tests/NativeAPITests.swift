@@ -107,6 +107,34 @@ final class NativeAPITests: XCTestCase {
         XCTAssertTrue(health.measurements.isEmpty)
     }
 
+    func testAppleActivityReadsDateRangeAndPreservesMissingSamples() async throws {
+        let from = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2025-11-15"))
+        let to = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2025-11-16"))
+        let range = try NativeHealthWorkspaceRange(from: from, to: to)
+        let client = api { request in
+            XCTAssertEqual(request.url?.path, "/api/native/health/apple-activity")
+            XCTAssertEqual(request.url?.query, "from=2025-11-15&to=2025-11-16")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-native-token")
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Sync-Device"))
+            return .json("""
+            {"from":"2025-11-15","to":"2025-11-16","vitals":[
+              {"day":"2025-11-15","oxygenSaturation":{"latest":97,"min":96,"max":97,"average":96.5,"count":2,"measuredAt":"2025-11-15T06:00:00.000Z"}}
+            ],"workouts":[
+              {"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","activityType":37,"startDate":"2025-11-16T06:00:00.000Z","endDate":"2025-11-16T06:30:00.000Z","durationSeconds":1730}
+            ]}
+            """)
+        }
+        let response = try await client.appleActivity(token: "synthetic-native-token", range: range)
+        XCTAssertEqual(response.vitals.first?.oxygenSaturation?.latest, 97)
+        XCTAssertEqual(response.vitals.first?.oxygenSaturation?.count, 2)
+        XCTAssertNil(response.vitals.first?.heartRate)
+        XCTAssertNil(response.vitals.first?.restingHeartRate)
+        XCTAssertEqual(response.workouts.first?.durationSeconds, 1730)
+        XCTAssertNil(response.workouts.first?.energyKcal)
+        XCTAssertNil(response.workouts.first?.distanceMeters)
+    }
+
+
     func testImportPreviewAndUploadPreserveExactBatchAndRequireExplicitSourceConfirmation() async throws {
         let payload = Data("{\"version\":1,\"synthetic\":true}".utf8)
         var uploadCount = 0

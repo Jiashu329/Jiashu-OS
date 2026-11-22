@@ -23,7 +23,7 @@
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSHealthShareUsageDescription</key>
-    <string>读取步数、活动能量、睡眠、体重和去脂体重，在你开启同步后上传到你的 Jiashu OS 账户，用于查看趋势与复盘。</string>
+    <string>读取步数、活动能量、睡眠、体重、去脂体重、心率、静息心率、血氧和训练记录，在你开启同步后上传到你的 Jiashu OS 账户，用于查看趋势与复盘。</string>
     <key>NSHealthUpdateUsageDescription</key>
     <string>Jiashu OS 仅读取你允许的健康数据，不请求写入或修改苹果健康记录。</string>
     <key>NSCameraUsageDescription</key>

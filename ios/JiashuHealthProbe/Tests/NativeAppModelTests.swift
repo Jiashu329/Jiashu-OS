@@ -420,6 +420,57 @@ final class NativeAppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testUpgradedDeviceUploadsActivityOnlyAfterExplicitAuthorizationEvenWithoutExistingMetrics() async throws {
+        let server = NativeModelChannelServer()
+        let reader = NativeModelHealthReader()
+        let requests = NativeModelRequestCounter()
+        reader.readError = NativeHealthError.noReadableData
+        reader.activityBackgroundAvailable = false
+        reader.activitySnapshot = NativeAppleActivitySnapshot(capturedAt: NativeDates.parse("2026-11-17T08:00:00Z")!, vitals: [
+            .init(day: "2026-11-17", heartRate: .init(average: 77, min: 60, max: 114), restingHeartRate: nil,
+                  oxygenSaturation: nil),
+        ], workouts: [])
+        let fixture = try NativeModelFixture(reader: reader) { request, context in
+            guard request.url?.path == "/api/native/health/apple-activity" else { return try server.reply(request, context: context) }
+            _ = requests.next("activity")
+            let deviceToken = try XCTUnwrap(server.selectedToken(owner: context.a.user.id))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Sync-Device"), deviceToken)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + context.a.accessToken)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: nativeModelRequestBody(request)) as? [String: Any])
+            XCTAssertEqual(payload["version"] as? Int, 1)
+            XCTAssertEqual((payload["vitals"] as? [[String: Any]])?.first?["day"] as? String, "2026-11-17")
+            return .immediate(.json(["received": 1, "updated": 1, "syncedAt": "2026-11-17T08:00:00Z"]))
+        }
+        defer { fixture.cleanup() }
+        let credential = try NativeHealthDeviceCredential.generate()
+        try fixture.context.deviceStore(for: fixture.context.a).save(credential)
+        server.configure(owner: fixture.context.a.user.id, token: credential.deviceToken, revision: 3)
+        UserDefaults.standard.set(true, forKey: "jiashu.native.health-auto-sync." + fixture.context.a.user.id)
+
+        await fixture.model.login(email: fixture.context.a.user.email, password: "synthetic-password")
+        XCTAssertEqual(reader.observerAppleActivityFlags, [false])
+        XCTAssertFalse(fixture.model.appleActivityPermissionRequested)
+        XCTAssertEqual(reader.activityReadWindows, [])
+        XCTAssertEqual(requests.value("activity"), 0)
+
+        await fixture.model.connectHealth()
+        XCTAssertTrue(fixture.model.appleActivityPermissionRequested)
+        XCTAssertEqual(reader.authorizationCount, 1)
+        XCTAssertEqual(reader.observerAppleActivityFlags, [false, true])
+        XCTAssertTrue(fixture.model.observerMessage?.contains("心率") == true)
+        XCTAssertEqual(reader.activityReadWindows, [30])
+        XCTAssertEqual(requests.value("activity"), 1)
+        XCTAssertEqual(server.selectionCount, 0)
+        XCTAssertEqual(server.uploadCount, 0)
+        XCTAssertNil(fixture.model.lastReceipt)
+        XCTAssertEqual(fixture.model.appleActivityLastSync, "2026-11-17T08:00:00Z")
+
+        await reader.notifyChange()
+        XCTAssertEqual(reader.activityReadWindows, [30, 7])
+        XCTAssertEqual(requests.value("activity"), 2)
+    }
+
+    @MainActor
     func testAnotherDeviceTakingOverPausesSyncWithoutSilentReselection() async throws {
         let server = NativeModelChannelServer()
         let reader = NativeModelHealthReader()
@@ -920,6 +971,8 @@ private final class NativeModelFixture {
         NativeModelProtocol.remove(host: host)
         UserDefaults.standard.removeObject(forKey: "jiashu.native.health-auto-sync." + context.a.user.id)
         UserDefaults.standard.removeObject(forKey: "jiashu.native.health-auto-sync." + context.b.user.id)
+        UserDefaults.standard.removeObject(forKey: "jiashu.native.apple-activity-permission-v1." + context.a.user.id)
+        UserDefaults.standard.removeObject(forKey: "jiashu.native.apple-activity-permission-v1." + context.b.user.id)
     }
 }
 
@@ -1103,6 +1156,10 @@ private final class NativeModelHealthReader: NativeHealthReading {
     var readError: Error?
     var failAtReadCount: Int?
     var snapshotOverride: NativeHealthSnapshot?
+    var activitySnapshot: NativeAppleActivitySnapshot?
+    var activityBackgroundAvailable = true
+    private(set) var activityReadWindows: [Int] = []
+    private(set) var observerAppleActivityFlags: [Bool] = []
     var readGate: NativeModelReaderGate?
     var readStarted: (() -> Void)?
     private var callback: (@Sendable () async -> Void)?
@@ -1128,9 +1185,16 @@ private final class NativeModelHealthReader: NativeHealthReading {
         ])
     }
 
-    func startObserving(onChange: @escaping @Sendable () async -> Void) async throws {
+    func readAppleActivity(days: Int) async throws -> NativeAppleActivitySnapshot? {
+        activityReadWindows.append(days)
+        return activitySnapshot
+    }
+
+    func startObserving(includingAppleActivity: Bool, onChange: @escaping @Sendable () async -> Void) async throws -> Bool {
         observerCount += 1
+        observerAppleActivityFlags.append(includingAppleActivity)
         callback = onChange
+        return !includingAppleActivity || activityBackgroundAvailable
     }
 
     func notifyChange() async {

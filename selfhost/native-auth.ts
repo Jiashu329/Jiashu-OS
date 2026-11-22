@@ -26,6 +26,7 @@ export const NATIVE_API_ROUTES: Readonly<Record<string, readonly string[]>> = {
   '/api/native/finance/runway': ['GET', 'PUT'],
   '/api/native/health': ['GET'],
   '/api/native/health/actions': ['GET', 'PUT'],
+  '/api/native/health/apple-activity': ['GET', 'POST'],
   '/api/native/health/assistant': ['GET', 'POST'],
   '/api/native/health/export': ['GET'],
   '/api/native/health/foods': ['GET'],

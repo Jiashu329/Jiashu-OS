@@ -30,6 +30,7 @@ struct NativeApplicationSection: Identifiable {
         Self(id: "health-and-diet", title: "健康与饮食", entries: [
             .init(id: "nutrition", title: "饮食", icon: "fork.knife", keywords: "记一餐 饮食记录 营养 食物库", destination: .workspace("/health/nutrition")),
             .init(id: "weekly-review", title: "每周复盘", icon: "calendar", keywords: "回顾 本周行动", destination: .workspace("/health/review")),
+            .init(id: "apple-activity", title: "心率、血氧与训练", icon: "heart.text.square", keywords: "静息心率 健身 体能训练", destination: .workspace("/health/apple-activity")),
             .init(id: "health-records", title: "健康记录", icon: "list.bullet.clipboard", keywords: "记录管理 补录 体重 步数 睡眠 活动", destination: .workspace("/health/records")),
             .init(id: "health-goals", title: "健康目标", icon: "target", keywords: "达成 生效历史", destination: .workspace("/health/goals")),
             .init(id: "weight-plan", title: "体重计划", icon: "scalemass", keywords: "体重周期", destination: .workspace("/health/weight-plan")),

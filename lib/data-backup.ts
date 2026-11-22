@@ -17,6 +17,7 @@ import { normalizeUserCoverUrl } from './douban-cover-selection.ts';
 import { parseTMDBCover, tmdbCoverUrl } from './tmdb-cover.ts';
 import { parseIMDbRating } from './imdb-rating.ts';
 import { MAX_RECIPE_PHOTO_STORAGE_CHARS, parseRecipeCookingNote, parseRecipeDefinition, parseRecipePhoto, parseRecipePreview, parseRecipeSourceAuthor, parseRecipeSourceTitle } from './nutrition-recipes.ts';
+import { APPLE_VITAL_METRICS, parseAppleActivityPayload } from './apple-health-activity.ts';
 
 export const BACKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const BACKUP_MAX_ROWS = 20000;
@@ -62,6 +63,8 @@ export const BACKUP_TABLES = {
   nutrition_recipes: { label: '我的菜谱', columns: ['id','source','source_url','source_key','source_title','source_author','title','note','ingredients','steps','servings','revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
   nutrition_recipe_cookings: { label: '制作笔记与成品照', columns: ['id','recipe_id','note','photo_data_url','revision','created_at','updated_at','archived_at'], keys: ['id'], globalId: true },
   nutrition_recipe_operations: { label: '菜谱保存回执', columns: ['id','recipe_id','cooking_id','action','request_hash','result_json','created_at'], keys: ['id'], globalId: true },
+  health_apple_vitals: { label: '苹果健康心率与血氧', columns: ['day','metric','value_json','exported_at','received_at'], keys: ['day','metric'] },
+  health_apple_workouts: { label: '苹果健康训练记录', columns: ['workout_id','day','start_date','workout_json','exported_at','received_at'], keys: ['workout_id'] },
 } satisfies Record<string, TableSpec>;
 export type BackupTable = keyof typeof BACKUP_TABLES;
 export const BACKUP_TABLE_NAMES = Object.keys(BACKUP_TABLES) as BackupTable[];
@@ -79,6 +82,9 @@ export const BACKUP_PRE_DOUBAN_V2_TABLE_NAMES = [
 /** The signed v2 shape published before private recipes and cooking photos. */
 export const BACKUP_PRE_RECIPES_V2_TABLE_NAMES = [...BACKUP_PRE_DOUBAN_V2_TABLE_NAMES, 'douban_items'] as const satisfies readonly BackupTable[];
 const RECIPE_BACKUP_TABLE_NAMES = ['nutrition_recipes','nutrition_recipe_cookings','nutrition_recipe_operations'] as const satisfies readonly BackupTable[];
+/** Keep the property order used to sign v2 sets before Apple health activity. */
+export const BACKUP_PRE_APPLE_ACTIVITY_V2_TABLE_NAMES = [...BACKUP_PRE_RECIPES_V2_TABLE_NAMES, ...RECIPE_BACKUP_TABLE_NAMES] as const;
+const APPLE_ACTIVITY_BACKUP_TABLE_NAMES = ['health_apple_vitals', 'health_apple_workouts'] as const satisfies readonly BackupTable[];
 /** Published v2 volume sets used these 27 tables; their signed shape must remain verifiable. */
 export const BACKUP_PREVIOUS_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !(ACTION_BACKUP_TABLES as readonly string[]).includes(table));
 const BACKUP_LEGACY_V2_TABLE_NAMES = BACKUP_PRE_DOUBAN_V2_TABLE_NAMES.filter((table) => !([...P1_BACKUP_TABLES,...P2_BACKUP_TABLES,...ACTION_BACKUP_TABLES] as readonly string[]).includes(table));
@@ -201,6 +207,24 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
     if (typeof value === 'number' && !Number.isFinite(value)) backupFail('备份中含无效数字。');
     if (key.endsWith('_at')) { timestamp(value, ['archived_at','deleted_at','reverted_at','published_at'].includes(key)); if (value !== null && Date.parse(value as string) > now + 5*60000) backupFail('备份记录时间不能晚于当前时间。'); }
     if (['note','reason','revert_reason'].includes(key) && value !== null && table !== 'nutrition_recipes' && table !== 'nutrition_recipe_cookings') text(value);
+  }
+  if (table === 'health_apple_vitals' || table === 'health_apple_workouts') {
+    if (normalizeTimestamp(r.exported_at) !== r.exported_at || normalizeTimestamp(r.received_at) !== r.received_at) {
+      backupFail('苹果健康备份的同步时间不是规范格式。');
+    }
+    const payload = { version: 1, exportedAt: r.exported_at, vitals: [], workouts: [] };
+    if (table === 'health_apple_vitals') {
+      const metric = APPLE_VITAL_METRICS.find(key => key === r.metric);
+      if (!metric) backupFail('苹果健康备份含不支持的指标。');
+      const value = parsedJson(r.value_json);
+      const parsed = parseAppleActivityPayload({ ...payload, vitals: [{ day: r.day, [metric]: value }] });
+      if (canonical(parsed.vitals[0][metric]) !== canonical(value)) backupFail('苹果健康备份的测量数据不是规范格式。');
+    } else {
+      const value = parsedJson(r.workout_json);
+      const parsed = parseAppleActivityPayload({ ...payload, workouts: [value] }).workouts[0];
+      if (parsed.id !== r.workout_id || parsed.startDate !== r.start_date || shanghaiDay(parsed.startDate) !== r.day
+        || canonical(parsed) !== canonical(value)) backupFail('苹果健康备份的训练标识、日期或内容不一致。');
+    }
   }
   if (table === 'nutrition_recipes') {
     recipeBackupId(r.id); integer(r.revision, 1);
@@ -401,7 +425,12 @@ function validateRow(table: BackupTable, r: BackupRow, now: number) {
   if (table === 'finance_runway_settings') { integer(r.revision); parseLedger(r.ledger); parseCurrency(r.currency); minor(r.monthly_expense_minor, true); parseFinanceRunwayInput({ monthlyExpenseAmount:decimalFromMinor(r.monthly_expense_minor as string, r.currency as string), targetMonths:r.target_months, accountIds:parsedJson(r.account_ids_json) }, r.currency as Parameters<typeof parseFinanceRunwayInput>[1]); }
 }
 export function backupRowKey(table: BackupTable, row: BackupRow): string { return JSON.stringify((BACKUP_TABLES[table].keys as readonly string[]).map((k) => row[k])); }
-export function comparableBackupRow(table: BackupTable, row: BackupRow): string { return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && ['balance_revision','metadata_revision'].includes(k)) && !(table==='finance_account_classifications'&&row.origin==='baseline'&&k==='recorded_at') && !(table === 'finance_goal_plans' && k === 'revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k)) && !(table==='douban_items'&&['observed_at','local_revision'].includes(k))).map((k) => [k,row[k]]))); }
+export function comparableBackupRow(table: BackupTable, row: BackupRow): string {
+  // A new HealthKit upload can advance timestamps while preserving the same records.
+  if (table === 'health_apple_vitals') return canonical([row.day, row.metric, parsedJson(row.value_json)]);
+  if (table === 'health_apple_workouts') return canonical([row.workout_id, row.day, row.start_date, parsedJson(row.workout_json)]);
+  return JSON.stringify(Object.fromEntries(BACKUP_TABLES[table].columns.filter((k) => k !== 'sequence' && !(table === 'finance_accounts' && ['balance_revision','metadata_revision'].includes(k)) && !(table==='finance_account_classifications'&&row.origin==='baseline'&&k==='recorded_at') && !(table === 'finance_goal_plans' && k === 'revision') && !(REVISION_SETTINGS.includes(table) && k === 'revision') && !(table==='nutrition_favorites'&&['id','created_at'].includes(k)) && !(table==='douban_items'&&['observed_at','local_revision'].includes(k))).map((k) => [k,row[k]])));
+}
 
 export function parseDataBackup(input: unknown, now = Date.now(), limits: BackupLimits = SINGLE_BACKUP_LIMITS): DataBackup {
   try {
@@ -415,6 +444,8 @@ export function parseDataBackup(input: unknown, now = Date.now(), limits: Backup
     if(raw.version===2&&(BACKUP_LEGACY_V2_TABLE_NAMES.some((table)=>!Object.hasOwn(sourceTables,table))||Object.keys(sourceTables).some((table)=>!BACKUP_TABLE_NAMES.includes(table as BackupTable))))backupFail('备份含有缺失或不支持的数据表。');
     const recipeTablesPresent = RECIPE_BACKUP_TABLE_NAMES.filter(table => Object.hasOwn(sourceTables, table));
     if (recipeTablesPresent.length > 0 && recipeTablesPresent.length !== RECIPE_BACKUP_TABLE_NAMES.length) backupFail('菜谱备份缺少关联的数据表。');
+    const appleActivityTablesPresent = APPLE_ACTIVITY_BACKUP_TABLE_NAMES.filter(table => Object.hasOwn(sourceTables, table));
+    if (appleActivityTablesPresent.length > 0 && appleActivityTablesPresent.length !== APPLE_ACTIVITY_BACKUP_TABLE_NAMES.length) backupFail('苹果健康备份缺少关联的数据表。');
     const hadNutritionHistory=Object.hasOwn(sourceTables,'nutrition_entry_history');
     const hadFinanceClassifications=Object.hasOwn(sourceTables,'finance_account_classifications');
     const optionalV1=['nutrition_favorites','nutrition_day_status','nutrition_batches'];

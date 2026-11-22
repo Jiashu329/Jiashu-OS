@@ -19,6 +19,9 @@ final class NativeHealthSync: ObservableObject {
     @Published private(set) var syncMessage = "连接苹果健康后，可在打开 App 或健康数据变化时同步。"
     @Published private(set) var observerMessage: String?
     @Published private(set) var lastReceipt: NativeSyncReceipt?
+    @Published private(set) var appleActivityPermissionRequested = false
+    @Published private(set) var appleActivitySyncMessage: String?
+    @Published private(set) var appleActivityLastSync: String?
     @Published var pendingChannelConsent: PendingNativeHealthChannelConsent?
     @Published private(set) var channel: NativeHealthChannel?
     @Published private(set) var configuringChannel = false
@@ -70,6 +73,7 @@ final class NativeHealthSync: ObservableObject {
     func renewSession(_ value: NativeSession) { session = value }
 
     private func syncKey(_ userID: String) -> String { "jiashu.native.health-auto-sync." + userID }
+    private func appleActivityPermissionKey(_ userID: String) -> String { "jiashu.native.apple-activity-permission-v1." + userID }
 
     private func isCurrent(_ owner: String, _ epoch: UUID) -> Bool {
         generation == epoch && session?.user.id == owner
@@ -82,6 +86,7 @@ final class NativeHealthSync: ObservableObject {
     func restorePreference(for value: NativeSession) throws {
         session = value
         let userID = value.user.id
+        appleActivityPermissionRequested = UserDefaults.standard.bool(forKey: appleActivityPermissionKey(userID))
         let requested = UserDefaults.standard.bool(forKey: syncKey(userID))
         if requested {
             do { autoSyncEnabled = try deviceStore(userID).load() != nil }
@@ -115,6 +120,13 @@ final class NativeHealthSync: ObservableObject {
             }
             let status = try await api.channel(token: current.accessToken, deviceToken: credential?.deviceToken)
             guard isCurrent(current.user.id, epoch) else { return }
+            if !appleActivityPermissionRequested {
+                // The sheet does not disclose which reads were granted. This
+                // records that this account requested the new types explicitly.
+                appleActivityPermissionRequested = true
+                UserDefaults.standard.set(true, forKey: appleActivityPermissionKey(current.user.id))
+                if observationID != nil { stopObserving() }
+            }
             channel = status
             lastChannelCheckAt = Date()
             if status.isCurrentDevice, credential != nil {
@@ -277,8 +289,12 @@ final class NativeHealthSync: ObservableObject {
         let id = UUID()
         observationID = id
         do {
-            try await reader.startObserving { [weak self] in
+            let activityDeliveryReady = try await reader.startObserving(includingAppleActivity: appleActivityPermissionRequested) { [weak self] in
                 await self?.observedChange(id: id)
+            }
+            guard observationID == id else { return }
+            if !activityDeliveryReady {
+                observerMessage = "部分心率、血氧或训练记录的后台通知暂不可用，打开 App 时仍会尝试同步。"
             }
         } catch {
             guard observationID == id else { return }
@@ -421,12 +437,29 @@ final class NativeHealthSync: ObservableObject {
         syncMessage = "正在读取苹果健康…"
         if presentError { self.presentError?(nil) }
         defer { if generation == epoch { syncing = false } }
+        let credential: NativeHealthDeviceCredential
         do {
-            guard let credential = try deviceStore(current.user.id).load() else {
+            guard let saved = try deviceStore(current.user.id).load() else {
                 pauseAutomaticSync(owner: current.user.id)
                 syncMessage = "请先确认这台 iPhone 为日常同步来源。"
                 return
             }
+            credential = saved
+        } catch {
+            reportHealthSyncFailure(error, owner: current.user.id, epoch: epoch, token: current.accessToken,
+                                    runID: runID, presentError: presentError)
+            return
+        }
+        async let activity: Void = syncAppleActivity(days: days, current: current, credential: credential, epoch: epoch,
+                                                      runID: runID, deadline: deadline, presentError: presentError)
+        await syncExistingHealth(trigger: trigger, days: days, current: current, credential: credential,
+                                 epoch: epoch, runID: runID, deadline: deadline)
+        await activity
+    }
+
+    private func syncExistingHealth(trigger: Trigger, days: Int, current: NativeSession, credential: NativeHealthDeviceCredential,
+                                    epoch: UUID, runID: UUID, deadline: ContinuousClock.Instant) async {
+        do {
             let snapshot = try await reader.read(days: days)
             try checkAttemptDeadline(deadline)
             guard isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
@@ -448,19 +481,65 @@ final class NativeHealthSync: ObservableObject {
             if autoSyncEnabled { syncMessage = "服务器已确认：写入 \(receipt.imported) 条，跳过 \(receipt.skipped) 条。" }
             if trigger != .observer { await didFinishForegroundSync?(receipt, trigger == .foreground) }
         } catch {
+            reportHealthSyncFailure(error, owner: current.user.id, epoch: epoch, token: current.accessToken,
+                                    runID: runID, presentError: trigger.presentsErrors)
+        }
+    }
+
+    private func reportHealthSyncFailure(_ error: Error, owner: String, epoch: UUID, token: String,
+                                         runID: UUID, presentError: Bool) {
+        guard isCurrent(owner, epoch), syncRunID == runID, autoSyncEnabled else { return }
+        if error is CancellationError {
+            syncMessage = "本次同步已暂停，将在下次打开 App 时重试。"
+            return
+        }
+        if case NativeHealthError.noReadableData = error {
+            syncMessage = "本次未取得可同步记录。请核对系统健康读取权限和记录范围；缺失不会记为零。"
+            return
+        }
+        if let failure = error as? NativeAPIError, failure.isAuthenticationFailure, session?.accessToken != token { return }
+        syncMessage = "本次同步未完成：" + error.localizedDescription + " 可稍后重试。"
+        handle(error, owner: owner, epoch: epoch, token: token, presentError: presentError)
+    }
+
+    private func syncAppleActivity(days: Int, current: NativeSession, credential: NativeHealthDeviceCredential,
+                                   epoch: UUID, runID: UUID, deadline: ContinuousClock.Instant, presentError: Bool) async {
+        guard appleActivityPermissionRequested, isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
+        do {
+            try checkAttemptDeadline(deadline)
+            guard let snapshot = try await reader.readAppleActivity(days: days) else { return }
+            try checkAttemptDeadline(deadline)
             guard isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
-            if error is CancellationError {
-                syncMessage = "本次同步已暂停，将在下次打开 App 时重试。"
+            let unread = snapshot.unavailableTypes.isEmpty ? "" : " 未能读取：" + snapshot.unavailableTypes.joined(separator: "、") + "。"
+            let batches = try snapshot.encodedBatches()
+            guard !batches.isEmpty else {
+                appleActivitySyncMessage = "在所选日期内未读到可同步的心率、血氧或训练记录。" + unread
                 return
             }
-            if case NativeHealthError.noReadableData = error {
-                syncMessage = "本次未取得可同步记录。请核对系统健康读取权限和记录范围；缺失不会记为零。"
-                return
+            for payload in batches {
+                try checkAttemptDeadline(deadline)
+                guard isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
+                let receipt = try await api.uploadAppleActivity(token: current.accessToken, payload: payload,
+                                                               deviceToken: credential.deviceToken)
+                guard isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
+                appleActivityLastSync = receipt.syncedAt
             }
-            if let failure = error as? NativeAPIError, failure.isAuthenticationFailure,
-               session?.accessToken != current.accessToken { return }
-            syncMessage = "本次同步未完成：" + error.localizedDescription + " 可稍后重试。"
-            handle(error, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
+            appleActivitySyncMessage = "服务器已确认收到 \(snapshot.vitals.count) 天的身体指标和 \(snapshot.workouts.count) 条训练记录。" + unread
+        } catch {
+            guard isCurrent(current.user.id, epoch), syncRunID == runID, autoSyncEnabled else { return }
+            if let failure = error as? NativeAPIError {
+                if case .server(status: 404, _, _, _) = failure {
+                    appleActivitySyncMessage = "当前服务版本尚未接入心率、血氧与训练记录。"
+                    return
+                }
+                if failure.isAuthenticationFailure || failure.code == "HEALTH_SYNC_CHANNEL_REQUIRED" {
+                    handle(failure, owner: current.user.id, epoch: epoch, token: current.accessToken, presentError: presentError)
+                    return
+                }
+            }
+            appleActivitySyncMessage = error is CancellationError
+                ? "心率、血氧与训练记录同步已暂停，下次打开 App 时可重试。"
+                : "心率、血氧与训练记录未全部同步：" + error.localizedDescription
         }
     }
 
@@ -481,6 +560,9 @@ final class NativeHealthSync: ObservableObject {
         channel = nil
         configuringChannel = false
         lastReceipt = nil
+        appleActivityPermissionRequested = false
+        appleActivitySyncMessage = nil
+        appleActivityLastSync = nil
         autoSyncEnabled = false
         syncing = false
         lastChannelCheckAt = nil

@@ -264,6 +264,9 @@ final class NativeAppModel: ObservableObject {
     var syncMessage: String { healthSync.syncMessage }
     var observerMessage: String? { healthSync.observerMessage }
     var lastReceipt: NativeSyncReceipt? { healthSync.lastReceipt }
+    var appleActivityPermissionRequested: Bool { healthSync.appleActivityPermissionRequested }
+    var appleActivitySyncMessage: String? { healthSync.appleActivitySyncMessage }
+    var appleActivityLastSync: String? { healthSync.appleActivityLastSync }
     var channel: NativeHealthChannel? { healthSync.channel }
     var configuringChannel: Bool { healthSync.configuringChannel }
 

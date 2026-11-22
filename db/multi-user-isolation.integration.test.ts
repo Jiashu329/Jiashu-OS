@@ -203,7 +203,7 @@ void test('complete backups expose only their owner and foreign global-ID previe
   }
   await saveAISettings(db, 'alice', { apiKey: 'sk-synthetic-alice-private', model: 'MiniMax-M3', region: 'cn', expectedRevision: 0 }, MASTER, NOW);
   const alice = await exportDataBackup(db, 'alice', NOW); const bob = await exportDataBackup(db, 'bob', NOW);
-  assert.equal(Object.keys(bob.tables).length, 34); assert.equal(BACKUP_TABLE_NAMES.length, 34);
+  assert.equal(Object.keys(bob.tables).length, 36); assert.equal(BACKUP_TABLE_NAMES.length, 36);
   for (const [backup, label] of [[alice, 'Alice'], [bob, 'Bob']] as const) {
     assert.deepEqual(Object.keys(backup.tables).sort(), [...BACKUP_TABLE_NAMES].sort());
     assert.equal(backup.tables.douban_items.length, 1);

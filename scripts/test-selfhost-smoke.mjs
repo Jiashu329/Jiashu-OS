@@ -367,6 +367,32 @@ async function multiuserAcceptance() {
   await login(new Browser(), changedRootEmail, password);
 }
 
+const appleActivityPath = '/health/apple-activity';
+const appleActivityDate = '2026-01-02';
+const appleActivityQuery = appleActivityPath + '?from=' + appleActivityDate + '&to=' + appleActivityDate;
+const appleActivityPayload = {
+  version: 1,
+  exportedAt: '2026-01-03T01:00:00.000Z',
+  vitals: [{
+    day: appleActivityDate,
+    heartRate: { average: 72, min: 52, max: 141 },
+    restingHeartRate: { value: 56, measuredAt: '2026-01-02T01:00:00.000Z' },
+    oxygenSaturation: { latest: 97, average: 97.5, min: 97, max: 98, count: 2, measuredAt: '2026-01-02T02:00:00.000Z' },
+  }],
+  workouts: [{
+    id: '2aa2bce7-4f27-4688-80a7-691b42aa3e51', activityType: 37,
+    startDate: '2026-01-01T23:00:00.000Z', endDate: '2026-01-01T23:30:00.000Z',
+    durationSeconds: 1740, energyKcal: 200, distanceMeters: 4400,
+  }],
+};
+
+function checkAppleActivity(activity) {
+  assert.deepEqual(activity, {
+    from: appleActivityDate, to: appleActivityDate,
+    vitals: appleActivityPayload.vitals, workouts: appleActivityPayload.workouts,
+  });
+}
+
 async function nativeAcceptance(browser) {
   // Use a separate synthetic day so the existing browser persistence assertions
   // continue exercising their unchanged fixtures and expected row counts.
@@ -454,6 +480,24 @@ async function nativeAcceptance(browser) {
   const blockedManual = await json(await write('/health/import', token, changedSource, { 'X-Confirm-Source-Changes': 'true' }), 409, 'Explicit per-batch source confirmation cannot bypass the selected channel');
   assert.equal(blockedManual.code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
 
+  await json(await request(appleActivityQuery), 401, 'Anonymous Apple activity');
+  assert.equal((await json(await write(appleActivityPath, token, appleActivityPayload), 403, 'Native Apple activity requires the selected device')).code, 'HEALTH_SYNC_CHANNEL_REQUIRED');
+  await json(await write(appleActivityPath, token, appleActivityPayload, { 'X-Sync-Device': shortcut.deviceToken }), 403, 'Old shortcut cannot upload Apple activity');
+  const forgedActivity = await browser.request('/api' + appleActivityPath, {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Page-Owner': ownerId, 'X-Sync-Device': deviceToken, 'X-Jso-Native-Client': 'healthkit-v1' },
+    body: JSON.stringify(appleActivityPayload),
+  });
+  assert.equal((await json(forgedActivity, 403, 'Browser cannot forge a native Apple activity write')).code, 'NATIVE_REQUEST_REQUIRED');
+  const activityReceipt = await json(await write(appleActivityPath, token, appleActivityPayload, channelHeaders), 200, 'Selected iPhone uploads Apple activity');
+  assert.equal(activityReceipt.received, 4); assert.equal(activityReceipt.updated, 4);
+  const activityReplay = await json(await write(appleActivityPath, token, appleActivityPayload, channelHeaders), 200, 'Apple activity upload can be retried');
+  assert.equal(activityReplay.updated, 0);
+  checkAppleActivity(await json(await request(appleActivityQuery, token), 200, 'Native Apple activity read'));
+  checkAppleActivity(await json(await browser.request('/api' + appleActivityQuery), 200, 'Browser reads the same Apple activity data'));
+  const activityPage = await browser.request(appleActivityQuery);
+  assert.equal(activityPage.status, 200, 'Production Apple activity page renders');
+  assert.match(await activityPage.text(), /心率、血氧与训练/);
+
   const sourceSnapshot = (exportedAt, suffix, stepValue) => ({ ...payload, exportedAt,
     measurements: payload.measurements.map(row => ({ ...row, source: 'native-daily-' + suffix + '-' + row.metric,
       ...(row.metric === 'steps' ? { value: stepValue } : {}) })),
@@ -490,6 +534,7 @@ async function nativeAcceptance(browser) {
   assert.equal(replacement.revision, 2); assert.notEqual(replacement.deviceId, selected.deviceId);
   const oldInFlight = await json(await write('/health/import', token, inFlight, { ...channelHeaders, 'X-Import-Preview': inFlightPreview.token, 'X-Confirm-Source-Changes': 'true' }), 403, 'Revoked former daily device cannot finish an in-flight import');
   assert.equal(oldInFlight.code, 'SYNC_DEVICE_INVALID');
+  await json(await write(appleActivityPath, token, appleActivityPayload, channelHeaders), 403, 'Revoked former daily device cannot upload Apple activity');
   const wrongRelease = await json(await write('/sync/channel', token, { expectedRevision: replacement.revision }, { 'X-Sync-Device': shortcut.deviceToken }, 'DELETE'), 409, 'An independent connection cannot clear the selected channel');
   assert.equal(wrongRelease.code, 'NATIVE_HEALTH_CHANNEL_NOT_CURRENT');
   const replacementHeaders = { 'X-Sync-Device': replacementToken };
@@ -624,6 +669,8 @@ async function nativeWorkspaceAcceptance(request, write, token, nativeDate, nutr
   const backup = await json(backupResponse, 200, 'Native complete backup download');
   assert.equal(backup.version, 2);
   assert.equal(backup.tables.nutrition_recipe_cookings.find(item => item.id === cookingKey)?.photo_data_url, TINY_JPEG_DATA_URL);
+  assert.equal(backup.tables.health_apple_vitals.length, 3, 'Complete backup includes the three vital summaries');
+  assert.equal(backup.tables.health_apple_workouts[0]?.workout_id, appleActivityPayload.workouts[0].id, 'Complete backup includes the training record');
   const restorePreview = await json(await write('/data/backup', token, { action: 'preview', backup }), 200, 'Native complete backup restore preview');
   assert.equal(restorePreview.total.conflicts, 0);
   const restored = await json(await write('/data/backup', token, { action: 'restore', backup, previewHash: restorePreview.previewHash }), 200, 'Native explicitly confirmed backup restore');
@@ -715,6 +762,7 @@ async function main() {
   migrate(); // Existing migration ledger is safe to re-check on every deployment.
   await start();
   assert.deepEqual(await json(await authenticated.request('/api/sync/channel'), 200, 'Daily channel survives a process and database restart'), channelBeforeRestart);
+  checkAppleActivity(await json(await authenticated.request('/api' + appleActivityQuery), 200, 'Apple activity survives a process and database restart'));
   for (const oldCookie of revokedPersistentSessions) {
     const replay = new Browser(); replay.cookies.set('jso-test-session', oldCookie);
     assert.equal((await replay.request('/api/session')).status, 401, 'Logout remains revoked after the production server and database restart');
@@ -737,7 +785,7 @@ async function main() {
   await json(await authenticated.request('/api/session'), 401, 'Logged out session');
   await json(await authenticated.request('/api/health/goals'), 401, 'Logged out business data');
   await multiuserAcceptance();
-  process.stdout.write('Self-hosted production smoke passed: migrations, persistent rolling authentication, SSR identity bootstrap, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, native bearer login/overview/five-metric import/source confirmation/manual records/nutrition, persistent daily HealthKit channel consent/source changes/takeover/manual overlays, and durable independent session revocation.\n');
+  process.stdout.write('Self-hosted production smoke passed: migrations, persistent rolling authentication, SSR identity bootstrap, CSRF, identity isolation, food catalog, persistent goals/nutrition, idempotency, restart, logout, administrator-only accounts, email login, native bearer login/overview/five-metric import/source confirmation/manual records/nutrition, daily HealthKit channel consent/source changes/takeover/manual overlays, Apple activity upload/read/backup, and durable session revocation.\n');
 }
 
 try { await main(); }

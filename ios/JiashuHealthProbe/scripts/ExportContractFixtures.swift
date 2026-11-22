@@ -1,8 +1,7 @@
 import Foundation
 
 /// Compiled alongside the production Foundation-only exporter on macOS CI.
-/// Every payload below is produced by NativeHealthSnapshot.encodePayload();
-/// no copied encoder or hand-authored JSON stands in for the app contract.
+/// Every payload below comes from the production iPhone uploader's wire models.
 @main
 struct ExportContractFixtures {
     private struct Metadata: Encodable {
@@ -17,6 +16,31 @@ struct ExportContractFixtures {
         try emit("before-midnight-9998", capture: date("2026-11-15T23:59:59+08:00").addingTimeInterval(0.9998), days: 2)
         try emit("after-midnight-0002", capture: date("2026-11-16T00:00:00+08:00").addingTimeInterval(0.0002), days: 2)
         try emit("normal-five-metrics", capture: date("2026-11-16T15:00:00+08:00"), days: 1, normalSleep: true)
+        try emitAppleActivity()
+    }
+
+    private static func emitAppleActivity() throws {
+        let capture = try date("2026-11-16T10:00:00+08:00")
+        let measuredAt = NativeHealthCalendar.timestamp(try date("2026-11-16T00:32:00+08:00"))
+        let start = NativeHealthCalendar.timestamp(try date("2026-11-16T00:01:00+08:00"))
+        let end = NativeHealthCalendar.timestamp(try date("2026-11-16T00:31:00+08:00"))
+        let day = NativeAppleActivityDay(day: "2026-11-16",
+            heartRate: .init(average: 78.5, min: 52, max: 140),
+            restingHeartRate: .init(value: 56, measuredAt: measuredAt),
+            oxygenSaturation: .init(latest: 98, average: 97, min: 96, max: 98, count: 2, measuredAt: measuredAt))
+        let workouts = (0..<1_001).map { index in
+            NativeAppleActivityWorkout(id: String(format: "00000000-0000-4000-8000-%012d", index),
+                activityType: 37, startDate: start, endDate: end, durationSeconds: 1_740,
+                energyKcal: index == 0 ? 198.5 : nil, distanceMeters: index == 0 ? 4_000 : nil)
+        }
+        let snapshot = NativeAppleActivitySnapshot(capturedAt: capture, vitals: [day], workouts: workouts)
+        var line = Data("{\"fixture\":\"apple-activity-batches\",\"batches\":[".utf8)
+        for (index, batch) in try snapshot.encodedBatches().enumerated() {
+            if index != 0 { line.append(contentsOf: ",".utf8) }
+            line.append(batch)
+        }
+        line.append(contentsOf: "]}\n".utf8)
+        FileHandle.standardOutput.write(line)
     }
 
     private static func date(_ value: String) throws -> Date {

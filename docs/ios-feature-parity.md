@@ -15,6 +15,7 @@
 | 从首页继续记录和周行动 | 今天 → `NativeHomeFollowThrough` | `overview`、`health/actions`、`finance/books` | 恢复饮食原日期、餐次和原保存请求。余额恢复核对原账本、币种和当前编辑权限。周复盘与执行周分别按北京时间计算。 |
 | Apple 健康授权与日常同步设备 | 应用 → 同步中心（`NativeSyncCenter`、`NativeAppModel`、`HealthKitReader`） | `sync/channel`、`health/import/preview`、`health/import` | 用户先完成系统健康授权，再明确选择日常同步设备。后续选定设备上传无需逐批确认来源。设备被替换时暂停，人工更正保留。 |
 | 健康指标趋势、自选日期、真实来源 | 健康工作区 → 自选日期、来源与睡眠分析；`NativeHealthRangeWorkspace` | `health?from=…&to=…` | 体重、去脂体重、步数、活动能量、睡眠；北京时间，包含首尾日期，最多360天；无记录日期不补零。 |
+| 心率、血氧与训练 | 健康趋势 → 心率、血氧与训练；`NativeAppleActivityWorkspace` | `GET/POST health/apple-activity` | 网页和 iPhone 显示同一账号的日汇总和单次训练。已连接的设备可在同步中心更新授权。训练按 HealthKit UUID 去重，新数据随完整业务备份导出和恢复。 |
 | 睡眠分期、真实入睡与起床、分周规律 | 同上，选择睡眠；`NativeWorkspaceSleepSummary` | 同一健康范围响应 | 分期按实际时长汇总；跨午夜使用圆周平均；截断窗口与只有总时长的旧记录不参与作息规律推断。 |
 | 估算体脂及配对依据 | 同上，选择估算体脂率 | 健康响应 `bodyComposition` | 仅同来源、相同测量时刻的体重与去脂体重配对；展示未配对和无效配对数。不是健康 App 的直接体脂测量。 |
 | 健康记录查询、补录、人工更正、隐藏和恢复 | 健康工作区 → 健康记录与修改历史；`NativeHealthRecordsWorkspace`、`HealthQuickEntryView` | `health/records`、`health/records/{key}`、`…/history` | 过滤与分页；读取详情再修改；保留原因、记录修改版本与底层导入版本；冲突后保留填写并重新核对。 |
