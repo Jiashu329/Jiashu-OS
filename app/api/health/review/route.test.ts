@@ -16,11 +16,14 @@ import { listNutritionEntries } from '../../../../db/nutrition-store.ts';
 import { readWeeklyActions, writeWeeklyAction } from '../../../../db/health-weekly-actions-store.ts';
 import { shiftWeekDay } from '../../../../lib/health-weekly-actions.ts';
 import { readWithDeadline } from '../../../../lib/read-deadline.ts';
+import { readAppleActivityDaily } from '../../../../db/apple-health-activity-store.ts';
+import { buildWeeklyAppleActivity, type WeeklyAppleActivity } from '../../../../lib/apple-activity-supplements.ts';
 
 const NOW = new Date('2026-11-12T08:00:00.000Z');
 const ORIGIN = 'https://synthetic-weekly.example';
 interface ApiError { code: string; error: string }
-async function readReview(response: Response): Promise<weekly.HealthWeeklyReview & { focus: HealthWeeklyFocus }> { return await response.json() as weekly.HealthWeeklyReview & { focus: HealthWeeklyFocus }; }
+type WeeklyResponse = weekly.HealthWeeklyReview & { focus: HealthWeeklyFocus; appleActivity: WeeklyAppleActivity };
+async function readReview(response: Response): Promise<WeeklyResponse> { return await response.json() as WeeklyResponse; }
 async function readError(response: Response): Promise<ApiError> { return await response.json() as ApiError; }
 
 function loadExports(path: URL, bindings: Record<string, unknown>, names: string[]): Record<string, unknown> {
@@ -29,7 +32,7 @@ function loadExports(path: URL, bindings: Record<string, unknown>, names: string
   return compileFunction(source + '\nreturn {' + names.join(',') + '};', Object.keys(bindings))(...Object.values(bindings));
 }
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, now = NOW) {
   const sqlite = new DatabaseSync(':memory:');
   const migrations = new URL('../../../../drizzle/', import.meta.url);
   for (const name of readdirSync(migrations).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(name, migrations), 'utf8'));
@@ -58,8 +61,9 @@ function fixture(t: TestContext) {
   const repository = loadExports(new URL('../../../../db/health-repository.ts', import.meta.url), { ...recordsStore, env, buildHealthSummary, buildBodyComposition }, ['readHealthRange']);
   const route = loadExports(new URL('./route.ts', import.meta.url), {
     ...shared, ...repository, ...weekly, env, buildHealthWeeklyFocus, readGoalSettings, readWeightPlanSettings, listNutritionEntries, readWeeklyActions, shiftWeekDay, readWithDeadline,
-    parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, NOW),
-    buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], NOW, args[4]),
+    readAppleActivityDaily, buildWeeklyAppleActivity,
+    parseHealthWeekQuery: (params: URLSearchParams) => weekly.parseHealthWeekQuery(params, now),
+    buildHealthWeeklyReview: (...args: Parameters<typeof weekly.buildHealthWeeklyReview>) => weekly.buildHealthWeeklyReview(args[0], args[1], args[2], now, args[4]),
   }, ['GET']) as { GET(request: Request): Promise<Response> };
   function record(owner: string, measurement: HealthMeasurement) {
     sqlite.prepare(`INSERT OR REPLACE INTO health_measurements
@@ -215,6 +219,55 @@ void test('an empty review keeps unrecorded days and unset goals empty', async (
     assert.equal(metric.currentAchievedDays, null);
     assert.ok(metric.currentPoints.every((point) => point.value === null));
   }
+});
+
+void test('Apple weekly records compare completed weekdays, separate today, and stay scoped to the owner', async t => {
+  const f = fixture(t);
+  const vital = f.sqlite.prepare('INSERT INTO health_apple_vitals(user_id, day, metric, value_json, exported_at, received_at) VALUES (?,?,?,?,?,?)');
+  const workout = f.sqlite.prepare('INSERT INTO health_apple_workouts(user_id, workout_id, day, start_date, workout_json, exported_at, received_at) VALUES (?,?,?,?,?,?,?)');
+  const asOf = NOW.toISOString();
+  for (const [owner, day, value, count] of [
+    ['alice', '2026-11-09', 70, 3], ['alice', '2026-11-11', 78, 2], ['alice', '2026-11-12', 90, 5],
+    ['alice', '2026-11-04', 72, 4], ['alice', '2026-11-05', 84, 2], ['alice', '2026-11-08', 120, 7],
+    ['bob', '2026-11-10', 100, 20],
+  ] as const) {
+    vital.run(owner, day, 'heartRate', JSON.stringify({ average: value, min: value - 5, max: value + 5 }), asOf, asOf);
+    vital.run(owner, day, 'oxygenSaturation', JSON.stringify({ latest: 97, average: 96, min: 95, max: 97, count, measuredAt: day + 'T01:00:00.000Z' }), asOf, asOf);
+    if (day === '2026-11-11') vital.run(owner, day, 'restingHeartRate', JSON.stringify({ value: 57, measuredAt: day + 'T02:00:00.000Z' }), asOf, asOf);
+    workout.run(owner, day, day, day + 'T01:00:00.000Z', JSON.stringify({ durationSeconds: count * 300, energyKcal: 2000 }), asOf, asOf);
+  }
+  workout.run('alice', 'second', '2026-11-09', '2026-11-09T02:00:00.000Z', JSON.stringify({ durationSeconds: 105, energyKcal: 300 }), asOf, asOf);
+  const { appleActivity } = await readReview(await f.get('userId=bob'));
+  assert.deepEqual(appleActivity, {
+    status: 'ready',
+    current: { from: '2026-11-09', to: '2026-11-11', heartRate: { average: 74, days: 2 }, restingHeartRate: { average: 57, days: 1 },
+      oxygenSaturation: { days: 2, samples: 5 }, workouts: { count: 3, durationSeconds: 1605 } },
+    previous: { from: '2026-11-02', to: '2026-11-04', heartRate: { average: 72, days: 1 }, restingHeartRate: null,
+      oxygenSaturation: { days: 1, samples: 4 }, workouts: { count: 1, durationSeconds: 1200 } },
+    today: { from: '2026-11-12', to: '2026-11-12', heartRate: { average: 90, days: 1 }, restingHeartRate: null,
+      oxygenSaturation: { days: 1, samples: 5 }, workouts: { count: 1, durationSeconds: 1500 } },
+  });
+  const historical = (await readReview(await f.get('week=2026-11-05'))).appleActivity;
+  assert.equal(historical.status, 'ready');
+  assert.equal(historical.current?.to, '2026-11-08');
+  assert.equal(historical.current?.heartRate?.days, 3);
+  assert.equal(historical.previous?.to, '2026-11-01');
+  assert.equal(historical.today, null);
+});
+
+void test('Apple weekly status distinguishes Monday without completed days from a failed read', async t => {
+  // Monday in Beijing while it is still Sunday in UTC.
+  const f = fixture(t, new Date('2026-11-08T17:00:00.000Z'));
+  const empty = await readReview(await f.get());
+  assert.deepEqual(empty.appleActivity, { status: 'ready', current: null, previous: null,
+    today: { from: '2026-11-09', to: '2026-11-09', heartRate: null, restingHeartRate: null, oxygenSaturation: null, workouts: null } });
+  f.sqlite.exec('DROP TABLE health_apple_vitals');
+  const response = await f.get();
+  assert.equal(response.status, 200);
+  const failed = await readReview(response);
+  assert.deepEqual(failed.appleActivity, { status: 'unavailable' });
+  assert.deepEqual(failed.metrics, empty.metrics);
+  assert.deepEqual(failed.focus, empty.focus);
 });
 
 void test('weekly priorities explain only the signed-in user’s completed-day evidence without saving an action', async (t) => {

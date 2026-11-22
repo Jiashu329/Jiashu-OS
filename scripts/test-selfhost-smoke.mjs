@@ -494,9 +494,32 @@ async function nativeAcceptance(browser) {
   assert.equal(activityReplay.updated, 0);
   checkAppleActivity(await json(await request(appleActivityQuery, token), 200, 'Native Apple activity read'));
   checkAppleActivity(await json(await browser.request('/api' + appleActivityQuery), 200, 'Browser reads the same Apple activity data'));
-  const activityPage = await browser.request(appleActivityQuery);
-  assert.equal(activityPage.status, 200, 'Production Apple activity page renders');
-  assert.match(await activityPage.text(), /心率、血氧与训练/);
+  const activityBookmark = await browser.request(appleActivityQuery + '&day=' + appleActivityDate);
+  assert.equal(activityBookmark.status, 307, 'Old Apple activity bookmark opens the integrated Health workspace');
+  const trendPath = activityBookmark.headers.get('location');
+  assert.equal(trendPath, `/health?metric=heart_rate&from=${appleActivityDate}&to=${appleActivityDate}&day=${appleActivityDate}`);
+  const activityPage = await browser.request(trendPath);
+  assert.equal(activityPage.status, 200, 'Production integrated Health workspace renders');
+  assert.match(await activityPage.text(), /心率[\s\S]*血氧/);
+  const weekPath = '/health/review?week=' + appleActivityDate;
+  const appleWeek = (await json(await request(weekPath, token), 200, 'Native integrated health review')).appleActivity;
+  assert.deepEqual(appleWeek, {
+    status: 'ready',
+    current: {
+      from: '2025-12-29', to: '2026-01-04', heartRate: { average: 72, days: 1 }, restingHeartRate: { average: 56, days: 1 },
+      oxygenSaturation: { days: 1, samples: 2 }, workouts: { count: 1, durationSeconds: 1740 },
+    },
+    previous: { from: '2025-12-22', to: '2025-12-28', heartRate: null, restingHeartRate: null, oxygenSaturation: null, workouts: null },
+    today: null,
+  });
+  assert.deepEqual((await json(await browser.request('/api' + weekPath), 200, 'Browser integrated health review')).appleActivity, appleWeek);
+  const appleToday = (await json(await request('/overview', token), 200, 'Native integrated Today')).appleActivity;
+  assert.equal(appleToday.status, 'ready'); assert.equal(appleToday.today, appleToday.to);
+  assert.ok(appleToday.from <= appleToday.to);
+  if (appleToday.from > appleActivityDate) {
+    assert.deepEqual({ resting: appleToday.restingHeartRate, oxygen: appleToday.oxygenSaturation, workouts: appleToday.workouts },
+      { resting: null, oxygen: null, workouts: null }, 'Historical training and readings do not masquerade as the latest week');
+  }
 
   const sourceSnapshot = (exportedAt, suffix, stepValue) => ({ ...payload, exportedAt,
     measurements: payload.measurements.map(row => ({ ...row, source: 'native-daily-' + suffix + '-' + row.metric,

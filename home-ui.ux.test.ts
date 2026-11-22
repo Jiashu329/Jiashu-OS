@@ -3,6 +3,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { renderHomeApp } from './home-ui.ts';
+import type { HomeAppleActivity } from './lib/apple-activity-supplements.ts';
 
 const metricKeys = ['steps', 'sleep', 'active_energy', 'weight', 'lean_body_mass', 'body_fat'];
 const snapshot = () => ({
@@ -36,6 +37,31 @@ test('all home metric cards deep-link to the same metric and a useful persisted 
     assert.match(card.querySelector('.metric-value strong')!.textContent!, /^0$/);
     assert.match(card.querySelector('.metric-date')!.textContent!, /2026-11-11/);
   }
+});
+
+void test('home keeps recent vitals dated and shows only today’s workouts alongside activity', async () => {
+  const data = { ...snapshot(), appleActivity: { status: 'ready', from: '2026-11-05', to: '2026-11-11', today: '2026-11-11',
+    restingHeartRate: { value: 61, measuredAt: '2026-11-09T23:17:00.000Z' },
+    oxygenSaturation: { value: 97.2, measuredAt: '2026-11-08T23:18:00.000Z' },
+    workouts: { count: 2, durationSeconds: 2700 } } satisfies HomeAppleActivity };
+  const { document } = await fixture(data);
+  for (const [metric, from, day, reading, stamp] of [
+    ['resting_heart_rate', '2026-11-05', '2026-11-10', '61', /11\/10.*07:17/],
+    ['oxygen_saturation', '2026-11-05', '2026-11-09', '97.2', /11\/9.*07:18/],
+    ['workouts', '2026-11-11', '2026-11-11', '2', /45 分钟.*2026-11-11/],
+  ] as const) {
+    const card = document.querySelector('.metric-card.' + metric)!;
+    const target = new URL(card.getAttribute('href')!, 'https://synthetic-home.example');
+    assert.deepEqual(Object.fromEntries(target.searchParams), { metric, from, to: '2026-11-11', day });
+    assert.equal(card.querySelector('.metric-value strong')?.textContent, reading);
+    assert.match(card.querySelector('.metric-date')!.textContent, stamp);
+  }
+  assert.equal(document.querySelector('.metric-card.active_energy')?.nextElementSibling?.classList.contains('workouts'), true);
+  assert.equal(document.querySelector('.metric-card.workouts')?.closest('[role="group"]')?.getAttribute('aria-label'), '活动与训练');
+  const emptyData = { ...data, appleActivity: { ...data.appleActivity, workouts: null } };
+  const empty = (await fixture(emptyData)).document.querySelector('.metric-card.workouts')!;
+  assert.match(empty.textContent, /今天暂无已同步训练/);
+  assert.doesNotMatch(empty.textContent, /0 次|0 分钟/);
 });
 
 test('home keeps priorities ahead of the overview while goals are progressively disclosed and independently available', async () => {

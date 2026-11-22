@@ -1,8 +1,10 @@
 import { CLIENT_REQUEST_SCRIPT } from './client-request.ts';
+import { HEALTH_NAVIGATION_SCRIPT } from './health-navigation.ts';
 
 export function renderHealthWeeklyScript(): string {
   return String.raw`<script type="module">(()=>{
 ${CLIENT_REQUEST_SCRIPT}
+${HEALTH_NAVIGATION_SCRIPT}
 const el=(id)=>document.getElementById('weekly-'+id);
 const keys=['steps','sleep','active_energy','weight'];
 const labels={steps:'步数',sleep:'睡眠',active_energy:'活动能量',weight:'体重'};
@@ -71,9 +73,83 @@ function renderWeightPlan(data){if(data.supplementalStatus?.weightPlan==='unavai
   else html+='<p>'+(!plan.settings?'所选日期尚无可用体重计划。':'体重计划已停用，实测记录仍保留。')+'</p>';
   el('weight-plan').innerHTML=html;
 }
+function weeklyHealthHref(metric,period){
+  const range=isCalendarDay(period?.from)&&isCalendarDay(period?.to)?{from:period.from,to:period.to,day:period.to}:undefined;
+  return esc(healthViewPath(metric,7,false,range));
+}
+function periodDays(period){return Math.round((Date.parse(period.to+'T12:00:00Z')-Date.parse(period.from+'T12:00:00Z'))/86400000)+1;}
+function appleCoverage(days,period){return format(days)+' / '+periodDays(period)+' 天';}
+function weeklyHeart(period,key){
+  const metric=period?.[key];
+  return metric?format(metric.average)+' 次/分 · '+appleCoverage(metric.days,period):'暂无记录';
+}
+function weeklyOxygen(period,field){
+  const metric=period?.oxygenSaturation;
+  if(!metric)return '暂无记录';
+  return field==='days'?appleCoverage(metric.days,period):format(metric.samples)+' 次';
+}
+function weeklyWorkout(period,field){
+  const metric=period?.workouts;
+  if(!metric)return '暂无已同步训练';
+  return field==='duration'?format(metric.durationSeconds/60)+' 分钟':format(metric.count)+' 次';
+}
+function weeklyAppleRow(label,metric,current,previous,value){
+  const heading=metric?'<a href="'+weeklyHealthHref(metric,current)+'">'+label+'</a>':'<span>'+label+'</span>';
+  return '<div class="weekly-apple-row">'+heading+'<div><strong>'+esc(value(current))+'</strong>'
+    +'<small>上周同期 '+esc(value(previous))+'</small></div></div>';
+}
+function weeklyAppleCard(label,metric,period,rows){
+  const heading=metric==='heart_rate'?label:'<a href="'+weeklyHealthHref(metric,period)+'">'+label+'</a>';
+  return '<article class="weekly-card weekly-apple-card '+metric+'"><h3>'+heading+'</h3>'+rows.join('')+'</article>';
+}
+function renderWeeklyApple(activity){
+  const section=el('apple-section'),today=el('apple-today');
+  if(!section||!today)return;
+  section.hidden=!activity;
+  today.hidden=true;
+  today.replaceChildren();
+  if(!activity)return;
+  const result=el('apple-activity');
+  if(activity.status!=='ready'){
+    result.textContent='训练、心率和血氧暂时无法读取。';
+    return;
+  }
+  const {current,previous}=activity;
+  if(!current||!previous){
+    result.textContent='本周尚无已结束的日期可比较。';
+  }else{
+    const summary='已结束日期 '+current.from+' 至 '+current.to+' · 上周同期 '+previous.from+' 至 '+previous.to+'（各 '+periodDays(current)+' 天）';
+    const row=(label,metric,value)=>weeklyAppleRow(label,metric,current,previous,value);
+    result.innerHTML='<p class="weekly-note weekly-apple-date">'+esc(summary)+'</p><div class="weekly-apple-grid">'
+      +weeklyAppleCard('活动与训练','workouts',current,[
+        row('训练次数',null,period=>weeklyWorkout(period,'count')),
+        row('实际训练时长',null,period=>weeklyWorkout(period,'duration')),
+      ])
+      +weeklyAppleCard('心率','heart_rate',current,[
+        row('日均心率','heart_rate',period=>weeklyHeart(period,'heartRate')),
+        row('静息心率','resting_heart_rate',period=>weeklyHeart(period,'restingHeartRate')),
+      ])
+      +weeklyAppleCard('血氧','oxygen_saturation',current,[
+        row('有记录天数',null,period=>weeklyOxygen(period,'days')),
+        row('采样次数',null,period=>weeklyOxygen(period,'samples')),
+      ])+'</div>';
+  }
+  const day=activity.today;
+  if(day){
+    const values=[
+      ['训练','workouts',day.workouts?weeklyWorkout(day,'count')+' · '+weeklyWorkout(day,'duration'):weeklyWorkout(day,'count')],
+      ['日均心率','heart_rate',day.heartRate?format(day.heartRate.average)+' 次/分':'暂无记录'],
+      ['静息心率','resting_heart_rate',day.restingHeartRate?format(day.restingHeartRate.average)+' 次/分':'暂无记录'],
+      ['血氧','oxygen_saturation',day.oxygenSaturation?'采样 '+weeklyOxygen(day,'samples'):'暂无记录'],
+    ];
+    today.innerHTML='<h3>今天的记录 <small>'+esc(day.to)+'</small></h3><div class="weekly-apple-today-grid">'
+      +values.map(([label,metric,value])=>'<a href="'+weeklyHealthHref(metric,day)+'"><span>'+label+'</span><strong>'+esc(value)+'</strong></a>').join('')+'</div>';
+    today.hidden=false;
+  }
+}
 function render(data,drafts=null){
-  state.data=data;state.conflict=false;state.suggestedDraft=null;renderNutrition(data);renderWeightPlan(data);renderActions(data);setBaselines();if(drafts){el('action-text').value=drafts.text;if(data.actions.current){el('action-status').value=drafts.status;el('action-feedback').value=drafts.feedback;}}renderFocus(data);
-  el('range').textContent=data.weekStart+' — '+data.weekEnd;el('partial').hidden=!data.partial;el('comparison').textContent='本期 '+data.weekStart+' — '+data.cutoffDay+'；对比上周同期 '+data.previousStart+' — '+data.previousCutoffDay+'（各 '+data.comparisonDays+' 天）。';
+  state.data=data;state.conflict=false;state.suggestedDraft=null;renderNutrition(data);renderWeightPlan(data);renderWeeklyApple(data.appleActivity);renderActions(data);setBaselines();if(drafts){el('action-text').value=drafts.text;if(data.actions.current){el('action-status').value=drafts.status;el('action-feedback').value=drafts.feedback;}}renderFocus(data);
+  el('range').textContent=data.weekStart+' — '+data.weekEnd;el('partial').hidden=!data.partial;el('comparison').textContent='详细数据涵盖本期 '+data.weekStart+' — '+data.cutoffDay+'；对比上周同期 '+data.previousStart+' — '+data.previousCutoffDay+'（各 '+data.comparisonDays+' 天）。';
   const byMetric=new Map(data.metrics.map((metric)=>[metric.metric,metric]));
   el('metrics').innerHTML=keys.map((key)=>{const metric=byMetric.get(key);return '<article class="weekly-card"><h3>'+labels[key]+' · 记录日均</h3><div class="weekly-number"><strong'+(metric.currentAverage===null?' class="empty"':'')+'>'+(metric.currentAverage===null?'暂无记录':format(metric.currentAverage))+'</strong>'+(metric.currentAverage===null?'':'<span>'+units[key]+'</span>')+'</div><p>本期有记录 '+metric.currentRecordedDays+' / '+data.comparisonDays+' 天</p><p>上周同期 '+(metric.previousAverage===null?'暂无记录':format(metric.previousAverage)+' '+units[key])+' · '+metric.previousRecordedDays+' 天</p><p class="weekly-delta">'+(metric.delta===null?'暂无可比日均':metric.delta===0?'与上周同期持平':'记录日均差值 '+(metric.delta>0?'+':'')+format(metric.delta)+' '+units[key])+'</p></article>';}).join('');
   el('goals').innerHTML=keys.slice(0,3).map((key)=>{const metric=byMetric.get(key);const currentSet=metric.currentAchievedDays!==null,previousSet=metric.previousAchievedDays!==null,set=currentSet||previousSet;const timeline=[...(metric.targetsInPeriod||[]),...(metric.previousPoints||[]).filter((point)=>Object.hasOwn(point,'target')).map((point)=>({day:point.day,target:point.target,effectiveFrom:point.targetEffectiveFrom}))].map((point)=>point.day+'：'+(point.target===null?'未设置':format(point.target)+' '+units[key])+(point.effectiveFrom==='1970-01-01'?'（历史基线）':point.effectiveFrom?'（'+point.effectiveFrom+' 起）':''));return '<article class="weekly-card"><h3>'+labels[key]+'</h3><div class="weekly-goal-value'+(!set||!metric.currentRecordedDays?' empty':'')+'">'+(!currentSet?'本期未设置目标':metric.currentRecordedDays?'达成 '+metric.currentAchievedDays+' 天':'暂无记录')+'</div><p>'+(!set?'不计算目标达成天数':'按当日生效目标统计')+'</p><p>本期'+(set?'达成 '+metric.currentAchievedDays+' / ':'')+'有记录 '+metric.currentRecordedDays+' 天</p><p>上周同期'+(set?'达成 '+metric.previousAchievedDays+' / ':'')+'有记录 '+metric.previousRecordedDays+' 天</p>'+(timeline.length?'<details><summary>查看两周每日目标</summary><p>'+timeline.map(esc).join('<br>')+'</p></details>':'')+'</article>';}).join('');
@@ -87,7 +163,7 @@ async function load(preserve=false){
  try{const data=await requestJSON('/api/health/review?'+new URLSearchParams({week}),{signal:controller.signal,redirect:'error'});if(sequence!==state.sequence||changedAccount())return;
   if(data?.weekStart!==week||!validDay(data.cutoffDay)||!Array.isArray(data.metrics)||!data.nutrition?.current||!data.nutrition?.previous||!data.weightPlan?.review||!data.actions||!Number.isInteger(data.comparisonDays)||data.comparisonDays<1||data.comparisonDays>7||!keys.every(key=>data.metrics.some(metric=>metric.metric===key&&Array.isArray(metric.currentPoints)&&metric.currentPoints.length===data.comparisonDays&&Array.isArray(metric.previousPoints)&&metric.previousPoints.length===data.comparisonDays)))throw new Error('每周回顾内容暂时无法读取，请重试。');
   if(preserve&&data.supplementalStatus?.actions==='unavailable')throw new Error('行动暂时无法读取，原填写已保留，请稍后重试。');
-  state.week=data.weekStart;state.today=data.today;render(data,drafts);el('reload-actions').hidden=true;const partial=data.supplementalStatus&&Object.values(data.supplementalStatus).some(value=>value==='unavailable');status(preserve?'已读取最新行动，原填写已保留，请核对后再保存。':partial?'部分补充信息暂时无法读取，现有健康重点仍可查看。':'',Boolean(partial));
+  state.week=data.weekStart;state.today=data.today;render(data,drafts);el('reload-actions').hidden=true;const partial=data.appleActivity?.status==='unavailable'||Boolean(data.supplementalStatus&&Object.values(data.supplementalStatus).some(value=>value==='unavailable'));status(preserve?'已读取最新行动，原填写已保留，请核对后再保存。':partial?'部分补充信息暂时无法读取，现有健康重点仍可查看。':'',Boolean(partial));
  }catch(error){if(sequence!==state.sequence||error?.name==='AbortError')return;status(error?.message||'每周回顾读取失败，请重试。',true,error?.status===401||error?.code==='SIGN_IN_REQUIRED');}
  finally{if(sequence===state.sequence){state.controller=null;el('page').setAttribute('aria-busy','false');formControls(changedAccount());refreshSuggestion();}}
 }

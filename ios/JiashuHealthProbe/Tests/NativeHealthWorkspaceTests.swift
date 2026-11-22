@@ -2,6 +2,34 @@ import XCTest
 @testable import JiashuHealthProbe
 
 final class NativeHealthWorkspaceTests: XCTestCase {
+    func testUnifiedTrendKeepsOneSelectedDayAndUsesOnlyRecordedVitalSamples() throws {
+        let initial = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2025-11-16"))
+        let first = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2025-11-15"))
+        let last = try XCTUnwrap(NativeHealthWorkspaceFormat.date("2025-11-17"))
+        let range = try NativeHealthWorkspaceRange(from: first, to: last)
+        let activity = NativeAppleActivityResponse(from: range.from, to: range.to, vitals: [
+            .init(day: "2025-11-15", heartRate: .init(average: 72, min: 55, max: 110), restingHeartRate: nil,
+                  oxygenSaturation: nil),
+            .init(day: "2025-11-17", heartRate: nil,
+                  restingHeartRate: .init(value: 61, measuredAt: "2025-11-17T08:00:00Z"),
+                  oxygenSaturation: .init(latest: 98, average: 97, min: 96, max: 98, count: 2,
+                                          measuredAt: "2025-11-17T09:00:00Z"))
+        ], workouts: [])
+
+        let heart = activity.points(for: "heart_rate")
+        let resting = activity.points(for: "resting_heart_rate")
+        let oxygen = activity.points(for: "oxygen_saturation")
+        XCTAssertEqual(heart.first?.bounds, 55.0...110.0)
+        XCTAssertEqual(resting.first?.value, 61)
+        XCTAssertEqual(oxygen.first?.value, 97, "The trend shows daily average, not the latest sample")
+        XCTAssertEqual(NativeHealthTrendTopic.forMetric("oxygen_saturation"), .oxygen)
+        XCTAssertEqual(NativeHealthTrendTopic.forMetric("resting_heart_rate"), .heart)
+        for points in [heart, resting, oxygen] {
+            XCTAssertEqual(NativeHealthTrendSelection.day(initial, points: points, range: range), "2025-11-16")
+            XCTAssertFalse(points.contains { $0.day == "2025-11-16" })
+        }
+    }
+
     private func date(_ value: String) -> Date { ISO8601DateFormatter().date(from:value)! }
     private func json(_ value: String) throws -> NativeJSON { try JSONDecoder().decode(NativeJSON.self,from:Data(value.utf8)) }
 

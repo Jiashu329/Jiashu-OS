@@ -111,6 +111,69 @@ final class NativeHomeHealthCardsTests: XCTestCase {
         XCTAssertNil(NativeHomeHealthSnapshot(overview: invalidDay, health: nil, now: now).metric("weight").value)
     }
 
+    func testTodayShowsIndependentActualMeasurementTimesAndDoesNotCarryYesterdayWorkoutsForward() throws {
+        let source = try JSONDecoder().decode(NativeAppleActivityOverview.self, from: Data(#"""
+        {"status":"ready","from":"2026-11-11","to":"2026-11-17","today":"2026-11-17",
+         "restingHeartRate":{"value":59,"measuredAt":"2026-11-16T23:09:00Z"},
+         "oxygenSaturation":{"value":97.6,"measuredAt":"2026-11-16T00:01:00Z"},
+         "workouts":{"count":2,"durationSeconds":4200}}
+        """#.utf8))
+        let today = NativeHomeAppleActivitySnapshot(source, now: now)
+        XCTAssertEqual(today.availability, .ready)
+        XCTAssertEqual(today.restingHeartRate?.value, 59)
+        XCTAssertEqual(today.restingHeartRate?.day, "2026-11-17")
+        XCTAssertEqual(today.restingHeartRate?.timestamp(today: today.today), "今天 07:09")
+        XCTAssertEqual(today.oxygenSaturation?.value, 97.6)
+        XCTAssertEqual(today.oxygenSaturation?.day, "2026-11-16")
+        XCTAssertEqual(today.oxygenSaturation?.timestamp(today: today.today), "11/16 08:01")
+        XCTAssertEqual(today.workouts?.count, 2)
+        XCTAssertEqual(today.workouts?.durationSeconds, 4200)
+
+        let tomorrow = NativeHomeAppleActivitySnapshot(source, now: now.addingTimeInterval(86_400))
+        XCTAssertEqual(tomorrow.oxygenSaturation?.day, "2026-11-16")
+        XCTAssertNil(tomorrow.workouts)
+        XCTAssertEqual(tomorrow.workoutLabel, "今日训练待更新")
+    }
+
+    func testUnavailableOrOlderOverviewCannotInventWorkoutRecordsOrBlockExtraMetrics() throws {
+        let unavailable = try JSONDecoder().decode(NativeAppleActivityOverview.self, from: Data(#"{"status":"unavailable"}"#.utf8))
+        let failure = NativeHomeAppleActivitySnapshot(unavailable, now: now)
+        XCTAssertEqual(failure.availability, .unavailable)
+        XCTAssertNil(failure.workouts)
+        XCTAssertNotEqual(failure.workoutLabel, NativeHomeAppleActivitySnapshot(nil, now: now).workoutLabel)
+
+        let source = try JSONDecoder().decode(NativeAppleActivityOverview.self, from: Data(#"""
+        {"status":"ready","from":"2026-11-11","to":"2026-11-17","today":"2026-11-17",
+         "restingHeartRate":{"value":60,"measuredAt":"2026-11-18T00:00:00Z"},
+         "oxygenSaturation":{"value":97.9,"measuredAt":"2026-11-16T00:01:00Z"},"workouts":null}
+        """#.utf8))
+        let ready = NativeHomeAppleActivitySnapshot(source, now: now)
+        XCTAssertNil(ready.restingHeartRate)
+        XCTAssertEqual(ready.oxygenSaturation?.value, 97.9)
+        XCTAssertEqual(ready.workoutLabel, "暂无已同步训练")
+    }
+
+    func testWeeklyResponseUsesExplicitCompletedAndTodayWindowsAndAllowsOldServer() throws {
+        let legacy = #"""
+        {"weekStart":"2026-11-16","cutoffDay":"2026-11-17","isCurrent":true,"metrics":[],"focus":null
+        """#
+        let decoder = JSONDecoder()
+        XCTAssertNil(try decoder.decode(NativeWeeklyDetails.self, from: Data((legacy + "}").utf8)).appleActivity)
+        let extra = #"""
+        ,"appleActivity":{"status":"ready",
+          "current":{"from":"2026-11-16","to":"2026-11-16","heartRate":{"average":72,"days":1},"restingHeartRate":null,"oxygenSaturation":{"days":1,"samples":8},"workouts":null},
+          "previous":{"from":"2026-11-09","to":"2026-11-09","heartRate":null,"restingHeartRate":null,"oxygenSaturation":null,"workouts":{"count":1,"durationSeconds":1200}},
+          "today":{"from":"2026-11-17","to":"2026-11-17","heartRate":null,"restingHeartRate":null,"oxygenSaturation":null,"workouts":{"count":2,"durationSeconds":3600}}}}
+        """#
+        let value = try decoder.decode(NativeWeeklyDetails.self, from: Data((legacy + extra).utf8))
+        XCTAssertEqual(value.appleActivity?.current?.reviewRange(now: now)?.to, "2026-11-16")
+        XCTAssertEqual(value.appleActivity?.previous?.reviewRange(now: now)?.to, "2026-11-09")
+        XCTAssertEqual(value.appleActivity?.today?.reviewRange(now: now)?.to, "2026-11-17")
+        XCTAssertEqual(value.appleActivity?.current?.oxygenSaturation?.samples, 8)
+        XCTAssertNil(value.appleActivity?.current?.workouts)
+        XCTAssertEqual(value.appleActivity?.today?.workouts?.count, 2)
+    }
+
     private func plan(enabled: Bool? = true, direction: String = "loss", average: Double? = nil,
                       percent: Double? = nil, status: String = "active") throws -> NativeHomeWeightPlanReview {
         let target = direction == "gain" ? 68 : direction == "maintain" ? 64 : 60

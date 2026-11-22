@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 import HealthKit
 
 struct NativeAppleActivityResponse: Decodable {
@@ -18,306 +17,277 @@ extension NativeAPI {
     }
 }
 
-struct NativeAppleActivityWorkspace: View {
-    private enum Mode: String, CaseIterable {
-        case vitals = "心率与血氧"
-        case workouts = "训练记录"
+enum NativeHealthTrendTopic: String, CaseIterable, Identifiable {
+    case activity, sleep, heart, oxygen, body
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .activity: return "活动与训练"
+        case .sleep: return "睡眠"
+        case .heart: return "心率"
+        case .oxygen: return "血氧"
+        case .body: return "体重与体成分"
+        }
     }
 
-    private struct ReadContext: Equatable {
-        let dateRange: String?
-        let lastSync: String?
+    var icon: String {
+        switch self {
+        case .activity: return "figure.walk"
+        case .sleep: return "moon"
+        case .heart: return "heart.text.square"
+        case .oxygen: return "drop"
+        case .body: return "scalemass"
+        }
     }
 
-    let api: NativeAPI
-    let token: String
+    var accent: Color {
+        switch self {
+        case .activity: return NativePalette.adaptive(0x976125, 0xFFC786)
+        case .sleep: return NativePalette.adaptive(0x6251A6, 0xC9BAFF)
+        case .heart: return NativePalette.adaptive(0x526EAF, 0xB6C7FF)
+        case .oxygen: return NativePalette.adaptive(0x2A7189, 0x91D5EA)
+        case .body: return NativePalette.adaptive(0x237467, 0x80D7BF)
+        }
+    }
 
-    @EnvironmentObject private var appModel: NativeAppModel
+    var metrics: [String] {
+        switch self {
+        case .activity: return ["steps", "active_energy"]
+        case .sleep: return ["sleep"]
+        case .heart: return ["heart_rate", "resting_heart_rate"]
+        case .oxygen: return ["oxygen_saturation"]
+        case .body: return ["weight", "lean_body_mass", "body_fat"]
+        }
+    }
+
+    var defaultMetric: String { metrics[0] }
+
+    static func forMetric(_ metric: String?) -> NativeHealthTrendTopic {
+        guard let metric else { return .activity }
+        return allCases.first { $0.metrics.contains(metric) } ?? .activity
+    }
+}
+
+extension NativeAppleActivityResponse {
+    func points(for metric: String) -> [NativeWorkspaceHealthPoint] {
+        vitals.compactMap { sample -> NativeWorkspaceHealthPoint? in
+            guard sample.day >= from, sample.day <= to else { return nil }
+            switch metric {
+            case "heart_rate":
+                guard let value = sample.heartRate, value.average.isFinite else { return nil }
+                let bounds: ClosedRange<Double>? = value.min.isFinite && value.max.isFinite && value.min <= value.max
+                    ? value.min...value.max : nil
+                return NativeWorkspaceHealthPoint(day: sample.day, value: value.average, bounds: bounds)
+            case "resting_heart_rate":
+                guard let value = sample.restingHeartRate, value.value.isFinite else { return nil }
+                return NativeWorkspaceHealthPoint(day: sample.day, value: value.value, measuredAt: value.measuredAt)
+            case "oxygen_saturation":
+                guard let value = sample.oxygenSaturation, value.average.isFinite, (0...100).contains(value.average) else { return nil }
+                return NativeWorkspaceHealthPoint(day: sample.day, value: value.average, measuredAt: value.measuredAt)
+            default:
+                return nil
+            }
+        }.sorted { $0.day < $1.day }
+    }
+}
+
+struct NativeHealthTrendTopicCard: View {
+    let topic: NativeHealthTrendTopic
+    let value: String
+    let note: String
+    let selected: Bool
+    let action: () -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var mode: Mode = .vitals
-    @State private var from: Date
-    @State private var to: Date
-    @State private var editingDates = false
-    @State private var snapshot: NativeAppleActivityResponse?
-    @State private var loading = false
-    @State private var error: String?
-    @State private var requestID = UUID()
-
-    init(api: NativeAPI, token: String, initialRange: NativeHealthWorkspaceRange? = nil) {
-        self.api = api
-        self.token = token
-        let end = initialRange.flatMap { NativeHealthWorkspaceFormat.date($0.to) } ?? Date()
-        let start = initialRange.flatMap { NativeHealthWorkspaceFormat.date($0.from) }
-            ?? NativeActionDates.calendar.date(byAdding: .day, value: -29, to: end) ?? end
-        _from = State(initialValue: start)
-        _to = State(initialValue: end)
-    }
-
-    private var range: NativeHealthWorkspaceRange? {
-        try? NativeHealthWorkspaceRange(from: from, to: to)
-    }
 
     var body: some View {
-        List {
-            Section {
-                if typeSize.isAccessibilitySize {
-                    modePicker
-                } else {
-                    modePicker.pickerStyle(.segmented)
-                }
-                Button { editingDates = true } label: {
-                    Label(range?.label ?? "选择日期", systemImage: "calendar")
-                }
-                .accessibilityLabel("日期范围，" + (range?.label ?? "选择日期"))
-            }
-            if let error {
-                Section {
-                    NativeInlineNotice(error, tone: .error)
-                    Button("重试") { Task { await load() } }
-                }
-            }
-            if let snapshot, let range, snapshot.from == range.from, snapshot.to == range.to {
-                switch mode {
-                case .vitals:
-                    NativeAppleActivityVitals(days: snapshot.vitals, range: range)
-                case .workouts:
-                    workoutSection(snapshot.workouts)
-                }
-            } else if loading || error == nil {
-                Section { ProgressView("正在读取记录…") }
-            }
-        }
-        .nativeGeometricPage()
-        .navigationTitle("心率、血氧与训练")
-        .navigationBarTitleDisplayMode(.inline)
-        .environment(\.timeZone, NativeActionDates.timeZone)
-        .task(id: ReadContext(dateRange: range?.label, lastSync: appModel.appleActivityLastSync)) { await load() }
-        .refreshable { await load() }
-        .sheet(isPresented: $editingDates) {
-            NativeHealthDateRangeEditor(from: from, to: to) { start, end in
-                let previousRange = range
-                from = start
-                to = end
-                if range != previousRange { error = nil }
-            }
-        }
-    }
-
-    private var modePicker: some View {
-        Picker("记录类型", selection: $mode) {
-            ForEach(Mode.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
-        }
-    }
-
-    private func workoutSection(_ workouts: [NativeAppleActivityWorkout]) -> some View {
-        Section("训练记录") {
-            if workouts.isEmpty {
-                NativeFeatureEmpty(title: "这段时间暂无训练记录",
-                                   detail: "请在「应用 → 同步中心」检查授权并补充同步。",
-                                   icon: "figure.run")
-            } else {
-                ForEach(workouts.sorted { $0.startDate > $1.startDate }) { workout in
-                    NativeAppleActivityWorkoutRow(workout: workout)
-                }
-            }
-        }
-    }
-
-    @MainActor private func load() async {
-        guard let requested = range else { return }
-        let id = UUID()
-        requestID = id
-        loading = true
-        error = nil
-        defer { if requestID == id { loading = false } }
-        do {
-            let response = try await api.appleActivity(token: token, range: requested)
-            guard requestID == id, requested == range, !Task.isCancelled else { return }
-            snapshot = response
-        } catch {
-            guard requestID == id, requested == range, !Task.isCancelled else { return }
-            if case NativeAPIError.server(let status, _, _, _) = error, status == 404 {
-                self.error = "当前服务端尚未提供心率、血氧和训练记录。"
-            } else {
-                self.error = error.localizedDescription
-            }
-        }
-    }
-}
-
-private struct NativeAppleActivityVitalPoint: Identifiable {
-    let day: String
-    let date: Date
-    let value: Double
-    let minimum: Double
-    let maximum: Double
-    let detail: String
-    var id: String { day }
-
-    init(day: String, date: Date, value: Double, minimum: Double? = nil, maximum: Double? = nil, detail: String) {
-        self.day = day
-        self.date = date
-        self.value = value
-        self.minimum = minimum ?? value
-        self.maximum = maximum ?? value
-        self.detail = detail
-    }
-}
-
-private enum NativeAppleActivityVitalMetric: String, CaseIterable {
-    case heartRate = "心率"
-    case restingHeartRate = "静息心率"
-    case oxygenSaturation = "血氧"
-
-    private func percentage(_ value: Double) -> String { NativeHealthWorkspaceFormat.number(value) + "%" }
-    var valueLabel: String {
-        switch self {
-        case .heartRate: return "每日平均心率"
-        case .restingHeartRate: return "每日静息心率"
-        case .oxygenSaturation: return "每日最近一次血氧"
-        }
-    }
-    var unit: String { self == .oxygenSaturation ? "%" : "次/分" }
-
-    func valueText(_ value: Double) -> String {
-        self == .oxygenSaturation ? percentage(value) : NativeHealthWorkspaceFormat.number(value) + " " + unit
-    }
-
-    func point(_ row: NativeAppleActivityDay) -> NativeAppleActivityVitalPoint? {
-        guard let date = NativeHealthWorkspaceFormat.date(row.day) else { return nil }
-        switch self {
-        case .heartRate:
-            guard let rate = row.heartRate else { return nil }
-            let interval = "范围 " + NativeHealthWorkspaceFormat.number(rate.min) + "–" + valueText(rate.max)
-            return .init(day: row.day, date: date, value: rate.average, minimum: rate.min, maximum: rate.max,
-                         detail: interval)
-        case .restingHeartRate:
-            guard let rate = row.restingHeartRate else { return nil }
-            return .init(day: row.day, date: date, value: rate.value,
-                         detail: "记录时间 " + NativeHealthWorkspaceFormat.clock(rate.measuredAt))
-        case .oxygenSaturation:
-            guard let oxygen = row.oxygenSaturation else { return nil }
-            let aggregate = "\(oxygen.count) 次采样 · 平均 " + percentage(oxygen.average)
-                + " · 范围 " + percentage(oxygen.min) + "–" + percentage(oxygen.max)
-            let timestamp = NativeHealthWorkspaceFormat.clock(oxygen.measuredAt)
-            return .init(day: row.day, date: date, value: oxygen.latest, minimum: oxygen.min, maximum: oxygen.max,
-                         detail: "最近 " + timestamp + " · " + aggregate)
-        }
-    }
-}
-
-private struct NativeAppleActivityVitals: View {
-    let days: [NativeAppleActivityDay]
-    let range: NativeHealthWorkspaceRange
-    @State private var metric: NativeAppleActivityVitalMetric = .heartRate
-
-    private var points: [NativeAppleActivityVitalPoint] {
-        days.filter { range.from <= $0.day && $0.day <= range.to }
-            .compactMap(metric.point).sorted { $0.day < $1.day }
-    }
-
-    var body: some View {
-        Section {
-            Picker("指标", selection: $metric) {
-                ForEach(NativeAppleActivityVitalMetric.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
-            }
-            let points = self.points
-            if points.isEmpty {
-                NativeFeatureEmpty(title: "这段时间暂无" + metric.rawValue + "记录",
-                                   detail: "请在「应用 → 同步中心」检查授权并补充同步。",
-                                   icon: "heart.text.square")
-            } else {
-                Text(metric.valueLabel).font(.headline)
-                chart(points)
-            }
-        }
-        if !points.isEmpty {
-            Section("每日记录") {
-                ForEach(points.reversed()) { point in
-                    VStack(alignment: .leading, spacing: 5) {
-                        LabeledContent(point.day, value: metric.valueText(point.value))
-                        Text(point.detail).font(.caption).foregroundStyle(NativePalette.muted)
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 5) {
+                if topic == .body && !typeSize.isAccessibilitySize {
+                    HStack {
+                        title
+                        Spacer(minLength: 4)
+                        readout
                     }
-                    .accessibilityElement(children: .combine)
+                } else {
+                    title
+                    readout
                 }
+                Text(note).font(.caption).foregroundStyle(NativePalette.muted).fixedSize(horizontal: false, vertical: true)
             }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: topic == .body ? 66 : 83, alignment: .leading)
+            .nativeGeometricCard(fill: selected ? NativePalette.soft : NativePalette.surface, corner: 16, compactCorner: 7)
+            .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(NativePalette.accent.opacity(selected ? 0.55 : 0), lineWidth: 1))
+            .foregroundStyle(NativePalette.ink)
         }
+        .buttonStyle(NativePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("health-trend-topic-" + topic.rawValue)
     }
 
-    private func chart(_ points: [NativeAppleActivityVitalPoint]) -> some View {
-        Chart(points) { point in
-            if point.minimum < point.maximum {
-                RuleMark(x: .value("日期", point.date),
-                         yStart: .value("最低", point.minimum), yEnd: .value("最高", point.maximum))
-                    .foregroundStyle(NativePalette.accent.opacity(0.45))
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-            }
-            PointMark(x: .value("日期", point.date), y: .value(metric.valueLabel, point.value))
-                .foregroundStyle(NativePalette.accent)
-        }
-        .chartXScale(domain: NativeHealthChartCalendar.domain(range))
-        .chartYScale(domain: yDomain(points))
-        .chartYAxis { AxisMarks(position: .leading) }
-        .chartXAxis {
-            AxisMarks(values: NativeHealthChartCalendar.ticks(range)) { value in
-                AxisGridLine()
-                AxisTick()
-                AxisValueLabel {
-                    if let date = value.as(Date.self) { Text(NativeActionDates.formatted(date, pattern: "M/d")) }
-                }
-            }
-        }
-        .chartYAxisLabel(metric.unit)
-        .frame(height: 160)
-        .accessibilityLabel(metric.valueLabel)
+    private var title: some View {
+        Label(topic.title, systemImage: topic.icon).font(.caption.weight(.semibold))
+            .foregroundStyle(topic.accent).fixedSize(horizontal: false, vertical: true)
     }
 
-    private func yDomain(_ points: [NativeAppleActivityVitalPoint]) -> ClosedRange<Double> {
-        let low = points.map(\.minimum).min() ?? 0
-        let high = points.map(\.maximum).max() ?? low
-        let padding = max(1, (high - low) * 0.08)
-        if metric == .oxygenSaturation {
-            return max(0, low - padding)...min(100, high + padding)
+    private var readout: some View {
+        Text(value).font(.title3.weight(.semibold)).monospacedDigit()
+            .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
+    }
+}
+
+struct NativeHealthTrendDayRow: View {
+    let topic: NativeHealthTrendTopic
+    let title: String
+    let value: String
+    let note: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: topic.icon)
+                .frame(width: 30, height: 30).background(topic.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(topic.accent).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(title).fontWeight(.semibold).fixedSize()
+                        Spacer(minLength: 4)
+                        Text(value).monospacedDigit().fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).fontWeight(.semibold)
+                        Text(value).monospacedDigit()
+                    }
+                }
+                .font(.subheadline)
+                Text(note).font(.caption).foregroundStyle(NativePalette.muted)
+            }
         }
-        return max(0, low - padding)...(high + padding)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct NativeHealthTrendWorkouts: View {
+    let title: String
+    let workouts: [NativeAppleActivityWorkout]?
+    let unavailableText: String
+    @Binding var expandedID: String?
+    @State private var showingMore = false
+
+    private var sorted: [NativeAppleActivityWorkout] {
+        (workouts ?? []).sorted { $0.startDate > $1.startDate }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+            if let workouts {
+                Text(Self.summary(workouts)).font(.caption).foregroundStyle(NativePalette.muted)
+                let recent = sorted
+                ForEach(recent.prefix(4)) { row in
+                    NativeAppleActivityWorkoutRow(workout: row, expandedID: $expandedID)
+                }
+                if recent.count > 4 {
+                    DisclosureGroup("其余 \(recent.count - 4) 条训练", isExpanded: moreBinding) {
+                        ForEach(recent.dropFirst(4)) { row in
+                            NativeAppleActivityWorkoutRow(workout: row, expandedID: $expandedID)
+                        }
+                    }.font(.subheadline)
+                }
+            } else {
+                Text(unavailableText).font(.subheadline).foregroundStyle(NativePalette.muted)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativeGeometricCard(corner: 20, compactCorner: 7)
+    }
+
+    private var moreBinding: Binding<Bool> {
+        Binding(get: {
+            showingMore || sorted.dropFirst(4).contains { $0.id == expandedID }
+        }, set: { value in
+            showingMore = value
+            if !value, sorted.dropFirst(4).contains(where: { $0.id == expandedID }) { expandedID = nil }
+        })
+    }
+
+    static func summary(_ rows: [NativeAppleActivityWorkout]) -> String {
+        guard !rows.isEmpty else { return "暂无已同步训练" }
+        let duration = rows.reduce(0) { $0 + $1.durationSeconds }
+        return "\(rows.count) 次训练 · " + (Self.duration(duration) ?? "时长未知")
+    }
+
+    static func duration(_ duration: Double, includeSeconds: Bool = false) -> String? {
+        guard let seconds = Int(exactly: duration.rounded()), seconds >= 0 else { return nil }
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainder = seconds % 60
+        return [
+            hours > 0 ? "\(hours) 小时" : nil,
+            minutes > 0 ? "\(minutes) 分钟" : nil,
+            seconds < 60 || (includeSeconds && remainder > 0) ? "\(remainder) 秒" : nil,
+        ].compactMap { $0 }.joined(separator: " ")
     }
 }
 
 private struct NativeAppleActivityWorkoutRow: View {
     let workout: NativeAppleActivityWorkout
+    @Binding var expandedID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(activityLabel).font(.headline)
-            Text(timeLabel).font(.subheadline).foregroundStyle(NativePalette.muted)
-            Text(details.joined(separator: " · ")).font(.subheadline)
+        DisclosureGroup(isExpanded: Binding(get: { expandedID == workout.id }, set: { expanded in
+            if expanded { expandedID = workout.id }
+            else if expandedID == workout.id { expandedID = nil }
+        })) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(timeLabel)
+                if let duration = NativeHealthTrendWorkouts.duration(workout.durationSeconds, includeSeconds: true) {
+                    Text("实际时长 " + duration)
+                }
+                if let distance = workout.distanceMeters {
+                    Text("距离 " + NativeHealthWorkspaceFormat.number(distance / 1_000) + " 公里")
+                }
+                if let energy = workout.energyKcal {
+                    Text("活动消耗 " + NativeHealthWorkspaceFormat.number(energy) + " 千卡")
+                }
+            }
+            .font(.caption).foregroundStyle(NativePalette.muted)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "figure.run")
+                    .frame(width: 28, height: 28)
+                    .background(NativeHealthTrendTopic.activity.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 7))
+                    .foregroundStyle(NativeHealthTrendTopic.activity.accent).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(activityLabel).font(.subheadline.weight(.semibold)).foregroundStyle(NativePalette.ink)
+                    Text(startLabel).font(.caption).foregroundStyle(NativePalette.muted)
+                }
+                Spacer(minLength: 4)
+                if let duration = NativeHealthTrendWorkouts.duration(workout.durationSeconds) {
+                    Text(duration).font(.caption.weight(.medium)).foregroundStyle(NativePalette.ink)
+                }
+            }
+            .frame(minHeight: 44)
+            .accessibilityElement(children: .combine)
         }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
+    }
+
+    private var startLabel: String {
+        guard let start = NativeDates.parse(workout.startDate) else { return "时间未提供" }
+        return NativeActionDates.formatted(start, pattern: "M月d日 · HH:mm")
     }
 
     private var timeLabel: String {
         guard let start = NativeDates.parse(workout.startDate), let end = NativeDates.parse(workout.endDate)
         else { return "时间未提供" }
-        let endPattern = NativeActionDates.day(start) == NativeActionDates.day(end) ? "HH:mm" : "yyyy-MM-dd HH:mm"
-        return NativeActionDates.formatted(start, pattern: "yyyy-MM-dd HH:mm") + "–"
+        let endPattern = NativeActionDates.day(start) == NativeActionDates.day(end) ? "HH:mm" : "M月d日 HH:mm"
+        return NativeActionDates.formatted(start, pattern: "M月d日 HH:mm") + "–"
             + NativeActionDates.formatted(end, pattern: endPattern)
-    }
-
-    private var details: [String] {
-        [duration,
-         workout.distanceMeters.map { NativeHealthWorkspaceFormat.number($0 / 1000) + " 公里" },
-         workout.energyKcal.map { NativeHealthWorkspaceFormat.number($0) + " 千卡" }]
-            .compactMap { $0 }
-    }
-
-    private var duration: String? {
-        guard let seconds = Int(exactly: workout.durationSeconds.rounded()), seconds >= 0 else { return nil }
-        let hours = seconds / 3600
-        let minutes = (seconds % 3600) / 60
-        if hours > 0 { return "\(hours) 小时 \(minutes) 分钟" }
-        if minutes > 0 { return "\(minutes) 分钟 \(seconds % 60) 秒" }
-        return "\(seconds) 秒"
     }
 
     private var activityLabel: String {

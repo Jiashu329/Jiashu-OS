@@ -34,6 +34,53 @@ struct NativeOverview: Codable, Sendable {
     let nutrition: NativeJSON?
     let modules: NativeJSON?
     var weekly: NativeOverviewWeeklyEvidence? = nil
+    var appleActivity: NativeAppleActivityOverview? = nil
+}
+
+struct NativeAppleActivityOverview: Codable, Sendable {
+    struct Reading: Codable, Sendable {
+        let value: Double
+        let measuredAt: String
+    }
+
+    let status: String
+    let from: String?
+    let to: String?
+    let today: String?
+    let restingHeartRate: Reading?
+    let oxygenSaturation: Reading?
+    let workouts: NativeAppleActivityWorkoutSummary?
+}
+
+struct NativeAppleActivityWorkoutSummary: Codable, Sendable {
+    let count: Int
+    let durationSeconds: Double
+}
+
+struct NativeAppleActivityWeekly: Codable, Sendable {
+    struct Period: Codable, Sendable {
+        struct HeartRate: Codable, Sendable {
+            let average: Double
+            let days: Int
+        }
+
+        struct Oxygen: Codable, Sendable {
+            let days: Int
+            let samples: Int
+        }
+
+        let from: String
+        let to: String
+        let heartRate: HeartRate?
+        let restingHeartRate: HeartRate?
+        let oxygenSaturation: Oxygen?
+        let workouts: NativeAppleActivityWorkoutSummary?
+    }
+
+    let status: String
+    let current: Period?
+    let previous: Period?
+    let today: Period?
 }
 
 struct NativeOverviewWeeklyEvidence: Codable, Sendable {
@@ -246,6 +293,7 @@ struct NativeWeeklyReviewResponse: Codable, Sendable {
     let partial: Bool
     let metrics: [NativeWeeklyMetric]
     let focus: NativeWeeklyFocus
+    var appleActivity: NativeAppleActivityWeekly? = nil
 }
 
 struct NativeWeeklyMetric: Codable, Identifiable, Sendable {

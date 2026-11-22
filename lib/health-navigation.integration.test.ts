@@ -4,6 +4,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { renderApp } from '../ui.ts';
+import { parseDateRangeQuery } from './date-range.ts';
 
 async function settled(check: () => boolean) {
   for (let index = 0; index < 40; index++) { if (check()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
@@ -38,6 +39,10 @@ function fixture(initialPath = '/health', rows: unknown[] = [], initialState: un
   const fetch = async (path: string, options?: RequestInit) => {
     requests.push({ url: path, method: options?.method ?? 'GET' });
     if (path.startsWith('/api/health?')) return Response.json({ measurements: rows, lastSync: null, bodyComposition: null });
+    if (path.startsWith('/api/health/apple-activity?')) {
+      const { from, to } = parseDateRangeQuery(new URL(path, initial.origin).searchParams, Date.now(), 30);
+      return Response.json({ from, to, vitals: [], workouts: [] });
+    }
     if (path === '/api/sync/devices') return Response.json({ devices: [] });
     if (path === '/api/health/import') return Response.json({ imported: 1 });
     throw new Error('Unexpected synthetic request: ' + path);
@@ -57,7 +62,7 @@ test('health metric and range deep links survive interactions, Back, Forward and
   const f = fixture('/health?metric=sleep&days=180'); await f.ready();
   assert.equal(f.el('chart-title').textContent, '睡眠趋势');
   assert.equal(f.document.querySelector('[data-days="180"]')!.getAttribute('aria-pressed'), 'true');
-  f.click('[data-metric="weight"]'); f.click('[data-days="7"]');
+  f.click('[data-health-group="body"]'); f.click('[data-days="7"]');
   assert.equal(f.location.pathname + f.location.search, '/health?metric=weight&days=7');
   assert.equal(f.el('chart-title').textContent, '体重变化');
   f.history.back(); assert.equal(f.location.search, '?metric=weight&days=180');
@@ -68,7 +73,7 @@ test('health metric and range deep links survive interactions, Back, Forward and
   const reloaded = fixture(f.location.pathname + f.location.search); await reloaded.ready();
   assert.equal(reloaded.el('chart-title').textContent, '体重变化');
   assert.equal(reloaded.document.querySelector('[data-days="180"]')!.getAttribute('aria-pressed'), 'true');
-  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests.filter((request) => request.url.startsWith('/api/health?')).length, 1);
 });
 
 test('chart question entry shares the selected metric and range as a draft and computed body fat stays unsupported',async()=>{
@@ -78,7 +83,7 @@ test('chart question entry shares the selected metric and range as a draft and c
   assert.equal(details.length,1);assert.equal((details[0] as {metric:string}).metric,'sleep');assert.equal((details[0] as {days:number}).days,180);
   assert.match((details[0] as {question:string}).question,/180.*睡眠/);
   assert.equal(f.requests.some((r)=>r.method==='POST'),false);
-  f.click('[data-metric="body_fat"]');f.click('#ask-health-chart');assert.equal(details.length,1);
+  f.click('[data-health-group="body"]');f.click('[data-metric="body_fat"]');f.click('#ask-health-chart');assert.equal(details.length,1);
 });
 
 test('historical custom dates drive chart filtering, export, assistant draft and browser history together',async()=>{
@@ -91,7 +96,7 @@ test('historical custom dates drive chart filtering, export, assistant draft and
   const details:Array<{from:string;to:string;days:number}>=[];f.window.addEventListener('health-assistant-open',(event)=>details.push((event as unknown as CustomEvent).detail));f.click('#ask-health-chart');
   assert.equal(details[0].from,'2024-02-28');assert.equal(details[0].to,'2024-03-01');assert.equal(details[0].days,3);
   f.el('health-range-from').value='2024-02-30';f.el('health-range-to').value='2024-03-01';f.el('health-range-form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));
-  assert.equal(f.el('health-range-error').hidden,false);assert.equal(f.requests.length,1);assert.match(f.location.search,/from=2024-02-28/);
+  assert.equal(f.el('health-range-error').hidden,false);assert.equal(f.requests.filter((request)=>request.url.startsWith('/api/health?')).length,1);assert.match(f.location.search,/from=2024-02-28/);
   f.click('[data-days="7"]');await f.ready();assert.equal(f.location.search,'?metric=steps&days=7');
   f.history.back();await f.ready();assert.equal(f.location.search,'?metric=steps&from=2024-02-28&to=2024-03-01');assert.equal(f.el('record-count').textContent,'3 条记录');
   assert.equal(f.requests.some((request)=>request.method==='POST'),false);
@@ -106,7 +111,7 @@ test('sleep schedule analysis follows the selected historical range and keeps du
   const f=fixture('/health?metric=sleep&from=2024-02-29&to=2024-03-01',rows);await f.ready();
   assert.equal(f.el('sleep-analysis').hidden,false);assert.match(f.el('sleep-analysis').textContent!,/23:00/);assert.match(f.el('sleep-analysis').textContent!,/07:00/);
   assert.match(f.el('sleep-analysis').textContent!,/睡眠记录 2 天.*完整时刻 1 天/);assert.match(f.el('sleep-analysis').textContent!,/仅有总时长/);assert.doesNotMatch(f.el('sleep-analysis').textContent!,/21:00|05:00/);
-  f.click('[data-metric="steps"]');assert.equal(f.el('sleep-analysis').hidden,true);
+  f.click('[data-health-group="activity"]');assert.equal(f.el('sleep-analysis').hidden,true);
 });
 
 test('health and sync navigation create reversible entries and goals links expand the calendar', async () => {
@@ -143,11 +148,21 @@ test('manual shortcut handoff clears the sensitive fragment and does not auto-su
   assert.equal(f.requests.some((item) => item.method === 'POST'), false);
 });
 
-test('non-sleep trends retain a readable scrollable chart instead of shrinking labels to phone width', async () => {
+test('the responsive Health chart provides keyboard date access and keeps missing dates selectable', async () => {
   const f = fixture('/health?metric=steps&from=2026-11-10&to=2026-11-16', [{ metric: 'steps', value: 5000, day: '2026-11-11', startDate: '2026-11-11T00:00:00+08:00' }]);
   await f.ready();
-  assert.equal(f.el('chart-wrap').querySelector('.metric-chart-scroll')?.getAttribute('tabindex'), '0');
-  assert.match(f.el('chart-wrap').textContent ?? '', /横向滑动/);
+  const chart = f.el('chart-wrap').querySelector('.health-workspace-chart-svg');
+  assert.equal(chart?.getAttribute('tabindex'), '0');
+  assert.match(chart?.getAttribute('aria-label') ?? '', /2026-11-16.*暂无记录/);
+  const selectFirstDay = new f.window.Event('keydown', { bubbles: true, cancelable: true });
+  Object.defineProperty(selectFirstDay, 'key', { value: 'Home' });
+  chart?.dispatchEvent(selectFirstDay);
+  assert.match(f.location.search, /day=2026-11-10/);
+  const advanceDay = new f.window.Event('keydown', { bubbles: true, cancelable: true });
+  Object.defineProperty(advanceDay, 'key', { value: 'ArrowRight' });
+  f.el('chart-wrap').querySelector('.health-workspace-chart-svg')?.dispatchEvent(advanceDay);
+  assert.match(f.location.search, /day=2026-11-11/);
+  assert.match(f.el('chart-wrap').querySelector('.health-workspace-chart-svg')?.getAttribute('aria-label') ?? '', /5,000 步/);
 });
 
 test('expanding goals preserves the existing editable target dialog even when progress cannot load', async () => {

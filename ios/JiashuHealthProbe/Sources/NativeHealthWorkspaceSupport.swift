@@ -31,10 +31,12 @@ struct NativeHealthWorkspaceRange: Equatable, Codable {
 enum NativeHealthWorkspaceFormat {
     static let metricKeys = ["weight", "lean_body_mass", "steps", "active_energy", "sleep"]
     static func metric(_ key: String) -> String {
-        ["weight":"体重", "lean_body_mass":"去脂体重", "steps":"步数", "active_energy":"活动能量", "sleep":"睡眠", "body_fat":"估算体脂率"][key] ?? key
+        ["weight":"体重", "lean_body_mass":"去脂体重", "steps":"步数", "active_energy":"活动能量", "sleep":"睡眠", "body_fat":"估算体脂率",
+         "heart_rate":"日均心率", "resting_heart_rate":"静息心率", "oxygen_saturation":"血氧"][key] ?? key
     }
     static func unit(_ key: String) -> String {
-        ["weight":"kg", "lean_body_mass":"kg", "steps":"步", "active_energy":"千卡", "sleep":"小时", "body_fat":"%"][key] ?? ""
+        ["weight":"kg", "lean_body_mass":"kg", "steps":"步", "active_energy":"千卡", "sleep":"小时", "body_fat":"%",
+         "heart_rate":"次/分", "resting_heart_rate":"次/分", "oxygen_saturation":"%"][key] ?? ""
     }
     static func number(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "未知" }

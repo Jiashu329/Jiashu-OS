@@ -8,6 +8,7 @@ import { buildHealthWeeklyReview, parseHealthWeekQuery } from './health-weekly.t
 import { buildHealthWeeklyFocus } from './health-weekly-focus.ts';
 import type { HealthMeasurement } from './health.ts';
 import type { WeeklyAction } from './health-weekly-actions.ts';
+import type { WeeklyAppleActivity } from './apple-activity-supplements.ts';
 
 const NOW=new Date('2026-11-14T04:00:00Z');
 const currentAction:WeeklyAction={weekStart:'2026-11-09',text:'保持午间散步',status:'planned',feedback:'',revision:1,createdAt:NOW.toISOString(),updatedAt:NOW.toISOString()};
@@ -19,7 +20,7 @@ function review(week='2026-11-09',actions:{current:WeeklyAction|null;next:Weekly
  return{...base,focus:buildHealthWeeklyFocus(base)};
 }
 async function settle(check:()=>boolean){for(let i=0;i<70;i++){if(check())return;await new Promise<void>(resolve=>setImmediate(resolve));}assert.ok(check());}
-function fixture(options:{next?:WeeklyAction|null;current?:WeeklyAction|null;withGuards?:boolean;focus?:Record<string,unknown>;actionsUnavailable?:boolean}={}){
+function fixture(options:{next?:WeeklyAction|null;current?:WeeklyAction|null;withGuards?:boolean;focus?:Record<string,unknown>;actionsUnavailable?:boolean;appleActivity?:(week:string)=>WeeklyAppleActivity}={}){
  const {window,document}=parseHTML(renderHealthWeeklyPage());
  Object.defineProperty(window.HTMLSelectElement.prototype,'value',{configurable:true,get(){return this.querySelector('option[selected]')?.getAttribute('value')??this.querySelector('option')?.getAttribute('value')??'';},set(value:string){for(const option of this.querySelectorAll('option'))if(option.getAttribute('value')===String(value))option.setAttribute('selected','');else option.removeAttribute('selected');}});
  let url=new URL('https://synthetic-weekly.example/health/review?week=2026-11-09'),failSave=false,failRead=false,pendingRead:null|(()=>Promise<Response>)=null,verify:()=>Promise<void>=async()=>{};
@@ -27,7 +28,7 @@ function fixture(options:{next?:WeeklyAction|null;current?:WeeklyAction|null;wit
  let actions={current:options.current===undefined?structuredClone(currentAction):options.current,next:options.next??null};
  const session={changed:false,verify:()=>verify(),request:async(input:string,init:RequestInit={})=>{
   const parsed=new URL(input,url),method=init.method??'GET',body=init.body?JSON.parse(String(init.body)):null;requests.push({url:parsed.pathname+parsed.search,method,body});
-  if(parsed.pathname==='/api/health/review'){if(pendingRead)return pendingRead();if(failRead)throw new Error('Synthetic read failed');const data=review(parsed.searchParams.get('week')??'2026-11-09',actions);if(options.focus)data.focus=options.focus as unknown as typeof data.focus;if(options.actionsUnavailable)data.supplementalStatus.actions='unavailable';return Response.json(data);}
+  if(parsed.pathname==='/api/health/review'){if(pendingRead)return pendingRead();if(failRead)throw new Error('Synthetic read failed');const week=parsed.searchParams.get('week')??'2026-11-09';const data=review(week,actions);if(options.focus)data.focus=options.focus as unknown as typeof data.focus;if(options.actionsUnavailable)data.supplementalStatus.actions='unavailable';return Response.json({...data,appleActivity:options.appleActivity?.(week)});}
   if(parsed.pathname==='/api/health/actions'){
    if(failSave)return Response.json({error:'其他页面已更新行动。',code:'WEEKLY_ACTION_CONFLICT'},{status:409});
    const action={...body,revision:body.expectedRevision+1,createdAt:NOW.toISOString(),updatedAt:NOW.toISOString()};
@@ -51,6 +52,35 @@ test('weekly review leads with a bounded focus and keeps all original data in cl
  assert.equal(f.el('details').hasAttribute('open'),false);for(const id of ['metrics','goals','nutrition','weight-plan','completeness','daily-rows'])assert.ok(f.el('details').contains(f.el(id)),id);
  assert.equal(f.document.querySelectorAll('#weekly-focus-secondary article').length<=2,true);assert.equal(f.requests.every(request=>request.method==='GET'),true);
  const ids=[...f.document.querySelectorAll('[id]')].map(node=>node.id);assert.equal(new Set(ids).size,ids.length);
+});
+
+void test('weekly Apple records compare completed days, isolate today, and link to the same periods', async () => {
+ const current={from:'2026-11-09',to:'2026-11-13',heartRate:{average:72,days:4},restingHeartRate:null,
+  oxygenSaturation:{days:2,samples:7},workouts:{count:3,durationSeconds:5400}};
+ const previous={from:'2026-11-02',to:'2026-11-06',heartRate:null,restingHeartRate:{average:60,days:2},
+  oxygenSaturation:null,workouts:{count:1,durationSeconds:1800}};
+ const today={...current,from:'2026-11-14',to:'2026-11-14',heartRate:{average:94,days:1},workouts:{count:2,durationSeconds:4500}};
+ const f=fixture({appleActivity:(week)=>week==='2026-11-09'?{status:'ready',current,previous,today}:{status:'unavailable'}});
+ await settle(()=>f.el('page').getAttribute('aria-busy')==='false');
+ const completed=f.el('apple-activity');
+ assert.match(completed.textContent,/已结束日期 2026-11-09 至 2026-11-13.*2026-11-02 至 2026-11-06/);
+ assert.match(completed.querySelector('.workouts')!.textContent,/3 次.*上周同期 1 次.*90 分钟.*上周同期 30 分钟/);
+ assert.match(completed.querySelector('.heart_rate')!.textContent,/72 次\/分 · 4 \/ 5 天.*暂无记录.*60 次\/分 · 2 \/ 5 天/);
+ assert.match(completed.querySelector('.oxygen_saturation')!.textContent,/2 \/ 5 天.*7 次/);
+ assert.doesNotMatch(completed.textContent,/2026-11-14|94 次\/分|75 分钟/);
+ assert.match(f.el('apple-today').textContent,/今天的记录 2026-11-14.*2 次 · 75 分钟.*94 次\/分/);
+ for(const [anchor,metric,from,to] of [
+  [completed.querySelector('.workouts a')!,'workouts','2026-11-09','2026-11-13'],
+  [f.el('apple-today').querySelector('a[href*="metric=oxygen_saturation"]')!,'oxygen_saturation','2026-11-14','2026-11-14'],
+ ] as const){
+  const target=new URL(anchor.getAttribute('href')!,'https://synthetic-weekly.example');
+  assert.deepEqual(Object.fromEntries(target.searchParams),{metric,from,to,day:to});
+ }
+ f.click('previous');
+ await settle(()=>f.requests.length===2&&f.el('page').getAttribute('aria-busy')==='false');
+ assert.match(f.el('apple-activity').textContent,/暂时无法读取/);
+ assert.equal(f.el('apple-today').hidden,true);
+ assert.equal(f.el('content').hidden,false);
 });
 
 test('using a suggestion only fills the next action draft and its separate submit saves it',async()=>{

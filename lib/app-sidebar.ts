@@ -75,7 +75,7 @@ ${APP_PAGE_UX_CSS}
 `;
 
 const contextNavigation = {
-  health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/apple-activity', '心率、血氧与训练'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
+  health: { label: '健康管理', links: [['/health', '趋势总览'], ['/health/weight-plan', '体重计划'], ['/health/review', '每周回顾'], ['/health/records', '记录管理'], ['/settings/ai', 'AI 设置']] },
   nutrition: { label: '饮食管理', links: [['/health/nutrition', '饮食记录'], ['/health/foods', '食物库'], ['/health/nutrition/recipes', '我的菜谱']] },
   douban: { label: '书影音分类', links: [['/life/douban', '全部收藏'], ['/life/douban?kind=movie', '电影'], ['/life/douban?kind=series', '电视剧'], ['/life/douban?kind=book', '书籍'], ['/life/douban?kind=music', '音乐'], ['/life/douban?kind=screen', '待分类']] },
   finance: { label: '财务管理', links: [['/finance', '账户总览'], ['/finance/balances', '核对余额'], ['/finance/goals', '资金目标'], ['/finance/runway', '应急储备'], ['/finance/review', '月度回顾'], ['/finance/activity', '协作动态']] },

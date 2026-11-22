@@ -1,4 +1,5 @@
 import { APPLE_VITAL_METRICS, type AppleActivityPayload, type AppleVitalDay, type AppleVitalMetric, type AppleWorkout } from '../lib/apple-health-activity.ts';
+import type { AppleActivityDaily, AppleActivityRange, AppleWorkoutSummary } from '../lib/apple-activity-supplements.ts';
 import { shanghaiDay } from '../lib/health.ts';
 
 type Database = Pick<D1Database, 'prepare' | 'batch'>;
@@ -46,18 +47,41 @@ export async function writeAppleActivity(db: Database, userId: string, tokenHash
   return { received: vitals.length + workouts.length, updated: savedVitals.meta.changes + savedWorkouts.meta.changes, syncedAt };
 }
 
+interface VitalRow { day: string; metric: AppleVitalMetric; data: string }
+
+function combineVitals(rows: VitalRow[]): AppleVitalDay[] {
+  const days = new Map<string, AppleVitalDay>();
+  for (const row of rows) {
+    const day = days.get(row.day) ?? { day: row.day };
+    day[row.metric] = JSON.parse(row.data);
+    days.set(row.day, day);
+  }
+  return [...days.values()];
+}
+
 export async function readAppleActivity(db: Database, userId: string, from: string, to: string) {
-  const [vitalRows, workoutRows] = await db.batch<{ day: string; metric: AppleVitalMetric; data: string }>([
+  const [vitalRows, workoutRows] = await db.batch<VitalRow>([
     db.prepare(`SELECT day, metric, value_json AS data FROM health_apple_vitals
       WHERE user_id=? AND day BETWEEN ? AND ? ORDER BY day, metric`).bind(userId, from, to),
     db.prepare(`SELECT workout_json AS data FROM health_apple_workouts
       WHERE user_id=? AND day BETWEEN ? AND ? ORDER BY start_date DESC, workout_id`).bind(userId, from, to),
   ]);
-  const days = new Map<string, AppleVitalDay>();
-  for (const row of vitalRows.results) {
-    const day = days.get(row.day) ?? { day: row.day };
-    day[row.metric] = JSON.parse(row.data);
-    days.set(row.day, day);
-  }
-  return { from, to, vitals: [...days.values()], workouts: workoutRows.results.map(row => JSON.parse(row.data) as AppleWorkout) };
+  return { from, to, vitals: combineVitals(vitalRows.results), workouts: workoutRows.results.map(row => JSON.parse(row.data) as AppleWorkout) };
+}
+
+/** Reduce synced workouts in SQLite so overview reads never transfer individual sessions. */
+export async function readAppleActivityDaily(db: Database, userId: string, vitalsRange: AppleActivityRange,
+  workoutRange = vitalsRange): Promise<AppleActivityDaily> {
+  const { results } = await db.prepare(`SELECT day, metric, value_json AS data FROM health_apple_vitals
+    WHERE user_id=? AND day BETWEEN ? AND ?
+    UNION ALL
+    SELECT day, 'workouts' AS metric, json_object('count', COUNT(*), 'durationSeconds', SUM(json_extract(workout_json, '$.durationSeconds'))) AS data
+    FROM health_apple_workouts WHERE user_id=? AND day BETWEEN ? AND ? GROUP BY day ORDER BY day, metric`)
+    .bind(userId, vitalsRange.from, vitalsRange.to, userId, workoutRange.from, workoutRange.to)
+    .all<VitalRow | { day: string; metric: 'workouts'; data: string }>();
+  return {
+    vitals: combineVitals(results.filter(row => row.metric !== 'workouts')),
+    workouts: results.filter(row => row.metric === 'workouts')
+      .map(row => ({ day: row.day, ...(JSON.parse(row.data) as AppleWorkoutSummary) })),
+  };
 }

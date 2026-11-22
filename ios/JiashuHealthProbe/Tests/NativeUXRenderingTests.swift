@@ -111,6 +111,7 @@ final class NativeUXRenderingTests: XCTestCase {
         let from = scenario.day(offset: 1 - days), to = scenario.day
         let range = ["from": from, "to": to]
         let rangeReads = scenario.completed("/api/native/health", matching: range)
+        let activityReads = scenario.completed("/api/native/health/apple-activity", matching: range)
         let goalReads = scenario.completed("/api/native/health/goals")
         try await capture(NavigationStack {
             NativeHealthRangeWorkspace(api: api, token: token, userID: scenario.userID,
@@ -118,6 +119,7 @@ final class NativeUXRenderingTests: XCTestCase {
         }, name: name, size: accessible ? CGSize(width: 320, height: 874) : CGSize(width: 390, height: 844),
            dark: accessible, large: accessible, waitUntil: {
                scenario.completed("/api/native/health", matching: range) > rangeReads
+                   && scenario.completed("/api/native/health/apple-activity", matching: range) > activityReads
                    && scenario.completed("/api/native/health/goals") > goalReads
            })
     }
@@ -363,6 +365,28 @@ private final class NativeRenderingScenario: @unchecked Sendable {
             let recordedDays = metrics.values.reduce(0) { $0 + (($1["points"] as? [[String: Any]])?.count ?? 0) }
             result = ["summary": ["metrics": metrics, "measurementCount": recordedDays, "lastMeasurementAt": now],
                       "measurements": [], "lastSync": null, "range": ["from": from, "to": to]]
+        case "/api/native/health/apple-activity":
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let from = try XCTUnwrap(query.first(where: { $0.name == "from" })?.value)
+            let to = try XCTUnwrap(query.first(where: { $0.name == "to" })?.value)
+            let vitals: [[String: Any]] = [-5, -4, -2, -1, 0].compactMap { offset in
+                let recordedDay = self.day(offset: offset)
+                guard from <= recordedDay, recordedDay <= to else { return nil }
+                return [
+                    "day": recordedDay,
+                    "heartRate": ["average": 75 + offset, "min": 55 + offset, "max": 128 + offset],
+                    "restingHeartRate": ["value": 61 + offset, "measuredAt": recordedDay + "T01:10:00Z"],
+                    "oxygenSaturation": ["latest": 98, "average": 97.5, "min": 97, "max": 98, "count": 2,
+                                         "measuredAt": recordedDay + "T01:35:00Z"]
+                ]
+            }
+            let workoutDay = self.day(offset: -2)
+            let workouts: [[String: Any]] = from <= workoutDay && workoutDay <= to ? [[
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "activityType": 37,
+                "startDate": workoutDay + "T09:00:00Z", "endDate": workoutDay + "T09:30:00Z",
+                "durationSeconds": 1730, "energyKcal": 166, "distanceMeters": 4200
+            ]] : []
+            result = ["from": from, "to": to, "vitals": vitals, "workouts": workouts]
         case "/api/native/health/goals":
             result = ["targets": ["steps": 8000, "sleep": 8, "active_energy": 300], "revision": 0, "updatedAt": null, "effectiveFrom": null]
         case "/api/native/health/records":
