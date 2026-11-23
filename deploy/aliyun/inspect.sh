@@ -87,7 +87,7 @@ inspect_capacity() {
     fi
   fi
   capacity_command filesystem_bytes 2 df -B1 --output=target,size,used,avail,pcent -- "${disk_paths[@]}"
-  capacity_command filesystem_inodes 2 df -i --output=target,itotal,iused,iavail,ipcent -- "${disk_paths[@]}"
+  capacity_command filesystem_inodes 2 df --output=target,itotal,iused,iavail,ipcent -- "${disk_paths[@]}"
   for directory in /opt/jiashu-test/data /opt/jiashu-test/backups; do
     [[ ! -d "$directory" ]] || usage_paths+=("$directory")
   done
