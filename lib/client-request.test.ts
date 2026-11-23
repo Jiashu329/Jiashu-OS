@@ -69,3 +69,12 @@ void test('validation issues remain in the composed message without exposing a s
     assert.equal(value.message, '请核对记录。 数值超出范围'); return true;
   });
 });
+
+void test('repeated validation messages appear once while distinct issues remain visible', async () => {
+  const request = fixture(async () => Response.json({ error: '请核对记录。', code: 'INVALID_HEALTH_SYNC',
+    issues: [{ message: '请核对记录。' }, { message: '无法识别睡眠状态' }, { message: '无法识别睡眠状态' }, null,
+      { message: 5 }, { message: '日期格式不正确' }] }, { status: 400 }));
+  await assert.rejects(request('/api/health/import', { method: 'POST' }), (error: unknown) => {
+    assert.equal((error as Error).message, '请核对记录。 无法识别睡眠状态；日期格式不正确'); return true;
+  });
+});

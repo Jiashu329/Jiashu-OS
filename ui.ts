@@ -336,7 +336,7 @@ ${HEALTH_WORKSPACE_CSS}
         resetImportPreview();
         try{const data=await request('/api/health/import/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:text});showImportPreview(data.preview,text);$('import-error').textContent=error.code==='HEALTH_IMPORT_STALE'?'记录已变化，已重新预览。请再次核对后确认。':'本次存在来源变化，请核对预览并明确确认；尚未写入。';}
         catch(previewError){$('import-error').textContent=readableError(previewError);}
-      }else {const recovery=error.status===401?' 请在同一个 Safari 重新登录，再运行快捷指令或重新选择文件。':error.code==='SYNC_DEVICE_INVALID'?' 请重新生成同步连接；也可查看变更预览后手动确认。':['NETWORK_ERROR','REQUEST_TIMEOUT'].includes(error.code)||error.status>=500?' 导入结果暂未确认。请先关闭窗口并刷新同步结果，再决定是否重试；相同批次不会重复写入。':deviceToken?' 自动同步未确认完成。请先查看变更预览，再手动确认。':'';$('import-error').textContent=readableError(error)+recovery;$('import-recovery').hidden=error.status!==401;}
+      }else {const recovery=error.status===401?' 请在同一个 Safari 重新登录，再运行快捷指令或重新选择文件。':error.code==='SYNC_DEVICE_INVALID'?' 请重新生成同步连接；也可查看变更预览后手动确认。':error.code==='INVALID_HEALTH_SYNC'||[400,413,415,422].includes(error.status)?' 本次未导入。请修正快捷指令或导入文件后重试。':['NETWORK_ERROR','REQUEST_TIMEOUT'].includes(error.code)||error.status>=500?' 导入结果暂未确认。请先关闭窗口并刷新同步结果，再决定是否重试；相同批次不会重复写入。':deviceToken?' 自动同步未确认完成。请先查看变更预览，再手动确认。':'';$('import-error').textContent=readableError(error)+recovery;$('import-recovery').hidden=error.status!==401;}
       $('import-title').textContent='确认健康数据导入';$('import-error').hidden=false;if(activeHandoff)activeHandoff.deviceToken=null;
     }finally{
       importBusy=false;$('import-submit').disabled=false;$('import-json').disabled=false;$('import-file').disabled=false;$('import-source-confirm').disabled=false;$('import-submit').textContent=importPreview?'确认导入':'查看变更预览';
